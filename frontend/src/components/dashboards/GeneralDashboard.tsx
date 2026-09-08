@@ -9,7 +9,7 @@ import {
 import { KpiCard, type KpiCardProps } from '../shared/KpiCard';
 import { ChartWrapper } from '../shared/ChartWrapper';
 import { getPortalContext } from '@/lib/portal-context';
-import { WorldGlobe } from '../geo/WorldGlobe';
+import { GlobalThreatMap } from '../geo/GlobalThreatMap';
 import { NigeriaThreatMap, type FeedAdvisory } from '../geo/NigeriaThreatMap';
 import { apiUrl, apiFetch } from '@/lib/api';
 
@@ -639,7 +639,7 @@ export const GeneralDashboard = () => {
             <AlertsFeed alerts={feedAlerts} source={feedSource} loading={feedLoading} />
 
             {/* Supplementary — kept from the previous dashboard, still real data */}
-            <WorldGlobe />
+            <GlobalThreatMap />
 
             <OnboardedClientsWidget clients={clients} loading={clientsLoading} />
 

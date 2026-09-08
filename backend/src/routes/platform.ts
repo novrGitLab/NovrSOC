@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents } from '../services/wazuh';
 import { getAuditLog } from '../lib/audit';
+import { getMISPStats } from '../services/misp';
 
 const router = Router();
 
@@ -56,11 +57,26 @@ async function checkClaudeAI(): Promise<ServiceCheck> {
     }
 }
 
-// GET /api/platform/health — real checks for Wazuh Manager, Database (Supabase), and Claude AI.
-// Every other service on the Platform Health page stays mock until it has its own real check
-// built — see frontend/src/components/features/PlatformHealth.tsx.
+// MISP reports three distinguishable states, so this can say WHY it's not usable rather than a
+// flat "down": unconfigured, unreachable, or reachable-but-rejecting-the-key (which is the
+// current state of the configured instance — see services/misp.ts's header).
+async function checkMISP(): Promise<ServiceCheck & { detail?: string }> {
+    const start = Date.now();
+    const stats = await getMISPStats();
+    const latency = Date.now() - start;
+    if (!stats.configured) return { name: 'MISP', status: 'down', latency_ms: 0, detail: 'Not configured' };
+    if (stats.auth_ok) return { name: 'MISP', status: 'up', latency_ms: latency, detail: `${stats.events} events, ${stats.attributes} attributes` };
+    // Reachable but not authenticating is degraded, not down — the host is healthy, the
+    // credential isn't, and those need different fixes.
+    if (stats.reachable) return { name: 'MISP', status: 'degraded', latency_ms: latency, detail: stats.error };
+    return { name: 'MISP', status: 'down', latency_ms: latency, detail: stats.error };
+}
+
+// GET /api/platform/health — real checks for Wazuh Manager, Database (Supabase), Claude AI, and
+// MISP. Every other service on the Platform Health page stays mock until it has its own real
+// check built — see frontend/src/components/features/PlatformHealth.tsx.
 router.get('/health', async (_req, res) => {
-    const results = await Promise.all([checkWazuh(), checkDatabase(), checkClaudeAI()]);
+    const results = await Promise.all([checkWazuh(), checkDatabase(), checkClaudeAI(), checkMISP()]);
 
     const allUp = results.every((r) => r.status === 'up');
     const anyDown = results.some((r) => r.status === 'down');

@@ -43,6 +43,8 @@ import orgCTIRouter from './routes/orgCTI';
 import { runCTIWatcher } from './jobs/ctiWatcher';
 import { startAutoCloseJob } from './jobs/autoClose';
 import { startEscalationJob } from './jobs/incidentEscalation';
+import { startNigerianIntelJob } from './jobs/nigerianIntelJob';
+import { startGlobalIntelJob } from './jobs/globalIntelJob';
 import platformRouter from './routes/platform';
 import organisationsRouter from './routes/organisations';
 import secopsRouter from './routes/secops';
@@ -357,3 +359,9 @@ startAutoCloseJob();
 // Escalation emails for unresolved HIGH/CRITICAL cases — see jobs/incidentEscalation.ts.
 // No-ops (with a log line) when TheHive isn't configured.
 startEscalationJob();
+// Hourly Nigerian threat-intel collection (ngCERT + OTX + Feodo Tracker -> Nigeria heatmap +
+// MISP). Each source degrades to zero independently — see nigerianIntelCollector.ts's header
+// for which ones are actually reachable today.
+startNigerianIntelJob();
+// OTX pulse + Wazuh-derived MITRE technique sync — see jobs/globalIntelJob.ts.
+startGlobalIntelJob();

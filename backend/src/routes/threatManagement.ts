@@ -449,6 +449,116 @@ router.post('/alerts/:id/create-incident', async (req, res) => {
     res.json({ success: true, incident_id: newCase._id, incident_number: deriveIncidentNumber(newCase), message: `Incident ${deriveIncidentNumber(newCase)} created from alert ${alert.rule_id}` });
 });
 
+// GET /api/threats/global-map — country-level threat origins for the flat world map on the
+// dashboard (components/geo/GlobalThreatMap.tsx).
+//
+// Source is the Wazuh indexer's own GeoLocation.country_name aggregation over the last 7 days —
+// real observed attack sources against monitored endpoints. OTX would be a natural second
+// source, but its key is currently rejected (403 on every endpoint, verified live 2026-09-07),
+// so adding it would contribute nothing but latency; the merge below is written so a second
+// source slots in without restructuring, and `sources` says which ones actually reported.
+interface CountryAgg {
+    aggregations?: { countries?: { buckets?: Array<{ key: string; doc_count: number }> } };
+}
+
+// ISO-3166 numeric codes are what world-atlas topojson keys its features on, so the map needs
+// numeric — not alpha-2 — to colour a country in. Limited to the countries that realistically
+// show up in this deployment's alert stream plus the major threat-origin countries; anything
+// unmapped still appears in the ranked list below the map, just uncoloured.
+const COUNTRY_CODES: Record<string, { alpha2: string; numeric: string }> = {
+    Nigeria: { alpha2: 'NG', numeric: '566' },
+    'United States': { alpha2: 'US', numeric: '840' },
+    China: { alpha2: 'CN', numeric: '156' },
+    Russia: { alpha2: 'RU', numeric: '643' },
+    Germany: { alpha2: 'DE', numeric: '276' },
+    'United Kingdom': { alpha2: 'GB', numeric: '826' },
+    France: { alpha2: 'FR', numeric: '250' },
+    India: { alpha2: 'IN', numeric: '356' },
+    Brazil: { alpha2: 'BR', numeric: '076' },
+    Australia: { alpha2: 'AU', numeric: '036' },
+    Netherlands: { alpha2: 'NL', numeric: '528' },
+    Ukraine: { alpha2: 'UA', numeric: '804' },
+    'North Korea': { alpha2: 'KP', numeric: '408' },
+    Iran: { alpha2: 'IR', numeric: '364' },
+    'South Africa': { alpha2: 'ZA', numeric: '710' },
+    Ghana: { alpha2: 'GH', numeric: '288' },
+    Kenya: { alpha2: 'KE', numeric: '404' },
+    Egypt: { alpha2: 'EG', numeric: '818' },
+    Vietnam: { alpha2: 'VN', numeric: '704' },
+    Indonesia: { alpha2: 'ID', numeric: '360' },
+    Singapore: { alpha2: 'SG', numeric: '702' },
+    Canada: { alpha2: 'CA', numeric: '124' },
+    Japan: { alpha2: 'JP', numeric: '392' },
+    'South Korea': { alpha2: 'KR', numeric: '410' },
+    Turkey: { alpha2: 'TR', numeric: '792' },
+    Poland: { alpha2: 'PL', numeric: '616' },
+    Romania: { alpha2: 'RO', numeric: '642' },
+};
+
+const ALLOWED_WINDOWS = new Set(['24h', '7d', '30d', '90d', 'all']);
+
+router.get('/global-map', async (req, res) => {
+    const sourcesReporting: string[] = [];
+    const windowParam = typeof req.query.window === 'string' && ALLOWED_WINDOWS.has(req.query.window) ? req.query.window : '7d';
+    try {
+        const timeQuery = windowParam === 'all'
+            ? { match_all: {} }
+            : { range: { timestamp: { gte: `now-${windowParam}` } } };
+
+        const result = await search<CountryAgg>('wazuh-alerts-4.x-*', {
+            size: 0,
+            query: timeQuery,
+            aggs: { countries: { terms: { field: 'GeoLocation.country_name', size: 30 } } },
+        }).catch(() => null);
+
+        const buckets = result?.aggregations?.countries?.buckets ?? [];
+        if (buckets.length > 0) sourcesReporting.push('wazuh');
+
+        // When the window is empty, say WHY: no alerts at all vs. alerts present but none
+        // carrying GeoLocation (which means Wazuh's GeoIP enrichment isn't populating — a
+        // manager-side config issue, not a bug in this endpoint). Verified live 2026-09-07:
+        // 2,493 alerts in the last 7d, 0 of them geolocated; only 8 alerts have ever had
+        // GeoLocation.country_name at all.
+        let diagnostic: string | undefined;
+        if (buckets.length === 0) {
+            const [totalHits, geoHits] = await Promise.all([
+                search<{ hits?: { total?: { value?: number } } }>('wazuh-alerts-4.x-*', { size: 0, query: timeQuery }).catch(() => null),
+                search<{ hits?: { total?: { value?: number } } }>('wazuh-alerts-4.x-*', { size: 0, query: { exists: { field: 'GeoLocation.country_name' } } }).catch(() => null),
+            ]);
+            const alerts = totalHits?.hits?.total?.value ?? 0;
+            const geolocated = geoHits?.hits?.total?.value ?? 0;
+            diagnostic = alerts === 0
+                ? `No alerts indexed in the ${windowParam} window.`
+                : `${alerts.toLocaleString()} alerts in the ${windowParam} window but none carry GeoLocation.country_name (${geolocated} geolocated alerts exist across all time) — Wazuh's GeoIP enrichment is not populating.`;
+        }
+
+        const countries = buckets
+            .map((b) => ({
+                country: b.key,
+                countryCode: COUNTRY_CODES[b.key]?.alpha2 ?? b.key.slice(0, 2).toUpperCase(),
+                numericCode: COUNTRY_CODES[b.key]?.numeric ?? null,
+                threats: b.doc_count,
+                threatType: 'alert',
+            }))
+            .sort((a, b) => b.threats - a.threats);
+
+        res.json({
+            countries,
+            total: countries.reduce((sum, c) => sum + c.threats, 0),
+            sources: sourcesReporting,
+            // Honest empty state rather than demo countries — an empty map means the indexer
+            // genuinely has no geolocated alerts in the window, which is a real answer.
+            source: countries.length > 0 ? 'live' : 'empty',
+            window: windowParam,
+            diagnostic,
+            generated_at: new Date().toISOString(),
+        });
+    } catch (err) {
+        console.error('[threats] Global map error:', err);
+        res.status(500).json({ countries: [], total: 0, sources: [], source: 'error', error: 'Failed to build global map' });
+    }
+});
+
 router.get('/stats', (_req, res) => {
     res.json(usingMockStats ? MOCK_STATS : computeStats(liveAlerts));
 });

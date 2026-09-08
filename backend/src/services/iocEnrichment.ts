@@ -8,6 +8,7 @@ import { threatfoxSearchIOC, type ThreatFoxIOC } from './threatfox';
 import { vtCheckIP, vtCheckDomain, vtCheckHash, vtCheckURL, vtToRiskScore, type VTResult } from './virustotal';
 import { checkGreyNoise, type GreyNoiseResult } from './greynoise';
 import { getCensysHost } from './censys';
+import { searchMISP } from './misp';
 
 export type IOCType = 'ip' | 'domain' | 'hash' | 'url';
 
@@ -24,6 +25,10 @@ export interface EnrichedIOC {
         virustotal: { malicious: number; suspicious: number; total_engines: number; verdict: string; as_owner: string | undefined; tags: string[] } | null;
         greynoise: { noise: boolean; riot: boolean; classification: string; name?: string } | null;
         censys: unknown | null; // raw host record — no fixed shape assumed since it's exploratory (open ports/services), not a verdict this composite score can weigh
+        // A hit here means this exact value is already in the org's own MISP — the strongest
+        // signal available, because someone deliberately curated it rather than it coming from
+        // a third-party feed. Null when MISP isn't configured, is unreachable, or has no match.
+        misp: { count: number; events: string[]; attributes: Array<{ type?: string; value?: string; category?: string; event_id?: string; comment?: string }> } | null;
     };
     tags: string[];
     enriched_at: string;
@@ -70,8 +75,12 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
     // doesn't feed the composite risk score below the way GreyNoise's classification does.
     const censysLookup: Promise<unknown | null> = type === 'ip' ? getCensysHost(value) : Promise.resolve(null);
 
-    const [otxResult, abuseResult, urlhausResult, threatfoxResult, vtResult, greynoiseResult, censysResult] = await Promise.allSettled([
-        otxLookup, abuseLookup, urlhausLookup, threatfoxLookup, vtLookup, greynoiseLookup, censysLookup,
+    // MISP applies to every IOC type — it stores whatever the org has curated, not one class of
+    // indicator. Returns null (never throws) when unconfigured or when the key is rejected.
+    const mispLookup = searchMISP(value);
+
+    const [otxResult, abuseResult, urlhausResult, threatfoxResult, vtResult, greynoiseResult, censysResult, mispResult] = await Promise.allSettled([
+        otxLookup, abuseLookup, urlhausLookup, threatfoxLookup, vtLookup, greynoiseLookup, censysLookup, mispLookup,
     ]);
 
     const otx = otxResult.status === 'fulfilled' ? otxResult.value : null;
@@ -81,6 +90,7 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
     const vt = vtResult.status === 'fulfilled' ? vtResult.value : null;
     const greynoise = greynoiseResult.status === 'fulfilled' && !greynoiseResult.value?.error ? greynoiseResult.value : null;
     const censys = censysResult.status === 'fulfilled' ? censysResult.value : null;
+    const misp = mispResult.status === 'fulfilled' ? mispResult.value : null;
 
     // Composite risk score
     let score = 0;
@@ -97,6 +107,10 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
     // the way OTX/AbuseIPDB/VirusTotal are.
     if (greynoise?.classification === 'malicious') score = Math.min(100, score + 20);
     if (greynoise?.riot) score = Math.max(0, score - 10);
+    // A MISP hit is the org's own curated intelligence — weighted above any single external
+    // feed, but still additive rather than an automatic 100, so a stale MISP entry can't by
+    // itself outrank every other source saying the value is clean.
+    if (misp?.found) score = Math.min(100, score + 25);
     score = Math.min(100, score);
 
     const verdict: EnrichedIOC['verdict'] = score >= 70 ? 'malicious' : score >= 30 ? 'suspicious' : 'clean';
@@ -112,6 +126,7 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
     if (greynoise?.noise) tags.add('internet-scanner');
     if (greynoise?.riot) tags.add('known-benign-service');
     greynoise?.tags?.forEach((tag) => tags.add(tag));
+    if (misp?.found) tags.add('in-misp');
 
     return {
         value,
@@ -152,6 +167,7 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
                 name: greynoise.name,
             } : null,
             censys,
+            misp: misp?.found ? { count: misp.count, events: misp.events, attributes: misp.attributes } : null,
         },
         tags: [...tags],
         enriched_at: new Date().toISOString(),

@@ -8,12 +8,19 @@
 // synthesizing numbers.
 import { Router } from 'express';
 import { search } from '../lib/wazuh-indexer';
-import { enrichIPBatch } from '../services/geoEnrichment';
+import { enrichIPBatch, getSupabase } from '../services/geoEnrichment';
 import { lookupASN } from '../services/ripeStat';
 import { checkBlock, type AbuseIPDBBlockReport } from '../services/abuseipdb';
 import { otxSearchPulses, type OTXPulse } from '../services/otx';
 import { getNigerianCyberNews, type NewsResult } from '../services/serper';
 import { getCountryExposure, isConfigured as shadowserverConfigured, type CountryExposureStats } from '../services/shadowserver';
+import {
+    runNigerianIntelCollector,
+    getBufferedAdvisories,
+    getLastCollectorResult,
+    setLastCollectorResult,
+    type CollectedAdvisory,
+} from '../services/nigerianIntelCollector';
 
 const router = Router();
 
@@ -23,6 +30,10 @@ export interface SupplementalNigeriaData {
     cyber_news: NewsResult[];
     shadowserver: CountryExposureStats | null;
     shadowserver_configured: boolean;
+    // Advisories collected by services/nigerianIntelCollector.ts (ngCERT + OTX). Read from
+    // `nigeria_advisories` when that table exists, otherwise from the collector's in-memory
+    // buffer — `advisories_persisted` on the collector result says which.
+    advisories: CollectedAdvisory[];
     fetched_at: string;
 }
 
@@ -30,10 +41,26 @@ const NIGERIAN_ISP_ASNS = ['AS29465', 'AS36873', 'AS37148', 'AS37076', 'AS37282'
 
 let supplementalCache: { data: SupplementalNigeriaData; expires: number } | null = null;
 
+// Prefers the `nigeria_advisories` table; falls back to the collector's in-memory buffer when
+// that table doesn't exist yet (PGRST205), so the feed shows this run's advisories either way.
+async function fetchCollectedAdvisories(limit: number): Promise<CollectedAdvisory[]> {
+    const supabase = getSupabase();
+    if (supabase) {
+        const { data, error } = await supabase
+            .from('nigeria_advisories')
+            .select('*')
+            .eq('org_id', 'global')
+            .order('published_at', { ascending: false })
+            .limit(limit);
+        if (!error && data) return data as CollectedAdvisory[];
+    }
+    return getBufferedAdvisories(limit);
+}
+
 async function getSupplementalNigeriaData(): Promise<SupplementalNigeriaData> {
     if (supplementalCache && supplementalCache.expires > Date.now()) return supplementalCache.data;
 
-    const [abuseResults, otxPulses, cyberNews, shadowserverStats] = await Promise.all([
+    const [abuseResults, otxPulses, cyberNews, shadowserverStats, collectedAdvisories] = await Promise.all([
         Promise.all(NIGERIAN_ISP_ASNS.map(async (asn) => {
             try {
                 const info = await lookupASN(asn);
@@ -54,6 +81,7 @@ async function getSupplementalNigeriaData(): Promise<SupplementalNigeriaData> {
         otxSearchPulses('nigeria', 10).catch(() => [] as OTXPulse[]),
         getNigerianCyberNews(10).catch(() => [] as NewsResult[]),
         getCountryExposure('NG').catch(() => null as CountryExposureStats | null),
+        fetchCollectedAdvisories(10).catch(() => [] as CollectedAdvisory[]),
     ]);
 
     const data: SupplementalNigeriaData = {
@@ -62,6 +90,7 @@ async function getSupplementalNigeriaData(): Promise<SupplementalNigeriaData> {
         cyber_news: cyberNews,
         shadowserver: shadowserverStats,
         shadowserver_configured: shadowserverConfigured(),
+        advisories: collectedAdvisories,
         fetched_at: new Date().toISOString(),
     };
     supplementalCache = { data, expires: Date.now() + 15 * 60 * 1000 };
@@ -115,6 +144,7 @@ const emptySupplemental = (): SupplementalNigeriaData => ({
     cyber_news: [],
     shadowserver: null,
     shadowserver_configured: false,
+    advisories: [],
     fetched_at: new Date().toISOString(),
 });
 
@@ -361,6 +391,7 @@ router.get('/nigeria-threats', async (req, res) => {
                 abuse_reports: supplemental.abuse_reports,
                 otx_pulses: supplemental.otx_pulses.map((p) => ({ id: p.id, name: p.name, tags: p.tags, created: p.created })),
                 cyber_news: supplemental.cyber_news,
+                advisories: supplemental.advisories,
                 shadowserver: supplemental.shadowserver,
                 shadowserver_configured: supplemental.shadowserver_configured,
                 fetched_at: supplemental.fetched_at,
@@ -385,6 +416,7 @@ router.get('/nigeria-threats', async (req, res) => {
                 abuse_reports: supplemental.abuse_reports,
                 otx_pulses: supplemental.otx_pulses.map((p) => ({ id: p.id, name: p.name, tags: p.tags, created: p.created })),
                 cyber_news: supplemental.cyber_news,
+                advisories: supplemental.advisories,
                 shadowserver: supplemental.shadowserver,
                 shadowserver_configured: supplemental.shadowserver_configured,
                 fetched_at: supplemental.fetched_at,
@@ -423,6 +455,29 @@ router.get('/network-info/:ip', async (req, res) => {
     } catch (err) {
         res.status(502).json({ error: err instanceof Error ? err.message : 'RIPE Stat lookup failed', ip });
     }
+});
+
+// POST /api/dashboard/nigeria-threats/collect — run the Nigerian intel collector on demand
+// (the "Refresh Intelligence" button on the Nigerian Threat Feed page). The hourly job runs the
+// same function; the collector itself refuses overlapping runs so a double-click can't
+// double-count state counters.
+router.post('/nigeria-threats/collect', async (_req, res) => {
+    try {
+        const result = await runNigerianIntelCollector();
+        setLastCollectorResult(result);
+        // The 15-minute supplemental cache would otherwise hide the advisories that just landed.
+        supplementalCache = null;
+        res.json({ success: true, result });
+    } catch (err) {
+        console.error('[dashboard] Nigeria collect error:', err);
+        res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Collection failed' });
+    }
+});
+
+// GET /api/dashboard/nigeria-threats/status — when intelligence was last refreshed and which
+// sources produced anything, without triggering a new run.
+router.get('/nigeria-threats/status', (_req, res) => {
+    res.json({ last_run: getLastCollectorResult() });
 });
 
 export default router;

@@ -12,7 +12,10 @@ import { apiUrl, apiFetch } from '@/lib/api';
 // queryable, not a per-page-load fetch. Rows backed by the real check are marked LIVE below;
 // everything else stays marked MOCK rather than silently blending the two.
 
-interface Service { name: string; url: string; status: 'operational' | 'degraded' | 'outage'; uptime: number; latency: number; live?: boolean }
+// `detail` carries the backend check's own explanation where it has one (MISP reports whether
+// it's unconfigured, unreachable, or reachable-but-rejecting-the-key — three states that need
+// three different fixes, and which a bare amber dot can't distinguish).
+interface Service { name: string; url: string; status: 'operational' | 'degraded' | 'outage'; uptime: number; latency: number; live?: boolean; detail?: string }
 // Vercel doesn't auto-expose its VERCEL_URL as a NEXT_PUBLIC_ var (that needs an explicit
 // mapping in next.config.ts, which doesn't exist here), so NEXT_PUBLIC_VERCEL_URL is only ever
 // populated if it's set by hand in the deployment's env vars. novr-soc.vercel.app is the
@@ -25,6 +28,9 @@ const SERVICES: Service[] = [
     { name: 'Supabase Database', url: 'bwtmjukbrtijnwusrrjb.supabase.co', status: 'operational', uptime: 99.99, latency: 45 },
     { name: 'Wazuh Manager', url: '169.58.242.174:55000', status: 'operational', uptime: 99.87, latency: 312 },
     { name: 'Wazuh Indexer', url: '169.58.242.174:9200', status: 'operational', uptime: 99.87, latency: 298 },
+    // Real check — driven by GET /api/platform/health's MISP entry via REAL_CHECK_NAME_MAP
+    // below, so the status/latency shown here are live, not the placeholder values.
+    { name: 'MISP', url: '169.58.242.194', status: 'operational', uptime: 0, latency: 0 },
 ];
 
 interface ApiStatus { name: string; last_check: string; status: 'up' | 'down'; latency: number; live?: boolean }
@@ -45,7 +51,7 @@ const API_STATUS: ApiStatus[] = [
 
 interface PlatformHealthResponse {
     overall: 'operational' | 'degraded' | 'outage';
-    services: Array<{ name: string; status: 'up' | 'degraded' | 'down'; latency_ms: number }>;
+    services: Array<{ name: string; status: 'up' | 'degraded' | 'down'; latency_ms: number; detail?: string }>;
     checked_at: string;
 }
 
@@ -65,6 +71,7 @@ const REAL_CHECK_NAME_MAP: Record<string, { serviceName?: string; apiName?: stri
     'Wazuh Manager': { serviceName: 'Wazuh Manager' },
     'Database': { serviceName: 'Supabase Database' },
     'Claude AI': { apiName: 'Claude AI (PHISHID)' },
+    'MISP': { serviceName: 'MISP' },
 };
 
 export function PlatformHealth() {
@@ -103,7 +110,7 @@ export function PlatformHealth() {
                     if (!mapped) continue;
                     if (mapped.serviceName) {
                         setServices((prev) => prev.map((s) => s.name !== mapped.serviceName ? s : {
-                            ...s, live: true, latency: check.latency_ms,
+                            ...s, live: true, latency: check.latency_ms, detail: check.detail,
                             status: check.status === 'up' ? 'operational' : check.status === 'degraded' ? 'degraded' : 'outage',
                         }));
                     }
@@ -181,9 +188,13 @@ export function PlatformHealth() {
                             </div>
                             <p className="text-[10px] text-foreground-muted font-mono mb-3 truncate">{s.url}</p>
                             <div className="flex items-center justify-between text-xs">
-                                <span className="text-foreground-muted">Uptime: <span className="font-bold text-foreground">{s.uptime}%</span></span>
+                                {/* Uptime is only meaningful for the rows carrying a historical
+                                    figure — the live checks measure a single request, not a
+                                    window, so a 0% there would be a lie rather than a datum. */}
+                                <span className="text-foreground-muted">Uptime: <span className="font-bold text-foreground">{s.uptime > 0 ? `${s.uptime}%` : '—'}</span></span>
                                 <span className="text-foreground-muted">Latency: <span className="font-bold text-foreground">{s.latency}ms</span></span>
                             </div>
+                            {s.detail && <p className="text-[10px] text-amber mt-2 leading-snug">{s.detail}</p>}
                         </div>
                     ))}
                 </div>

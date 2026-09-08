@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { ExternalLink, Newspaper, ShieldAlert } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { ExternalLink, Newspaper, ShieldAlert, RefreshCw, Radar } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 
 // NCC-CSIRT/NGCERT advisories below are still mock data — neither agency exposes a scrapable
@@ -53,6 +53,36 @@ interface ShadowserverStats {
     top_ports: Array<{ port: number; count: number }>;
 }
 
+// Collected by services/nigerianIntelCollector.ts (ngCERT + OTX), surfaced through
+// GET /api/dashboard/nigeria-threats' `supplemental.advisories`.
+interface CollectedAdvisory {
+    source: string;
+    advisory_id: string;
+    title: string;
+    description: string;
+    severity: 'low' | 'medium' | 'high' | 'critical';
+    threat_type: string;
+    tags: string[];
+    source_url: string;
+    published_at: string;
+}
+
+interface CollectorRun {
+    ran_at: string;
+    advisories: number;
+    ips_found: number;
+    states_updated: string[];
+    advisories_persisted: boolean;
+    sources: Array<{ name: string; ok: boolean; items: number; note?: string }>;
+}
+
+const COLLECTED_SEV_STYLE: Record<CollectedAdvisory['severity'], string> = {
+    critical: 'bg-red/10 text-red border-red/30',
+    high: 'bg-orange/10 text-orange border-orange/30',
+    medium: 'bg-amber/10 text-amber border-amber/30',
+    low: 'bg-blue/10 text-blue border-blue/30',
+};
+
 export function NigerianThreatFeed() {
     const [sourceFilter, setSourceFilter] = useState<(typeof SOURCES)[number]>('All');
     const filtered = MOCK_NIGERIA_ADVISORIES.filter((a) => sourceFilter === 'All' || a.source === sourceFilter);
@@ -61,26 +91,53 @@ export function NigerianThreatFeed() {
     const [newsLoading, setNewsLoading] = useState(true);
     const [shadowserver, setShadowserver] = useState<ShadowserverStats | null>(null);
     const [shadowserverConfigured, setShadowserverConfigured] = useState(false);
+    const [advisories, setAdvisories] = useState<CollectedAdvisory[]>([]);
+    const [totalThreats, setTotalThreats] = useState(0);
+    const [statesAffected, setStatesAffected] = useState(0);
+    const [lastRun, setLastRun] = useState<CollectorRun | null>(null);
+    const [refreshing, setRefreshing] = useState(false);
+
+    const load = useCallback(async () => {
+        try {
+            const res = await apiFetch(apiUrl('/api/dashboard/nigeria-threats?range=24h'), { cache: 'no-store' });
+            if (!res.ok) return;
+            const data = await res.json();
+            setNews(data?.supplemental?.cyber_news ?? []);
+            setShadowserver(data?.supplemental?.shadowserver ?? null);
+            setShadowserverConfigured(!!data?.supplemental?.shadowserver_configured);
+            setAdvisories(data?.supplemental?.advisories ?? []);
+            setTotalThreats(data?.summary?.total_threats ?? 0);
+            setStatesAffected(data?.summary?.states_affected ?? 0);
+        } catch {
+            // leave sections empty — each renders its own empty state
+        } finally {
+            setNewsLoading(false);
+        }
+    }, []);
 
     useEffect(() => {
-        let cancelled = false;
-        (async () => {
-            try {
-                const res = await apiFetch(apiUrl('/api/dashboard/nigeria-threats?range=24h'), { cache: 'no-store' });
-                if (!res.ok || cancelled) return;
-                const data = await res.json();
-                if (cancelled) return;
-                setNews(data?.supplemental?.cyber_news ?? []);
-                setShadowserver(data?.supplemental?.shadowserver ?? null);
-                setShadowserverConfigured(!!data?.supplemental?.shadowserver_configured);
-            } catch {
-                // leave news/shadowserver empty — sections below render their own empty states
-            } finally {
-                if (!cancelled) setNewsLoading(false);
-            }
-        })();
-        return () => { cancelled = true; };
-    }, []);
+        void load();
+        // Last collector run, so the banner can show when intelligence was last refreshed
+        // without kicking off a new (slow, externally-rate-limited) collection.
+        apiFetch(apiUrl('/api/dashboard/nigeria-threats/status'), { cache: 'no-store' })
+            .then((r) => r.json())
+            .then((d) => setLastRun(d?.last_run ?? null))
+            .catch(() => {});
+    }, [load]);
+
+    const triggerCollection = async () => {
+        setRefreshing(true);
+        try {
+            const res = await apiFetch(apiUrl('/api/dashboard/nigeria-threats/collect'), { method: 'POST' });
+            const data = await res.json();
+            if (data?.result) setLastRun(data.result);
+            await load();
+        } catch {
+            // surfaced by the banner still showing the previous run
+        } finally {
+            setRefreshing(false);
+        }
+    };
 
     return (
         <div className="space-y-4">
@@ -88,6 +145,79 @@ export function NigerianThreatFeed() {
                 <h1 className="text-lg font-black text-foreground">Nigerian Threat Intelligence Feed</h1>
                 <p className="text-xs text-foreground-muted">NCC-CSIRT and NGCERT advisories (mock — no live scraper wired yet), plus live cyber news and exposure stats below.</p>
             </div>
+
+            {/* Collector status — real counts from the live intel run, plus a manual trigger */}
+            <div className="bg-green/5 border border-green/20 rounded-xl p-4">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                            <Radar size={14} className="text-green" />
+                            <span className="text-sm font-bold text-foreground">Nigerian Threat Intelligence</span>
+                        </div>
+                        <div className="text-xs text-foreground-muted mt-1">
+                            {totalThreats.toLocaleString()} threats tracked across {statesAffected} state{statesAffected === 1 ? '' : 's'}
+                            {lastRun ? ` · last collection ${new Date(lastRun.ran_at).toLocaleString()}` : ' · no collection run yet this session'}
+                        </div>
+                        {lastRun && (
+                            <div className="text-[10px] text-foreground-muted mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                                {lastRun.sources.map((s) => (
+                                    <span key={s.name} className={s.ok ? 'text-foreground-muted' : 'text-amber'}>
+                                        {s.name}: {s.ok ? `${s.items} item${s.items === 1 ? '' : 's'}` : (s.note ?? 'unavailable')}
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    <button
+                        onClick={triggerCollection}
+                        disabled={refreshing}
+                        className="flex items-center gap-1.5 bg-green text-white text-xs font-bold px-3 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity flex-shrink-0"
+                    >
+                        <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+                        {refreshing ? 'Collecting…' : 'Refresh Now'}
+                    </button>
+                </div>
+            </div>
+
+            {/* Live advisories collected from ngCERT + OTX */}
+            {advisories.length > 0 && (
+                <div>
+                    <div className="flex items-center gap-2 mb-2">
+                        <h2 className="text-sm font-black text-foreground">Collected Advisories</h2>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 bg-green/10 text-green rounded-full uppercase">Live</span>
+                    </div>
+                    <div className="space-y-2">
+                        {advisories.map((a) => (
+                            <div key={a.advisory_id} className="bg-card border border-border rounded-xl p-4">
+                                <div className="flex items-start justify-between gap-3 mb-1.5">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase ${COLLECTED_SEV_STYLE[a.severity] ?? COLLECTED_SEV_STYLE.medium}`}>{a.severity}</span>
+                                        <span className="text-[10px] font-bold px-2 py-0.5 bg-purple/10 text-purple rounded-full">{a.source}</span>
+                                        {a.threat_type && a.threat_type !== 'unknown' && (
+                                            <span className="text-[10px] text-foreground-muted font-mono">{a.threat_type}</span>
+                                        )}
+                                    </div>
+                                    <span className="text-[10px] text-foreground-muted flex-shrink-0">{a.published_at ? new Date(a.published_at).toLocaleDateString() : ''}</span>
+                                </div>
+                                <p className="text-sm font-bold text-foreground mb-1">{a.title}</p>
+                                {a.description && <p className="text-xs text-foreground-muted mb-2 line-clamp-3">{a.description}</p>}
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="flex flex-wrap gap-1">
+                                        {a.tags?.slice(0, 6).map((t) => (
+                                            <span key={t} className="text-[9px] font-medium px-1.5 py-0.5 bg-card-muted text-foreground-muted rounded-full">{t}</span>
+                                        ))}
+                                    </div>
+                                    {a.source_url && (
+                                        <a href={a.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[10px] font-bold text-blue hover:text-purple transition-colors flex-shrink-0">
+                                            View Source <ExternalLink size={10} />
+                                        </a>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             <div className="flex gap-1 bg-card-muted rounded-lg p-1 w-fit">
                 {SOURCES.map((s) => (
