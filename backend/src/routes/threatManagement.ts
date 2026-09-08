@@ -3,6 +3,7 @@ import { search } from '../lib/wazuh-indexer';
 import { sendCriticalAlertEmail } from '../services/email';
 import { isDemoMode } from '../lib/demoMode';
 import { createCase, isTheHiveConfigured, deriveIncidentNumber } from '../services/thehive';
+import { getGreyNoiseCountryStats, isGreyNoiseConfigured } from '../services/greynoise';
 
 // SecOps Threat Management console — live security event stream from the Wazuh Indexer
 // (wazuh-alerts-4.x-*, same OpenSearch backend /api/wazuh/alerts-indexer queries), falling
@@ -465,6 +466,10 @@ interface CountryAgg {
 // numeric — not alpha-2 — to colour a country in. Limited to the countries that realistically
 // show up in this deployment's alert stream plus the major threat-origin countries; anything
 // unmapped still appears in the ranked list below the map, just uncoloured.
+// Covers every country GreyNoise's top-50 source_countries bucket actually returned when this
+// was built, plus the ones Wazuh's own GeoLocation field can emit. A country missing from here
+// still appears in the ranked list under the map — it just can't be coloured, since the map
+// needs the numeric id to match a topojson feature.
 const COUNTRY_CODES: Record<string, { alpha2: string; numeric: string }> = {
     Nigeria: { alpha2: 'NG', numeric: '566' },
     'United States': { alpha2: 'US', numeric: '840' },
@@ -493,6 +498,74 @@ const COUNTRY_CODES: Record<string, { alpha2: string; numeric: string }> = {
     Turkey: { alpha2: 'TR', numeric: '792' },
     Poland: { alpha2: 'PL', numeric: '616' },
     Romania: { alpha2: 'RO', numeric: '642' },
+    Pakistan: { alpha2: 'PK', numeric: '586' },
+    Argentina: { alpha2: 'AR', numeric: '032' },
+    Uzbekistan: { alpha2: 'UZ', numeric: '860' },
+    Mexico: { alpha2: 'MX', numeric: '484' },
+    'Hong Kong': { alpha2: 'HK', numeric: '344' },
+    Colombia: { alpha2: 'CO', numeric: '170' },
+    Taiwan: { alpha2: 'TW', numeric: '158' },
+    Chile: { alpha2: 'CL', numeric: '152' },
+    Spain: { alpha2: 'ES', numeric: '724' },
+    Italy: { alpha2: 'IT', numeric: '380' },
+    Thailand: { alpha2: 'TH', numeric: '764' },
+    Bangladesh: { alpha2: 'BD', numeric: '050' },
+    Philippines: { alpha2: 'PH', numeric: '608' },
+    Malaysia: { alpha2: 'MY', numeric: '458' },
+    Kazakhstan: { alpha2: 'KZ', numeric: '398' },
+    Bulgaria: { alpha2: 'BG', numeric: '100' },
+    'Czech Republic': { alpha2: 'CZ', numeric: '203' },
+    Czechia: { alpha2: 'CZ', numeric: '203' },
+    Sweden: { alpha2: 'SE', numeric: '752' },
+    Switzerland: { alpha2: 'CH', numeric: '756' },
+    Ireland: { alpha2: 'IE', numeric: '372' },
+    Finland: { alpha2: 'FI', numeric: '246' },
+    Norway: { alpha2: 'NO', numeric: '578' },
+    Denmark: { alpha2: 'DK', numeric: '208' },
+    Austria: { alpha2: 'AT', numeric: '040' },
+    Belgium: { alpha2: 'BE', numeric: '056' },
+    Portugal: { alpha2: 'PT', numeric: '620' },
+    Greece: { alpha2: 'GR', numeric: '300' },
+    Hungary: { alpha2: 'HU', numeric: '348' },
+    Serbia: { alpha2: 'RS', numeric: '688' },
+    Lithuania: { alpha2: 'LT', numeric: '440' },
+    Latvia: { alpha2: 'LV', numeric: '428' },
+    Estonia: { alpha2: 'EE', numeric: '233' },
+    Moldova: { alpha2: 'MD', numeric: '498' },
+    Belarus: { alpha2: 'BY', numeric: '112' },
+    Georgia: { alpha2: 'GE', numeric: '268' },
+    Armenia: { alpha2: 'AM', numeric: '051' },
+    Azerbaijan: { alpha2: 'AZ', numeric: '031' },
+    Israel: { alpha2: 'IL', numeric: '376' },
+    'Saudi Arabia': { alpha2: 'SA', numeric: '682' },
+    'United Arab Emirates': { alpha2: 'AE', numeric: '784' },
+    Iraq: { alpha2: 'IQ', numeric: '368' },
+    Morocco: { alpha2: 'MA', numeric: '504' },
+    Algeria: { alpha2: 'DZ', numeric: '012' },
+    Tunisia: { alpha2: 'TN', numeric: '788' },
+    Ethiopia: { alpha2: 'ET', numeric: '231' },
+    Tanzania: { alpha2: 'TZ', numeric: '834' },
+    Uganda: { alpha2: 'UG', numeric: '800' },
+    Cameroon: { alpha2: 'CM', numeric: '120' },
+    Senegal: { alpha2: 'SN', numeric: '686' },
+    Peru: { alpha2: 'PE', numeric: '604' },
+    Ecuador: { alpha2: 'EC', numeric: '218' },
+    Venezuela: { alpha2: 'VE', numeric: '862' },
+    Bolivia: { alpha2: 'BO', numeric: '068' },
+    Paraguay: { alpha2: 'PY', numeric: '600' },
+    Uruguay: { alpha2: 'UY', numeric: '858' },
+    'Dominican Republic': { alpha2: 'DO', numeric: '214' },
+    Guatemala: { alpha2: 'GT', numeric: '320' },
+    Cambodia: { alpha2: 'KH', numeric: '116' },
+    Myanmar: { alpha2: 'MM', numeric: '104' },
+    Nepal: { alpha2: 'NP', numeric: '524' },
+    'Sri Lanka': { alpha2: 'LK', numeric: '144' },
+    Mongolia: { alpha2: 'MN', numeric: '496' },
+    'New Zealand': { alpha2: 'NZ', numeric: '554' },
+    Seychelles: { alpha2: 'SC', numeric: '690' },
+    Panama: { alpha2: 'PA', numeric: '591' },
+    Luxembourg: { alpha2: 'LU', numeric: '442' },
+    Cyprus: { alpha2: 'CY', numeric: '196' },
 };
 
 const ALLOWED_WINDOWS = new Set(['24h', '7d', '30d', '90d', 'all']);
@@ -500,6 +573,40 @@ const ALLOWED_WINDOWS = new Set(['24h', '7d', '30d', '90d', 'all']);
 router.get('/global-map', async (req, res) => {
     const sourcesReporting: string[] = [];
     const windowParam = typeof req.query.window === 'string' && ALLOWED_WINDOWS.has(req.query.window) ? req.query.window : '7d';
+
+    // GreyNoise first when a key is set — it answers a question this deployment's own telemetry
+    // can't: where internet-wide malicious scanning is originating right now, globally, rather
+    // than only what happened to hit these monitored endpoints. Falls through to the Wazuh
+    // aggregation below on any failure or empty result, so this never makes the map worse.
+    if (isGreyNoiseConfigured()) {
+        try {
+            const stats = await getGreyNoiseCountryStats(50);
+            if (stats.length > 0) {
+                const countries = stats
+                    .map((s) => ({
+                        country: s.country,
+                        countryCode: COUNTRY_CODES[s.country]?.alpha2 ?? s.country.slice(0, 2).toUpperCase(),
+                        numericCode: COUNTRY_CODES[s.country]?.numeric ?? null,
+                        threats: s.count,
+                        threatType: 'scanning',
+                    }))
+                    .sort((a, b) => b.threats - a.threats);
+
+                res.json({
+                    countries,
+                    total: countries.reduce((sum, c) => sum + c.threats, 0),
+                    sources: ['greynoise'],
+                    source: 'greynoise',
+                    window: 'live',
+                    generated_at: new Date().toISOString(),
+                });
+                return;
+            }
+        } catch (err) {
+            console.warn('[threats] GreyNoise global map failed, falling back to Wazuh:', err instanceof Error ? err.message : err);
+        }
+    }
+
     try {
         const timeQuery = windowParam === 'all'
             ? { match_all: {} }
@@ -548,7 +655,7 @@ router.get('/global-map', async (req, res) => {
             sources: sourcesReporting,
             // Honest empty state rather than demo countries — an empty map means the indexer
             // genuinely has no geolocated alerts in the window, which is a real answer.
-            source: countries.length > 0 ? 'live' : 'empty',
+            source: countries.length > 0 ? 'wazuh' : 'empty',
             window: windowParam,
             diagnostic,
             generated_at: new Date().toISOString(),

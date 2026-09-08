@@ -43,6 +43,10 @@ export function GlobalThreatMap() {
     // Backend explains an empty map rather than leaving it silently blank — e.g. alerts exist
     // but none are geolocated, which is a Wazuh GeoIP config issue, not a missing feature.
     const [diagnostic, setDiagnostic] = useState<string | null>(null);
+    // 'greynoise' = internet-wide malicious scanning origins; 'wazuh' = alert sources seen by
+    // this deployment's own monitored endpoints. The two answer different questions, so the
+    // subtitle and attribution below say which one is on screen.
+    const [source, setSource] = useState<string | null>(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -52,6 +56,7 @@ export function GlobalThreatMap() {
                 if (cancelled) return;
                 setThreats(Array.isArray(data?.countries) ? data.countries : []);
                 setDiagnostic(typeof data?.diagnostic === 'string' ? data.diagnostic : null);
+                setSource(typeof data?.source === 'string' ? data.source : null);
             })
             .catch(() => { if (!cancelled) setThreats([]); })
             .finally(() => { if (!cancelled) setLoading(false); });
@@ -140,7 +145,11 @@ export function GlobalThreatMap() {
             <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                 <div>
                     <h3 className="font-bold text-sm text-foreground">Global Threat Map</h3>
-                    <p className="text-[10px] text-foreground-muted">Alert source countries, last 7 days — Nigeria highlighted</p>
+                    <p className="text-[10px] text-foreground-muted">
+                        {source === 'greynoise'
+                            ? 'Live malicious scanning origins, internet-wide — Nigeria highlighted'
+                            : 'Alert source countries seen by monitored endpoints — Nigeria highlighted'}
+                    </p>
                 </div>
                 <div className="flex items-center gap-3 flex-wrap">
                     {[
@@ -199,6 +208,12 @@ export function GlobalThreatMap() {
                                 <div className="text-[9px] text-foreground-muted truncate" title={t.country}>{t.country}</div>
                             </div>
                         ))}
+                    </div>
+                )}
+
+                {source === 'greynoise' && (
+                    <div className="text-[9px] text-foreground-muted mt-2 text-right">
+                        Powered by GreyNoise Intelligence
                     </div>
                 )}
             </div>
