@@ -3,6 +3,7 @@ import { search } from '../lib/wazuh-indexer';
 import { sendCriticalAlertEmail } from '../services/email';
 import { isDemoMode } from '../lib/demoMode';
 import { createCase, isTheHiveConfigured, deriveIncidentNumber } from '../services/thehive';
+import { NIGERIAN_ACTORS, GLOBAL_ACTORS } from '../services/threatActors';
 import { getGreyNoiseCountryStats, isGreyNoiseConfigured } from '../services/greynoise';
 
 // SecOps Threat Management console — live security event stream from the Wazuh Indexer
@@ -668,6 +669,23 @@ router.get('/global-map', async (req, res) => {
 
 router.get('/stats', (_req, res) => {
     res.json(usingMockStats ? MOCK_STATS : computeStats(liveAlerts));
+});
+
+// GET /api/threats/actors — threat actor reference library.
+//
+// Served from services/threatActors.ts, not Supabase: there is no threat_actors table in this
+// database (the `nigeria_intel` and `global_intel` schemas this was specced against don't exist
+// at all). Every entry is publicly documented by a named vendor or MITRE and carries its own
+// reference URL — this is a curated reference library, not NovrSOC telemetry, and the response
+// says so via `source` so the page can label it accurately.
+router.get('/actors', (_req, res) => {
+    res.json({
+        nigerian: NIGERIAN_ACTORS,
+        global: GLOBAL_ACTORS,
+        source: 'curated-reference',
+        note: 'Publicly documented threat actors, each linked to its originating vendor or MITRE ATT&CK entry. Not derived from this platform’s own telemetry.',
+        generated_at: new Date().toISOString(),
+    });
 });
 
 export default router;

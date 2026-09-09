@@ -56,6 +56,10 @@ interface NigeriaThreatsResponse {
     states: NigeriaStateData[];
     summary: NigeriaThreatsSummary;
     source: string;
+    // True when Wazuh attributed no alerts to any Nigerian state and the backend fell back to
+    // the illustrative baseline in nigeria_state_threats. The map is badged in that case — a
+    // populated map must never be mistaken for live telemetry.
+    demo_data?: boolean;
     enrichment_coverage?: EnrichmentCoverage;
     generated_at: string;
 }
@@ -147,9 +151,21 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
                 {/* Header */}
                 <div className="flex items-center justify-between mb-6">
                     <div>
-                        <SectionHeader title="Nigeria National Threat Landscape" />
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <SectionHeader title="Nigeria National Threat Landscape" />
+                            {data?.demo_data && (
+                                <span
+                                    title="Wazuh reported no geolocated Nigerian activity in this window, so an illustrative baseline is shown instead of an empty map."
+                                    className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200 uppercase"
+                                >
+                                    Demonstration data
+                                </span>
+                            )}
+                        </div>
                         <p className="text-sm text-muted-foreground">
-                            Real-time cyber activity across Nigerian states
+                            {data?.demo_data
+                                ? 'Illustrative baseline — not live telemetry. Replaced automatically once Wazuh reports geolocated Nigerian activity.'
+                                : 'Real-time cyber activity across Nigerian states'}
                             {fetchError && <span className="text-red-500"> · Connection error: {fetchError}</span>}
                             {data?.summary.error && <span className="text-amber-500"> · {data.summary.error}</span>}
                         </p>

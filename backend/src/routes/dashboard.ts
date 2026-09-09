@@ -12,6 +12,7 @@ import { enrichIPBatch, getSupabase } from '../services/geoEnrichment';
 import { lookupASN } from '../services/ripeStat';
 import { checkBlock, type AbuseIPDBBlockReport } from '../services/abuseipdb';
 import { circlSearchPulses, type CIRCLPulse } from '../services/circl';
+import { readSeededStates, hasDemoData, nigeriaStateToMapName } from '../services/nigeriaDemoSeed';
 import { getNigerianCyberNews, type NewsResult } from '../services/serper';
 import {
     runNigerianIntelCollector,
@@ -330,6 +331,31 @@ router.get('/nigeria-threats', async (req, res) => {
             };
         });
 
+        // The map above is built purely from Wazuh alerts. When Wazuh attributed nothing to any
+        // Nigerian state (the normal case today — few agents, little geolocated traffic), fall
+        // back to whatever baseline is stored in nigeria_state_threats so the map isn't blank.
+        // `demo_data` in the response tells the UI to badge it, so a populated map is never
+        // mistaken for live telemetry. Live Wazuh data always wins — this only runs at zero.
+        let demoData = false;
+        if (!states.some((s) => s.threats > 0)) {
+            const seeded = await readSeededStates();
+            if (seeded.length > 0) {
+                demoData = await hasDemoData();
+                const byName = new Map(seeded.map((r) => [nigeriaStateToMapName(r.state_name), r]));
+                for (const state of states) {
+                    const row = byName.get(state.name);
+                    if (!row) continue;
+                    state.threats = row.attack_count ?? 0;
+                    state.critical = row.critical_flag ? 1 : 0;
+                    state.top_threat_type = row.dominant_type ?? 'None';
+                    state.severity = row.critical_flag ? 'critical' : state.threats > 0 ? 'medium' : 'clean';
+                    state.threat_level = getThreatLevel(state.threats);
+                    totalThreats += state.threats;
+                    totalCritical += state.critical;
+                }
+            }
+        }
+
         const sortedByThreats = [...states].sort((a, b) => b.threats - a.threats).filter((s) => s.threats > 0);
         const threatScore = totalThreats > 0
             ? Math.min(Math.round((totalCritical * 10 + totalThreats * 0.5) / Math.max(hits.length / 100, 1)), 100)
@@ -367,7 +393,10 @@ router.get('/nigeria-threats', async (req, res) => {
                     : totalThreats > 0 ? 'LOW'
                     : 'CLEAR',
             },
-            source: 'wazuh',
+            source: demoData ? 'seed' : 'wazuh',
+            // True when the states above came from the illustrative baseline rather than live
+            // Wazuh telemetry — the frontend badges the map accordingly.
+            demo_data: demoData,
             geo_sources: {
                 ipregistry: 'Primary geolocation and enrichment',
                 ripe_stat: 'ASN and BGP routing information',

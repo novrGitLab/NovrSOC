@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { HomepageScanner } from '@/components/features/HomepageScanner';
 
 export default function LandingPage() {
   return (
@@ -215,24 +216,7 @@ export default function LandingPage() {
             Scan any website, IP address, or domain for threats, malware, and security issues —
             powered by 9 threat intelligence sources running behind the scenes.
           </p>
-          <div className="bg-white border border-[#EEF0F6] rounded-2xl p-6 shadow-sm">
-            <div className="flex flex-col sm:flex-row gap-3">
-              <input
-                type="text"
-                placeholder="Enter URL, IP, or domain — e.g. example.com"
-                className="flex-1 border border-[#EEF0F6] rounded-xl px-4 py-3
-                           text-sm focus:outline-none focus:border-[#520385]"
-              />
-              <Link href="/login"
-                    className="bg-[#520385] text-white font-bold px-6 py-3
-                               rounded-xl hover:bg-[#420270] whitespace-nowrap text-sm">
-                Scan Now →
-              </Link>
-            </div>
-            <p className="text-[10px] text-[#7A8099] mt-3">
-              Free scan. Sign in for the full threat report, MITRE mapping, and history.
-            </p>
-          </div>
+          <HomepageScanner />
         </div>
       </section>
 

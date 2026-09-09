@@ -34,6 +34,39 @@ const SEV_STYLE: Record<Advisory['severity'], string> = {
 };
 const SOURCES = ['All', 'NCC-CSIRT', 'NGCERT'] as const;
 
+// Sector filtering works off the advisory's own tags. Collected advisories carry an explicit
+// `sector:<slug>` tag (see backend services/nigeriaDemoSeed.ts, which sets sector:banking,
+// sector:telecommunications and so on); older or externally-sourced rows may not, so the
+// matcher also falls back to the sector's keywords appearing in any tag or in the title.
+const SECTORS = [
+    'All Sectors', 'Banking & Finance', 'Telecommunications', 'Fintech',
+    'Government', 'Healthcare', 'Energy', 'Education',
+] as const;
+
+const SECTOR_KEYWORDS: Record<string, string[]> = {
+    'Banking & Finance': ['banking', 'bank', 'finance', 'financial', 'cbn', 'ussd', 'swift'],
+    'Telecommunications': ['telecom', 'telco', 'ncc', 'sim', 'ss7', 'mobile'],
+    'Fintech': ['fintech', 'payment', 'api', 'mobile-money'],
+    'Government': ['government', 'govt', 'public-sector', 'nimc'],
+    'Healthcare': ['health', 'healthcare', 'hospital', 'medical'],
+    'Energy': ['energy', 'power', 'oil', 'gas', 'utility'],
+    'Education': ['education', 'university', 'school', 'academic'],
+};
+
+function matchesSector(sector: string, tags: string[] | undefined, title: string): boolean {
+    if (sector === 'All Sectors') return true;
+    const slug = sector.toLowerCase().split(' ')[0].replace(/[^a-z]/g, '');
+    const lowerTags = (tags ?? []).map((t) => t.toLowerCase());
+
+    // Explicit tag wins: `sector:banking`, `sector:telecommunications`, or a blanket `sector:all`.
+    if (lowerTags.includes('sector:all')) return true;
+    if (lowerTags.some((t) => t.startsWith('sector:') && t.slice(7).startsWith(slug))) return true;
+
+    const keywords = SECTOR_KEYWORDS[sector] ?? [slug];
+    const haystack = `${lowerTags.join(' ')} ${title.toLowerCase()}`;
+    return keywords.some((k) => haystack.includes(k));
+}
+
 interface NewsItem {
     title: string;
     url: string;
@@ -74,7 +107,10 @@ const COLLECTED_SEV_STYLE: Record<CollectedAdvisory['severity'], string> = {
 
 export function NigerianThreatFeed() {
     const [sourceFilter, setSourceFilter] = useState<(typeof SOURCES)[number]>('All');
-    const filtered = MOCK_NIGERIA_ADVISORIES.filter((a) => sourceFilter === 'All' || a.source === sourceFilter);
+    const [sectorFilter, setSectorFilter] = useState<string>('All Sectors');
+    const filtered = MOCK_NIGERIA_ADVISORIES.filter(
+        (a) => (sourceFilter === 'All' || a.source === sourceFilter) && matchesSector(sectorFilter, a.tags, a.title)
+    );
 
     const [news, setNews] = useState<NewsItem[]>([]);
     const [newsLoading, setNewsLoading] = useState(true);
@@ -83,6 +119,9 @@ export function NigerianThreatFeed() {
     const [statesAffected, setStatesAffected] = useState(0);
     const [lastRun, setLastRun] = useState<CollectorRun | null>(null);
     const [refreshing, setRefreshing] = useState(false);
+
+    // Collected (live) advisories get the same sector filter as the reference list above.
+    const visibleAdvisories = advisories.filter((a) => matchesSector(sectorFilter, a.tags, a.title));
 
     const load = useCallback(async () => {
         try {
@@ -164,15 +203,40 @@ export function NigerianThreatFeed() {
                 </div>
             </div>
 
-            {/* Live advisories collected from ngCERT + OTX */}
-            {advisories.length > 0 && (
+            {/* Sector filter — applies to both the collected advisories below and the reference
+                list further down. Matches on the advisory's `sector:` tag, falling back to
+                keyword matching for rows that don't carry one. */}
+            <div>
+                <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-2">Sector</p>
+                <div className="flex gap-2 flex-wrap">
+                    {SECTORS.map((s) => (
+                        <button
+                            key={s}
+                            onClick={() => setSectorFilter(s)}
+                            className={`text-xs px-3 py-1.5 rounded-full font-medium transition-colors ${
+                                sectorFilter === s ? 'bg-purple text-white' : 'bg-card-muted text-foreground-muted hover:text-purple'
+                            }`}
+                        >
+                            {s}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {/* Live advisories collected from ngCERT + CIRCL */}
+            {visibleAdvisories.length > 0 && (
                 <div>
                     <div className="flex items-center gap-2 mb-2">
                         <h2 className="text-sm font-black text-foreground">Collected Advisories</h2>
                         <span className="text-[9px] font-bold px-1.5 py-0.5 bg-green/10 text-green rounded-full uppercase">Live</span>
+                        {sectorFilter !== 'All Sectors' && (
+                            <span className="text-[10px] text-foreground-muted">
+                                {visibleAdvisories.length} of {advisories.length} in {sectorFilter}
+                            </span>
+                        )}
                     </div>
                     <div className="space-y-2">
-                        {advisories.map((a) => (
+                        {visibleAdvisories.map((a) => (
                             <div key={a.advisory_id} className="bg-card border border-border rounded-xl p-4">
                                 <div className="flex items-start justify-between gap-3 mb-1.5">
                                     <div className="flex items-center gap-2 flex-wrap">

@@ -33,6 +33,7 @@ import dataRecoveryRouter from './routes/dataRecovery';
 import slaRouter from './routes/sla';
 import alertsRouter from './routes/alerts';
 import threatManagementRouter from './routes/threatManagement';
+import publicRouter from './routes/public';
 import incidentResponseRouter from './routes/incidentResponse';
 import weblogicRouter from './routes/weblogic';
 import assetsRouter from './routes/assets';
@@ -260,6 +261,12 @@ const apiLimiter = rateLimit({
 app.use('/api/auth', authLimiter, botProtection);
 app.use('/api/portal/auth', authLimiter, botProtection);
 app.use('/api', apiLimiter);
+
+// Public, unauthenticated — the marketing site's free scanner. Mounted ahead of every
+// requireAuth-gated route below and never gated itself; it carries its own tighter per-IP limit
+// (10/hour) on top of the general apiLimiter above, since it's the one anonymous path that
+// spends third-party API quota. See routes/public.ts.
+app.use('/api/public', publicRouter);
 
 app.use('/api/auth', authRouter);
 app.use('/api/portal', portalRouter);
