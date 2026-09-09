@@ -129,6 +129,11 @@ const ALLOWED_ORIGINS = [
     'https://novrsoc-prev.vercel.app',
     'https://novr-soc.vercel.app',
     'https://novrsoc.vercel.app',
+    // This backend's own Railway origin. Not needed for the frontend->backend calls that make up
+    // ~all traffic (a page served from Vercel sends its own Vercel origin, and same-origin
+    // requests send no Origin header at all), but listed so anything served from the API's own
+    // domain — a docs/status page opened in a browser, or a same-site tool — isn't rejected.
+    'https://novrsoc-production-1fb6.up.railway.app',
     process.env.FRONTEND_URL,
     process.env.FRONTEND_ORIGIN,
     'http://localhost:3000',

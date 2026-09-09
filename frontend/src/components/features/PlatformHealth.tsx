@@ -24,7 +24,7 @@ interface Service { name: string; url: string; status: 'operational' | 'degraded
 const FRONTEND_URL_LABEL = process.env.NEXT_PUBLIC_VERCEL_URL || 'novr-soc.vercel.app';
 const SERVICES: Service[] = [
     { name: 'NovrSOC Frontend', url: FRONTEND_URL_LABEL, status: 'operational', uptime: 99.98, latency: 124 },
-    { name: 'NovrSOC Backend API', url: 'novrsoc-production.up.railway.app', status: 'operational', uptime: 99.91, latency: 287 },
+    { name: 'NovrSOC Backend API', url: 'novrsoc-production-1fb6.up.railway.app', status: 'operational', uptime: 99.91, latency: 287 },
     { name: 'Supabase Database', url: 'bwtmjukbrtijnwusrrjb.supabase.co', status: 'operational', uptime: 99.99, latency: 45 },
     { name: 'Wazuh Manager', url: '169.58.242.174:55000', status: 'operational', uptime: 99.87, latency: 312 },
     { name: 'Wazuh Indexer', url: '169.58.242.174:9200', status: 'operational', uptime: 99.87, latency: 298 },

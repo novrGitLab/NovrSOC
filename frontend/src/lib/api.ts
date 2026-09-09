@@ -8,8 +8,15 @@ import { portalSignOut } from './portal-auth';
 // Falls back to the deployed Railway backend, not localhost — so a Vercel build with
 // NEXT_PUBLIC_BACKEND_URL unset still works instead of silently trying to call
 // localhost:4001 from the browser. Local dev overrides this via frontend/.env.local.
+//
+// Updated 2026-09-09: the Railway service moved to novrsoc-production-1fb6. The old
+// novrsoc-production host is gone, so any preview/production build deployed WITHOUT
+// NEXT_PUBLIC_BACKEND_URL set was falling back to a dead origin and failing every call —
+// which looks identical to a CORS problem in the browser console but isn't one.
+// NEXT_PUBLIC_* is inlined at build time, so changing it in Vercel needs a redeploy to
+// take effect; this fallback is what covers a build where it was never set.
 export function apiUrl(path: string): string {
-    const base = process.env.NEXT_PUBLIC_BACKEND_URL || 'https://novrsoc-production.up.railway.app';
+    const base = process.env.NEXT_PUBLIC_BACKEND_URL || 'https://novrsoc-production-1fb6.up.railway.app';
     return `${base}${path}`;
 }
 
