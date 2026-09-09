@@ -1,4 +1,4 @@
-// Global intelligence sync — OTX pulses (every 6h) and MITRE technique detections derived from
+// Global intelligence sync — CIRCL OSINT pulses (every 6h) and MITRE technique detections derived from
 // Wazuh alerts (hourly).
 //
 // Persistence caveat, verified live 2026-09-07: neither `global_intel.threat_pulses` nor
@@ -8,24 +8,15 @@
 // `public.mitre_detections` instead (see backend/sql/2026-09-threat-intel.sql), and no-op
 // quietly with a single log line until those tables exist.
 //
-// OTX caveat: OTX_API_KEY in the environment is invalid (403 on every endpoint, and 31 chars
-// where a real key is 64), so the pulse half of this job returns 0 until a working key is set.
-// The MITRE half reads Wazuh directly and is unaffected.
+// Pulse source: the keyless CIRCL OSINT MISP feed (services/circl.ts). This used to be
+// AlienVault OTX, which was removed on 2026-09-09 — its key was invalid (403 on every endpoint,
+// 31 chars where a real key is 64) and it contributed nothing. CIRCL needs no key at all, so
+// this half of the job now produces real rows. The MITRE half reads Wazuh directly and is
+// unaffected either way.
 
 import { getSupabase } from '../services/geoEnrichment';
 import { search } from '../lib/wazuh-indexer';
-
-interface OTXPulse {
-    id: string;
-    name: string;
-    description?: string;
-    author_name?: string;
-    tags?: string[];
-    indicator_count?: number;
-    malware_families?: unknown[];
-    attack_ids?: Array<{ id?: string }>;
-    created?: string;
-}
+import { circlGetPulses } from '../services/circl';
 
 // Table-missing is the expected steady state until the migration runs — logged once per call,
 // not per row, and never escalated to an error.
@@ -33,26 +24,12 @@ function isMissingTable(code?: string): boolean {
     return code === 'PGRST205' || code === '42P01';
 }
 
-async function syncOTXPulses(): Promise<number> {
-    const apiKey = process.env.OTX_API_KEY;
-    if (!apiKey) return 0;
+async function syncCIRCLPulses(): Promise<number> {
     const supabase = getSupabase();
     if (!supabase) return 0;
 
     try {
-        const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-        const r = await fetch(`https://otx.alienvault.com/api/v1/pulses/subscribed?limit=50&modified_since=${since}`, {
-            headers: { 'X-OTX-API-KEY': apiKey },
-            signal: AbortSignal.timeout(15000),
-        });
-        if (r.status === 401 || r.status === 403) {
-            console.warn('[GlobalIntel] OTX rejected the API key — pulse sync skipped');
-            return 0;
-        }
-        if (!r.ok) return 0;
-
-        const data = (await r.json()) as { results?: OTXPulse[] };
-        const pulses = data.results ?? [];
+        const pulses = await circlGetPulses(50);
         if (pulses.length === 0) return 0;
 
         const { error } = await supabase.from('threat_pulses').upsert(
@@ -60,24 +37,26 @@ async function syncOTXPulses(): Promise<number> {
                 pulse_id: p.id,
                 name: p.name,
                 description: (p.description ?? '').slice(0, 500),
-                author: p.author_name ?? null,
-                tlp: 'white',
+                author: p.author ?? null,
+                tlp: p.tlp ?? 'white',
                 tags: p.tags ?? [],
-                ioc_count: p.indicator_count ?? 0,
+                // The manifest carries event metadata, not per-event attribute counts — fetching
+                // every event file just to count IOCs would be thousands of requests per run.
+                ioc_count: 0,
                 malware_families: p.malware_families ?? [],
-                attack_ids: (p.attack_ids ?? []).map((a) => a.id).filter(Boolean),
-                published_at: p.created ?? new Date().toISOString(),
+                attack_ids: p.attack_ids.map((a) => a.id).filter(Boolean),
+                published_at: p.created,
             })),
             { onConflict: 'pulse_id' }
         );
         if (error) {
-            if (!isMissingTable(error.code)) console.warn('[GlobalIntel] OTX persist failed:', error.message);
+            if (!isMissingTable(error.code)) console.warn('[GlobalIntel] CIRCL persist failed:', error.message);
             return 0;
         }
-        console.log(`[GlobalIntel] Synced ${pulses.length} OTX pulses`);
+        console.log(`[GlobalIntel] Synced ${pulses.length} CIRCL pulses`);
         return pulses.length;
     } catch (err) {
-        console.warn('[GlobalIntel] OTX sync error:', err instanceof Error ? err.message : err);
+        console.warn('[GlobalIntel] CIRCL sync error:', err instanceof Error ? err.message : err);
         return 0;
     }
 }
@@ -140,12 +119,12 @@ async function syncMITREDetections(): Promise<number> {
 }
 
 export function startGlobalIntelJob(): void {
-    console.log('[GlobalIntel] Job started — OTX every 6h, MITRE every 60 minutes');
+    console.log('[GlobalIntel] Job started — CIRCL every 6h, MITRE every 60 minutes');
     setTimeout(() => {
-        void syncOTXPulses();
+        void syncCIRCLPulses();
         void syncMITREDetections();
     }, 20_000).unref();
 
-    setInterval(() => { void syncOTXPulses(); }, 6 * 60 * 60 * 1000).unref();
+    setInterval(() => { void syncCIRCLPulses(); }, 6 * 60 * 60 * 1000).unref();
     setInterval(() => { void syncMITREDetections(); }, 60 * 60 * 1000).unref();
 }

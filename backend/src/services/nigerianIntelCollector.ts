@@ -9,11 +9,10 @@
 //     collects nothing from here today. It's still implemented (and still the first source
 //     tried) because Railway's egress may not be blocked the way this one is — if it isn't,
 //     this starts producing advisories with no code change. It fails silently to 0, never throws.
-//   * OTX — OTX_API_KEY in the environment is INVALID: 403 "Authentication required" on every
-//     endpoint, and it's 31 characters where a real OTX key is 64. Separately, the endpoint the
-//     spec used (/api/v1/pulses/search) no longer exists at all — OTX moved it to
-//     /api/v1/search/pulses, which is what's used here. Both facts mean OTX contributes nothing
-//     until a valid key is set.
+//   * CIRCL OSINT feed — replaced OTX here on 2026-09-09. OTX was removed because its key was
+//     invalid (403 on every endpoint, 31 chars where a real key is 64) so it contributed
+//     nothing. CIRCL needs no key. Note its published entry point is manifest.json — the
+//     feed-osint/ directory URL itself serves an HTML index, not JSON.
 //   * Feodo Tracker — WORKS, no key needed. This is the one source actually producing live IOCs
 //     right now (botnet C2 IPs), so it's the reason the collector isn't a no-op today.
 //   * IPregistry — WORKS. Used to resolve each IOC to a Nigerian state.
@@ -31,6 +30,7 @@
 import { getSupabase } from './geoEnrichment';
 import { getNigerianState } from './nigeriaGeo';
 import { addAttributeToEvent, isMISPConfigured } from './misp';
+import { circlSearchPulses, circlGetPulseIndicators, type CIRCLPulse } from './circl';
 
 const NIGERIA_EVENT_ID = process.env.MISP_NIGERIA_EVENT_ID || '1';
 
@@ -135,29 +135,12 @@ async function fetchAdvisoryContent(url: string): Promise<string> {
     }
 }
 
-interface OTXPulseLite {
-    id: string;
-    name: string;
-    description?: string;
-    created?: string;
-    tags?: string[];
-    indicators?: Array<{ type: string; indicator: string }>;
-}
-
-async function fetchOTXNigerianPulses(): Promise<{ items: OTXPulseLite[]; note?: string }> {
-    const apiKey = process.env.OTX_API_KEY;
-    if (!apiKey) return { items: [], note: 'OTX_API_KEY not set' };
+// Nigeria-relevant events from the keyless CIRCL OSINT feed, replacing the OTX pulse search
+// that used to sit here (removed 2026-09-09 — its key was rejected on every call).
+async function fetchCIRCLNigerianPulses(): Promise<{ items: CIRCLPulse[]; note?: string }> {
     try {
-        // /api/v1/search/pulses — the spec's /api/v1/pulses/search is a dead path (404
-        // "endpoint not found"), verified live.
-        const r = await fetch('https://otx.alienvault.com/api/v1/search/pulses?q=nigeria&limit=20&sort=-modified', {
-            headers: { 'X-OTX-API-KEY': apiKey },
-            signal: AbortSignal.timeout(12000),
-        });
-        if (r.status === 401 || r.status === 403) return { items: [], note: 'OTX rejected the API key (403)' };
-        if (!r.ok) return { items: [], note: `OTX returned HTTP ${r.status}` };
-        const data = (await r.json()) as { results?: OTXPulseLite[] };
-        return { items: data.results ?? [] };
+        const items = await circlSearchPulses('nigeria', 20);
+        return { items, note: items.length === 0 ? 'No Nigeria-tagged events in the current CIRCL feed' : undefined };
     } catch (err) {
         return { items: [], note: err instanceof Error ? err.message : 'fetch failed' };
     }
@@ -313,25 +296,29 @@ export async function runNigerianIntelCollector(): Promise<CollectorResult> {
             if (i < ngcert.items.length - 1) await new Promise((r) => setTimeout(r, 1000)); // be polite
         }
 
-        // 2. OTX Nigeria-tagged pulses
-        const otx = await fetchOTXNigerianPulses();
-        sources.push({ name: 'OTX', ok: !otx.note, items: otx.items.length, note: otx.note });
+        // 2. CIRCL OSINT Nigeria-tagged events
+        const circl = await fetchCIRCLNigerianPulses();
+        sources.push({ name: 'CIRCL OSINT', ok: circl.items.length > 0, items: circl.items.length, note: circl.note });
 
-        for (const pulse of otx.items) {
+        for (const pulse of circl.items) {
             advisories.push({
-                source: 'OTX AlienVault',
-                advisory_id: `OTX-${pulse.id}`,
+                source: 'CIRCL OSINT',
+                advisory_id: `CIRCL-${pulse.id}`,
                 title: pulse.name,
                 description: (pulse.description ?? '').slice(0, 500),
                 severity: 'medium',
                 threat_type: getThreatType(`${pulse.name} ${pulse.description ?? ''}`),
-                tags: [...(pulse.tags ?? []), 'nigeria', 'otx'],
-                source_url: `https://otx.alienvault.com/pulse/${pulse.id}`,
-                published_at: pulse.created ?? new Date().toISOString(),
+                tags: [...(pulse.tags ?? []), 'nigeria', 'circl'],
+                source_url: `https://www.circl.lu/doc/misp/feed-osint/${pulse.id}.json`,
+                published_at: pulse.created,
             });
 
-            for (const indicator of (pulse.indicators ?? []).filter((i) => i.type === 'IPv4').slice(0, 20)) {
-                const state = await getNigerianState(indicator.indicator);
+            // The manifest has no inline indicators, so pull this one event's attributes and use
+            // its IPv4 values. Only runs for events that already matched "nigeria", so this is a
+            // handful of requests per collection run, not one per feed entry.
+            const indicators = await circlGetPulseIndicators(pulse.id);
+            for (const indicator of indicators.filter((i) => i.type === 'ip-src' || i.type === 'ip-dst').slice(0, 20)) {
+                const state = await getNigerianState(indicator.value);
                 if (!state) continue;
                 await bumpStateThreat(state, 'malware', 1);
                 statesUpdated.add(state);

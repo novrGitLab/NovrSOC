@@ -3,7 +3,8 @@ import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents } from '..
 import { getAuditLog } from '../lib/audit';
 import { getMISPStats, isMISPConfigured } from '../services/misp';
 import { isTheHiveConfigured, testConnection as testTheHive } from '../services/thehive';
-import { isConfigured as censysConfigured } from '../services/censys';
+import { isConfigured as leakixConfigured } from '../services/leakix';
+import { isConfigured as fofaConfigured } from '../services/fofa';
 
 const router = Router();
 
@@ -96,28 +97,50 @@ async function checkTheHive(): Promise<ServiceCheck & { detail?: string }> {
 // network round-trip per integration, so a misconfigured key is diagnosable from the Platform
 // Health page instead of only from Railway logs.
 function integrationConfig() {
-    const otxKey = (process.env.OTX_API_KEY || '').trim();
-    // A real OTX key is 64 hex chars. The key currently in the environment is 31, which is why
-    // every OTX endpoint 403s — surfacing the length makes that self-evident.
-    const otxValidShape = otxKey.length === 64;
+    const threatfoxKey = (process.env.THREATFOX_API_KEY || '').trim();
 
     return {
+        // OTX and Censys were removed on 2026-09-09. Reported explicitly as `removed` rather
+        // than dropped from this response, so an operator looking at Platform Health sees why
+        // they vanished instead of assuming a regression — and so nothing warns about the
+        // OTX_API_KEY / CENSYS_* values that may still be sitting in Railway unused.
         otx: {
-            configured: otxKey.length > 0,
-            valid_shape: otxValidShape,
-            key_length: otxKey.length,
-            expected_length: 64,
-            detail: !otxKey ? 'OTX_API_KEY not set'
-                : otxValidShape ? 'Key is the expected length'
-                : `OTX_API_KEY is ${otxKey.length} chars — a real key is 64, so OTX will reject it`,
+            configured: false,
+            removed: true,
+            detail: 'Removed — pulse feed replaced by CIRCL OSINT (keyless) and IOC corroboration by ThreatFox.',
+        },
+        censys: {
+            configured: false,
+            removed: true,
+            detail: 'Removed — host exposure lookups replaced by LeakIX.',
+        },
+        circl: {
+            configured: true,
+            detail: 'CIRCL OSINT feed — public MISP feed, no key required.',
+        },
+        threatfox: {
+            configured: threatfoxKey.length > 0,
+            detail: threatfoxKey.length > 0
+                ? 'THREATFOX_API_KEY set — abuse.ch IOC corroboration active'
+                : 'THREATFOX_API_KEY not set — abuse.ch now requires an Auth-Key, so ThreatFox returns nothing without it',
+        },
+        leakix: {
+            configured: leakixConfigured(),
+            // The free tier still needs a registered key: an empty key returns 401 "Invalid API
+            // key" (verified live). Unconfigured means lookups are skipped, NOT that hosts are clean.
+            detail: leakixConfigured()
+                ? 'LEAKIX_API_KEY set — host exposure lookups active'
+                : 'LEAKIX_API_KEY not set — free key available at leakix.net/settings/api. Host exposure lookups are skipped, not reported as clean.',
+        },
+        fofa: {
+            configured: fofaConfigured(),
+            detail: fofaConfigured()
+                ? 'FOFA_API_KEY and FOFA_EMAIL set — asset search active'
+                : 'FOFA_API_KEY/FOFA_EMAIL not set — activates automatically once both are provided',
         },
         misp: {
             configured: isMISPConfigured(),
             detail: isMISPConfigured() ? 'MISP_URL and MISP_API_KEY set' : 'MISP_URL/MISP_API_KEY not set',
-        },
-        censys: {
-            configured: censysConfigured(),
-            detail: censysConfigured() ? 'CENSYS_API_ID and CENSYS_API_SECRET set' : 'CENSYS_API_ID/CENSYS_API_SECRET not set',
         },
         anthropic: {
             configured: !!process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY !== 'your-key-here',

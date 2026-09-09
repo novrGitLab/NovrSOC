@@ -42,7 +42,7 @@ interface ThreatAlert {
     tags: string[];
     abuseipdb_confidence: number | null;
     vt_malicious: number | null;
-    otx_pulses: number | null;
+    pulse_matches: number | null;
     assigned_to: string | null;
 }
 
@@ -71,7 +71,7 @@ const MOCK_ALERTS: ThreatAlert[] = [
         tags: ['tor', 'c2', 'proxy'],
         abuseipdb_confidence: 94,
         vt_malicious: 16,
-        otx_pulses: 8,
+        pulse_matches: 8,
         assigned_to: null,
     },
     {
@@ -98,7 +98,7 @@ const MOCK_ALERTS: ThreatAlert[] = [
         tags: ['brute-force', 'ssh', 'china'],
         abuseipdb_confidence: 87,
         vt_malicious: 12,
-        otx_pulses: 3,
+        pulse_matches: 3,
         assigned_to: 'Karl Mensah',
     },
     {
@@ -125,7 +125,7 @@ const MOCK_ALERTS: ThreatAlert[] = [
         tags: ['ransomware', 'ryuk', 'c2', 'suricata'],
         abuseipdb_confidence: 98,
         vt_malicious: 58,
-        otx_pulses: 24,
+        pulse_matches: 24,
         assigned_to: null,
     },
     {
@@ -152,7 +152,7 @@ const MOCK_ALERTS: ThreatAlert[] = [
         tags: ['fim', 'persistence', 'cron'],
         abuseipdb_confidence: null,
         vt_malicious: null,
-        otx_pulses: null,
+        pulse_matches: null,
         assigned_to: null,
     },
     {
@@ -179,7 +179,7 @@ const MOCK_ALERTS: ThreatAlert[] = [
         tags: ['nrd', 'suspicious-domain', 'exfil'],
         abuseipdb_confidence: 12,
         vt_malicious: 0,
-        otx_pulses: 0,
+        pulse_matches: 0,
         assigned_to: null,
     },
     {
@@ -206,7 +206,7 @@ const MOCK_ALERTS: ThreatAlert[] = [
         tags: ['account-creation', 'after-hours'],
         abuseipdb_confidence: null,
         vt_malicious: null,
-        otx_pulses: null,
+        pulse_matches: null,
         assigned_to: null,
     },
 ];
@@ -289,7 +289,7 @@ function mapIndexerAlert(hit: IndexerAlertHit): ThreatAlert {
         tags: src.rule?.groups ?? [],
         abuseipdb_confidence: null,
         vt_malicious: null,
-        otx_pulses: null,
+        pulse_matches: null,
         assigned_to: null,
     };
 }

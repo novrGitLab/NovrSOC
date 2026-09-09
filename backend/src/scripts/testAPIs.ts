@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import { otxLookupIP } from '../services/otx';
+import { circlGetPulses } from '../services/circl';
+import { checkLeakIX } from '../services/leakix';
 import { checkIP } from '../services/abuseipdb';
 import { urlhausLookupURL } from '../services/urlhaus';
 import { threatfoxSearchIOC } from '../services/threatfox';
@@ -18,9 +19,13 @@ async function runTests() {
     const TEST_MALWARE_URL = 'http://malware.testing.google.test/testing/malware/';
     const TEST_CVE = 'CVE-2021-44228'; // Log4Shell — always in results
 
-    console.log('1. Testing OTX...');
-    const otx = await otxLookupIP(TEST_IP);
-    console.log(otx ? `   ✅ OTX: ${otx.pulse_count} pulses for ${TEST_IP}` : '   ❌ OTX: failed');
+    console.log('1. Testing CIRCL OSINT feed (replaced OTX)...');
+    const pulses = await circlGetPulses(5);
+    console.log(pulses.length > 0 ? `   ✅ CIRCL: ${pulses.length} recent pulses` : '   ❌ CIRCL: failed');
+
+    console.log('1b. Testing LeakIX (replaced Censys)...');
+    const leak = await checkLeakIX(TEST_IP);
+    console.log(`   ${leak.status === 'ok' || leak.status === 'not_found' ? '✅' : '⚠️ '} LeakIX: status=${leak.status}${leak.error ? ` (${leak.error})` : ''}`);
 
     console.log('2. Testing AbuseIPDB...');
     const abuse = await checkIP(TEST_IP);

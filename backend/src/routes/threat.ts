@@ -4,7 +4,7 @@ import { validate } from '../middleware/validate';
 import { enrichIOC, type IOCType } from '../services/iocEnrichment';
 import { getCVEById, getRecentCVEs, getCVSSScore, getCVEDescription } from '../services/nvd';
 import { isInKEV, getKEVCatalog } from '../services/cisa';
-import { otxGetPulses } from '../services/otx';
+import { circlGetPulses } from '../services/circl';
 import { analyzeSSL } from '../services/sslLabs';
 import { getSupabase } from '../services/geoEnrichment';
 
@@ -30,16 +30,21 @@ router.post('/ioc/lookup', validate(IOCLookupSchema), async (req, res) => {
     }
 });
 
-// GET /api/threat/feeds/otx
-router.get('/feeds/otx', async (req, res) => {
+// GET /api/threat/feeds/circl — CIRCL OSINT feed, replacing the old /feeds/otx route.
+// /feeds/otx is kept as an alias so any bookmarked link or cached frontend bundle still
+// resolves instead of 404ing; both serve CIRCL data now.
+async function servePulses(req: import('express').Request, res: import('express').Response) {
     try {
         const limit = Number(req.query.limit) || 20;
-        const pulses = await otxGetPulses(limit);
-        res.json({ pulses, count: pulses.length });
+        const pulses = await circlGetPulses(limit);
+        res.json({ pulses, count: pulses.length, source: 'circl' });
     } catch {
-        res.status(500).json({ error: 'OTX fetch failed' });
+        res.status(500).json({ error: 'CIRCL feed fetch failed' });
     }
-});
+}
+
+router.get('/feeds/circl', servePulses);
+router.get('/feeds/otx', servePulses);
 
 // ── Threat Advisory ───────────────────────────────────────────────
 

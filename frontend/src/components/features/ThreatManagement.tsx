@@ -36,7 +36,7 @@ interface ThreatAlert {
     tags: string[];
     abuseipdb_confidence: number | null;
     vt_malicious: number | null;
-    otx_pulses: number | null;
+    pulse_matches: number | null;
     assigned_to: string | null;
 }
 
@@ -410,7 +410,7 @@ export function ThreatManagement() {
                             </div>
 
                             {/* Threat intel scores */}
-                            {(selected.abuseipdb_confidence !== null || selected.vt_malicious !== null || selected.otx_pulses !== null) && (
+                            {(selected.abuseipdb_confidence !== null || selected.vt_malicious !== null || selected.pulse_matches !== null) && (
                                 <div>
                                     <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-2">Threat Intelligence</p>
                                     <div className="grid grid-cols-3 gap-3">
@@ -424,7 +424,7 @@ export function ThreatManagement() {
                                         </div>
                                         <div className="border border-border rounded-lg p-2.5 text-center">
                                             <p className="text-[9px] text-foreground-muted uppercase tracking-wider">Threat Feed Pulses</p>
-                                            <p className={`text-lg font-black mt-0.5 ${scoreColor(selected.otx_pulses !== null ? selected.otx_pulses * 4 : null)}`}>{selected.otx_pulses ?? '—'}</p>
+                                            <p className={`text-lg font-black mt-0.5 ${scoreColor(selected.pulse_matches !== null ? selected.pulse_matches * 4 : null)}`}>{selected.pulse_matches ?? '—'}</p>
                                         </div>
                                     </div>
                                 </div>

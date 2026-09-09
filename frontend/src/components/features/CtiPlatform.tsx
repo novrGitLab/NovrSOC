@@ -18,7 +18,7 @@ interface IOCResult {
     risk_score: number;
     verdict: Verdict;
     sources: {
-        otx: { pulse_count: number; tags: string[]; mitre_techniques: string[] } | null;
+        leakix: { status: 'ok' | 'not_found' | 'unconfigured' | 'error'; exposed: boolean; service_count: number; leak_count: number } | null;
         abuseipdb: { confidence: number; total_reports: number; country: string | null; isp: string | null; is_tor: boolean } | null;
         urlhaus: { status: string; threat: string; tags: string[] } | null;
         threatfox: { malware: string; confidence: number; threat_type: string } | null;
@@ -40,7 +40,7 @@ interface FeedIOC {
     last_seen: string;
 }
 
-interface OTXPulse {
+interface ThreatPulse {
     id: string;
     name: string;
     description: string;
@@ -156,7 +156,7 @@ export function CtiPlatform() {
     const [feed, setFeed] = useState<FeedIOC[]>([]);
     const [feedFilter, setFeedFilter] = useState<IOCType | 'all'>('all');
     const [activeTab, setActiveTab] = useState<Tab>('search');
-    const [pulses, setPulses] = useState<OTXPulse[]>([]);
+    const [pulses, setPulses] = useState<ThreatPulse[]>([]);
     const [pulsesLoading, setPulsesLoading] = useState(false);
     const [stats, setStats] = useState({ total: 0, malicious: 0, suspicious: 0, clean: 0 });
     const inputRef = useRef<HTMLInputElement>(null);
@@ -523,17 +523,31 @@ export function CtiPlatform() {
                                     <div className="p-4">
                                         <div className="flex items-center gap-2 mb-2">
                                             <div className="w-2 h-2 rounded-full bg-purple" />
-                                            <span className="text-xs font-semibold text-foreground">Global Threat Intelligence</span>
+                                            <span className="text-xs font-semibold text-foreground">Host Exposure (LeakIX)</span>
                                         </div>
-                                        {result.sources.otx ? (
-                                            <>
-                                                <div className="text-sm font-bold text-foreground">{result.sources.otx.pulse_count} threat pulses</div>
-                                                {result.sources.otx.mitre_techniques.length > 0 && (
-                                                    <div className="text-xs text-foreground-muted mt-1">MITRE: {result.sources.otx.mitre_techniques.slice(0, 3).join(', ')}</div>
-                                                )}
-                                            </>
+                                        {result.sources.leakix ? (
+                                            result.sources.leakix.status === 'ok' ? (
+                                                <>
+                                                    <div className="text-sm font-bold text-foreground">
+                                                        {result.sources.leakix.service_count} exposed service{result.sources.leakix.service_count === 1 ? '' : 's'}
+                                                    </div>
+                                                    <div className="text-xs text-foreground-muted mt-1">
+                                                        {result.sources.leakix.leak_count > 0
+                                                            ? `${result.sources.leakix.leak_count} known leak${result.sources.leakix.leak_count === 1 ? '' : 's'}`
+                                                            : 'No known leaks'}
+                                                    </div>
+                                                </>
+                                            ) : result.sources.leakix.status === 'not_found' ? (
+                                                <div className="text-xs text-foreground-muted">No LeakIX records for this host</div>
+                                            ) : (
+                                                // Never render an unconfigured/failed lookup as "no exposure" — that
+                                                // would read as a clean result the scan never actually established.
+                                                <div className="text-xs text-amber">
+                                                    {result.sources.leakix.status === 'unconfigured' ? 'Not checked — LEAKIX_API_KEY not set' : 'Lookup failed'}
+                                                </div>
+                                            )
                                         ) : (
-                                            <div className="text-xs text-foreground-muted">No pulse data</div>
+                                            <div className="text-xs text-foreground-muted">Not applicable for this IOC type</div>
                                         )}
                                     </div>
 
@@ -621,7 +635,7 @@ export function CtiPlatform() {
                                     <button className="text-xs text-blue hover:text-purple font-medium transition-colors">Create Incident</button>
                                     <button className="text-xs text-blue hover:text-purple font-medium transition-colors">Export IOC</button>
                                     <a
-                                        href={`https://otx.alienvault.com/indicator/${result.type}/${result.value}`}
+                                        href="https://www.circl.lu/doc/misp/feed-osint/"
                                         target="_blank" rel="noopener noreferrer"
                                         className="ml-auto text-xs text-foreground-muted hover:text-blue flex items-center gap-1 transition-colors"
                                     >
@@ -774,7 +788,7 @@ export function CtiPlatform() {
                         <div className="bg-card border border-border rounded-xl p-10 text-center">
                             <Zap size={36} className="text-border mx-auto mb-3" />
                             <div className="text-sm text-foreground-muted">No pulses found — subscribe to threat feeds to see live pulses here</div>
-                            <a href="https://otx.alienvault.com/browse/pulses" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-3 text-xs text-blue hover:text-purple">
+                            <a href="https://www.circl.lu/doc/misp/feed-osint/" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-3 text-xs text-blue hover:text-purple">
                                 Browse Threat Feed <ExternalLink size={11} />
                             </a>
                         </div>
@@ -790,7 +804,7 @@ export function CtiPlatform() {
                                     {pulse.tags?.slice(0, 4).map((tag) => (
                                         <span key={tag} className="text-[10px] bg-purple/10 text-purple px-2 py-0.5 rounded-full">{tag}</span>
                                     ))}
-                                    <a href={`https://otx.alienvault.com/pulse/${pulse.id}`} target="_blank" rel="noopener noreferrer" className="ml-auto text-xs text-blue flex items-center gap-1 hover:text-purple">
+                                    <a href={`https://www.circl.lu/doc/misp/feed-osint/${pulse.id}.json`} target="_blank" rel="noopener noreferrer" className="ml-auto text-xs text-blue flex items-center gap-1 hover:text-purple">
                                         View pulse <ExternalLink size={10} />
                                     </a>
                                 </div>

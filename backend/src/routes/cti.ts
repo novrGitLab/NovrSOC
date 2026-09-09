@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { enrichIOC, type IOCType } from '../services/iocEnrichment';
-import { otxGetPulses } from '../services/otx';
+import { circlGetPulses } from '../services/circl';
 import { getSupabase } from '../services/geoEnrichment';
-import { searchCensys, isConfigured as censysConfigured } from '../services/censys';
+import { checkLeakIX, isConfigured as leakixConfigured } from '../services/leakix';
 
 const router = Router();
 
@@ -32,7 +32,7 @@ router.post('/lookup', async (req, res) => {
             risk_score: 0,
             verdict: 'clean',
             note: 'Private/internal IP address',
-            sources: { otx: null, abuseipdb: null, urlhaus: null, threatfox: null },
+            sources: { abuseipdb: null, urlhaus: null, threatfox: null, leakix: null },
             tags: ['private'],
             enriched_at: new Date().toISOString(),
         });
@@ -50,7 +50,10 @@ router.post('/lookup', async (req, res) => {
                     ioc_value: value,
                     ioc_type: type,
                     risk_score: result.risk_score,
-                    otx_pulse_count: result.sources.otx?.pulse_count || 0,
+                    // Legacy column from when OTX fed this pipeline. OTX is gone; the column is
+                    // kept (dropping it would need a migration) and written as 0 rather than
+                    // repurposed, so nothing reads a ThreatFox count as an OTX pulse count.
+                    otx_pulse_count: 0,
                     abuseipdb_confidence: result.sources.abuseipdb?.confidence || 0,
                     country_code: result.sources.abuseipdb?.country || null,
                     isp: result.sources.abuseipdb?.isp || null,
@@ -104,12 +107,13 @@ router.get('/feed', async (req, res) => {
     }
 });
 
-// GET /api/cti/pulses?limit=20
+// GET /api/cti/pulses?limit=20 — now the CIRCL OSINT feed (keyless) instead of OTX. Same
+// response shape, so the CTI Platform page needed no change.
 router.get('/pulses', async (req, res) => {
     try {
         const limit = Number(req.query.limit) || 20;
-        const pulses = await otxGetPulses(limit);
-        res.json({ pulses, count: pulses.length });
+        const pulses = await circlGetPulses(limit);
+        res.json({ pulses, count: pulses.length, source: 'circl' });
     } catch (err) {
         console.error('[CTI] Pulse fetch error:', err);
         res.status(500).json({ error: 'Pulse fetch failed' });
@@ -141,22 +145,30 @@ router.get('/stats', async (_req, res) => {
     }
 });
 
-// GET /api/cti/censys?q=... — network exposure search (services/censys.ts), surfaced on the
-// Network Topology page. No credentials configured in this environment (CENSYS_API_ID/
-// CENSYS_API_SECRET), so this reports `configured: false` honestly rather than a fake result —
-// isConfigured() is exposed separately so the frontend can show that state without needing to
-// fire a query first.
-router.get('/censys', async (req, res) => {
-    if (!censysConfigured()) {
-        res.json({ configured: false, results: [], total: 0 });
+// GET /api/cti/leakix?ip=... — per-host exposure lookup, surfaced on the Network Topology page.
+// Replaces the old /api/cti/censys route.
+//
+// LeakIX's free tier still needs a registered key (verified: no key returns 401 "Invalid API
+// key"), so `configured` is reported separately and an unconfigured lookup is never dressed up
+// as a clean host — see services/leakix.ts.
+router.get('/leakix', async (req, res) => {
+    const ip = typeof req.query.ip === 'string' ? req.query.ip.trim() : '';
+    if (!ip) {
+        res.status(400).json({ error: 'ip query param required' });
         return;
     }
-    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-    if (!q) {
-        res.status(400).json({ error: 'q query param required' });
+    if (!leakixConfigured()) {
+        res.json({
+            configured: false,
+            status: 'unconfigured',
+            exposed: false,
+            services: [],
+            leaks: [],
+            note: 'LEAKIX_API_KEY not set — register a free key at leakix.net/settings/api',
+        });
         return;
     }
-    const result = await searchCensys(q);
+    const result = await checkLeakIX(ip);
     res.json({ configured: true, ...result });
 });
 

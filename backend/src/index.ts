@@ -359,9 +359,9 @@ startAutoCloseJob();
 // Escalation emails for unresolved HIGH/CRITICAL cases — see jobs/incidentEscalation.ts.
 // No-ops (with a log line) when TheHive isn't configured.
 startEscalationJob();
-// Hourly Nigerian threat-intel collection (ngCERT + OTX + Feodo Tracker -> Nigeria heatmap +
+// Hourly Nigerian threat-intel collection (ngCERT + CIRCL + Feodo Tracker -> Nigeria heatmap +
 // MISP). Each source degrades to zero independently — see nigerianIntelCollector.ts's header
 // for which ones are actually reachable today.
 startNigerianIntelJob();
-// OTX pulse + Wazuh-derived MITRE technique sync — see jobs/globalIntelJob.ts.
+// CIRCL pulse + Wazuh-derived MITRE technique sync — see jobs/globalIntelJob.ts.
 startGlobalIntelJob();

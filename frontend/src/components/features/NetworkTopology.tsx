@@ -65,32 +65,39 @@ export function NetworkTopology() {
     const [countryFilter, setCountryFilter] = useState('all');
     const [statusFilter, setStatusFilter] = useState('all');
 
-    // Censys network-exposure search — real, unlike the rest of this page (see the file header
-    // comment: everything above is mock data pending a Zeek sensor). No credentials configured
-    // in this environment, so `censysConfigured` will read false until CENSYS_API_ID/
-    // CENSYS_API_SECRET are added — GET /api/cti/censys reports that honestly rather than
-    // faking a result.
-    const [censysConfigured, setCensysConfigured] = useState<boolean | null>(null);
-    const [censysQuery, setCensysQuery] = useState('');
-    const [censysResults, setCensysResults] = useState<{ results: unknown[]; total: number } | null>(null);
-    const [censysSearching, setCensysSearching] = useState(false);
+    // LeakIX host-exposure lookup — real, unlike the rest of this page (see the file header
+    // comment: everything above is mock data pending a Zeek sensor). Replaced the Censys search
+    // that used to sit here.
+    //
+    // LeakIX takes a single IP, not a search expression, so this is a host lookup rather than a
+    // query box. Its free tier still requires a registered key, so an unconfigured lookup says
+    // so plainly instead of rendering an empty result set that would read as "nothing exposed".
+    const [leakixConfigured, setLeakixConfigured] = useState<boolean | null>(null);
+    const [leakixIp, setLeakixIp] = useState('');
+    const [leakixResult, setLeakixResult] = useState<{
+        status: string;
+        services: Array<{ port: number | null; protocol: string | null; software: string | null }>;
+        leaks: Array<{ severity: string | null; summary: string | null }>;
+    } | null>(null);
+    const [leakixSearching, setLeakixSearching] = useState(false);
 
     useEffect(() => {
-        apiFetch(apiUrl('/api/cti/censys'), { cache: 'no-store' })
+        // Probe with a well-known address purely to read back `configured`.
+        apiFetch(apiUrl('/api/cti/leakix?ip=1.1.1.1'), { cache: 'no-store' })
             .then((r) => r.json())
-            .then((data) => setCensysConfigured(!!data?.configured))
-            .catch(() => setCensysConfigured(false));
+            .then((data) => setLeakixConfigured(!!data?.configured))
+            .catch(() => setLeakixConfigured(false));
     }, []);
 
-    const runCensysSearch = async () => {
-        if (!censysQuery.trim()) return;
-        setCensysSearching(true);
+    const runLeakixLookup = async () => {
+        if (!leakixIp.trim()) return;
+        setLeakixSearching(true);
         try {
-            const res = await apiFetch(apiUrl(`/api/cti/censys?q=${encodeURIComponent(censysQuery.trim())}`), { cache: 'no-store' });
+            const res = await apiFetch(apiUrl(`/api/cti/leakix?ip=${encodeURIComponent(leakixIp.trim())}`), { cache: 'no-store' });
             const data = await res.json();
-            setCensysResults({ results: data.results ?? [], total: data.total ?? 0 });
+            setLeakixResult({ status: data.status ?? 'error', services: data.services ?? [], leaks: data.leaks ?? [] });
         } finally {
-            setCensysSearching(false);
+            setLeakixSearching(false);
         }
     };
 
@@ -150,35 +157,49 @@ export function NetworkTopology() {
             <div className="bg-card border border-border rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-2">
                     <Globe2 size={14} className="text-purple" />
-                    <h2 className="text-xs font-bold text-foreground uppercase tracking-wider">Network Exposure Search</h2>
-                    <span className="text-[9px] text-foreground-muted">via Censys</span>
+                    <h2 className="text-xs font-bold text-foreground uppercase tracking-wider">Host Exposure Lookup</h2>
+                    <span className="text-[9px] text-foreground-muted">via LeakIX</span>
                 </div>
-                {censysConfigured === false ? (
+                {leakixConfigured === false ? (
                     <p className="text-xs text-foreground-muted">
-                        Not configured — add CENSYS_API_ID and CENSYS_API_SECRET (free at censys.io/register) to Railway to enable.
+                        Not configured — add LEAKIX_API_KEY (free key at leakix.net/settings/api) to Railway to enable.
                     </p>
                 ) : (
                     <>
                         <div className="flex gap-2">
                             <input
-                                value={censysQuery}
-                                onChange={(e) => setCensysQuery(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') runCensysSearch(); }}
-                                placeholder='e.g. ip:1.2.3.4 or services.port:22'
+                                value={leakixIp}
+                                onChange={(e) => setLeakixIp(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') runLeakixLookup(); }}
+                                placeholder="e.g. 8.8.8.8"
                                 className="flex-1 border border-border bg-card-muted rounded-lg px-3 py-2 text-xs text-foreground focus:outline-none focus:border-purple"
                             />
                             <button
-                                onClick={runCensysSearch}
-                                disabled={censysSearching || !censysQuery.trim()}
+                                onClick={runLeakixLookup}
+                                disabled={leakixSearching || !leakixIp.trim()}
                                 className="flex items-center gap-1.5 bg-purple text-white text-xs font-bold px-4 py-2 rounded-lg disabled:opacity-50 transition-colors"
                             >
-                                <Search size={13} /> {censysSearching ? 'Searching…' : 'Search'}
+                                <Search size={13} /> {leakixSearching ? 'Checking…' : 'Check'}
                             </button>
                         </div>
-                        {censysResults && (
-                            <p className="text-[11px] text-foreground-muted mt-2">
-                                {censysResults.total.toLocaleString()} total match{censysResults.total === 1 ? '' : 'es'} · showing {censysResults.results.length}
-                            </p>
+                        {leakixResult && (
+                            leakixResult.status === 'ok' ? (
+                                <div className="mt-2 space-y-1">
+                                    <p className="text-[11px] text-foreground-muted">
+                                        {leakixResult.services.length} exposed service{leakixResult.services.length === 1 ? '' : 's'} ·{' '}
+                                        {leakixResult.leaks.length} known leak{leakixResult.leaks.length === 1 ? '' : 's'}
+                                    </p>
+                                    {leakixResult.services.slice(0, 6).map((s, i) => (
+                                        <p key={i} className="text-[11px] text-foreground">
+                                            {s.port ?? '?'}/{s.protocol ?? '—'}{s.software ? ` · ${s.software}` : ''}
+                                        </p>
+                                    ))}
+                                </div>
+                            ) : leakixResult.status === 'not_found' ? (
+                                <p className="text-[11px] text-foreground-muted mt-2">No LeakIX records for that host.</p>
+                            ) : (
+                                <p className="text-[11px] text-amber mt-2">Lookup unavailable — result not established.</p>
+                            )
                         )}
                     </>
                 )}

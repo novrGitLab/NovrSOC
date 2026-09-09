@@ -1,14 +1,17 @@
 // Unified IOC enrichment — combines all threat intel sources.
 // Called by CTI Platform, Threat Management, URL Scan Suite (via routes/threat.ts).
 
-import { otxLookupIP, otxLookupDomain, otxLookupHash, otxLookupURL, type OTXIndicator } from './otx';
 import { checkIP, type AbuseIPDBResult } from './abuseipdb';
 import { urlhausLookupURL, urlhausLookupHost, type URLHausResult, type URLHausHostResult } from './urlhaus';
 import { threatfoxSearchIOC, type ThreatFoxIOC } from './threatfox';
 import { vtCheckIP, vtCheckDomain, vtCheckHash, vtCheckURL, vtToRiskScore, type VTResult } from './virustotal';
 import { checkGreyNoise, type GreyNoiseResult } from './greynoise';
-import { getCensysHost } from './censys';
+import { checkLeakIX, type LeakIXResult } from './leakix';
 import { searchMISP } from './misp';
+
+// OTX and Censys were removed from this pipeline (2026-09-09). OTX's pulse contribution is now
+// covered by ThreatFox (which has a working key here) plus the keyless CIRCL OSINT feed for the
+// pulse/advisory surfaces; Censys's host-exposure role is now LeakIX's.
 
 export type IOCType = 'ip' | 'domain' | 'hash' | 'url';
 
@@ -18,13 +21,15 @@ export interface EnrichedIOC {
     risk_score: number;          // 0-100 composite
     verdict: 'clean' | 'suspicious' | 'malicious';
     sources: {
-        otx: { pulse_count: number; tags: string[]; mitre_techniques: string[] } | null;
         abuseipdb: { confidence: number; total_reports: number; country: string | null; isp: string | null; is_tor: boolean } | null;
         urlhaus: { status: string; threat: string; tags: string[] } | null;
         threatfox: { malware: string; confidence: number; threat_type: string } | null;
         virustotal: { malicious: number; suspicious: number; total_engines: number; verdict: string; as_owner: string | undefined; tags: string[] } | null;
         greynoise: { noise: boolean; riot: boolean; classification: string; name?: string } | null;
-        censys: unknown | null; // raw host record — no fixed shape assumed since it's exploratory (open ports/services), not a verdict this composite score can weigh
+        // Host exposure from LeakIX. `status` distinguishes a real "no records" from "we never
+        // asked" (no key) or "the lookup failed" — an unconfigured LeakIX must never read as a
+        // clean host. Open services are informational; confirmed leaks do move the risk score.
+        leakix: { status: LeakIXResult['status']; exposed: boolean; service_count: number; leak_count: number; services: LeakIXResult['services']; leaks: LeakIXResult['leaks'] } | null;
         // A hit here means this exact value is already in the org's own MISP — the strongest
         // signal available, because someone deliberately curated it rather than it coming from
         // a third-party feed. Null when MISP isn't configured, is unreachable, or has no match.
@@ -47,12 +52,6 @@ function urlhausSummary(result: URLHausResult | URLHausHostResult | null): { sta
 }
 
 export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedIOC> {
-    const otxLookup: Promise<OTXIndicator | null> =
-        type === 'ip' ? otxLookupIP(value)
-        : type === 'domain' ? otxLookupDomain(value)
-        : type === 'hash' ? otxLookupHash(value)
-        : otxLookupURL(value);
-
     const abuseLookup: Promise<AbuseIPDBResult | null> = type === 'ip' ? checkIP(value) : Promise.resolve(null);
 
     const urlhausLookup: Promise<URLHausResult | URLHausHostResult | null> =
@@ -71,35 +70,35 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
     // GreyNoise only makes sense for IPs (it's internet-scan telemetry) — a no-key call for
     // every other type would just waste a request on a value it was never going to answer for.
     const greynoiseLookup: Promise<GreyNoiseResult | null> = type === 'ip' ? checkGreyNoise(value) : Promise.resolve(null);
-    // Network exposure (open ports/services), not a threat verdict — informational only, so it
-    // doesn't feed the composite risk score below the way GreyNoise's classification does.
-    const censysLookup: Promise<unknown | null> = type === 'ip' ? getCensysHost(value) : Promise.resolve(null);
+    // Host exposure — IP-only, same reasoning as GreyNoise above. Open ports alone are
+    // informational, but a confirmed leak is a finding and does feed the risk score.
+    const leakixLookup: Promise<LeakIXResult | null> = type === 'ip' ? checkLeakIX(value) : Promise.resolve(null);
 
     // MISP applies to every IOC type — it stores whatever the org has curated, not one class of
     // indicator. Returns null (never throws) when unconfigured or when the key is rejected.
     const mispLookup = searchMISP(value);
 
-    const [otxResult, abuseResult, urlhausResult, threatfoxResult, vtResult, greynoiseResult, censysResult, mispResult] = await Promise.allSettled([
-        otxLookup, abuseLookup, urlhausLookup, threatfoxLookup, vtLookup, greynoiseLookup, censysLookup, mispLookup,
+    const [abuseResult, urlhausResult, threatfoxResult, vtResult, greynoiseResult, leakixResult, mispResult] = await Promise.allSettled([
+        abuseLookup, urlhausLookup, threatfoxLookup, vtLookup, greynoiseLookup, leakixLookup, mispLookup,
     ]);
 
-    const otx = otxResult.status === 'fulfilled' ? otxResult.value : null;
     const abuse = abuseResult.status === 'fulfilled' ? abuseResult.value : null;
     const urlhaus = urlhausSummary(urlhausResult.status === 'fulfilled' ? urlhausResult.value : null);
     const threatfox = threatfoxResult.status === 'fulfilled' ? threatfoxResult.value : [];
     const vt = vtResult.status === 'fulfilled' ? vtResult.value : null;
     const greynoise = greynoiseResult.status === 'fulfilled' && !greynoiseResult.value?.error ? greynoiseResult.value : null;
-    const censys = censysResult.status === 'fulfilled' ? censysResult.value : null;
+    const leakix = leakixResult.status === 'fulfilled' ? leakixResult.value : null;
     const misp = mispResult.status === 'fulfilled' ? mispResult.value : null;
 
     // Composite risk score
     let score = 0;
-    if (otx && otx.pulse_count > 0) score += Math.min(40, otx.pulse_count * 5); // up to 40 from OTX
     if (abuse && abuse.abuseConfidenceScore) score += Math.floor(abuse.abuseConfidenceScore * 0.3); // up to 30 from AbuseIPDB
     if (urlhaus) score += 25; // known malicious URL/host
     if (threatfox.length > 0) {
+        // ThreatFox absorbs the weight OTX used to carry here: it's now the primary
+        // pulse/campaign-style corroboration, so it contributes up to 40 rather than 20.
         const maxConf = Math.max(...threatfox.map((t) => t.confidence_level || 0));
-        score += Math.floor(maxConf * 0.2); // up to 20 from ThreatFox
+        score += Math.min(40, Math.floor(maxConf * 0.4));
     }
     score += vtToRiskScore(vt); // up to 35 from VirusTotal
     // GreyNoise adjusts rather than adds to the base score — it's context (is this address
@@ -107,6 +106,10 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
     // the way OTX/AbuseIPDB/VirusTotal are.
     if (greynoise?.classification === 'malicious') score = Math.min(100, score + 20);
     if (greynoise?.riot) score = Math.max(0, score - 10);
+    // A confirmed leak on the host is a concrete finding, not just surface area, so it moves the
+    // score. Only counted for a status:'ok' answer — an unconfigured or failed LeakIX lookup
+    // must never change the score in either direction.
+    if (leakix?.status === 'ok' && leakix.leaks.length > 0) score = Math.min(100, score + 15);
     // A MISP hit is the org's own curated intelligence — weighted above any single external
     // feed, but still additive rather than an automatic 100, so a stale MISP entry can't by
     // itself outrank every other source saying the value is clean.
@@ -117,7 +120,6 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
 
     // Collect tags
     const tags = new Set<string>();
-    otx?.pulses?.forEach((p) => p.tags?.forEach((t) => tags.add(t)));
     if (abuse?.isTor) tags.add('tor');
     if (abuse?.usageType) tags.add(abuse.usageType.toLowerCase().replace(/\s+/g, '-'));
     urlhaus?.tags.forEach((t) => tags.add(t));
@@ -126,6 +128,8 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
     if (greynoise?.noise) tags.add('internet-scanner');
     if (greynoise?.riot) tags.add('known-benign-service');
     greynoise?.tags?.forEach((tag) => tags.add(tag));
+    if (leakix?.status === 'ok' && leakix.leaks.length > 0) tags.add('known-leak');
+    if (leakix?.status === 'ok' && leakix.services.length > 0) tags.add('exposed-service');
     if (misp?.found) tags.add('in-misp');
 
     return {
@@ -134,11 +138,6 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
         risk_score: score,
         verdict,
         sources: {
-            otx: otx ? {
-                pulse_count: otx.pulse_count || 0,
-                tags: otx.pulses?.flatMap((p) => p.tags || []) || [],
-                mitre_techniques: otx.pulses?.flatMap((p) => (p.attack_ids || []).map((a) => a.display_name)) || [],
-            } : null,
             abuseipdb: abuse ? {
                 confidence: abuse.abuseConfidenceScore,
                 total_reports: abuse.totalReports,
@@ -166,7 +165,14 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
                 classification: greynoise.classification,
                 name: greynoise.name,
             } : null,
-            censys,
+            leakix: leakix ? {
+                status: leakix.status,
+                exposed: leakix.exposed,
+                service_count: leakix.services.length,
+                leak_count: leakix.leaks.length,
+                services: leakix.services,
+                leaks: leakix.leaks,
+            } : null,
             misp: misp?.found ? { count: misp.count, events: misp.events, attributes: misp.attributes } : null,
         },
         tags: [...tags],

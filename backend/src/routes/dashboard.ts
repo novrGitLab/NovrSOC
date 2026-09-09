@@ -11,7 +11,7 @@ import { search } from '../lib/wazuh-indexer';
 import { enrichIPBatch, getSupabase } from '../services/geoEnrichment';
 import { lookupASN } from '../services/ripeStat';
 import { checkBlock, type AbuseIPDBBlockReport } from '../services/abuseipdb';
-import { otxSearchPulses, type OTXPulse } from '../services/otx';
+import { circlSearchPulses, type CIRCLPulse } from '../services/circl';
 import { getNigerianCyberNews, type NewsResult } from '../services/serper';
 import {
     runNigerianIntelCollector,
@@ -25,9 +25,9 @@ const router = Router();
 
 export interface SupplementalNigeriaData {
     abuse_reports: Array<AbuseIPDBBlockReport & { isp: string; asn: string }>;
-    otx_pulses: OTXPulse[];
+    threat_pulses: CIRCLPulse[];
     cyber_news: NewsResult[];
-    // Advisories collected by services/nigerianIntelCollector.ts (ngCERT + OTX). Read from
+    // Advisories collected by services/nigerianIntelCollector.ts (ngCERT + CIRCL). Read from
     // `nigeria_advisories` when that table exists, otherwise from the collector's in-memory
     // buffer — `advisories_persisted` on the collector result says which.
     advisories: CollectedAdvisory[];
@@ -57,7 +57,7 @@ async function fetchCollectedAdvisories(limit: number): Promise<CollectedAdvisor
 async function getSupplementalNigeriaData(): Promise<SupplementalNigeriaData> {
     if (supplementalCache && supplementalCache.expires > Date.now()) return supplementalCache.data;
 
-    const [abuseResults, otxPulses, cyberNews, collectedAdvisories] = await Promise.all([
+    const [abuseResults, circlPulses, cyberNews, collectedAdvisories] = await Promise.all([
         Promise.all(NIGERIAN_ISP_ASNS.map(async (asn) => {
             try {
                 const info = await lookupASN(asn);
@@ -75,14 +75,14 @@ async function getSupplementalNigeriaData(): Promise<SupplementalNigeriaData> {
                 return [];
             }
         })),
-        otxSearchPulses('nigeria', 10).catch(() => [] as OTXPulse[]),
+        circlSearchPulses('nigeria', 10).catch(() => [] as CIRCLPulse[]),
         getNigerianCyberNews(10).catch(() => [] as NewsResult[]),
         fetchCollectedAdvisories(10).catch(() => [] as CollectedAdvisory[]),
     ]);
 
     const data: SupplementalNigeriaData = {
         abuse_reports: abuseResults.flat().slice(0, 25),
-        otx_pulses: otxPulses,
+        threat_pulses: circlPulses,
         cyber_news: cyberNews,
         advisories: collectedAdvisories,
         fetched_at: new Date().toISOString(),
@@ -134,7 +134,7 @@ function getThreatLevel(count: number): ThreatLevel {
 
 const emptySupplemental = (): SupplementalNigeriaData => ({
     abuse_reports: [],
-    otx_pulses: [],
+    threat_pulses: [],
     cyber_news: [],
     advisories: [],
     fetched_at: new Date().toISOString(),
@@ -381,7 +381,7 @@ router.get('/nigeria-threats', async (req, res) => {
             },
             supplemental: {
                 abuse_reports: supplemental.abuse_reports,
-                otx_pulses: supplemental.otx_pulses.map((p) => ({ id: p.id, name: p.name, tags: p.tags, created: p.created })),
+                threat_pulses: supplemental.threat_pulses.map((p) => ({ id: p.id, name: p.name, tags: p.tags, created: p.created })),
                 cyber_news: supplemental.cyber_news,
                 advisories: supplemental.advisories,
                 fetched_at: supplemental.fetched_at,
@@ -404,7 +404,7 @@ router.get('/nigeria-threats', async (req, res) => {
             enrichment_coverage: { unattributed_ips: 0, ips_enriched: 0, nigerian_confirmed: 0, threats_added_by_enrichment: 0 },
             supplemental: {
                 abuse_reports: supplemental.abuse_reports,
-                otx_pulses: supplemental.otx_pulses.map((p) => ({ id: p.id, name: p.name, tags: p.tags, created: p.created })),
+                threat_pulses: supplemental.threat_pulses.map((p) => ({ id: p.id, name: p.name, tags: p.tags, created: p.created })),
                 cyber_news: supplemental.cyber_news,
                 advisories: supplemental.advisories,
                 fetched_at: supplemental.fetched_at,
