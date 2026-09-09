@@ -60,6 +60,9 @@ interface NigeriaThreatsResponse {
     // the illustrative baseline in nigeria_state_threats. The map is badged in that case — a
     // populated map must never be mistaken for live telemetry.
     demo_data?: boolean;
+    // Which intelligence feeds can currently contribute, derived server-side from what's
+    // actually configured — so a quiet map can be explained rather than just looking broken.
+    sources_active?: Array<{ name: string; active: boolean; detail: string }>;
     enrichment_coverage?: EnrichmentCoverage;
     generated_at: string;
 }
@@ -110,6 +113,33 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
     useEffect(() => {
         loadData();
     }, [timeRange]);
+
+    // Runs the Nigerian collector on demand (GreyNoise + Feodo + CIRCL, plus FOFA when keyed),
+    // then reloads. The run makes external calls per IP and takes tens of seconds, so the button
+    // stays disabled with a live label rather than appearing to hang.
+    const [collecting, setCollecting] = useState(false);
+    const [collectResult, setCollectResult] = useState<string | null>(null);
+
+    const runCollection = async () => {
+        setCollecting(true);
+        setCollectResult(null);
+        try {
+            const r = await apiFetch(apiUrl('/api/dashboard/nigeria-threats/collect'), { method: 'POST' });
+            const body = await r.json();
+            if (!r.ok) throw new Error(body?.error ?? `HTTP ${r.status}`);
+            const run = body?.result ?? body;
+            setCollectResult(
+                typeof run?.ips_found === 'number'
+                    ? `${run.ips_found} Nigerian IPs across ${run.states_updated?.length ?? 0} states`
+                    : 'Collection complete'
+            );
+            loadData();
+        } catch (err) {
+            setCollectResult(err instanceof Error ? err.message : 'Collection failed');
+        } finally {
+            setCollecting(false);
+        }
+    };
 
     useEffect(() => {
         const handleFsChange = () => { if (!document.fullscreenElement) setIsFullscreen(false); };
@@ -164,11 +194,43 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
                         </div>
                         <p className="text-sm text-muted-foreground">
                             {data?.demo_data
-                                ? 'Illustrative baseline — not live telemetry. Replaced automatically once Wazuh reports geolocated Nigerian activity.'
-                                : 'Real-time cyber activity across Nigerian states'}
+                                ? 'Illustrative baseline — not live telemetry. Replaced automatically once real intelligence is collected.'
+                                : data?.source === 'collector'
+                                    ? 'Collected threat intelligence — GreyNoise, Feodo Tracker and CIRCL, geolocated to state by IPregistry.'
+                                    : 'Real-time cyber activity across Nigerian states'}
                             {fetchError && <span className="text-red-500"> · Connection error: {fetchError}</span>}
                             {data?.summary.error && <span className="text-amber-500"> · {data.summary.error}</span>}
                         </p>
+
+                        {/* Which feeds can contribute right now, straight from the API rather than
+                            a hardcoded list — an inactive badge names the missing key. */}
+                        {data?.sources_active && data.sources_active.length > 0 && (
+                            <div className="flex gap-2 flex-wrap mt-2 items-center">
+                                {data.sources_active.map((s) => (
+                                    <span
+                                        key={s.name}
+                                        title={s.detail}
+                                        className={`text-[9px] font-bold px-2 py-1 rounded-full ${
+                                            s.active
+                                                ? 'bg-green-100 text-green-700'
+                                                : 'bg-card-muted text-foreground-muted'
+                                        }`}
+                                    >
+                                        {s.name} {s.active ? '✓' : '○'}
+                                    </span>
+                                ))}
+                                <button
+                                    onClick={() => void runCollection()}
+                                    disabled={collecting}
+                                    className="text-[9px] font-bold px-2 py-1 rounded-full border border-purple text-purple hover:bg-purple/5 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    {collecting ? 'Collecting… (up to a minute)' : 'Refresh Intelligence'}
+                                </button>
+                                {collectResult && (
+                                    <span className="text-[9px] text-muted-foreground">{collectResult}</span>
+                                )}
+                            </div>
+                        )}
                     </div>
                     <div className="text-right flex items-center gap-4">
                         {isLoading && <RefreshCw size={16} className="animate-spin text-muted-foreground" />}

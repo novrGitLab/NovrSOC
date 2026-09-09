@@ -31,6 +31,9 @@ import { getSupabase } from './geoEnrichment';
 import { getNigerianState } from './nigeriaGeo';
 import { addAttributeToEvent, isMISPConfigured } from './misp';
 import { circlSearchPulses, circlGetPulseIndicators, type CIRCLPulse } from './circl';
+import { getGreyNoiseNigerianIPs, isGreyNoiseConfigured } from './greynoise';
+import { searchFOFANigeria, isConfigured as fofaConfigured } from './fofa';
+import { hasDemoData, clearDemoBaseline } from './nigeriaDemoSeed';
 
 const NIGERIA_EVENT_ID = process.env.MISP_NIGERIA_EVENT_ID || '1';
 
@@ -206,6 +209,18 @@ async function storeAdvisories(advisories: CollectedAdvisory[]): Promise<boolean
 
 // Bumps a state's counters on the table the Nigeria map actually reads. Read-modify-write
 // (no unique constraint on state_name to upsert against, same limitation as org_setup).
+// The illustrative baseline (services/nigeriaDemoSeed.ts) writes to the same attack_count column
+// this collector increments. Clearing it lazily — at the moment the first REAL state bump is
+// about to happen, and never before — means a demo-populated map stays populated until there's
+// something real to replace it with, and real counts never start from a fabricated number.
+// Runs at most once per collector run.
+let demoCleared = false;
+async function ensureDemoBaselineCleared(): Promise<void> {
+    if (demoCleared) return;
+    demoCleared = true;
+    if (await hasDemoData()) await clearDemoBaseline();
+}
+
 async function bumpStateThreat(state: string, threatType: string, increment: number): Promise<boolean> {
     const supabase = getSupabase();
     if (!supabase) return false;
@@ -247,6 +262,7 @@ async function pushToMISP(ioc: { value: string; comment: string }): Promise<void
 let running = false;
 
 export async function runNigerianIntelCollector(): Promise<CollectorResult> {
+    demoCleared = false; // per-run guard — see ensureDemoBaselineCleared()
     const startedAt = Date.now();
     const sources: CollectorResult['sources'] = [];
     const statesUpdated = new Set<string>();
@@ -288,6 +304,7 @@ export async function runNigerianIntelCollector(): Promise<CollectorResult> {
             for (const ip of extractIPs(content).slice(0, 10)) {
                 const state = await getNigerianState(ip);
                 if (!state) continue;
+                await ensureDemoBaselineCleared();
                 await bumpStateThreat(state, threatType, 1);
                 await pushToMISP({ value: ip, comment: `ngCERT: ${item.title}` });
                 statesUpdated.add(state);
@@ -320,6 +337,7 @@ export async function runNigerianIntelCollector(): Promise<CollectorResult> {
             for (const indicator of indicators.filter((i) => i.type === 'ip-src' || i.type === 'ip-dst').slice(0, 20)) {
                 const state = await getNigerianState(indicator.value);
                 if (!state) continue;
+                await ensureDemoBaselineCleared();
                 await bumpStateThreat(state, 'malware', 1);
                 statesUpdated.add(state);
                 ipsFound++;
@@ -334,10 +352,59 @@ export async function runNigerianIntelCollector(): Promise<CollectorResult> {
         for (const ip of feodo.items.slice(0, 40)) {
             const state = await getNigerianState(ip);
             if (!state) continue; // non-Nigerian C2s are the overwhelming majority — skipped, not faked onto the map
+            await ensureDemoBaselineCleared();
             await bumpStateThreat(state, 'c2', 1);
             await pushToMISP({ value: ip, comment: 'Feodo Tracker botnet C2' });
             statesUpdated.add(state);
             ipsFound++;
+        }
+
+        // 4. GreyNoise — malicious IPs currently observed scanning FROM Nigerian networks.
+        // This is the source that actually puts live data on the map today: the country/ASN
+        // filtering happens in the GNQL query, so every IP returned is already Nigerian and only
+        // its state still needs resolving.
+        const greynoiseIPs = await getGreyNoiseNigerianIPs(40);
+        sources.push({
+            name: 'GreyNoise',
+            ok: isGreyNoiseConfigured(),
+            items: greynoiseIPs.length,
+            note: isGreyNoiseConfigured()
+                ? (greynoiseIPs.length === 0 ? 'No malicious Nigerian IPs returned this run' : undefined)
+                : 'GREYNOISE_API_KEY not set',
+        });
+
+        for (const entry of greynoiseIPs) {
+            const state = await getNigerianState(entry.ip);
+            // GreyNoise says the IP is Nigerian; IPregistry is what pins it to a state. When it
+            // can't, the IP is skipped rather than assigned to an arbitrary state.
+            if (!state) continue;
+            await ensureDemoBaselineCleared();
+            await bumpStateThreat(state, 'scanning', 1);
+            await pushToMISP({
+                value: entry.ip,
+                comment: `GreyNoise: malicious scanner on a Nigerian network${entry.tags.length > 0 ? ` (${entry.tags.slice(0, 3).join(', ')})` : ''}`,
+            });
+            statesUpdated.add(state);
+            ipsFound++;
+        }
+
+        // 5. FOFA — exposed services on Nigerian networks. Dormant until FOFA_API_KEY and
+        // FOFA_EMAIL are set; activates with no code change once they are.
+        if (fofaConfigured()) {
+            const fofaHosts = await searchFOFANigeria(40);
+            sources.push({ name: 'FOFA', ok: true, items: fofaHosts.length });
+            for (const host of fofaHosts) {
+                // FOFA's own region string isn't a reliable Nigerian state name, so state comes
+                // from IPregistry like every other source rather than being trusted from FOFA.
+                const state = await getNigerianState(host.ip);
+                if (!state) continue;
+                await ensureDemoBaselineCleared();
+                await bumpStateThreat(state, 'exposed_service', 1);
+                statesUpdated.add(state);
+                ipsFound++;
+            }
+        } else {
+            sources.push({ name: 'FOFA', ok: false, items: 0, note: 'FOFA_API_KEY/FOFA_EMAIL not set' });
         }
 
         const persisted = await storeAdvisories(advisories);

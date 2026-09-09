@@ -67,6 +67,79 @@ export function isGreyNoiseConfigured(): boolean {
 // /v3/gnql/stats?query=classification:malicious returns ~291k IPs bucketed into
 // stats.source_countries as [{country, count}] — full country NAMES, not the {country_code,
 // noise_ip_count} shape the draft assumed, which is why the caller maps names to ISO codes.
+// ── NIGERIAN SCANNER IPs ──────────────────────────────────────────
+
+export interface GreyNoiseNigerianIP {
+    ip: string;
+    tags: string[];
+    last_seen: string | null;
+}
+
+// Malicious IPs GreyNoise currently observes originating from Nigerian networks.
+//
+// Uses the GNQL *search* endpoint (/v3/gnql), not /v3/gnql/stats. Verified live 2026-09-09:
+// the stats endpoint aggregates only — it returns classifications/organizations/countries
+// buckets and has NO `top_ips` field, so trying to read individual IPs out of it yields
+// nothing. Search does return them, and works on this environment's plan.
+//
+// Per-IP geolocation is NOT available here: this plan's request_metadata.restricted_fields
+// includes source_latitude, source_longitude and first_seen, and the records carry no metadata
+// block at all — just ip, tags and last_seen. Nigerian *state* therefore has to come from
+// IPregistry via nigeriaGeo.getNigerianState(), which is what the collector does. Filtering by
+// country happens in the query itself, so every IP returned is already Nigerian and there's no
+// need to re-check each one's country individually.
+export async function getGreyNoiseNigerianIPs(limit = 50): Promise<GreyNoiseNigerianIP[]> {
+    const apiKey = process.env.GREYNOISE_API_KEY;
+    if (!apiKey) return [];
+
+    // Country first (broadest), then the big three mobile ASNs — MTN, Airtel, Globacom — which
+    // carry most Nigerian consumer traffic and, per the live stats, most of the malicious IPs
+    // (MTN alone accounted for 652 of 1021).
+    const queries = [
+        'metadata.country_code:NG classification:malicious',
+        'metadata.asn:AS29465 classification:malicious', // MTN Nigeria
+        'metadata.asn:AS36873 classification:malicious', // Airtel Networks
+        'metadata.asn:AS37148 classification:malicious', // Globacom
+    ];
+
+    const byIp = new Map<string, GreyNoiseNigerianIP>();
+
+    for (const query of queries) {
+        // Stop early once we have enough — each IP costs an IPregistry lookup downstream, and
+        // that free tier is metered.
+        if (byIp.size >= limit) break;
+        try {
+            const r = await fetch(
+                `https://api.greynoise.io/v3/gnql?query=${encodeURIComponent(query)}&size=${Math.min(50, limit)}`,
+                { headers: { key: apiKey, Accept: 'application/json' }, signal: AbortSignal.timeout(15000) }
+            );
+            if (!r.ok) {
+                console.warn(`[GreyNoise-NG] "${query}" -> HTTP ${r.status}`);
+                continue;
+            }
+            const data = (await r.json()) as {
+                data?: Array<{
+                    ip?: string;
+                    internet_scanner_intelligence?: { last_seen?: string; found?: boolean; tags?: Array<{ name?: string; slug?: string }> };
+                }>;
+            };
+            for (const rec of data.data ?? []) {
+                if (!rec.ip || byIp.has(rec.ip)) continue;
+                const isi = rec.internet_scanner_intelligence;
+                byIp.set(rec.ip, {
+                    ip: rec.ip,
+                    tags: (isi?.tags ?? []).map((t) => t.name ?? t.slug ?? '').filter(Boolean),
+                    last_seen: isi?.last_seen || null,
+                });
+            }
+        } catch (err) {
+            console.warn(`[GreyNoise-NG] "${query}" failed:`, err instanceof Error ? err.message : err);
+        }
+    }
+
+    return [...byIp.values()].slice(0, limit);
+}
+
 export async function getGreyNoiseCountryStats(limit = 50): Promise<GreyNoiseCountryStat[]> {
     const apiKey = process.env.GREYNOISE_API_KEY;
     if (!apiKey) return [];

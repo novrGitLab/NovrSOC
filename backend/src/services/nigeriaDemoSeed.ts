@@ -298,6 +298,40 @@ export async function readSeededStates(): Promise<SeededStateRow[]> {
     }
 }
 
+// Wipes the illustrative baseline so real collected data starts from clean zeros.
+//
+// This exists because the demo values and real telemetry write to the SAME columns. Without it,
+// the collector's first real Nigerian IP would increment Lagos from its fabricated 847 to 848 —
+// permanently fusing invented numbers with real ones, with no way to tell them apart afterwards.
+// The collector calls this the moment it has real state data to write, and never otherwise.
+export async function clearDemoBaseline(): Promise<boolean> {
+    const supabase = getSupabase();
+    if (!supabase) return false;
+    try {
+        const { error: stateError } = await supabase
+            .from('nigeria_state_threats')
+            .update({ attack_count: 0, threat_score: 0, critical_flag: false, dominant_type: null, last_updated: new Date().toISOString() })
+            .gt('attack_count', 0);
+        if (stateError) {
+            console.warn('[NigeriaDemoSeed] Could not clear state baseline:', stateError.message);
+            return false;
+        }
+
+        // Only the demo advisories — anything genuinely collected is left alone.
+        const { error: advError } = await supabase
+            .from('nigeria_advisories')
+            .delete()
+            .contains('tags', [DEMO_TAG]);
+        if (advError) console.warn('[NigeriaDemoSeed] Could not clear demo advisories:', advError.message);
+
+        console.log('[NigeriaDemoSeed] Demo baseline cleared — real collected data takes over');
+        return true;
+    } catch (err) {
+        console.warn('[NigeriaDemoSeed] Clear failed:', err instanceof Error ? err.message : err);
+        return false;
+    }
+}
+
 export async function seedNigerianDemoData(): Promise<{ states: number; advisories: number }> {
     if (!isDemoSeedEnabled()) {
         return { states: 0, advisories: 0 };

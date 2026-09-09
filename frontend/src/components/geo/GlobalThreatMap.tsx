@@ -47,6 +47,9 @@ export function GlobalThreatMap() {
     // this deployment's own monitored endpoints. The two answer different questions, so the
     // subtitle and attribution below say which one is on screen.
     const [source, setSource] = useState<string | null>(null);
+    // Every source that actually reported for this response, so attribution lists all of them
+    // rather than only the primary one.
+    const [sources, setSources] = useState<string[]>([]);
 
     useEffect(() => {
         let cancelled = false;
@@ -57,6 +60,7 @@ export function GlobalThreatMap() {
                 setThreats(Array.isArray(data?.countries) ? data.countries : []);
                 setDiagnostic(typeof data?.diagnostic === 'string' ? data.diagnostic : null);
                 setSource(typeof data?.source === 'string' ? data.source : null);
+                setSources(Array.isArray(data?.sources) ? data.sources.filter((s: unknown): s is string => typeof s === 'string') : []);
             })
             .catch(() => { if (!cancelled) setThreats([]); })
             .finally(() => { if (!cancelled) setLoading(false); });
@@ -211,9 +215,20 @@ export function GlobalThreatMap() {
                     </div>
                 )}
 
-                {source === 'greynoise' && (
+                {/* Lists every source that reported, not just the primary one. Names come from
+                    the API's `sources` array so this can't drift out of step with what actually
+                    contributed. */}
+                {sources.length > 0 && (
                     <div className="text-[9px] text-foreground-muted mt-2 text-right">
-                        Powered by GreyNoise Intelligence
+                        Powered by{' '}
+                        {sources
+                            .map((s) =>
+                                s === 'greynoise' ? 'GreyNoise Intelligence'
+                                    : s === 'wazuh' ? 'Wazuh'
+                                        : s === 'circl' ? 'CIRCL OSINT'
+                                            : s
+                            )
+                            .join(' + ')}
                     </div>
                 )}
             </div>

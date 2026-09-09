@@ -75,3 +75,50 @@ export async function searchFOFA(query: string, size = 10): Promise<FOFAResult> 
 export async function getFOFAHost(ip: string): Promise<FOFAResult> {
     return searchFOFA(`ip="${ip}"`);
 }
+
+export interface FOFANigerianHost {
+    ip: string;
+    port: string;
+    protocol: string;
+    /** FOFA's own region/city string — NOT a validated Nigerian state name. */
+    region: string;
+}
+
+// Exposed services on Nigerian networks, for the Nigeria threat map.
+//
+// Dormant until FOFA_API_KEY and FOFA_EMAIL are set; returns [] rather than throwing, so the
+// collector can call it unconditionally.
+//
+// The `fields` order below is what the response rows are positionally destructured against —
+// FOFA returns results as arrays, not objects, so the two must stay in sync. Region is captured
+// but deliberately NOT trusted as a Nigerian state name: FOFA's region strings don't reliably
+// match this platform's 37-state vocabulary, so the collector resolves state from the IP via
+// IPregistry the same way it does for every other source, and only uses this as context.
+export async function searchFOFANigeria(limit = 40): Promise<FOFANigerianHost[]> {
+    if (!isConfigured()) return [];
+
+    const queries = [
+        'country="NG"',
+        'asn="29465"', // MTN Nigeria
+        'asn="36873"', // Airtel Networks
+    ];
+
+    const byIp = new Map<string, FOFANigerianHost>();
+
+    for (const query of queries) {
+        if (byIp.size >= limit) break;
+        const result = await searchFOFA(query, Math.min(50, limit));
+        if (result.error) {
+            console.warn(`[FOFA-NG] "${query}": ${result.error}`);
+            continue;
+        }
+        for (const row of result.results) {
+            // fields=ip,port,protocol,host,title — see searchFOFA above.
+            const [ip, port, protocol] = row;
+            if (!ip || byIp.has(ip)) continue;
+            byIp.set(ip, { ip, port: port ?? '', protocol: protocol ?? '', region: '' });
+        }
+    }
+
+    return [...byIp.values()].slice(0, limit);
+}

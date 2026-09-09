@@ -141,6 +141,21 @@ const emptySupplemental = (): SupplementalNigeriaData => ({
     fetched_at: new Date().toISOString(),
 });
 
+// Which Nigerian intelligence sources are wired and keyed right now. Each entry says what it
+// contributes and, when inactive, exactly what's missing — so the UI can explain a quiet map
+// instead of just showing zeros.
+function nigeriaSourceStatus(): Array<{ name: string; active: boolean; detail: string }> {
+    const greynoise = !!process.env.GREYNOISE_API_KEY;
+    const fofa = !!(process.env.FOFA_API_KEY && process.env.FOFA_EMAIL);
+    return [
+        { name: 'GreyNoise', active: greynoise, detail: greynoise ? 'Malicious IPs scanning from Nigerian networks' : 'GREYNOISE_API_KEY not set' },
+        { name: 'Feodo Tracker', active: true, detail: 'Botnet C2 IPs — free, no key required' },
+        { name: 'CIRCL OSINT', active: true, detail: 'Nigeria-tagged events from the public MISP feed — no key required' },
+        { name: 'FOFA', active: fofa, detail: fofa ? 'Exposed services on Nigerian networks' : 'FOFA_API_KEY/FOFA_EMAIL not set' },
+        { name: 'ngCERT', active: false, detail: 'cert.gov.ng returns 403 to this backend — no scrapable feed' },
+    ];
+}
+
 const emptyStates = () =>
     Object.entries(NIGERIA_STATE_CODES).map(([name, code]) => ({
         name, code, threats: 0, critical: 0, high: 0, medium: 0, low: 0,
@@ -337,9 +352,15 @@ router.get('/nigeria-threats', async (req, res) => {
         // `demo_data` in the response tells the UI to badge it, so a populated map is never
         // mistaken for live telemetry. Live Wazuh data always wins — this only runs at zero.
         let demoData = false;
+        // Set when the states below came from the nigeria_state_threats table (written by the
+        // Nigerian collector: GreyNoise, Feodo, CIRCL) rather than from Wazuh's own alerts.
+        // Distinct from demoData — that table now normally holds REAL collected counts, and
+        // reporting those as 'wazuh' would misattribute them to telemetry they didn't come from.
+        let fromCollector = false;
         if (!states.some((s) => s.threats > 0)) {
             const seeded = await readSeededStates();
             if (seeded.length > 0) {
+                fromCollector = true;
                 demoData = await hasDemoData();
                 const byName = new Map(seeded.map((r) => [nigeriaStateToMapName(r.state_name), r]));
                 for (const state of states) {
@@ -393,10 +414,13 @@ router.get('/nigeria-threats', async (req, res) => {
                     : totalThreats > 0 ? 'LOW'
                     : 'CLEAR',
             },
-            source: demoData ? 'seed' : 'wazuh',
+            source: demoData ? 'seed' : fromCollector ? 'collector' : 'wazuh',
             // True when the states above came from the illustrative baseline rather than live
             // Wazuh telemetry — the frontend badges the map accordingly.
             demo_data: demoData,
+            // Which intelligence sources can currently contribute to this map. Derived from what
+            // is actually configured, so the badges reflect reality rather than a hardcoded list.
+            sources_active: nigeriaSourceStatus(),
             geo_sources: {
                 ipregistry: 'Primary geolocation and enrichment',
                 ripe_stat: 'ASN and BGP routing information',
@@ -425,6 +449,9 @@ router.get('/nigeria-threats', async (req, res) => {
             states: emptyStates(),
             summary: emptySummary('CLEAR', 'Wazuh indexer unavailable — showing zeros'),
             source: 'wazuh',
+            // Also reported on the failure path — a Wazuh outage shouldn't make the source
+            // badges disappear, since which feeds are keyed is independent of it.
+            sources_active: nigeriaSourceStatus(),
             geo_sources: {
                 ipregistry: 'Primary geolocation and enrichment',
                 ripe_stat: 'ASN and BGP routing information',
