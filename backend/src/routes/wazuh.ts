@@ -6,7 +6,7 @@ import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents } from '..
 import { isDemoMode, DEMO_AGENTS } from '../lib/demoMode';
 
 const router = Router();
-const CTIP_URL = process.env.CTIP_API_URL || 'http://138.197.188.132:8001';
+import { CTIP_URL, isCTIPConfigured, warnUnconfiguredOnce } from '../lib/legacyBackend';
 
 // NOTE — multi-tenancy: this is the pre-client baseline, all Wazuh data is Cybernovr-internal.
 // One Wazuh manager currently serves one org, so nothing here filters by org. When multiple

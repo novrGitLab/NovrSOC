@@ -4,7 +4,7 @@ import { logAudit } from '../lib/audit';
 import { getSupabase } from '../services/geoEnrichment';
 
 const router = Router();
-const BACKEND_URL = process.env.APP_API_BASE_URL || 'http://138.197.188.132:4000';
+import { APP_BACKEND_URL as BACKEND_URL, isAppBackendConfigured, warnUnconfiguredOnce } from '../lib/legacyBackend';
 
 // Hand-rolled JWT-shaped token (header.payload.signature, HMAC-SHA256) — dev-only convenience,
 // avoids pulling in a jsonwebtoken dependency just to sign these. IS verified now: requireAuth

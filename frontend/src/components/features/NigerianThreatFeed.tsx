@@ -1,17 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { ExternalLink, Newspaper, ShieldAlert, RefreshCw, Radar } from 'lucide-react';
+import { ExternalLink, Newspaper, RefreshCw, Radar } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 
 // NCC-CSIRT/NGCERT advisories below are still mock data — neither agency exposes a scrapable
 // feed. Real advisory format so this stays useful as a template once a live scraper is wired in.
-// The "Live Cyber News" and Shadowserver sections underneath ARE live: GET /api/dashboard/
-// nigeria-threats' `supplemental` field, sourced from services/serper.ts (Google News search,
-// no key needed to degrade — empty array if SERPER_API_KEY isn't set) and
-// services/shadowserver.ts (national exposure stats — requires manual org approval from the
-// Shadowserver Foundation, so `shadowserver_configured` is false and the section stays hidden
-// until SHADOWSERVER_API_ID/SECRET are set).
+// The "Live Cyber News" section underneath IS live: GET /api/dashboard/nigeria-threats'
+// `supplemental` field, sourced from services/serper.ts (Google News search, degrades to an
+// empty array if SERPER_API_KEY isn't set).
 
 interface Advisory {
     id: string;
@@ -43,14 +40,6 @@ interface NewsItem {
     snippet: string;
     source: string;
     date: string | null;
-}
-
-interface ShadowserverStats {
-    country: string;
-    date: string;
-    total_exposed: number;
-    by_category: Record<string, number>;
-    top_ports: Array<{ port: number; count: number }>;
 }
 
 // Collected by services/nigerianIntelCollector.ts (ngCERT + OTX), surfaced through
@@ -89,8 +78,6 @@ export function NigerianThreatFeed() {
 
     const [news, setNews] = useState<NewsItem[]>([]);
     const [newsLoading, setNewsLoading] = useState(true);
-    const [shadowserver, setShadowserver] = useState<ShadowserverStats | null>(null);
-    const [shadowserverConfigured, setShadowserverConfigured] = useState(false);
     const [advisories, setAdvisories] = useState<CollectedAdvisory[]>([]);
     const [totalThreats, setTotalThreats] = useState(0);
     const [statesAffected, setStatesAffected] = useState(0);
@@ -103,8 +90,6 @@ export function NigerianThreatFeed() {
             if (!res.ok) return;
             const data = await res.json();
             setNews(data?.supplemental?.cyber_news ?? []);
-            setShadowserver(data?.supplemental?.shadowserver ?? null);
-            setShadowserverConfigured(!!data?.supplemental?.shadowserver_configured);
             setAdvisories(data?.supplemental?.advisories ?? []);
             setTotalThreats(data?.summary?.total_threats ?? 0);
             setStatesAffected(data?.summary?.states_affected ?? 0);
@@ -282,30 +267,6 @@ export function NigerianThreatFeed() {
                 )}
             </div>
 
-            {/* Shadowserver national exposure stats — hidden entirely until an API key pair is
-                approved and configured, rather than showing a permanently-empty widget */}
-            {shadowserverConfigured && (
-                <div className="pt-2">
-                    <div className="flex items-center gap-2 mb-2">
-                        <ShieldAlert size={14} className="text-orange" />
-                        <h2 className="text-sm font-black text-foreground">Nigeria Network Exposure</h2>
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 bg-orange/10 text-orange rounded-full uppercase">Shadowserver</span>
-                    </div>
-                    {shadowserver ? (
-                        <div className="bg-card border border-border rounded-xl p-4">
-                            <p className="text-2xl font-black text-foreground">{shadowserver.total_exposed.toLocaleString()}</p>
-                            <p className="text-[10px] text-foreground-muted mb-3">exposed hosts reported for Nigeria on {shadowserver.date}</p>
-                            <div className="flex flex-wrap gap-1.5">
-                                {Object.entries(shadowserver.by_category).map(([tag, count]) => (
-                                    <span key={tag} className="text-[9px] font-medium px-1.5 py-0.5 bg-card-muted text-foreground-muted rounded-full">{tag}: {count}</span>
-                                ))}
-                            </div>
-                        </div>
-                    ) : (
-                        <p className="text-xs text-foreground-muted">Shadowserver reports unavailable right now.</p>
-                    )}
-                </div>
-            )}
         </div>
     );
 }

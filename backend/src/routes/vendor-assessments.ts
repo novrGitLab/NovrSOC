@@ -1,7 +1,7 @@
 import { Router } from 'express';
 
 const router = Router();
-const BACKEND_URL = process.env.APP_API_BASE_URL || 'http://138.197.188.132:4000';
+import { APP_BACKEND_URL as BACKEND_URL, isAppBackendConfigured, warnUnconfiguredOnce } from '../lib/legacyBackend';
 
 // GET /api/vendor-assessments
 router.get('/', async (req, res) => {

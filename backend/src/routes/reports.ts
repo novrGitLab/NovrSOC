@@ -4,8 +4,8 @@ import { search } from '../lib/wazuh-indexer';
 import { FRAMEWORKS } from '../lib/mock/compliance';
 
 const router = Router();
-const CTIP_URL = process.env.CTIP_API_URL || 'http://138.197.188.132:8001';
-const BACKEND_URL = process.env.APP_API_BASE_URL || 'http://138.197.188.132:4000';
+import { CTIP_URL, isCTIPConfigured, warnUnconfiguredOnce } from '../lib/legacyBackend';
+import { APP_BACKEND_URL as BACKEND_URL, isAppBackendConfigured } from '../lib/legacyBackend';
 
 interface ReportRequestBody {
     orgId: number;

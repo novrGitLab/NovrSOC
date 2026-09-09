@@ -44,6 +44,10 @@ router.get('/', async (req: AuthRequest, res) => {
             agentsTotal: 0,
             activeIncidents: 0,
             wazuhGroup: org.wazuh_group ?? null,
+            // Drives the dashboard's "Complete Setup" prompt — an org that was created but never
+            // taken through the onboarding wizard has no Wazuh group or contacts, so its widgets
+            // silently show nothing until someone finishes it.
+            setupComplete: !!org.setup_complete,
         }));
 
         res.json({ customers, total: customers.length, source: 'supabase' });

@@ -1,4 +1,4 @@
-const CTIP_URL = process.env.CTIP_API_URL || 'http://138.197.188.132:8001';
+import { CTIP_URL } from './legacyBackend';
 const ABUSEIPDB_KEY = process.env.ABUSEIPDB_API_KEY;
 const URLHAUS_AUTH_KEY = process.env.URLHAUS_AUTH_KEY;
 

@@ -37,6 +37,10 @@ const WATCH_PRIORITIES = ['Low', 'Medium', 'High'] as const;
 export function ShiftHandover() {
     const [incidents, setIncidents] = useState<Incident[]>([]);
     const [pastLogs, setPastLogs] = useState<HandoverLog[]>([]);
+    // 'supabase' = durable rows from the handover_logs table; 'memory' = the backend's in-process
+    // fallback, which is what you get if Supabase is unreachable. Surfaced so an analyst can tell
+    // whether the handover they just filed will still be there tomorrow.
+    const [logSource, setLogSource] = useState<'supabase' | 'memory' | null>(null);
     const [loading, setLoading] = useState(true);
     const [submitting, setSubmitting] = useState(false);
     const [submitError, setSubmitError] = useState<string | null>(null);
@@ -61,6 +65,7 @@ export function ShiftHandover() {
         ]).then(([incData, logData]) => {
             setIncidents(Array.isArray(incData?.incidents) ? incData.incidents : []);
             setPastLogs(Array.isArray(logData?.logs) ? logData.logs : []);
+            setLogSource(logData?.source === 'supabase' ? 'supabase' : logData ? 'memory' : null);
             setLoading(false);
         });
     };
@@ -344,7 +349,9 @@ export function ShiftHandover() {
                         </div>
                     )}
                     <p className="text-[9px] text-foreground-muted mt-3 pt-3 border-t border-border">
-                        Logged to this backend&apos;s in-memory store — not yet a durable Supabase table, so entries won&apos;t survive a backend restart.
+                        {logSource === 'memory'
+                            ? 'Database unreachable — handovers are being held in the backend’s in-memory store and won’t survive a restart.'
+                            : 'Saved to the handover_logs table — entries persist across backend restarts and redeploys.'}
                     </p>
                 </div>
             </div>

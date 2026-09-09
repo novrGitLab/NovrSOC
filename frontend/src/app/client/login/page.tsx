@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -18,6 +18,9 @@ const GoogleLogin = dynamic(
     { ssr: false }
 );
 
+// See frontend/src/app/login/page.tsx for why this is read as a full static expression.
+const googleOAuthEnabled = process.env.NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED === 'true';
+
 export default function ClientLoginPage() {
     const router = useRouter();
     const [email, setEmail] = useState('');
@@ -27,6 +30,19 @@ export default function ClientLoginPage() {
     const [submitting, setSubmitting] = useState(false);
     // Honeypot — see frontend/src/app/login/page.tsx for why.
     const [gotcha, setGotcha] = useState('');
+    // null = still checking. false = there is no portal backend configured, so no credentials
+    // can possibly work; say so plainly instead of presenting a form that always rejects.
+    const [portalConfigured, setPortalConfigured] = useState<boolean | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        apiFetch(apiUrl('/api/portal/status'), { cache: 'no-store' })
+            .then((r) => r.json())
+            .then((data) => { if (!cancelled) setPortalConfigured(!!data?.configured); })
+            // A failed status check isn't proof the portal is down — don't block sign-in on it.
+            .catch(() => { if (!cancelled) setPortalConfigured(true); });
+        return () => { cancelled = true; };
+    }, []);
 
     const submit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -40,6 +56,12 @@ export default function ClientLoginPage() {
             });
             const data = await res.json();
             if (!res.ok || !data.token) {
+                // Don't blame the user's password for a backend that isn't set up.
+                if (data?.code === 'PORTAL_NOT_CONFIGURED') {
+                    setPortalConfigured(false);
+                    setError(null);
+                    return;
+                }
                 setError('Invalid credentials. Contact your security team.');
                 return;
             }
@@ -84,6 +106,18 @@ export default function ClientLoginPage() {
                 <div className="w-full max-w-sm mx-auto">
                     <h1 className="font-black text-3xl text-foreground mb-2 tracking-tight">Client Portal</h1>
                     <p className="text-foreground-muted text-sm mb-8">Sign in to your NovrSOC client workspace</p>
+
+                    {portalConfigured === false && (
+                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
+                            <p className="text-sm text-amber-800 font-medium">
+                                Client Portal Setup Required
+                            </p>
+                            <p className="text-xs text-amber-700 mt-1">
+                                Portal access is being configured for your organisation.
+                                Contact your NovrSOC administrator for access.
+                            </p>
+                        </div>
+                    )}
 
                     <form onSubmit={submit} className="space-y-4">
                         <input
@@ -135,29 +169,35 @@ export default function ClientLoginPage() {
 
                         <button
                             type="submit"
-                            disabled={submitting}
+                            disabled={submitting || portalConfigured === false}
                             className="w-full bg-purple hover:bg-purple-hover text-white font-bold py-3.5 rounded-xl transition-all text-sm uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            {submitting ? 'Signing in…' : 'Sign In'}
+                            {submitting ? 'Signing in…' : portalConfigured === false ? 'Portal Unavailable' : 'Sign In'}
                         </button>
                     </form>
 
-                    <div className="flex items-center gap-3 my-6">
-                        <div className="flex-1 h-px bg-border" />
-                        <span className="text-foreground-muted text-xs">OR</span>
-                        <div className="flex-1 h-px bg-border" />
-                    </div>
+                    {/* See frontend/src/app/login/page.tsx for the Google Cloud Console origins
+                        this needs before NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED can be set to true. */}
+                    {googleOAuthEnabled && portalConfigured !== false && (
+                        <>
+                            <div className="flex items-center gap-3 my-6">
+                                <div className="flex-1 h-px bg-border" />
+                                <span className="text-foreground-muted text-xs">OR</span>
+                                <div className="flex-1 h-px bg-border" />
+                            </div>
 
-                    <div className="w-full border border-border rounded-xl hover:border-purple/30 hover:bg-[#F5F0FF] transition-all">
-                        <GoogleLogin
-                            onSuccess={handleGoogleSuccess}
-                            onError={() => setError('Google sign-in failed. Please try again.')}
-                            useOneTap={false}
-                            theme="outline"
-                            size="large"
-                            width="100%"
-                        />
-                    </div>
+                            <div className="w-full border border-border rounded-xl hover:border-purple/30 hover:bg-[#F5F0FF] transition-all">
+                                <GoogleLogin
+                                    onSuccess={handleGoogleSuccess}
+                                    onError={() => setError('Google sign-in failed. Please try again.')}
+                                    useOneTap={false}
+                                    theme="outline"
+                                    size="large"
+                                    width="100%"
+                                />
+                            </div>
+                        </>
+                    )}
                 </div>
 
                 {/* Bottom — footer note */}

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { runScan } from '../lib/scan';
 
 const router = Router();
-const BACKEND_URL = process.env.APP_API_BASE_URL || 'http://138.197.188.132:4000';
+import { APP_BACKEND_URL as BACKEND_URL, isAppBackendConfigured, warnUnconfiguredOnce } from '../lib/legacyBackend';
 
 // Reads the orgId claim from the portal JWT without verifying the signature — this route
 // only uses it to tag which org a scan belongs to; the backend independently verifies the
@@ -17,8 +17,32 @@ function unverifiedOrgId(authHeader: string | undefined): number | null {
     }
 }
 
+// GET /api/portal/status — lets the client login page tell "portal isn't set up yet" apart from
+// "your password was wrong" before anyone types anything. Every route below proxies to
+// APP_API_BASE_URL, so with that unset the portal cannot work at all, and saying so up front
+// beats a login form that always rejects.
+router.get('/status', (_req, res) => {
+    res.json({
+        configured: isAppBackendConfigured(),
+        detail: isAppBackendConfigured()
+            ? 'Portal backend configured'
+            : 'APP_API_BASE_URL is not set — client portal accounts cannot be authenticated yet.',
+    });
+});
+
 // POST /api/portal/auth/signin
 router.post('/auth/signin', async (req, res) => {
+    // Short-circuit when there's no portal backend at all: 503 immediately with an honest
+    // reason, rather than burning the 5s timeout below and reporting it as bad credentials.
+    if (!isAppBackendConfigured()) {
+        warnUnconfiguredOnce('APP_API_BASE_URL', 'client portal sign-in');
+        res.status(503).json({
+            error: 'Client portal access is still being configured. Contact your NovrSOC administrator.',
+            code: 'PORTAL_NOT_CONFIGURED',
+        });
+        return;
+    }
+
     try {
         const response = await fetch(`${BACKEND_URL}/api/portal/auth/signin`, {
             method: 'POST',

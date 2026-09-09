@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents } from '../services/wazuh';
 import { getAuditLog } from '../lib/audit';
-import { getMISPStats } from '../services/misp';
+import { getMISPStats, isMISPConfigured } from '../services/misp';
+import { isTheHiveConfigured, testConnection as testTheHive } from '../services/thehive';
+import { isConfigured as censysConfigured } from '../services/censys';
 
 const router = Router();
 
@@ -72,17 +74,75 @@ async function checkMISP(): Promise<ServiceCheck & { detail?: string }> {
     return { name: 'MISP', status: 'down', latency_ms: latency, detail: stats.error };
 }
 
-// GET /api/platform/health — real checks for Wazuh Manager, Database (Supabase), Claude AI, and
-// MISP. Every other service on the Platform Health page stays mock until it has its own real
-// check built — see frontend/src/components/features/PlatformHealth.tsx.
+// TheHive goes through the service's own testConnection(), which sends the Basic Auth header
+// this instance requires. A bare unauthenticated GET to /api/v1/status (the obvious approach)
+// returns 401 whether or not TheHive is healthy, so it would report "down" permanently — the
+// same trap checkWazuh() above already documents.
+async function checkTheHive(): Promise<ServiceCheck & { detail?: string }> {
+    const start = Date.now();
+    if (!isTheHiveConfigured()) {
+        return { name: 'TheHive', status: 'down', latency_ms: 0, detail: 'Not configured' };
+    }
+    const result = await testTheHive();
+    const latency = Date.now() - start;
+    if (result.ok) return { name: 'TheHive', status: 'up', latency_ms: latency };
+    // Reachable but rejecting credentials is degraded, not down — same distinction as MISP.
+    if (result.status > 0) return { name: 'TheHive', status: 'degraded', latency_ms: latency, detail: result.error };
+    return { name: 'TheHive', status: 'down', latency_ms: latency, detail: result.error };
+}
+
+// Credential-shape diagnostics for the integrations that are keyed but not otherwise probed on
+// every health poll. These answer "is the key even present, and the right shape?" without a
+// network round-trip per integration, so a misconfigured key is diagnosable from the Platform
+// Health page instead of only from Railway logs.
+function integrationConfig() {
+    const otxKey = (process.env.OTX_API_KEY || '').trim();
+    // A real OTX key is 64 hex chars. The key currently in the environment is 31, which is why
+    // every OTX endpoint 403s — surfacing the length makes that self-evident.
+    const otxValidShape = otxKey.length === 64;
+
+    return {
+        otx: {
+            configured: otxKey.length > 0,
+            valid_shape: otxValidShape,
+            key_length: otxKey.length,
+            expected_length: 64,
+            detail: !otxKey ? 'OTX_API_KEY not set'
+                : otxValidShape ? 'Key is the expected length'
+                : `OTX_API_KEY is ${otxKey.length} chars — a real key is 64, so OTX will reject it`,
+        },
+        misp: {
+            configured: isMISPConfigured(),
+            detail: isMISPConfigured() ? 'MISP_URL and MISP_API_KEY set' : 'MISP_URL/MISP_API_KEY not set',
+        },
+        censys: {
+            configured: censysConfigured(),
+            detail: censysConfigured() ? 'CENSYS_API_ID and CENSYS_API_SECRET set' : 'CENSYS_API_ID/CENSYS_API_SECRET not set',
+        },
+        anthropic: {
+            configured: !!process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY !== 'your-key-here',
+            detail: process.env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY set — NovrAI uses Claude' : 'ANTHROPIC_API_KEY not set — NovrAI falls back to Gemini',
+        },
+    };
+}
+
+// GET /api/platform/health — real checks for Wazuh Manager, Database (Supabase), Claude AI,
+// MISP and TheHive, plus a per-integration credential summary. Every other service on the
+// Platform Health page stays mock until it has its own real check built — see
+// frontend/src/components/features/PlatformHealth.tsx.
 router.get('/health', async (_req, res) => {
-    const results = await Promise.all([checkWazuh(), checkDatabase(), checkClaudeAI(), checkMISP()]);
+    const results = await Promise.all([checkWazuh(), checkDatabase(), checkClaudeAI(), checkMISP(), checkTheHive()]);
 
     const allUp = results.every((r) => r.status === 'up');
     const anyDown = results.some((r) => r.status === 'down');
     const overall = allUp ? 'operational' : anyDown ? 'outage' : 'degraded';
 
-    res.json({ overall, services: results, checked_at: new Date().toISOString() });
+    res.json({
+        overall,
+        services: results,
+        integrations: integrationConfig(),
+        checked_at: new Date().toISOString(),
+    });
 });
 
 // GET /api/platform/audit-log — real entries for the 3 actions currently logged (LOGIN,

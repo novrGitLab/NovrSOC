@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { normalizeDomain, resolveIpAddresses, fetchSubdomains, fetchWhois, fetchCertificates, checkCtipIoc, findSuspiciousSubdomains } from '../lib/dns-intel';
 
 const router = Router();
-const BACKEND_URL = process.env.APP_API_BASE_URL || 'http://138.197.188.132:4000';
+import { APP_BACKEND_URL as BACKEND_URL, isAppBackendConfigured, warnUnconfiguredOnce } from '../lib/legacyBackend';
 
 function saveScanHistory(domain: string, resultJson: unknown, orgId: number | null) {
     fetch(`${BACKEND_URL}/api/scan-history`, {

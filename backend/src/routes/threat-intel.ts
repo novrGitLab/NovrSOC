@@ -1,7 +1,7 @@
 import { Router } from 'express';
 
 const router = Router();
-const CTIP_URL = process.env.CTIP_API_URL || 'http://138.197.188.132:8001';
+import { CTIP_URL, isCTIPConfigured, warnUnconfiguredOnce } from '../lib/legacyBackend';
 
 // Generic catch-all reverse proxy to the CTIP backend, forwarding method/body/query.
 // Mounted at /api/threat-intel — req.params[0] carries everything after that prefix.

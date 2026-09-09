@@ -1,7 +1,7 @@
 const DOH_URL = 'https://cloudflare-dns.com/dns-query';
 const CRTSH_URL = 'https://crt.sh/';
 const RDAP_URL = 'https://rdap.org/domain';
-const CTIP_URL = process.env.CTIP_API_URL || 'http://138.197.188.132:8001';
+import { CTIP_URL } from './legacyBackend';
 
 export const DNS_RECORD_TYPES = ['A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME', 'SOA'] as const;
 export type DnsRecordType = typeof DNS_RECORD_TYPES[number];

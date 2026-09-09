@@ -163,12 +163,26 @@ export function NovrAI() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+    // Which model is actually answering. The header used to hardcode "Claude CTI Engine" even
+    // when ANTHROPIC_API_KEY was unset and every reply was really coming from Gemini. Backed by
+    // GET /api/novr-ai/status, so it flips to Claude on its own the moment that key is set —
+    // no code change needed (routes/novr-ai.ts tries Claude first and falls back to Gemini).
+    const [aiStatus, setAiStatus] = useState<{ provider: string; model: string } | null>(null);
     const bottomRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, loading]);
+
+    useEffect(() => {
+        let cancelled = false;
+        apiFetch(apiUrl('/api/novr-ai/status'), { cache: 'no-store' })
+            .then((r) => r.json())
+            .then((data) => { if (!cancelled) setAiStatus({ provider: data?.provider ?? 'none', model: data?.model ?? 'none' }); })
+            .catch(() => { if (!cancelled) setAiStatus({ provider: 'none', model: 'none' }); });
+        return () => { cancelled = true; };
+    }, []);
 
     const copyMessage = (text: string, index: number) => {
         navigator.clipboard.writeText(text);
@@ -324,9 +338,25 @@ export function NovrAI() {
                         <div>
                             <div className="flex items-center gap-2">
                                 <h2 className="text-xs font-bold text-foreground">NovrAI Security Copilot</h2>
-                                <span className="text-[10px] font-semibold bg-blue/10 text-blue border border-blue/30 px-1.5 py-0.2 rounded">
-                                    Claude CTI Engine
-                                </span>
+                                {aiStatus && (
+                                    <span
+                                        title={aiStatus.provider === 'none' ? 'No AI provider key configured' : `Model: ${aiStatus.model}`}
+                                        className={`flex items-center gap-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded border ${
+                                            aiStatus.provider === 'claude' ? 'bg-purple/10 text-purple border-purple/30'
+                                                : aiStatus.provider === 'gemini' ? 'bg-blue/10 text-blue border-blue/30'
+                                                : 'bg-card-muted text-foreground-muted border-border'
+                                        }`}
+                                    >
+                                        <span className={`w-1.5 h-1.5 rounded-full ${
+                                            aiStatus.provider === 'claude' ? 'bg-purple'
+                                                : aiStatus.provider === 'gemini' ? 'bg-blue'
+                                                : 'bg-foreground-muted'
+                                        }`} />
+                                        {aiStatus.provider === 'claude' ? 'Claude AI'
+                                            : aiStatus.provider === 'gemini' ? 'Gemini AI'
+                                            : 'AI Offline'}
+                                    </span>
+                                )}
                             </div>
                             <p className="text-[10px] text-foreground-muted">Autonomous SOC intelligence, alert triage & remediation</p>
                         </div>

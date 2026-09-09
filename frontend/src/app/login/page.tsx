@@ -16,6 +16,11 @@ import { AuthField } from '@/components/auth/AuthField';
 import { NigeriaLoginMap } from '@/components/auth/NigeriaLoginMap';
 import { Logo } from '@/components/shared/Logo';
 
+// Read as a full static expression, not destructured — Next.js inlines NEXT_PUBLIC_* vars at
+// build time by textual substitution, so `process.env.NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` has to
+// appear verbatim to be replaced.
+const googleOAuthEnabled = process.env.NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED === 'true';
+
 export default function AdminLoginPage() {
     const router = useRouter();
     const [email, setEmail] = useState('');
@@ -135,7 +140,7 @@ export default function AdminLoginPage() {
                         </div>
 
                         <div className="text-right">
-                            <Link href="#" className="text-xs font-semibold text-purple hover:underline">
+                            <Link href="/admin/dashboard" className="text-xs font-semibold text-purple hover:underline">
                                 Forgot password?
                             </Link>
                         </div>
@@ -151,22 +156,37 @@ export default function AdminLoginPage() {
                         </button>
                     </form>
 
-                    <div className="flex items-center gap-3 my-6">
-                        <div className="flex-1 h-px bg-border" />
-                        <span className="text-foreground-muted text-xs">OR</span>
-                        <div className="flex-1 h-px bg-border" />
-                    </div>
+                    {/* Google Sign-In is hidden unless NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED === 'true'.
+                        Rendering it before the OAuth client is configured produces a 403 from
+                        Google (origin not allowlisted) and a dead-looking button, which is worse
+                        than not offering the option at all.
 
-                    <div className="w-full border border-border rounded-xl hover:border-purple/30 hover:bg-[#F5F0FF] transition-all">
-                        <GoogleLogin
-                            onSuccess={handleGoogleSuccess}
-                            onError={() => setError('Google sign-in failed. Please try again.')}
-                            useOneTap={false}
-                            theme="outline"
-                            size="large"
-                            width="100%"
-                        />
-                    </div>
+                        To turn it on, add BOTH of these origins in Google Cloud Console →
+                        APIs & Services → Credentials → the OAuth 2.0 Client ID → Authorised
+                        JavaScript origins:
+                            https://novr-soc.vercel.app
+                            http://localhost:3000
+                        then set NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED=true in Vercel and redeploy. */}
+                    {googleOAuthEnabled && (
+                        <>
+                            <div className="flex items-center gap-3 my-6">
+                                <div className="flex-1 h-px bg-border" />
+                                <span className="text-foreground-muted text-xs">OR</span>
+                                <div className="flex-1 h-px bg-border" />
+                            </div>
+
+                            <div className="w-full border border-border rounded-xl hover:border-purple/30 hover:bg-[#F5F0FF] transition-all">
+                                <GoogleLogin
+                                    onSuccess={handleGoogleSuccess}
+                                    onError={() => setError('Google sign-in failed. Please try again.')}
+                                    useOneTap={false}
+                                    theme="outline"
+                                    size="large"
+                                    width="100%"
+                                />
+                            </div>
+                        </>
+                    )}
                 </div>
 
                 {/* Bottom — footer note */}

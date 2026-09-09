@@ -359,7 +359,41 @@ function AlertsFeed({ alerts, source, loading }: { alerts: FeedAlert[]; source: 
 }
 
 /* ── Onboarded Clients Widget (kept from the previous dashboard — real /api/customers + per-client Wazuh data) ── */
-interface OnboardedClient { id: string; name: string; industry: string | null; status: string; agentsTotal: number; activeIncidents: number; wazuhGroup: string | null }
+interface OnboardedClient { id: string; name: string; industry: string | null; status: string; agentsTotal: number; activeIncidents: number; wazuhGroup: string | null; setupComplete?: boolean }
+
+/* Orgs created but never taken through the onboarding wizard have no Wazuh group or contacts,
+   so their widgets render empty with no explanation. Surface them with a direct link to finish. */
+function IncompleteSetupPrompt({ clients }: { clients: OnboardedClient[] | null }) {
+    const incomplete = (clients ?? []).filter((c) => c.setupComplete === false);
+    if (incomplete.length === 0) return null;
+
+    return (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start justify-between gap-4 flex-wrap">
+            <div>
+                <p className="text-sm text-amber-800 font-medium">
+                    {incomplete.length === 1
+                        ? `${incomplete[0].name} hasn’t finished onboarding`
+                        : `${incomplete.length} organisations haven’t finished onboarding`}
+                </p>
+                <p className="text-xs text-amber-700 mt-1">
+                    Until setup is complete there’s no Wazuh group mapping, so endpoints and incidents won’t attribute to
+                    {incomplete.length === 1 ? ' this client' : ' these clients'}.
+                </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+                {incomplete.slice(0, 3).map((c) => (
+                    <a
+                        key={c.id}
+                        href={`/admin/settings/organisations/${c.id}/setup`}
+                        className="text-[11px] font-bold px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg transition-colors whitespace-nowrap"
+                    >
+                        Complete Setup{incomplete.length > 1 ? ` — ${c.name}` : ''}
+                    </a>
+                ))}
+            </div>
+        </div>
+    );
+}
 interface ClientLiveData { endpoints: number; incidents: number }
 
 function clientStatusBadge(orgStatus: string, endpoints: number): { label: string; classes: string } {
@@ -608,6 +642,8 @@ export const GeneralDashboard = () => {
                     <Bell size={14} /> {criticalAlertsCount ?? 0} critical
                 </Link>
             </div>
+
+            <IncompleteSetupPrompt clients={clients} />
 
             {/* Row 1: KPI cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
