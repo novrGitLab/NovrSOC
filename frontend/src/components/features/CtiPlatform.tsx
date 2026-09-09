@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
+import { StixExportButton } from '@/components/features/StixExportButton';
 
 type IOCType = 'ip' | 'domain' | 'hash' | 'url';
 type Verdict = 'clean' | 'suspicious' | 'malicious';
@@ -384,9 +385,12 @@ export function CtiPlatform() {
                     <h1 className="text-lg font-black text-foreground">CTI Platform</h1>
                     <p className="text-xs text-foreground-muted">Threat Intelligence · Search and correlate IOCs across 5 threat intelligence sources</p>
                 </div>
-                <div className="flex items-center gap-2 text-xs text-foreground-muted">
-                    <span className="w-2 h-2 rounded-full bg-green animate-pulse" />
-                    4 threat feeds active
+                <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2 text-xs text-foreground-muted">
+                        <span className="w-2 h-2 rounded-full bg-green animate-pulse" />
+                        4 threat feeds active
+                    </div>
+                    <StixExportButton />
                 </div>
             </div>
 

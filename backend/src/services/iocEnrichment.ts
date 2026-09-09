@@ -7,7 +7,7 @@ import { threatfoxSearchIOC, type ThreatFoxIOC } from './threatfox';
 import { vtCheckIP, vtCheckDomain, vtCheckHash, vtCheckURL, vtToRiskScore, type VTResult } from './virustotal';
 import { checkGreyNoise, type GreyNoiseResult } from './greynoise';
 import { checkLeakIX, type LeakIXResult } from './leakix';
-import { searchMISP } from './misp';
+import { searchMISP, mispEventUrl } from './misp';
 
 // OTX and Censys were removed from this pipeline (2026-09-09). OTX's pulse contribution is now
 // covered by ThreatFox (which has a working key here) plus the keyless CIRCL OSINT feed for the
@@ -33,7 +33,12 @@ export interface EnrichedIOC {
         // A hit here means this exact value is already in the org's own MISP — the strongest
         // signal available, because someone deliberately curated it rather than it coming from
         // a third-party feed. Null when MISP isn't configured, is unreachable, or has no match.
-        misp: { count: number; events: string[]; attributes: Array<{ type?: string; value?: string; category?: string; event_id?: string; comment?: string }> } | null;
+        misp: {
+            count: number;
+            events: string[];
+            attributes: Array<{ type?: string; value?: string; category?: string; event_id?: string; comment?: string }>;
+            event_links: Array<{ event_id: string; url: string }>;
+        } | null;
     };
     tags: string[];
     enriched_at: string;
@@ -173,7 +178,18 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
                 services: leakix.services,
                 leaks: leakix.leaks,
             } : null,
-            misp: misp?.found ? { count: misp.count, events: misp.events, attributes: misp.attributes } : null,
+            misp: misp?.found
+                ? {
+                    count: misp.count,
+                    events: misp.events,
+                    attributes: misp.attributes,
+                    // Built from MISP_BROWSE_URL (falling back to MISP_URL) rather than assembled
+                    // in the frontend — see services/misp.ts on why those two differ.
+                    event_links: misp.events
+                        .map((id) => ({ event_id: id, url: mispEventUrl(id) }))
+                        .filter((l): l is { event_id: string; url: string } => l.url !== null),
+                }
+                : null,
         },
         tags: [...tags],
         enriched_at: new Date().toISOString(),

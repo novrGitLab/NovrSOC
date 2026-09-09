@@ -34,6 +34,7 @@ import slaRouter from './routes/sla';
 import alertsRouter from './routes/alerts';
 import threatManagementRouter from './routes/threatManagement';
 import publicRouter from './routes/public';
+import intelligenceRouter from './routes/intelligence';
 import incidentResponseRouter from './routes/incidentResponse';
 import weblogicRouter from './routes/weblogic';
 import assetsRouter from './routes/assets';
@@ -308,6 +309,8 @@ app.use('/api/recovery', dataRecoveryRouter);
 app.use('/api/sla', slaRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/threats', threatManagementRouter);
+// STIX export — gated: a bundle is the org's whole accumulated IOC set in one file.
+app.use('/api/intelligence', requireAuth, intelligenceRouter);
 app.use('/api/incidents', incidentResponseRouter);
 app.use('/api/weblogic', weblogicRouter);
 app.use('/api/assets', assetsRouter);

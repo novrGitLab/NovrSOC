@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents } from '../services/wazuh';
 import { getAuditLog } from '../lib/audit';
-import { getMISPStats, isMISPConfigured } from '../services/misp';
+import { getMISPStats, isMISPConfigured, checkMISPBrowseRedirect } from '../services/misp';
 import { isTheHiveConfigured, testConnection as testTheHive } from '../services/thehive';
 import { isConfigured as leakixConfigured } from '../services/leakix';
 import { isConfigured as fofaConfigured } from '../services/fofa';
@@ -66,12 +66,22 @@ async function checkClaudeAI(): Promise<ServiceCheck> {
 async function checkMISP(): Promise<ServiceCheck & { detail?: string }> {
     const start = Date.now();
     const stats = await getMISPStats();
-    const latency = Date.now() - start;
     if (!stats.configured) return { name: 'MISP', status: 'down', latency_ms: 0, detail: 'Not configured' };
-    if (stats.auth_ok) return { name: 'MISP', status: 'up', latency_ms: latency, detail: `${stats.events} events, ${stats.attributes} attributes` };
+
+    // API auth and browser links fail independently — a rejected key and a localhost baseurl are
+    // two different problems with two different fixes, so both are reported rather than only
+    // whichever is checked first. (This instance currently has both.)
+    const browse = await checkMISPBrowseRedirect();
+    const latency = Date.now() - start;
+    const browseNote = browse.ok ? '' : ` Browser links broken: ${browse.detail}`;
+
+    if (stats.auth_ok) {
+        if (!browse.ok) return { name: 'MISP', status: 'degraded', latency_ms: latency, detail: `API healthy (${stats.events} events).${browseNote}` };
+        return { name: 'MISP', status: 'up', latency_ms: latency, detail: `${stats.events} events, ${stats.attributes} attributes` };
+    }
     // Reachable but not authenticating is degraded, not down — the host is healthy, the
     // credential isn't, and those need different fixes.
-    if (stats.reachable) return { name: 'MISP', status: 'degraded', latency_ms: latency, detail: stats.error };
+    if (stats.reachable) return { name: 'MISP', status: 'degraded', latency_ms: latency, detail: `${stats.error}${browseNote}` };
     return { name: 'MISP', status: 'down', latency_ms: latency, detail: stats.error };
 }
 
