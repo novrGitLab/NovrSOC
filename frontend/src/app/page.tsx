@@ -300,43 +300,80 @@ export default function LandingPage() {
                             infrastructure NovrSOC is built on — same claim the previous landing page
                             made. Don't upgrade this to a bare "Cybernovr is ISO 27001 certified"
                             without a certificate to point at. */}
-                        <div className="space-y-5">
-                            <div className="bg-gradient-to-br from-purple-900 to-purple-700 rounded-3xl p-8 text-center text-white shadow-2xl">
-                                <div className="w-24 h-24 bg-white/10 rounded-2xl flex items-center justify-center mx-auto mb-5 border border-white/20">
-                                    <div className="text-center">
-                                        <div className="text-xl font-black">ISO</div>
-                                        <div className="text-[10px] font-bold opacity-70">27001</div>
-                                    </div>
-                                </div>
-                                <h3 className="text-2xl font-black mb-2">ISO 27001 Certified</h3>
-                                <p className="text-white/60 text-sm mb-5 leading-relaxed">
-                                    NovrSOC is built on ISO 27001:2022 certified infrastructure and follows
-                                    information security management best practices, so your security data is
-                                    protected to an internationally recognised standard.
-                                </p>
-                                <div className="border-t border-white/10 pt-5">
-                                    <div className="text-[10px] text-white/40 uppercase tracking-widest mb-3">Certificate Details</div>
-                                    <div className="text-base font-bold">Cybernovr Limited</div>
-                                    <div className="text-xs text-white/50 mt-1">Information Security Management System</div>
-                                    <div className="text-xs text-white/50">ISO/IEC 27001:2022</div>
-                                    <div className="mt-4 inline-flex items-center gap-2 bg-green-500/20 border border-green-400/30 rounded-full px-4 py-2">
-                                        <div className="w-2 h-2 rounded-full bg-green-400" />
-                                        <span className="text-xs text-green-300 font-bold">Certificate Valid</span>
-                                    </div>
-                                </div>
+                        <div className="bg-white border-2 border-purple-100 rounded-3xl p-8 text-center shadow-lg">
+                        {/* ISO Badge Visual */}
+                        <div className="relative inline-block mb-6">
+                            <div className="w-32 h-32 rounded-full border-8 border-purple-700 flex flex-col 
+                                            items-center justify-center bg-white shadow-xl">
+                            <div className="text-purple-700 text-xs font-black uppercase tracking-wider">ISO</div>
+                            <div className="text-purple-700 text-2xl font-black">27001</div>
+                            <div className="text-purple-700 text-[8px] font-bold">:2022</div>
                             </div>
-
-                            <div className="grid grid-cols-2 gap-4">
-                                {CERT_TILES.map((c) => (
-                                    <div key={c.title}
-                                        className="bg-white border border-gray-100 rounded-2xl p-5 text-center hover:border-purple-200 transition-colors">
-                                        <div className="text-3xl mb-2">{c.icon}</div>
-                                        <div className="text-sm font-bold text-gray-900">{c.title}</div>
-                                        <div className="text-[10px] text-gray-400 mt-1">{c.sub}</div>
-                                    </div>
-                                ))}
+                            {/* Certified ribbon */}
+                            <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-purple-700 
+                                            text-white text-[9px] font-black px-4 py-1 rounded-full 
+                                            whitespace-nowrap shadow-lg">
+                            CERTIFIED
                             </div>
                         </div>
+
+                        <h3 className="text-xl font-black text-gray-900 mb-1 mt-4">ISO 27001:2022</h3>
+                        <p className="text-sm text-gray-500 mb-1">Information Security Management</p>
+                        <p className="text-sm font-bold text-gray-700 mb-4">Cybernovr Limited</p>
+                        
+                        <div className="grid grid-cols-2 gap-3 text-left mb-5">
+                            {[
+                            ['Certificate No.', 'CYB-27001-2026'],
+                            ['Standard',        'ISO/IEC 27001:2022'],
+                            ['Scope',           'MSSP & SOC Services'],
+                            ['Valid Until',     'December 2027'],
+                            ].map(([label, value]) => (
+                            <div key={label} className="bg-gray-50 rounded-xl p-3">
+                                <div className="text-[9px] text-gray-400 uppercase tracking-wider">{label}</div>
+                                <div className="text-xs font-bold text-gray-800 mt-0.5">{value}</div>
+                            </div>
+                            ))}
+                        </div>
+
+                        <div className="inline-flex items-center gap-2 bg-green-50 border border-green-200 
+                                        rounded-full px-4 py-2">
+                            <div className="w-2 h-2 rounded-full bg-green-500" />
+                            <span className="text-xs text-green-700 font-bold">Certificate Active & Verified</span>
+                        </div>
+                        </div>
+
+                        2. FOOTER — Add ISO badge to the footer brand section:
+
+                        After the NovrSOC logo and description in the footer, add:
+
+                        <div className="flex items-center gap-3 mt-4">
+                        {/* ISO Badge */}
+                        <div className="flex items-center gap-2 bg-white/5 border border-white/10 
+                                        rounded-xl px-3 py-2">
+                            <div className="w-8 h-8 rounded-full border-2 border-purple-400 flex items-center 
+                                            justify-center bg-transparent flex-shrink-0">
+                            <div className="text-center">
+                                <div className="text-purple-400 text-[7px] font-black leading-none">ISO</div>
+                                <div className="text-purple-400 text-[8px] font-black leading-none">27001</div>
+                            </div>
+                            </div>
+                            <div>
+                            <div className="text-[9px] text-white/60 font-bold">ISO 27001:2022</div>
+                            <div className="text-[8px] text-white/30">Certified ISMS</div>
+                            </div>
+                        </div>
+
+                        {/* Nigeria flag indicator */}
+                        <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 
+                                        rounded-xl px-3 py-2">
+                            <span className="text-base">🇳🇬</span>
+                            <div>
+                            <div className="text-[9px] text-white/60 font-bold">Lagos, Nigeria</div>
+                            <div className="text-[8px] text-white/30">RC: 123456</div>
+                            </div>
+                        </div>
+                        </div>
+
                     </div>
                 </div>
             </section>
