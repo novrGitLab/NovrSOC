@@ -147,6 +147,48 @@ export function mapTheHiveStatusToNovrSOC(status: string | undefined): 'open' | 
     return 'open';
 }
 
+// "Contained" is a NovrSOC-only lifecycle step with no TheHive counterpart — both it and
+// "investigating" store as InProgress (see NOVRSOC_STATUS_TO_THEHIVE above). Without somewhere
+// to keep the distinction, a case marked contained reads back as investigating on the very next
+// fetch and the workbench's status bar visibly jumps backwards a step.
+//
+// It's carried as a tag, which is the mechanism the mapping comment above always pointed at.
+// Tags survive status changes, come back on every case read (getCases/getCase both return
+// `tags`), and are ignored by TheHive's own workflow, so nothing downstream misreads a contained
+// case as something TheHive understands differently.
+//
+// The tag is only meaningful while a case is still open: resolving supersedes it, so
+// resolveNovrSOCStatus checks the real status first and never reports a closed case as
+// contained even if the tag was left behind.
+export const CONTAINED_TAG = 'novrsoc:contained';
+
+// Marks a case an analyst escalated by hand. Same reasoning as CONTAINED_TAG: TheHive has no
+// "escalated" concept, and the escalation is otherwise recorded only as a comment, which can't
+// be counted without one extra API call per case. The tag makes escalations both visible on the
+// case in TheHive's own UI and countable in a single listCase query.
+export const ESCALATED_TAG = 'novrsoc:escalated';
+
+/**
+ * The status NovrSOC's UI should show for a case — the four-state lifecycle
+ * (open → investigating → contained → resolved), resolving the contained tag against the real
+ * TheHive status. Prefer this over mapTheHiveStatusToNovrSOC() anywhere a case is rendered.
+ */
+export function resolveNovrSOCStatus(c: Pick<TheHiveCase, 'status' | 'tags'>): 'open' | 'investigating' | 'contained' | 'resolved' {
+    const base = mapTheHiveStatusToNovrSOC(c.status);
+    if (base === 'investigating' && (c.tags ?? []).includes(CONTAINED_TAG)) return 'contained';
+    return base;
+}
+
+/**
+ * The tag list a case should carry after moving to `novrSOCStatus`, given its current tags.
+ * Adds the contained marker when moving to contained and strips it on every other transition, so
+ * a case that moves contained → investigating doesn't stay stuck showing contained.
+ */
+export function tagsForStatusChange(currentTags: string[] | undefined, novrSOCStatus: string): string[] {
+    const withoutMarker = (currentTags ?? []).filter((t) => t !== CONTAINED_TAG);
+    return novrSOCStatus.toLowerCase() === 'contained' ? [...withoutMarker, CONTAINED_TAG] : withoutMarker;
+}
+
 /** Exposed for jobs/autoClose.ts — true for any of TheHive's terminal triage classifications. */
 export function isTheHiveStatusTerminal(status: string | undefined): boolean {
     return !!status && THEHIVE_TERMINAL_STATUSES.has(status);
@@ -220,7 +262,9 @@ export function formatCaseForNovrSOC(c: TheHiveCase) {
         incident_number: deriveIncidentNumber(c),
         title: c.title,
         severity: severityMap[c.severity] ?? 'medium',
-        status: mapTheHiveStatusToNovrSOC(c.status),
+        // resolveNovrSOCStatus, not mapTheHiveStatusToNovrSOC — the latter can't return
+        // 'contained', so a contained case would render as investigating.
+        status: resolveNovrSOCStatus(c),
         thehive_status: c.status ?? 'New', // the real classification, for anyone who wants it verbatim
         summary: c.description ?? c.summary ?? '',
         assignee: c.assignee ?? null,
@@ -250,12 +294,15 @@ export async function getCase(id: string): Promise<TheHiveCase | null> {
  * silently ignored. Returns null on failure rather than throwing, matching createCase's
  * fall-back-friendly convention.
  */
-export async function updateCase(id: string, params: { status?: TheHiveStatus; summary?: string; assignee?: string }): Promise<TheHiveCase | null> {
+export async function updateCase(id: string, params: { status?: TheHiveStatus; summary?: string; assignee?: string; tags?: string[] }): Promise<TheHiveCase | null> {
     try {
         const body: Record<string, unknown> = {};
         if (params.status) body.status = params.status;
         if (params.summary !== undefined) body.summary = params.summary;
         if (params.assignee) body.assignee = params.assignee;
+        // Replaces the whole tag list — TheHive has no add/remove-one operation for tags, so
+        // callers must pass the full desired set (see tagsForStatusChange).
+        if (params.tags) body.tags = params.tags;
 
         const { status, json } = await request<TheHiveCase>(`/api/v1/case/${encodeURIComponent(id)}`, 'PATCH', body);
         // TheHive's PATCH returns 204 No Content on success, not the updated object — fetch it

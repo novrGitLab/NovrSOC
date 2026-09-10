@@ -11,7 +11,6 @@ import {
     Clock,
     CheckCircle,
     RefreshCw,
-    Play,
     TrendingUp,
     FileText,
     ChevronRight,
@@ -27,7 +26,8 @@ import {
     Plus,
     X,
     UserPlus,
-    BookOpen
+    BookOpen,
+    ClipboardList
 } from 'lucide-react';
 interface PlaybookSummary {
     id: string;
@@ -126,6 +126,50 @@ const STATUS_CONFIG: Record<IncidentStatus, { bg: string; text: string; border: 
     escalated: { bg: 'bg-purple/10', text: 'text-purple', border: 'border-purple/30' },
 };
 
+// The four-step lifecycle the status bar walks through. `id` is the value sent to
+// PATCH /api/incidents/:id — 'new' rather than 'open', which is what this codebase's
+// IncidentStatus union and TheHive mapping both use.
+//
+// 'escalated' is deliberately not a step. Escalating is an action taken *during* an
+// investigation, not a stage between contained and resolved — the backend's escalate endpoint
+// leaves status untouched for the same reason. A case already carrying the legacy 'escalated'
+// status renders at the Investigating step (see currentStepFor) instead of falling off the bar.
+const WORKFLOW_STEPS = [
+    { id: 'new' as const, label: 'Open' },
+    { id: 'investigating' as const, label: 'Investigating' },
+    { id: 'contained' as const, label: 'Contained' },
+    { id: 'resolved' as const, label: 'Resolved' },
+];
+
+const NEXT_STEP_LABEL: Record<number, string> = {
+    0: 'Start Investigation',
+    1: 'Mark as Contained',
+    2: 'Resolve Incident',
+};
+
+function currentStepFor(status: IncidentStatus): number {
+    if (status === 'escalated') return 1; // escalated cases are still being investigated
+    const idx = WORKFLOW_STEPS.findIndex((s) => s.id === status);
+    return idx === -1 ? 0 : idx;
+}
+
+// Standard IR phases (NIST SP 800-61-shaped). This is a per-analyst working checklist, not case
+// state: it's kept in localStorage per incident, NOT written to TheHive, because TheHive already
+// has a real per-case task list (the Response Tasks panel below, backed by
+// POST /api/incidents/:id/tasks) and pushing a second parallel task concept into the same case
+// would leave two disagreeing lists on the same incident. Anything that needs to be shared with
+// another analyst belongs in Response Tasks or a note.
+const INVESTIGATION_STEPS = [
+    { id: 'triage', label: 'Initial Triage', desc: 'Review alert details, confirm severity, identify affected assets' },
+    { id: 'contain', label: 'Containment', desc: 'Isolate affected systems, block malicious IPs, revoke credentials' },
+    { id: 'evidence', label: 'Evidence Collection', desc: 'Capture logs, memory dumps, network traffic, screenshots' },
+    { id: 'eradicate', label: 'Eradication', desc: 'Remove malware, patch vulnerability, close attack vector' },
+    { id: 'recover', label: 'Recovery', desc: 'Restore systems, verify clean state, resume normal operations' },
+    { id: 'review', label: 'Post-Incident Review', desc: 'Document lessons learned, update playbooks, report to management' },
+];
+
+const CHECKLIST_KEY = (incidentId: string) => `novrsoc.ir-checklist.${incidentId}`;
+
 const NOTE_TYPE_STYLE: Record<NoteType, string> = {
     Update: 'bg-blue/15 text-blue border-blue/30',
     Evidence: 'bg-card-muted text-foreground-muted border-border',
@@ -151,6 +195,11 @@ export function IncidentResponse() {
     const [showPlaybookModal, setShowPlaybookModal] = useState(false);
     const [attachingPlaybook, setAttachingPlaybook] = useState<string | null>(null);
     const [playbooks, setPlaybooks] = useState<PlaybookSummary[] | null>(null);
+    const [checkedSteps, setCheckedSteps] = useState<Set<string>>(new Set());
+    const [escalationNote, setEscalationNote] = useState('');
+    const [escalating, setEscalating] = useState(false);
+    const [escalationResult, setEscalationResult] = useState<{ ok: boolean; message: string } | null>(null);
+    const [generatingReport, setGeneratingReport] = useState(false);
 
     const load = () => {
         setLoading(true);
@@ -270,6 +319,81 @@ export function IncidentResponse() {
             setIncidents((prev) => prev.map((i) => (i.id === id ? { ...i, status } : i)));
         } finally {
             setBusy(false);
+        }
+    }
+
+    // Opens the slide-over and loads that incident's per-analyst checklist.
+    //
+    // Done in the click handler rather than an effect on selectedId: reading localStorage is an
+    // external-store read that belongs in an event handler, and resetting the escalation fields
+    // here (instead of reactively) guarantees one incident's draft escalation note can never be
+    // shown against another incident.
+    function openIncident(id: string) {
+        setEscalationNote('');
+        setEscalationResult(null);
+        try {
+            const raw = localStorage.getItem(CHECKLIST_KEY(id));
+            setCheckedSteps(new Set(raw ? (JSON.parse(raw) as string[]) : []));
+        } catch {
+            setCheckedSteps(new Set());
+        }
+        setSelectedId(id);
+    }
+
+    function toggleStep(incidentId: string, stepId: string) {
+        setCheckedSteps((prev) => {
+            const next = new Set(prev);
+            if (next.has(stepId)) next.delete(stepId);
+            else next.add(stepId);
+            try {
+                localStorage.setItem(CHECKLIST_KEY(incidentId), JSON.stringify([...next]));
+            } catch {
+                // Blocked site data — the checklist still works for this session.
+            }
+            return next;
+        });
+    }
+
+    async function escalate(id: string) {
+        setEscalating(true);
+        setEscalationResult(null);
+        try {
+            const res = await apiFetch(apiUrl(`/api/incidents/${id}/escalate`), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ note: escalationNote.trim() }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                setEscalationResult({ ok: false, message: data?.error ?? `Escalation failed (HTTP ${res.status})` });
+                return;
+            }
+            // The backend reports each channel separately — it deliberately does NOT claim the
+            // CISO was emailed when EMAIL_ENABLED is off, so surface its message verbatim
+            // rather than a blanket "email sent".
+            setEscalationResult({ ok: Boolean(data?.success), message: data?.message ?? 'Escalation recorded' });
+            if (data?.success) setEscalationNote('');
+        } catch {
+            setEscalationResult({ ok: false, message: 'Escalation failed — could not reach the backend' });
+        } finally {
+            setEscalating(false);
+        }
+    }
+
+    async function generateReport(incident: Incident) {
+        setGeneratingReport(true);
+        try {
+            const res = await apiFetch(apiUrl(`/api/incidents/${incident.id}/report`));
+            if (!res.ok) return;
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${incident.incident_number ?? incident.id}-report.md`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } finally {
+            setGeneratingReport(false);
         }
     }
 
@@ -406,7 +530,7 @@ export function IncidentResponse() {
                         return (
                             <div
                                 key={inc.id}
-                                onClick={() => setSelectedId(inc.id)}
+                                onClick={() => openIncident(inc.id)}
                                 className="w-full bg-card border border-border rounded-xl p-4 hover:border-orange/40 hover:bg-card-muted/30 transition-all flex items-center justify-between gap-4 cursor-pointer shadow-xs group"
                             >
                                 <div className="min-w-0 space-y-1">
@@ -488,31 +612,159 @@ export function IncidentResponse() {
                                     </button>
                                 </div>
 
-                                {/* Status buttons */}
-                                <div className="flex items-center gap-2 flex-wrap">
-                                    <button disabled={busy} onClick={() => updateStatus(selected.id, 'new')} className="flex items-center gap-1.5 text-xs font-bold text-foreground border border-border px-3.5 py-2 rounded-lg transition-colors disabled:opacity-50 hover:bg-card-muted">
-                                        Open
-                                    </button>
-                                    <button disabled={busy} onClick={() => updateStatus(selected.id, 'investigating')} className="flex items-center gap-1.5 text-xs font-bold text-white bg-blue hover:bg-blue/90 px-3.5 py-2 rounded-lg transition-colors disabled:opacity-50">
-                                        <Play size={14} /> Investigating
-                                    </button>
-                                    <button disabled={busy} onClick={() => updateStatus(selected.id, 'contained')} className="flex items-center gap-1.5 text-xs font-bold text-amber-600 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 px-3.5 py-2 rounded-lg transition-colors disabled:opacity-50">
-                                        Contained
-                                    </button>
-                                    <button disabled={busy} onClick={() => updateStatus(selected.id, 'resolved')} className="flex items-center gap-1.5 text-xs font-bold text-emerald-500 bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 px-3.5 py-2 rounded-lg transition-colors disabled:opacity-50">
-                                        <CheckCircle size={14} /> Resolved
-                                    </button>
-                                    <button disabled={busy} onClick={() => updateStatus(selected.id, 'escalated')} className="flex items-center gap-1.5 text-xs font-bold text-red-500 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 px-3.5 py-2 rounded-lg transition-colors disabled:opacity-50">
-                                        <TrendingUp size={14} /> Escalate
-                                    </button>
-                                    <div className="ml-auto flex items-center gap-2">
-                                        <button onClick={openPlaybookModal} className="flex items-center gap-1.5 text-xs font-bold text-purple border border-purple/30 bg-purple/5 hover:bg-purple/10 px-3.5 py-2 rounded-lg transition-colors">
-                                            <BookOpen size={14} /> Attach Playbook
+                                {/* Status workflow bar. Every step stays clickable, not just the
+                                    next one — an analyst who marked contained prematurely has to
+                                    be able to step back to investigating. */}
+                                {(() => {
+                                    const currentStep = currentStepFor(selected.status);
+                                    const nextStep = WORKFLOW_STEPS[currentStep + 1];
+                                    return (
+                                        <div className="space-y-3">
+                                            <div className="flex items-center rounded-xl overflow-hidden border border-border">
+                                                {WORKFLOW_STEPS.map((step, i) => (
+                                                    <button
+                                                        key={step.id}
+                                                        disabled={busy}
+                                                        onClick={() => updateStatus(selected.id, step.id)}
+                                                        className={`flex-1 py-2.5 px-2 text-xs font-bold text-center transition-colors disabled:opacity-60 ${
+                                                            i === currentStep
+                                                                ? 'bg-purple text-white'
+                                                                : i < currentStep
+                                                                    ? 'bg-emerald-500 text-white'
+                                                                    : 'bg-card-muted text-foreground-muted hover:bg-border'
+                                                        } ${i > 0 ? 'border-l border-border' : ''}`}
+                                                    >
+                                                        {i < currentStep ? '✓ ' : ''}{step.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+
+                                            {selected.status === 'escalated' && (
+                                                <p className="text-[11px] text-red-500 font-bold">
+                                                    This incident carries the legacy &quot;escalated&quot; status — shown at the Investigating step.
+                                                </p>
+                                            )}
+
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                                {nextStep && (
+                                                    <button
+                                                        disabled={busy}
+                                                        onClick={() => updateStatus(selected.id, nextStep.id)}
+                                                        className="flex-1 min-w-[200px] bg-purple text-white font-bold py-3 rounded-xl hover:opacity-90 disabled:opacity-50 text-sm transition-opacity"
+                                                    >
+                                                        → {NEXT_STEP_LABEL[currentStep] ?? `Move to ${nextStep.label}`}
+                                                    </button>
+                                                )}
+                                                <button onClick={openPlaybookModal} className="flex items-center gap-1.5 text-xs font-bold text-purple border border-purple/30 bg-purple/5 hover:bg-purple/10 px-3.5 py-2 rounded-lg transition-colors">
+                                                    <BookOpen size={14} /> Attach Playbook
+                                                </button>
+                                                {selected.source === 'thehive' && (
+                                                    <button
+                                                        onClick={() => generateReport(selected)}
+                                                        disabled={generatingReport}
+                                                        className="flex items-center gap-1.5 text-xs font-bold text-foreground-muted hover:text-foreground border border-border bg-card px-3 py-2 rounded-lg transition-colors disabled:opacity-50"
+                                                    >
+                                                        <FileText size={14} /> {generatingReport ? 'Generating…' : 'Report (MD)'}
+                                                    </button>
+                                                )}
+                                                <button onClick={() => exportIncidentPDF(selected)} className="flex items-center gap-1.5 text-xs font-bold text-foreground-muted hover:text-foreground border border-border bg-card px-3 py-2 rounded-lg transition-colors">
+                                                    <FileDown size={14} /> PDF
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                {/* Escalation — high/critical only, and only while still open.
+                                    Escalating does not change status: it notifies the CISO and
+                                    records the reason on the case, and the investigation carries
+                                    on from whatever step it was at. */}
+                                {(selected.severity === 'high' || selected.severity === 'critical') && selected.status !== 'resolved' && (
+                                    <div className="bg-red-500/5 border border-red-500/30 rounded-xl p-4 sm:p-5 space-y-3">
+                                        <div>
+                                            <h3 className="text-sm font-bold text-red-500">Escalation</h3>
+                                            <p className="text-[11px] text-red-500/80 mt-0.5">
+                                                {selected.severity === 'critical'
+                                                    ? 'Critical incident — escalate within 30 minutes'
+                                                    : 'High severity — escalate if unresolved after 2 hours'}
+                                            </p>
+                                        </div>
+                                        <textarea
+                                            value={escalationNote}
+                                            onChange={(e) => setEscalationNote(e.target.value)}
+                                            placeholder="Describe what you found and why you are escalating…"
+                                            aria-label="Escalation reason"
+                                            className="w-full bg-card border border-red-500/30 rounded-xl p-3 text-sm text-foreground resize-none focus:outline-none focus:border-red-500 min-h-[70px]"
+                                        />
+                                        <button
+                                            onClick={() => escalate(selected.id)}
+                                            disabled={escalating || selected.source !== 'thehive'}
+                                            className="w-full flex items-center justify-center gap-1.5 bg-red-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl hover:bg-red-600 disabled:opacity-50 transition-colors"
+                                        >
+                                            <TrendingUp size={14} />
+                                            {escalating ? 'Escalating…' : 'Escalate to CISO — notify now'}
                                         </button>
-                                        <button onClick={() => exportIncidentPDF(selected)} className="flex items-center gap-1.5 text-xs font-bold text-foreground-muted hover:text-foreground border border-border bg-card px-3 py-2 rounded-lg transition-colors">
-                                            <FileDown size={14} /> PDF
-                                        </button>
+                                        {selected.source !== 'thehive' && (
+                                            <p className="text-[10px] text-foreground-muted">
+                                                Escalation is only available for TheHive-backed incidents.
+                                            </p>
+                                        )}
+                                        {escalationResult && (
+                                            <p className={`text-[11px] font-bold ${escalationResult.ok ? 'text-emerald-500' : 'text-red-500'}`}>
+                                                {escalationResult.message}
+                                            </p>
+                                        )}
                                     </div>
+                                )}
+
+                                {/* Investigation checklist */}
+                                <div className="bg-card border border-border rounded-xl p-4 sm:p-5 shadow-xs">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <h3 className="text-xs font-bold text-foreground uppercase tracking-wider flex items-center gap-2">
+                                            <ClipboardList size={14} className="text-purple" /> Investigation Steps
+                                        </h3>
+                                        <span className="text-[10px] text-foreground-muted">
+                                            {checkedSteps.size}/{INVESTIGATION_STEPS.length} complete
+                                        </span>
+                                    </div>
+
+                                    <div className="h-1.5 bg-card-muted rounded-full mb-4 overflow-hidden">
+                                        <div
+                                            className="h-full bg-purple rounded-full transition-all"
+                                            style={{ width: `${(checkedSteps.size / INVESTIGATION_STEPS.length) * 100}%` }}
+                                        />
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        {INVESTIGATION_STEPS.map((step) => {
+                                            const done = checkedSteps.has(step.id);
+                                            return (
+                                                <button
+                                                    key={step.id}
+                                                    onClick={() => toggleStep(selected.id, step.id)}
+                                                    aria-pressed={done}
+                                                    className={`w-full flex items-start gap-3 p-3 rounded-xl text-left transition-colors border ${
+                                                        done ? 'bg-emerald-500/5 border-emerald-500/30' : 'bg-card-muted/40 border-transparent hover:border-border'
+                                                    }`}
+                                                >
+                                                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 transition-colors ${
+                                                        done ? 'bg-emerald-500 border-emerald-500' : 'border-border'
+                                                    }`}>
+                                                        {done && <span className="text-white text-[8px] font-black">✓</span>}
+                                                    </div>
+                                                    <div>
+                                                        <div className={`text-xs font-bold ${done ? 'text-emerald-500 line-through' : 'text-foreground'}`}>
+                                                            {step.label}
+                                                        </div>
+                                                        <div className="text-[10px] text-foreground-muted mt-0.5 leading-relaxed">{step.desc}</div>
+                                                    </div>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                    <p className="text-[10px] text-foreground-muted mt-3">
+                                        Personal working checklist — saved in this browser only. Use Response Tasks for anything the team needs to see.
+                                    </p>
                                 </div>
 
                                 {/* Assign to analyst */}
@@ -569,24 +821,50 @@ export function IncidentResponse() {
                                             <h3 className="text-xs font-bold text-foreground uppercase tracking-wider mb-4 flex items-center gap-2">
                                                 <Clock size={14} className="text-blue" /> Timeline
                                             </h3>
-                                            <div className="space-y-0">
-                                                {selected.timeline.map((t, idx) => (
-                                                    <div key={t.id} className="flex gap-3">
-                                                        <div className="flex flex-col items-center">
-                                                            <div className="w-2.5 h-2.5 rounded-full bg-blue ring-4 ring-blue/10 shrink-0 mt-1" />
-                                                            {idx < selected.timeline.length - 1 && <div className="w-px flex-1 bg-border my-1" />}
-                                                        </div>
-                                                        <div className="pb-4">
-                                                            <div className="flex items-center gap-2">
-                                                                <p className="text-xs font-bold text-foreground">{t.action}</p>
-                                                                <span className="text-[10px] text-foreground-muted">{t.timestamp}</span>
+                                            {/* Case events and analyst notes in one thread. They
+                                                were previously two disconnected panels, so the
+                                                order in which things actually happened during an
+                                                investigation wasn't readable anywhere.
+                                                Deliberately NOT re-sorted by time: `timestamp`
+                                                and note timestamps are preformatted display
+                                                strings from different sources (locale date-time
+                                                vs. time-only), so string-comparing them would
+                                                interleave them wrongly. Case events first, then
+                                                notes in the order they were added. */}
+                                            {(() => {
+                                                const entries = [
+                                                    ...selected.timeline.map((t) => ({
+                                                        key: t.id, dot: 'bg-blue ring-blue/10',
+                                                        title: t.action, when: t.timestamp,
+                                                        who: `Triggered by ${t.actor}`, detail: t.detail,
+                                                    })),
+                                                    ...selected.notes.map((n) => ({
+                                                        key: `note-${n.id}`, dot: 'bg-purple ring-purple/10',
+                                                        title: `Note added — ${n.type}`, when: n.timestamp,
+                                                        who: n.author, detail: n.text,
+                                                    })),
+                                                ];
+                                                return (
+                                                    <div className="space-y-0">
+                                                        {entries.map((e, idx) => (
+                                                            <div key={e.key} className="flex gap-3">
+                                                                <div className="flex flex-col items-center">
+                                                                    <div className={`w-2.5 h-2.5 rounded-full ring-4 shrink-0 mt-1 ${e.dot}`} />
+                                                                    {idx < entries.length - 1 && <div className="w-px flex-1 bg-border my-1" />}
+                                                                </div>
+                                                                <div className="pb-4 min-w-0">
+                                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                                        <p className="text-xs font-bold text-foreground">{e.title}</p>
+                                                                        <span className="text-[10px] text-foreground-muted">{e.when}</span>
+                                                                    </div>
+                                                                    <p className="text-[11px] text-foreground-muted">{e.who}</p>
+                                                                    {e.detail && <p className="text-xs text-foreground-muted mt-1 leading-relaxed break-words">{e.detail}</p>}
+                                                                </div>
                                                             </div>
-                                                            <p className="text-[11px] text-foreground-muted">Triggered by {t.actor}</p>
-                                                            {t.detail && <p className="text-xs text-foreground-muted mt-1 leading-relaxed">{t.detail}</p>}
-                                                        </div>
+                                                        ))}
                                                     </div>
-                                                ))}
-                                            </div>
+                                                );
+                                            })()}
                                         </div>
 
                                         {/* Investigation notes */}

@@ -4,8 +4,10 @@ import { search } from '../lib/wazuh-indexer';
 import {
     getCases, createCase, getCase, updateCase, getCaseTasks, createTask, getCaseComments, addComment,
     formatCaseForNovrSOC, isTheHiveConfigured, mapNovrSOCStatusToTheHive, isTheHiveStatusTerminal, deriveIncidentNumber,
+    tagsForStatusChange, resolveNovrSOCStatus, ESCALATED_TAG,
 } from '../services/thehive';
 import { sendSlackAlert, sendSlackMessage } from '../services/slack';
+import { sendEscalationEmail, isEmailEnabled } from '../services/email';
 
 // A TheHive case id always looks like "~1234567" (confirmed live) — Wazuh-derived incident ids
 // look like "INC-2026-1000" (built below). Used to route a given :id to the right backend
@@ -403,16 +405,64 @@ router.get('/automation-status', async (_req: Request, res: Response) => {
             ? Math.round(responded.reduce((sum, c) => sum + (c._updatedAt! - c._createdAt!), 0) / responded.length / 60000)
             : null;
 
+        // Pipeline counts for the SOAR page's flow diagram. Every one is derived from the same
+        // capped listCase result above, so they share its undercount caveat on a high-volume day.
+        // Note these are NOT all "today" figures: open_cases and escalated_open are current
+        // state across the whole fetched window, because a case opened yesterday and still open
+        // is exactly what the "Analyst Open" stage is meant to show. The SOAR page labels each
+        // one with its own window rather than implying they're all daily.
+        const openCases = cases.filter((c) => !isTheHiveStatusTerminal(c.status));
+        const escalatedOpen = openCases.filter((c) => (c.tags ?? []).includes(ESCALATED_TAG));
+
+        // Richer feed for the SOAR page's live activity list. Same events as recent_log above,
+        // plus severity and a machine-readable type so the UI can colour-code without parsing
+        // the human-readable strings. recent_log is kept as-is — the existing SOAR automation
+        // panel renders it and changing its shape would break that.
+        const recentActivity = [
+            ...escalatedOpen.map((c) => ({
+                type: 'escalated' as const,
+                ts: c._updatedAt ?? 0,
+                title: `${deriveIncidentNumber(c)} — ${c.title}`,
+                severity: formatCaseForNovrSOC(c).severity,
+                time: formatWAT(c._updatedAt),
+                case_id: deriveIncidentNumber(c),
+            })),
+            ...autoResolvedCasesToday.map((c) => ({
+                type: 'resolved' as const,
+                ts: c._updatedAt ?? 0,
+                title: `${deriveIncidentNumber(c)} — ${c.title}`,
+                severity: formatCaseForNovrSOC(c).severity,
+                time: formatWAT(c._updatedAt),
+                case_id: deriveIncidentNumber(c),
+            })),
+            ...createdToday.map((c) => ({
+                type: 'created' as const,
+                ts: c._createdAt ?? 0,
+                title: `${deriveIncidentNumber(c)} — ${c.title}`,
+                severity: formatCaseForNovrSOC(c).severity,
+                time: formatWAT(c._createdAt),
+                case_id: deriveIncidentNumber(c),
+            })),
+        ]
+            .sort((a, b) => b.ts - a.ts)
+            .slice(0, 10)
+            // ts was only needed for the sort — dropped so the client can't mistake it for a
+            // display value and re-format it in the browser's own timezone.
+            .map(({ ts: _ts, ...rest }) => rest);
+
         res.json({
             active: true,
             cases_created_today: createdToday.length,
             auto_resolved_today: autoResolvedToday,
+            open_cases: openCases.length,
+            escalated_open: escalatedOpen.length,
             avg_response_minutes: avgResponseMinutes,
             recent_log: recentLog,
+            recent_activity: recentActivity,
         });
     } catch (err) {
         console.error('[incidents] automation-status failed:', err instanceof Error ? err.message : err);
-        res.status(502).json({ active: true, cases_created_today: 0, auto_resolved_today: 0, avg_response_minutes: null, recent_log: [] });
+        res.status(502).json({ active: true, cases_created_today: 0, auto_resolved_today: 0, open_cases: 0, escalated_open: 0, avg_response_minutes: null, recent_log: [], recent_activity: [] });
     }
 });
 
@@ -467,8 +517,20 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
 
     if (isTheHiveConfigured() && isTheHiveId(id)) {
         const theHiveStatus = status ? mapNovrSOCStatusToTheHive(status) : undefined;
+
+        // "contained" and "investigating" both store as InProgress, so the contained marker has
+        // to ride along as a tag or the status bar snaps back a step on the next read (see
+        // thehive.ts's CONTAINED_TAG). Needs the case's current tags to rewrite the full list,
+        // and only for a status change — an assignee-only PATCH must not touch tags.
+        let tags: string[] | undefined;
+        if (status) {
+            const current = await getCase(id);
+            tags = tagsForStatusChange(current?.tags, status);
+        }
+
         const updated = await updateCase(id, {
             ...(theHiveStatus ? { status: theHiveStatus } : {}),
+            ...(tags ? { tags } : {}),
             assignee: assignee ?? req.user?.email,
         });
         if (!updated) {
@@ -563,6 +625,183 @@ router.post('/:id/tasks', async (req: Request, res: Response) => {
         return;
     }
     res.json({ success: true, task: { _id: task._id, title: task.title, description: task.description ?? '', status: task.status } });
+});
+
+// Africa/Lagos is WAT (UTC+1) year-round with no DST, which is why the rest of this file does
+// the offset with fixed arithmetic. Here the IANA zone is used directly since these strings are
+// only ever displayed, never compared or bucketed.
+function formatWAT(value: string | number | Date | null | undefined): string {
+    if (!value) return 'Unknown';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return 'Unknown';
+    return `${d.toLocaleString('en-GB', { timeZone: 'Africa/Lagos' })} WAT`;
+}
+
+// POST /api/incidents/:id/escalate — analyst-initiated escalation from the incident workbench.
+//
+// Three things happen, in this order, and the response reports each one honestly rather than
+// claiming blanket success: the case is recorded as escalated in TheHive (a comment, so the
+// escalation and its reason live with the case rather than only in an inbox), the CISO is
+// emailed, and Slack is notified. Email goes through services/email.ts rather than a direct
+// Resend call so it uses the same Resend → SMTP → SendGrid fallback chain as every other email
+// in this codebase, and honours EMAIL_ENABLED.
+router.post('/:id/escalate', async (req: AuthRequest, res: Response) => {
+    const { id } = req.params;
+    const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
+    const escalatedBy = req.user?.email ?? 'Unknown analyst';
+
+    if (!isTheHiveConfigured() || !isTheHiveId(id)) {
+        res.status(503).json({ error: 'Escalation is only available for TheHive-backed incidents' });
+        return;
+    }
+
+    const theCase = await getCase(id);
+    if (!theCase) {
+        res.status(404).json({ error: 'Incident not found' });
+        return;
+    }
+
+    const formatted = formatCaseForNovrSOC(theCase);
+    const results: Record<string, string> = {};
+
+    // Recorded on the case first: if the email or Slack step fails, there is still a durable
+    // record that an analyst escalated and why.
+    const comment = await addComment(id, `ESCALATED by ${escalatedBy}${note ? `: ${note}` : ''}`);
+    results.thehive = comment ? 'recorded' : 'failed';
+
+    // Tagged as well as commented so the escalation is countable from a single listCase query
+    // (the SOAR pipeline's escalated figure) and visible on the case in TheHive's own UI.
+    // Status is deliberately untouched: escalating doesn't move a case out of investigating.
+    const existingTags = theCase.tags ?? [];
+    if (!existingTags.includes(ESCALATED_TAG)) {
+        await updateCase(id, { tags: [...existingTags, ESCALATED_TAG] });
+    }
+
+    const cisoEmail = process.env.CISO_EMAIL || 'rayne@cybernovr.com';
+    if (!isEmailEnabled()) {
+        // Reported rather than silently swallowed — sendEscalationEmail() no-ops when email is
+        // disabled, and the UI must not tell an analyst the CISO was emailed when nothing was.
+        results.email = 'skipped — EMAIL_ENABLED is not set';
+    } else {
+        try {
+            await sendEscalationEmail({
+                to: [cisoEmail],
+                incident_number: formatted.incident_number,
+                title: formatted.title,
+                severity: formatted.severity,
+                assignee: formatted.assignee ?? 'Unassigned',
+                opened_at: formatted.opened_at,
+                escalated_by: escalatedBy,
+                note,
+            });
+            results.email = `sent to ${cisoEmail}`;
+        } catch (err) {
+            console.error('[incidents/escalate] email failed:', err instanceof Error ? err.message : err);
+            results.email = 'failed — see server logs';
+        }
+    }
+
+    try {
+        await sendSlackAlert({
+            title: `Incident escalated: ${formatted.title}`,
+            severity: formatted.severity,
+            description: `Escalated by ${escalatedBy}${note ? `\n${note}` : ''}`,
+            affected_host: 'See case in NovrSOC',
+            incident_id: formatted.incident_number,
+            detected_at: formatWAT(theCase._createdAt),
+        });
+        results.slack = 'sent';
+    } catch {
+        results.slack = 'failed';
+    }
+
+    // 207-style semantics without inventing a status code: success is true only when the
+    // escalation was actually recorded somewhere durable.
+    res.json({
+        success: comment !== null,
+        message: results.email.startsWith('sent') ? 'Escalation email sent to CISO' : `Escalation recorded — ${results.email}`,
+        results,
+    });
+});
+
+// GET /api/incidents/:id/report — a Markdown incident report, downloaded by the workbench.
+//
+// Markdown rather than PDF on purpose: the front end already has exportIncidentPDF() for a
+// rendered document, and a text report is the format that pastes into a ticket, a post-incident
+// review doc or an email without a converter in between.
+//
+// Every field comes from the real case. Where TheHive has nothing (a case with no comments, no
+// assignee), the report says so explicitly instead of leaving a heading with silence under it —
+// a report that quietly omits sections reads as though those areas were checked and found clean.
+router.get('/:id/report', async (req: AuthRequest, res: Response) => {
+    const { id } = req.params;
+
+    if (!isTheHiveConfigured() || !isTheHiveId(id)) {
+        res.status(503).json({ error: 'Reports are only available for TheHive-backed incidents' });
+        return;
+    }
+
+    const theCase = await getCase(id);
+    if (!theCase) {
+        res.status(404).json({ error: 'Incident not found' });
+        return;
+    }
+
+    const formatted = formatCaseForNovrSOC(theCase);
+    const status = resolveNovrSOCStatus(theCase);
+    const comments = await getCaseComments(id).catch(() => []);
+    const tasks = await getCaseTasks(id).catch(() => []);
+
+    const notesSection = comments.length > 0
+        ? comments.map((c) => `- **${c.createdBy ?? 'Analyst'}** (${formatWAT(c.createdAt)}): ${c.message}`).join('\n')
+        : '_No analyst notes recorded._';
+
+    const tasksSection = tasks.length > 0
+        ? tasks.map((t) => `- [${t.status === 'Completed' ? 'x' : ' '}] ${t.title}${t.description ? ` — ${t.description}` : ''}`).join('\n')
+        : '_No response tasks recorded._';
+
+    const report = `# Incident Report
+
+## ${formatted.incident_number}: ${formatted.title}
+
+| Field | Value |
+| --- | --- |
+| Severity | ${formatted.severity.toUpperCase()} |
+| Status | ${status} |
+| TheHive classification | ${formatted.thehive_status} |
+| Assignee | ${formatted.assignee ?? 'Unassigned'} |
+| Created | ${formatWAT(theCase._createdAt)} |
+| Last updated | ${formatWAT(theCase._updatedAt)} |
+| Tags | ${(theCase.tags ?? []).join(', ') || 'None'} |
+
+## Description
+
+${theCase.description?.trim() || '_No description provided._'}
+
+## Response Tasks
+
+${tasksSection}
+
+## Analyst Notes
+
+${notesSection}
+
+## Timeline
+
+- ${formatWAT(theCase._createdAt)} — Incident created
+- ${formatWAT(theCase._updatedAt)} — Last updated (status: ${status})
+${status === 'resolved' ? '' : '- Investigation ongoing\n'}
+---
+
+_Generated by NovrSOC by Cybernovr — ${formatWAT(new Date())}_
+
+_Scope note: this report covers what is recorded on the TheHive case. Wazuh alert detail, MITRE
+mapping and affected-asset inventory are not included — they are not stored on the case._
+`;
+
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${formatted.incident_number}-report.md"`);
+    res.send(report);
 });
 
 export default router;

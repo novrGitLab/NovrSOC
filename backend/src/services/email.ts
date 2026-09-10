@@ -676,6 +676,10 @@ export async function sendOnboardingEmail(params: {
 }
 
 // 5. INCIDENT ESCALATION — jobs/incidentEscalation.ts
+// Covers both escalation paths: the automatic SLA-breach escalation (no escalated_by/note) and
+// an analyst hitting Escalate in the incident workbench, which carries who escalated and why.
+// The subtitle and the extra rows below switch on that, so an analyst-triggered escalation
+// doesn't arrive claiming the incident breached an SLA window it may not have.
 export async function sendEscalationEmail(params: {
     to: string[];
     incident_number: string;
@@ -683,11 +687,23 @@ export async function sendEscalationEmail(params: {
     severity: string;
     assignee: string;
     opened_at: string;
+    escalated_by?: string;
+    note?: string;
 }): Promise<void> {
     if (!isEmailEnabled()) return;
 
     const title = escapeHtml(params.title);
     const assignee = escapeHtml(params.assignee);
+    const manual = Boolean(params.escalated_by);
+
+    const noteRow = params.note?.trim()
+        ? `<tr><td style="padding:8px 0;color:#7A8099;font-size:12px;vertical-align:top;">ANALYST NOTES</td>
+               <td style="padding:8px 0;color:#1C1F2E;font-size:13px;white-space:pre-wrap;">${escapeHtml(params.note.trim())}</td></tr>`
+        : '';
+    const byRow = params.escalated_by
+        ? `<tr><td style="padding:8px 0;color:#7A8099;font-size:12px;">ESCALATED BY</td>
+               <td style="padding:8px 0;color:#1C1F2E;font-size:13px;">${escapeHtml(params.escalated_by)}</td></tr>`
+        : '';
 
     const body = `
     <tr>
@@ -702,7 +718,9 @@ export async function sendEscalationEmail(params: {
       <td style="padding:32px;">
         <h1 style="color:#1C1F2E;font-size:20px;font-weight:900;margin:0 0 4px;">${title}</h1>
         <p style="color:#7A8099;font-size:13px;margin:0 0 24px;">
-          This incident has not been resolved within the expected SLA window.
+          ${manual
+            ? 'An analyst has escalated this incident for immediate attention.'
+            : 'This incident has not been resolved within the expected SLA window.'}
         </p>
         <table style="width:100%;border-collapse:collapse;">
           <tr><td style="padding:8px 0;color:#7A8099;font-size:12px;">INCIDENT</td>
@@ -713,8 +731,10 @@ export async function sendEscalationEmail(params: {
               <td style="padding:8px 0;color:#1C1F2E;font-size:13px;">${assignee}</td></tr>
           <tr><td style="padding:8px 0;color:#7A8099;font-size:12px;">OPEN SINCE</td>
               <td style="padding:8px 0;color:#1C1F2E;font-size:13px;">${escapeHtml(params.opened_at)}</td></tr>
+          ${byRow}
+          ${noteRow}
         </table>
-        <a href="https://socnovr.vercel.app/admin/secops/incidents"
+        <a href="https://novr-soc.vercel.app/admin/secops/incidents"
            style="display:inline-block;background:#520385;color:white;padding:12px 24px;
                   border-radius:8px;text-decoration:none;font-weight:bold;margin-top:24px;font-size:13px;">
           View in NovrSOC →
