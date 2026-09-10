@@ -4,20 +4,14 @@ import { useState, useEffect } from 'react';
 import { Download } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 
-// Real entries (marked LIVE below) come from GET /api/platform/audit-log (lib/audit.ts) —
-// currently logged for LOGIN, CREATE_INCIDENT, and ADD_EXECUTIVE only (see those routes'
-// logAudit() calls). Everything else below stays clearly-labeled mock/historical data until
-// more routes get instrumented and this moves to a real Supabase audit_log table.
+// Every entry shown here is a real one from GET /api/platform/audit-log (lib/audit.ts), which
+// currently records LOGIN, CREATE_INCIDENT and ADD_EXECUTIVE (see those routes' logAudit()
+// calls). This table used to blend in a hardcoded MOCK_AUDIT list behind a LIVE/MOCK column;
+// that's gone, so an empty table now honestly means "nothing has been logged yet" rather than
+// showing invented activity. Instrumenting more routes is what fills this in — don't re-add
+// placeholder rows.
 
-interface AuditEntry { ts: string; user: string; action: string; resource: string; ip: string; result: 'success' | 'failed'; live?: boolean }
-
-const MOCK_AUDIT: AuditEntry[] = [
-    { ts: '2026-08-24 09:41:22', user: 'rayne@cybernovr.com', action: 'LOGIN', resource: 'Admin Portal', ip: '10.0.0.2', result: 'success' },
-    { ts: '2026-08-24 09:43:15', user: 'rayne@cybernovr.com', action: 'RUN_SCAN', resource: 'Domain: cybernovr.com', ip: '10.0.0.2', result: 'success' },
-    { ts: '2026-08-24 08:15:00', user: 'karl@cybernovr.com', action: 'LOGIN', resource: 'Admin Portal', ip: '10.0.0.3', result: 'success' },
-    { ts: '2026-08-24 08:17:22', user: 'karl@cybernovr.com', action: 'UPDATE_ALERT', resource: 'Alert: al_047', ip: '10.0.0.3', result: 'success' },
-    { ts: '2026-08-23 23:41:05', user: 'unknown', action: 'LOGIN', resource: 'Admin Portal', ip: '185.220.101.47', result: 'failed' },
-];
+interface AuditEntry { ts: string; user: string; action: string; resource: string; ip: string; result: 'success' | 'failed' }
 
 const ACTIONS = ['LOGIN', 'LOGOUT', 'CREATE_INCIDENT', 'UPDATE_ALERT', 'ADD_DOMAIN', 'ADD_EXECUTIVE', 'RUN_SCAN', 'EXPORT_REPORT', 'INVITE_USER', 'CHANGE_ROLE', 'DELETE_ORG', 'UPDATE_SETTINGS'];
 
@@ -33,26 +27,26 @@ export function AuditLog() {
     const [userFilter, setUserFilter] = useState('all');
     const [actionFilter, setActionFilter] = useState('all');
     const [resourceFilter, setResourceFilter] = useState('');
-    const [liveEntries, setLiveEntries] = useState<AuditEntry[]>([]);
+    const [entries, setEntries] = useState<AuditEntry[]>([]);
+    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         apiFetch(apiUrl('/api/platform/audit-log?limit=100'), { cache: 'no-store' })
             .then((r) => r.json())
             .then((data: { entries?: BackendAuditEntry[] }) => {
-                const entries = (data.entries ?? []).map((e): AuditEntry => ({
+                setEntries((data.entries ?? []).map((e): AuditEntry => ({
                     // Backend timestamp is already ISO 8601 UTC — reformat in place rather than
-                    // round-tripping through Date/toLocaleString, which would apply the
-                    // viewer's local timezone and make this inconsistent with MOCK_AUDIT's
-                    // plain 'YYYY-MM-DD HH:mm:ss' strings below.
+                    // round-tripping through Date/toLocaleString, which would silently relabel
+                    // every row in the viewer's local timezone.
                     ts: e.timestamp.replace('T', ' ').slice(0, 19),
-                    user: e.user, action: e.action, resource: e.resource, ip: e.ip, result: e.result, live: true,
-                }));
-                setLiveEntries(entries);
+                    user: e.user, action: e.action, resource: e.resource, ip: e.ip, result: e.result,
+                })));
             })
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => setLoading(false));
     }, []);
 
-    const allEntries = [...liveEntries, ...MOCK_AUDIT].sort((a, b) => (a.ts < b.ts ? 1 : -1));
+    const allEntries = [...entries].sort((a, b) => (a.ts < b.ts ? 1 : -1));
     const users = Array.from(new Set(allEntries.map((a) => a.user)));
     const filtered = allEntries.filter((a) =>
         (userFilter === 'all' || a.user === userFilter) &&
@@ -102,20 +96,28 @@ export function AuditLog() {
                     <table className="w-full text-left">
                         <thead>
                             <tr className="bg-grey-800">
-                                {['', 'Timestamp', 'User', 'Action', 'Resource', 'IP Address', 'Result'].map((c) => (
+                                {['Timestamp', 'User', 'Action', 'Resource', 'IP Address', 'Result'].map((c) => (
                                     <th key={c} className="px-4 py-3 text-[10px] font-semibold text-white uppercase tracking-widest whitespace-nowrap">{c}</th>
                                 ))}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-border text-sm">
+                            {filtered.length === 0 && (
+                                <tr>
+                                    <td colSpan={6} className="px-4 py-10 text-center text-xs text-foreground-muted">
+                                        {loading
+                                            ? 'Loading audit events…'
+                                            : allEntries.length === 0
+                                                ? 'No audit events recorded yet.'
+                                                : 'No audit events match these filters.'}
+                                    </td>
+                                </tr>
+                            )}
                             {filtered.map((a, i) => {
                                 const suspicious = isSuspiciousIp(a.ip);
                                 const flagged = a.result === 'failed' || suspicious;
                                 return (
                                     <tr key={i} className={flagged ? 'bg-red/5' : ''}>
-                                        <td className="px-4 py-3">
-                                            <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${a.live ? 'bg-green/10 text-green' : 'bg-card-muted text-foreground-muted'}`}>{a.live ? 'LIVE' : 'MOCK'}</span>
-                                        </td>
                                         <td className="px-4 py-3 text-foreground-muted whitespace-nowrap">{a.ts}</td>
                                         <td className="px-4 py-3 font-medium text-foreground whitespace-nowrap">{a.user}</td>
                                         <td className="px-4 py-3 font-mono text-foreground-muted whitespace-nowrap">{a.action}</td>

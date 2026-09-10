@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { ArrowLeft, CheckCircle2, XCircle, RefreshCw, Download, Mail, Calendar, ArrowUpRight } from 'lucide-react';
 import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer } from 'recharts';
 import { apiUrl, apiFetch } from '@/lib/api';
+import { VendorAssessmentQuestionnaire } from './VendorAssessmentQuestionnaire';
 
 interface VendorIssue {
     severity: 'critical' | 'high' | 'medium' | 'low';
@@ -188,6 +189,12 @@ export function VendorAssessments() {
                         })
                     )}
                 </div>
+
+                {/* Control questionnaire — the attested half of the review. Kept distinct from
+                    the automated score above, which is derived from externally observable
+                    signals (TLS, SPF/DMARC/DKIM, DNSSEC, breaches, exposed ports) and never
+                    from these answers. */}
+                <VendorAssessmentQuestionnaire vendorId={selectedVendor.id} vendorName={selectedVendor.name} />
 
                 {/* Technical details */}
                 <div className="bg-card border border-border rounded-xl p-5">

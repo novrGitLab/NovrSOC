@@ -541,7 +541,7 @@ export function NigeriaMap2({
             threat mode: threat_level, i.e. raw threat count thresholds, not severity). A
             previous version of this legend described threat *type* colors (malware/phishing/
             botnet/ddos) that didn't correspond to what the map's fill color actually encoded. */}
-        <div className="absolute bottom-3 left-3 bg-white/90 backdrop-blur rounded-lg border border-border px-3 py-2 text-[10px] space-y-1">
+        <div className="absolute top-3 right-3 bg-white/90 backdrop-blur rounded-lg border border-border px-3 py-2 text-[10px] space-y-1">
           <p className="font-bold text-foreground uppercase tracking-wide mb-1">
             {colorMode === 'region' ? 'Region' : 'Threat Level'}
           </p>

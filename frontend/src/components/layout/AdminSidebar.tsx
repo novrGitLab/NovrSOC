@@ -96,7 +96,11 @@ const adminNav: NavGroup[] = [
         icon: Shield,
         groupLabel: 'Brand Protection',
         items: [
-            { label: 'Domain & DNS Suite', href: '/admin/brand/domain-dns', icon: Globe },
+            // Replaces the old 'Domain & DNS Suite' entry, which pointed at two separate tools
+            // behind a tab switch (each with its own input). /admin/brand/domain-dns and the
+            // individual /admin/brand/domain and /admin/infra/dns routes all still resolve —
+            // only the nav entry moved, so existing links and bookmarks don't break.
+            { label: 'Domain Intelligence', href: '/admin/brand/domain-intelligence', icon: Globe },
             { label: 'Social Suite', href: '/admin/brand/social', icon: Users },
             { label: 'Brand Suite', href: '/admin/brand/brand', icon: Shield },
             { label: 'Executive Monitoring', href: '/admin/brand/executive', icon: UserCheck },
@@ -185,6 +189,7 @@ const adminNav: NavGroup[] = [
             { label: 'Team', href: '/admin/settings/team', icon: Users, adminOnly: true },
             { label: 'Organisations', href: '/admin/settings/organisations', icon: Building2, adminOnly: true },
             { label: 'Billing', href: '/admin/settings/billing', icon: CreditCard, adminOnly: true },
+            { label: 'Analytics', href: '/admin/settings/analytics', icon: BarChart, adminOnly: true },
             { label: 'Audit Log', href: '/admin/platform/audit', icon: ScrollText, adminOnly: true },
             { label: 'Platform Health', href: '/admin/platform/health', icon: Activity, managerOnly: true },
         ],

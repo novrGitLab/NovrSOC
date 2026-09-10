@@ -200,6 +200,33 @@ export function ExecutiveMonitor() {
                 </div>
             </div>
 
+            {/* What a scan actually runs. Driven by the `capabilities` flags the backend
+                reports, not a fixed list — only breach checking is wired up today, and showing
+                dark-web/Wazuh rows as if they ran would misrepresent an executive with no
+                findings as one that came back clean across four sources. */}
+            <div className="bg-card border border-border rounded-xl p-4">
+                <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-3">Checks run per executive</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    {[
+                        { icon: '🔓', name: 'Email Breach Check', desc: 'XposedOrNot', available: capabilities.breach_check },
+                        { icon: '📱', name: 'Social Media Check', desc: 'Handles you add per executive', available: true },
+                        { icon: '🌑', name: 'Dark Web Mentions', desc: 'Requires Flare.io', available: capabilities.darkweb },
+                        { icon: '🚨', name: 'Auth Anomalies', desc: 'Requires Wazuh', available: capabilities.wazuh },
+                    ].map((c) => (
+                        <div key={c.name} className={`rounded-lg border p-3 ${c.available ? 'border-border bg-card' : 'border-border bg-card-muted/40'}`}>
+                            <div className="flex items-center gap-2 mb-1">
+                                <span className={c.available ? '' : 'opacity-40'}>{c.icon}</span>
+                                <span className={`text-[11px] font-bold ${c.available ? 'text-foreground' : 'text-foreground-muted'}`}>{c.name}</span>
+                            </div>
+                            <p className="text-[10px] text-foreground-muted leading-snug">{c.desc}</p>
+                            <p className={`text-[9px] font-bold uppercase mt-1 ${c.available ? 'text-green' : 'text-foreground-muted'}`}>
+                                {c.available ? 'Active' : 'Not configured'}
+                            </p>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
             {/* Monitored Executives */}
             <div>
                 <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-2">Monitored Executives</p>

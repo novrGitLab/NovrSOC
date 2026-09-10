@@ -125,6 +125,85 @@ export function GlobalThreatMap() {
                     d3.select(this).attr('opacity', 1);
                     setTooltip(null);
                 });
+
+            // Animated attack flows from the top origins to Nigeria.
+            //
+            // Origins and their positions both come from real data, never a fixed list: the
+            // countries are the top entries of the same `threats` response the choropleth and
+            // the "Top Threat Origins" row below are drawn from, and each one's position is the
+            // geographic centroid of its actual topojson feature (d3.geoCentroid). A hardcoded
+            // origin list with hand-typed lat/lng is exactly what this component was built to
+            // get away from — see the header comment on the globe it replaced — and it would
+            // also drift silently the moment the backend's top origins changed.
+            const centroidByNumeric = new Map<string, [number, number]>();
+            for (const f of countries.features) {
+                centroidByNumeric.set(String(f.id ?? '').padStart(3, '0'), d3.geoCentroid(f));
+            }
+
+            const nigeriaCentroid = centroidByNumeric.get(NIGERIA_NUMERIC);
+            const destination = nigeriaCentroid ? projection(nigeriaCentroid) : null;
+
+            if (destination) {
+                const origins = threats
+                    .filter((t) => t.numericCode && String(t.numericCode).padStart(3, '0') !== NIGERIA_NUMERIC && t.threats > 0)
+                    .slice(0, 5);
+
+                const flowLayer = svg.append('g').attr('pointer-events', 'none');
+
+                origins.forEach((origin, i) => {
+                    const centroid = centroidByNumeric.get(String(origin.numericCode).padStart(3, '0'));
+                    const src = centroid ? projection(centroid) : null;
+                    if (!src) return;
+
+                    // Quadratic curve whose control point is lifted perpendicular to the
+                    // source→destination line, scaled to the span. A fixed vertical offset
+                    // flattens out on short hops and overshoots the viewBox on long ones.
+                    const [sx, sy] = src;
+                    const [dx, dy] = destination;
+                    const span = Math.hypot(dx - sx, dy - sy);
+                    const lift = Math.min(span * 0.3, height * 0.4);
+                    const cx = (sx + dx) / 2;
+                    const cy = (sy + dy) / 2 - lift;
+
+                    const path = flowLayer
+                        .append('path')
+                        .attr('d', `M${sx},${sy} Q${cx},${cy} ${dx},${dy}`)
+                        .attr('fill', 'none')
+                        .attr('stroke', '#CC2B2B')
+                        .attr('stroke-width', 1.25)
+                        .attr('stroke-linecap', 'round')
+                        .attr('opacity', 0.55);
+
+                    const node = path.node();
+                    if (!node) return;
+                    const totalLength = node.getTotalLength() || 200;
+
+                    const run = (selection: d3.Selection<SVGPathElement, unknown, null, undefined>, delay: number) => {
+                        selection
+                            .attr('stroke-dasharray', `${totalLength} ${totalLength}`)
+                            .attr('stroke-dashoffset', totalLength)
+                            .transition()
+                            .duration(2000)
+                            .delay(delay)
+                            .ease(d3.easeLinear)
+                            .attr('stroke-dashoffset', 0)
+                            .on('end', function () {
+                                run(d3.select(this), 1000);
+                            });
+                    };
+                    run(path, i * 400);
+                });
+
+                // Nigeria end-point marker, so the convergence point reads as the target.
+                flowLayer
+                    .append('circle')
+                    .attr('cx', destination[0])
+                    .attr('cy', destination[1])
+                    .attr('r', 3.5)
+                    .attr('fill', '#520385')
+                    .attr('stroke', '#FFFFFF')
+                    .attr('stroke-width', 1.5);
+            }
         };
 
         fetch(WORLD_ATLAS_URL)
@@ -182,6 +261,14 @@ export function GlobalThreatMap() {
                     </div>
                 )}
                 <svg ref={svgRef} className="w-full h-full" preserveAspectRatio="xMidYMid meet" />
+
+                {/* Only claim flows are drawn when there is actually something to draw them
+                    from — with no geolocated origins the map is a plain choropleth. */}
+                {!loading && !mapError && threats.length > 0 && (
+                    <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between gap-3 text-[10px] text-foreground-muted pointer-events-none">
+                        <span>Attack flows to Nigeria from the top {Math.min(threats.length, 5)} threat origins</span>
+                    </div>
+                )}
 
                 {tooltip && (
                     <div

@@ -179,8 +179,9 @@ router.get('/health', async (_req, res) => {
 });
 
 // GET /api/platform/audit-log — real entries for the 3 actions currently logged (LOGIN,
-// CREATE_INCIDENT, ADD_EXECUTIVE — see lib/audit.ts's call sites). Everything else on the
-// Audit Log page is still mock/historical data shown separately.
+// CREATE_INCIDENT, ADD_EXECUTIVE — see lib/audit.ts's call sites). These are the ONLY entries
+// the Audit Log page shows; its old hardcoded filler rows were removed, so an empty response
+// renders as "No audit events recorded yet." Instrument more routes with logAudit() to fill it.
 router.get('/audit-log', (req, res) => {
     const limit = Number(req.query.limit) || 100;
     res.json({ entries: getAuditLog(limit) });

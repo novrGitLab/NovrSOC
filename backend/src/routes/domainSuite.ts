@@ -208,6 +208,57 @@ router.post('/', validate(AddDomainSchema), (req, res) => {
     res.status(201).json(entry);
 });
 
+// POST /api/brand/domains/investigate { domain } — ad-hoc RDAP/WHOIS + typosquat candidates
+// for ANY domain, without it having to be added as a monitored domain first.
+//
+// The Domain Intelligence page needs this because every other route in this file is keyed on a
+// monitored domain's `:id` — GET /:id/scan and GET /:id/dns both 404 for a domain the operator
+// has merely typed into a search box. Registered here (before the /:id routes, so 'investigate'
+// isn't swallowed as an id) rather than loosening those to accept a bare hostname, which would
+// change what an existing id-keyed URL means.
+//
+// DNS records and certificates deliberately aren't returned: POST /api/dns/lookup already does
+// both for an arbitrary domain, and duplicating the crt.sh call here would mean two round trips
+// to the same upstream for one investigation.
+const InvestigateSchema = z.object({ domain: z.string().min(3).max(253).trim() });
+
+router.post('/investigate', validate(InvestigateSchema), async (req, res) => {
+    const raw = String(req.body?.domain ?? '');
+    const cleaned = raw.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^\*\./, '');
+    if (!cleaned || !cleaned.includes('.')) {
+        res.status(400).json({ error: 'Enter a valid domain, e.g. example.com' });
+        return;
+    }
+
+    let whois: ParsedWhois | null = null;
+    try {
+        whois = await lookupDomain(cleaned);
+    } catch {
+        // Non-fatal: RDAP is frequently unavailable for some TLDs, and the rest of the
+        // investigation is still worth returning.
+    }
+
+    // Pattern-generated typosquat candidates. These are NOT checked for registration or
+    // resolution — same limitation as GET /:id/scan's lookalikes — so the response labels them
+    // as candidates and the UI must not present them as confirmed hostile registrations.
+    const base = cleaned.split('.')[0];
+    const tld = cleaned.split('.').slice(1).join('.');
+    const lookalikes = [
+        { domain: `${base}-official.com`, similarity: 82, risk: 'MEDIUM' as const },
+        { domain: `${base}security.com`, similarity: 79, risk: 'MEDIUM' as const },
+        { domain: `${base}.ng`, similarity: 95, risk: 'HIGH' as const },
+        { domain: `${base.slice(0, -1)}k.${tld}`, similarity: 91, risk: 'HIGH' as const },
+    ].filter((l) => l.domain !== cleaned);
+
+    res.json({
+        domain: cleaned,
+        investigated_at: new Date().toISOString(),
+        whois,
+        lookalikes,
+        lookalikes_note: 'Pattern-generated candidates — registration and resolution are not verified.',
+    });
+});
+
 // DELETE /api/brand/domains/:id
 router.delete('/:id', (req, res) => {
     const idx = monitoredDomains.findIndex((d) => d.id === req.params.id);

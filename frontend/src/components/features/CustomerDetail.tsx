@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Building2, Siren, Server, ClipboardCheck, Users, Settings, Plus, Wrench } from 'lucide-react';
+import { ArrowLeft, Building2, Siren, Server, ClipboardCheck, Users, Settings, Plus, Wrench, ExternalLink } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 
 interface Org {
@@ -77,9 +77,24 @@ export function CustomerDetail({ orgId }: { orgId: string }) {
                     <h1 className="text-lg font-black text-foreground">{org.name === 'Cybernovr' ? '🛡️' : '🏢'} {org.name}</h1>
                     <p className="text-xs text-foreground-muted">{org.domain ?? 'No domain set'} · {org.industry ?? 'No industry set'}</p>
                 </div>
-                <Link href={`/admin/settings/organisations/${org.id}/setup`} className="flex items-center gap-1.5 text-xs font-bold text-white bg-purple hover:bg-purple-hover rounded-lg px-3 py-2 transition-colors flex-shrink-0">
-                    <Wrench size={13} /> Setup Wizard
-                </Link>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                    {/* Opens the client-facing portal login for this org in a new tab. It is a
+                        real sign-in, not an impersonation shortcut: portal sessions carry their
+                        own token minted by the external backend (see middleware/auth.ts's note
+                        on /api/portal/*), so an admin token can't be reused to view it and the
+                        org slug only pre-selects the tenant. */}
+                    <a
+                        href={`/client/login?org=${encodeURIComponent(org.slug)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 text-xs font-bold text-foreground border border-border hover:border-purple hover:text-purple rounded-lg px-3 py-2 transition-colors"
+                    >
+                        <ExternalLink size={13} /> Client Portal View
+                    </a>
+                    <Link href={`/admin/settings/organisations/${org.id}/setup`} className="flex items-center gap-1.5 text-xs font-bold text-white bg-purple hover:bg-purple-hover rounded-lg px-3 py-2 transition-colors">
+                        <Wrench size={13} /> Setup Wizard
+                    </Link>
+                </div>
             </div>
 
             <div className="flex gap-1 bg-card-muted rounded-lg p-1 w-fit overflow-x-auto">

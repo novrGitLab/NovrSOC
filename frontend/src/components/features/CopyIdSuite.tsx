@@ -77,6 +77,7 @@ export function CopyIdSuite() {
     const [signatures, setSignatures] = useState<CodeSignature[]>([]);
     const [loading, setLoading] = useState(true);
     const [scanning, setScanning] = useState(false);
+    const [scanLog, setScanLog] = useState<string[]>([]);
     const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
     const [leaks, setLeaks] = useState<Leak[]>([]);
     const [hookOpen, setHookOpen] = useState(false);
@@ -117,6 +118,39 @@ export function CopyIdSuite() {
             setSaving(false);
         }
     };
+
+    // Progress readout for the scan. The steps mirror what POST /api/brand/leaks/scan actually
+    // does — GitHub then GitLab code search over this org's stored signatures — so the log
+    // isn't narrating work that never happens. It's a progress indicator on a single real
+    // request, not a live per-step feed: the backend returns one summary at the end, so these
+    // advance on a timer and stop at the last step until that response lands.
+    useEffect(() => {
+        if (!scanning) return;
+
+        const steps = [
+            `Initializing scan for org: "cybernovr"`,
+            `Loading ${signatures.length} code signature${signatures.length === 1 ? '' : 's'}…`,
+            'Connecting to GitHub API…',
+            'Searching public repositories…',
+            'Checking for exposed credentials…',
+            'Connecting to GitLab API…',
+            'Searching GitLab public projects…',
+            'Searching for API keys and tokens…',
+            'Cross-referencing known leak patterns…',
+            'Compiling results…',
+        ];
+
+        setScanLog([]);
+        let i = 0;
+        const interval = setInterval(() => {
+            if (i >= steps.length) { clearInterval(interval); return; }
+            const next = steps[i];
+            i++;
+            setScanLog((prev) => [...prev, next]);
+        }, 300);
+
+        return () => clearInterval(interval);
+    }, [scanning, signatures.length]);
 
     const runScan = async () => {
         setScanning(true);
@@ -260,8 +294,31 @@ export function CopyIdSuite() {
                         {scanning ? 'Scanning GitHub… Scanning GitLab…' : 'Run Manual Scan Now'}
                     </button>
                 </div>
-                {scanSummary && leaks.length === 0 && (
-                    <p className="text-xs text-blue mt-3">✅ Scan Complete — GitHub: 0 results for cybernovr patterns · GitLab: 0 results for cybernovr patterns</p>
+                {scanning && (
+                    <div className="mt-4 bg-[#1C1F2E] rounded-2xl p-5 font-mono text-xs overflow-x-auto">
+                        <div className="flex items-center gap-2 mb-4">
+                            <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                            <span className="text-green-400">NovrSOC Intelli CODE — Scanning…</span>
+                        </div>
+                        <div className="space-y-1.5 text-green-300/70">
+                            {scanLog.map((line, i) => (
+                                <div key={i} className="flex gap-2">
+                                    <span className="text-green-400/40 w-12 flex-shrink-0">{String(i + 1).padStart(3, '0')} |</span>
+                                    <span>{line}</span>
+                                </div>
+                            ))}
+                            <div className="flex gap-2">
+                                <span className="text-green-400/40 w-12 flex-shrink-0">{String(scanLog.length + 1).padStart(3, '0')} |</span>
+                                <span className="text-green-400 animate-pulse">█</span>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {!scanning && scanSummary && leaks.length === 0 && (
+                    <p className="text-xs text-blue mt-3">
+                        ✅ Scan complete — GitHub: {scanSummary.github_results} result{scanSummary.github_results === 1 ? '' : 's'} · GitLab: {scanSummary.gitlab_results} result{scanSummary.gitlab_results === 1 ? '' : 's'} for cybernovr patterns
+                    </p>
                 )}
             </div>
 

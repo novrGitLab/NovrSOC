@@ -206,37 +206,14 @@ interface MonitoredExecutive {
 }
 
 const executives: MonitoredExecutive[] = [
-    {
-        id: '1', name: 'Abubakar Usman Damilare', email: 'rayne@cybernovr.com', role: 'Chief Executive Officer', department: 'Executive', org: 'Cybernovr',
-        socials: [{ platform: 'twitter', handle: '@rayneops' }, { platform: 'linkedin', handle: '/in/rayneops' }],
-        status: 'monitored', added_at: '2026-01-01', last_scanned: '2026-08-16T06:00:00.000Z', breach_count: 0, breaches: [], scan_status: 'complete',
-        auth_anomalies: [], risk_level: 'LOW',
-    },
-    {
-        id: '2', name: 'Karl Mensah', email: 'karl@cybernovr.com', role: 'Chief Technology Officer', department: 'Engineering', org: 'Cybernovr',
-        socials: [{ platform: 'twitter', handle: '@karl_cto' }],
-        status: 'at_risk', added_at: '2026-01-01', last_scanned: '2026-08-16T06:00:00.000Z', breach_count: 1,
-        breaches: [{ source: 'LinkedIn2024', title: 'LinkedIn 2021', breach_date: '2021-06-22', data_classes: ['Email addresses', 'Phone numbers', 'Professional information'], is_sensitive: false, is_verified: true }],
-        scan_status: 'complete',
-        auth_anomalies: [{ type: 'UNUSUAL_LOCATION', message: 'Login from London, UK (unusual — previous logins from Lagos)', severity: 'MEDIUM', time: '2026-08-14T23:41:02.000Z' }],
-        risk_level: 'MEDIUM',
-    },
-    {
-        id: '3', name: 'Amina Bello', email: 'amina@cybernovr.com', role: 'Chief Financial Officer', department: 'Finance', org: 'Cybernovr',
-        socials: [{ platform: 'linkedin', handle: '/in/aminabello' }],
-        status: 'at_risk', added_at: '2026-01-01', last_scanned: '2026-08-16T06:00:00.000Z', breach_count: 2,
-        breaches: [
-            { source: 'Adobe2013', title: 'Adobe 2013', breach_date: '2013-10-04', data_classes: ['Email addresses', 'Encrypted passwords'], is_sensitive: false, is_verified: true },
-            { source: 'Dropbox2012', title: 'Dropbox 2012', breach_date: '2012-07-01', data_classes: ['Email addresses', 'Hashed passwords'], is_sensitive: false, is_verified: true },
-        ],
-        scan_status: 'complete', auth_anomalies: [], risk_level: 'MEDIUM',
-    },
-    {
-        id: '4', name: 'Emeka Okonkwo', email: 'emeka@cybernovr.com', role: 'Head of Sales', department: 'Commercial', org: 'Cybernovr',
-        socials: [{ platform: 'twitter', handle: '@emeka_sales' }, { platform: 'instagram', handle: '@emekaokonkwo' }, { platform: 'linkedin', handle: '/in/emekaokonkwo' }],
-        status: 'monitored', added_at: '2026-01-01', last_scanned: '2026-08-16T06:00:00.000Z', breach_count: 0, breaches: [], scan_status: 'complete',
-        auth_anomalies: [], risk_level: 'LOW',
-    },
+    // Intentionally empty. This used to ship four hardcoded executives (a CEO, CTO, CFO and
+    // Head of Sales) carrying invented breach records — a fabricated LinkedIn 2021 hit, Adobe
+    // 2013/Dropbox 2012 hits, and a fake "unusual login from London" anomaly. None of it came
+    // from a real breach check, so the page was presenting fiction as findings.
+    //
+    // Executives are now added by the operator via POST /executives, and their breach data
+    // comes from POST /executives/:id/scan (services/breachCheck.ts — XposedOrNot). An empty
+    // list renders the empty state in the UI; don't reseed it.
 ];
 
 function maskEmail(email: string): string {
