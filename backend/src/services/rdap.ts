@@ -38,17 +38,34 @@ export interface ParsedWhois {
     daysUntilExpiry: number | null;
 }
 
+// Timeout is 20s, not 10s: rdap.org doesn't answer directly, it 302s to the authoritative
+// registry (rdap.org/domain/google.com -> rdap.verisign.com/com/v1/domain/google.com), so every
+// lookup is two round trips to two different hosts. Measured at ~6s from a developer machine,
+// and lookups were returning null from Railway where the egress path is slower — 10s was not
+// enough headroom for a two-hop request.
+//
+// Failures are logged rather than swallowed. This returns null for "no RDAP record" (plenty of
+// ccTLDs publish none) AND for "the request failed", and callers can't tell those apart — the
+// Domain Intelligence page renders both as an empty WHOIS tab. Without a log line there is
+// nothing to distinguish a domain with no RDAP data from an outbound network problem.
+const RDAP_TIMEOUT_MS = 20000;
+
 export async function lookupDomain(domain: string): Promise<ParsedWhois | null> {
     try {
         const res = await fetch(`${RDAP_BASE}/domain/${domain}`, {
-            signal: AbortSignal.timeout(10000),
+            signal: AbortSignal.timeout(RDAP_TIMEOUT_MS),
             headers: { Accept: 'application/json' },
         });
 
-        if (!res.ok) return null;
+        if (!res.ok) {
+            // 404 is the normal "this TLD/domain has no RDAP record" answer, not a fault.
+            if (res.status !== 404) console.warn(`[rdap] ${domain}: upstream returned HTTP ${res.status}`);
+            return null;
+        }
         const data = (await res.json()) as RDAPResponse;
         return parseRDAP(domain, data);
-    } catch {
+    } catch (err) {
+        console.warn(`[rdap] ${domain}: lookup failed —`, err instanceof Error ? err.message : err);
         return null;
     }
 }
