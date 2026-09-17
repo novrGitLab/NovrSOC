@@ -27,6 +27,7 @@ interface ThreatActor {
     confidence: 'high' | 'medium' | 'low';
     last_active: string;
     description: string;
+    damage: string;
     reference: string;
     reference_url: string;
 }
@@ -77,6 +78,15 @@ function ActorCard({ actor }: { actor: ThreatActor }) {
             </div>
 
             <p className="text-xs text-foreground-muted mb-3">{actor.description}</p>
+
+            {/* Documented impact. Every figure traces to the cited source at the bottom of the
+                card — these are attributed to public reporting, not estimated here. */}
+            {actor.damage && (
+                <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-3 mb-3">
+                    <p className="text-[10px] font-bold text-red-500 uppercase tracking-wider mb-1">Documented impact</p>
+                    <p className="text-xs text-foreground-muted leading-relaxed">{actor.damage}</p>
+                </div>
+            )}
 
             <div className="grid sm:grid-cols-2 gap-3 mb-3">
                 <div>

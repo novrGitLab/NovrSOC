@@ -167,8 +167,12 @@ export function HomepageScanner() {
                 <p className="mt-3 text-xs text-red-600 bg-red-50 rounded-lg p-3">{error}</p>
             )}
 
+            {/* Source names deliberately not listed here. This scanner is public and
+                unauthenticated; naming each upstream feed tells anyone probing the platform
+                exactly which providers to evade. Attribution is still shown on the admin-only
+                CTI and Platform Health pages, where the audience is the operator. */}
             <p className="text-[10px] text-gray-400 mt-3 text-center">
-                Powered by GreyNoise · VirusTotal · AbuseIPDB · URLScan · ThreatFox · URLhaus · IPregistry · CIRCL · LeakIX
+                Checked against nine commercial and open-source threat intelligence sources.
             </p>
         </div>
     );

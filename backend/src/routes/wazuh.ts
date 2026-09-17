@@ -890,19 +890,80 @@ router.get('/agents/:id/vulnerabilities', async (req, res) => {
     }
 });
 
-// GET /api/wazuh/agents/:id/packages — installed software from syscollector (Manager REST API,
-// not the indexer: syscollector inventory is not shipped to an index).
+// GET /api/wazuh/agents/:id/packages — installed software inventory.
+//
+// Two sources, tried in order, because which one holds the data depends on the Wazuh version:
+//   1. wazuh-states-inventory-packages-* on the indexer. Wazuh 4.8+ ships syscollector state
+//      here, and it is the faster path (one query, no Manager auth round trip).
+//   2. GET /syscollector/{id}/packages on the Manager REST API — where it lives pre-4.8, and
+//      still populated on some deployments where the indexer template was never created.
+//
+// Confirmed live on 2026-09-17: the Manager path returned 0 packages for every agent on this
+// deployment, which is what prompted adding the indexer path. If BOTH return nothing, the
+// response says syscollector is not reporting rather than implying the host has no software —
+// the agent's syscollector wodle has to be enabled with <packages>yes</packages>.
 router.get('/agents/:id/packages', async (req, res) => {
+    // Agent ids are zero-padded to 3 digits in the indexer ('1' -> '001'), but the Manager API
+    // accepts either. Padding here keeps the term query matching.
+    const agentId = req.params.id.padStart(3, '0');
+
+    interface PkgHit {
+        _source?: {
+            package?: { name?: string; version?: string; architecture?: string; vendor?: string; install_time?: string };
+        };
+    }
+    interface PkgSearch { hits?: { hits?: PkgHit[] } }
+
+    let indexerError: string | null = null;
+    try {
+        const result = await search<PkgSearch>('wazuh-states-inventory-packages-*', {
+            size: 500,
+            query: { bool: { must: [{ term: { 'agent.id': agentId } }] } },
+            _source: ['package.name', 'package.version', 'package.architecture', 'package.vendor', 'package.install_time'],
+        });
+
+        const hits = result?.hits?.hits ?? [];
+        if (hits.length > 0) {
+            const packages = hits.map((h) => ({
+                name: h._source?.package?.name ?? 'Unknown',
+                version: h._source?.package?.version ?? '',
+                architecture: h._source?.package?.architecture ?? null,
+                vendor: h._source?.package?.vendor ?? null,
+                install_time: h._source?.package?.install_time ?? null,
+            }));
+            res.json({ packages, agent_id: req.params.id, total: packages.length, source: 'indexer' });
+            return;
+        }
+    } catch (err) {
+        // A missing index throws here — expected on pre-4.8, so fall through to the Manager API
+        // rather than failing. Kept for the diagnostic below if that path is empty too.
+        indexerError = err instanceof Error ? err.message : String(err);
+    }
+
     if (!wazuhConfigured()) {
-        res.json({ packages: [], agent_id: req.params.id, error: 'Wazuh not configured' });
+        res.json({ packages: [], agent_id: req.params.id, total: 0, error: 'Wazuh not configured' });
         return;
     }
+
     try {
         const packages = await getAgentInventory(req.params.id);
-        res.json({ packages, agent_id: req.params.id, total: packages.length });
+        res.json({
+            packages,
+            agent_id: req.params.id,
+            total: packages.length,
+            source: 'manager-api',
+            ...(packages.length === 0 && {
+                error: 'No package inventory reported. Enable the syscollector wodle on this agent with <packages>yes</packages> — an empty list here does not mean the host has no software installed.',
+                indexer_error: indexerError,
+            }),
+        });
     } catch (err) {
         console.error('[wazuh/agents/:id/packages] failed:', err instanceof Error ? err.message : err);
-        res.json({ packages: [], agent_id: req.params.id, error: 'Syscollector unavailable - the agent may not have run an inventory scan yet' });
+        res.json({
+            packages: [], agent_id: req.params.id, total: 0,
+            error: 'Syscollector unavailable - the agent may not have run an inventory scan yet',
+            indexer_error: indexerError,
+        });
     }
 });
 

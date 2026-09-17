@@ -17,25 +17,25 @@ const FEATURES = [
     {
         icon: '🛡️', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
         title: 'Real-Time Threat Detection',
-        desc: 'Wazuh SIEM monitors all endpoints 24/7 with 37,000+ detection rules. MITRE ATT&CK mapping on every alert. Automatic case creation in TheHive.',
+        desc: 'Our SIEM monitors every endpoint 24/7 against 37,000+ detection rules, with MITRE ATT&CK mapping on each alert and automatic case creation for anything that matters.',
         items: ['SSH brute force detection', 'Malware behavioural analysis', 'Lateral movement tracking'],
     },
     {
         icon: '⚡', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
         title: 'SOAR Automation',
-        desc: 'Wazuh detects → case auto-created in TheHive → analyst notified on Slack → low severity cases auto-close after 30 minutes.',
-        items: ['Zero-touch incident creation', 'Escalation emails via Resend', 'Playbook-guided response'],
+        desc: 'Detection → case created automatically → analyst notified in seconds → low-severity cases auto-close after 30 minutes with no analyst time spent.',
+        items: ['Zero-touch incident creation', 'Automated CISO escalation', 'Playbook-guided response'],
     },
     {
         icon: '🇳🇬', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
         title: 'Nigerian Threat Intelligence',
-        desc: 'Real-time threat heatmap across all 37 states and FCT. GreyNoise Nigerian ASN data. ngCERT, NCC-CSIRT, and CBN advisory integration.',
-        items: ['GreyNoise Nigerian ASN data', 'ngCERT advisory feed', 'State-level threat heatmap'],
+        desc: 'Real-time threat heatmap across all 37 states and the FCT, built on live scanning telemetry for Nigerian ASNs, with ngCERT, NCC-CSIRT and CBN advisory integration.',
+        items: ['Live Nigerian ASN telemetry', 'ngCERT advisory feed', 'State-level threat heatmap'],
     },
     {
         icon: '🔍', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
         title: 'Multi-Source CTI Platform',
-        desc: 'Enrich any IP, domain, hash, or URL across 9 sources simultaneously. Results cached in Supabase. MISP integration for STIX-format sharing.',
+        desc: 'Enrich any IP, domain, hash or URL across nine intelligence sources at once, with cached results and STIX 2.1 export for sharing with partners and regulators.',
         items: ['9 simultaneous sources', 'STIX 2.1 export', 'IOC history and caching'],
     },
     {
@@ -47,13 +47,13 @@ const FEATURES = [
     {
         icon: '📧', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
         title: 'Email Security',
-        desc: 'DMARC monitoring, AI-powered phishing detection, RBL blocklist checking, and email header analysis. Powered by Cisco Talos and OpenPhish.',
+        desc: 'DMARC, SPF and DKIM monitoring, AI-powered phishing detection, real-time blocklist checking and full email header analysis.',
         items: ['DMARC / SPF / DKIM check', 'AI phishing classifier', 'Real-time RBL checking'],
     },
     {
         icon: '🤖', tag: 'AI', tagColor: 'bg-purple-100 text-purple-700',
         title: 'NovrAI Security Analyst',
-        desc: 'AI-powered SOC analyst available 24/7. Powered by Claude (Anthropic) with Gemini fallback. Context-aware of live platform data.',
+        desc: 'An AI security analyst on call 24/7, built on frontier language models and grounded in your live platform data rather than generic advice.',
         items: ['Incident triage guidance', 'MITRE technique mapping', 'Compliance Q&A (NDPA/CBN)'],
     },
     {
@@ -71,10 +71,10 @@ const FEATURES = [
 ];
 
 const PIPELINE = [
-    { step: '01', icon: '🚨', title: 'Detected', desc: 'Wazuh SIEM fires on anomaly' },
+    { step: '01', icon: '🚨', title: 'Detected', desc: 'SIEM fires on an anomaly' },
     { step: '02', icon: '🔍', title: 'Enriched', desc: 'MITRE mapping + source IP geo' },
-    { step: '03', icon: '📋', title: 'Case Created', desc: 'TheHive case in < 1 second' },
-    { step: '04', icon: '📲', title: 'Notified', desc: 'Slack + email to CISO' },
+    { step: '03', icon: '📋', title: 'Case Created', desc: 'Case opened in under a second' },
+    { step: '04', icon: '📲', title: 'Notified', desc: 'Chat + email to the CISO' },
     { step: '05', icon: '👨‍💻', title: 'Resolved', desc: 'Analyst works in NovrSOC' },
 ];
 
@@ -111,7 +111,7 @@ const PLANS = [
     },
     {
         name: 'Enterprise', price: 'Custom', period: '', desc: 'For large organisations',
-        features: ['Unlimited endpoints', 'Everything in Professional', 'Dedicated SOC Analyst', 'Custom Integrations', 'OPNsense Deployment', 'MSSP White-label', 'SLA Guarantee'],
+        features: ['Unlimited endpoints', 'Everything in Professional', 'Dedicated SOC Analyst', 'Custom Integrations', 'On-Premise Deployment', 'MSSP White-label', 'SLA Guarantee'],
         highlight: false, cta: 'Contact Sales',
     },
 ];

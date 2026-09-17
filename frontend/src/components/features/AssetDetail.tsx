@@ -241,7 +241,21 @@ export function AssetDetail({ agentId }: { agentId: string }) {
                 {tab === 'vulns' && (
                     vulnError ? <p className="text-xs text-amber">{vulnError}</p>
                         : vulns === null ? <p className="text-xs text-foreground-muted">Loading…</p>
-                            : sortedVulns.length === 0 ? <p className="text-xs text-foreground-muted">No vulnerabilities recorded for this agent. Wazuh&apos;s vulnerability detector must be enabled and have completed a scan for results to appear.</p>
+                            : sortedVulns.length === 0 ? (
+                                // An empty vulnerability list is NOT the same as a clean host, and
+                                // must never be rendered as one. Verified live: the index backing
+                                // this is empty on this deployment, so every agent would otherwise
+                                // appear to have zero vulnerabilities.
+                                <div className="bg-amber-500/5 border border-amber-500/30 rounded-xl p-5">
+                                    <p className="text-sm font-bold text-amber-500 mb-1">No vulnerability data for this agent</p>
+                                    <p className="text-xs text-foreground-muted leading-relaxed max-w-2xl">
+                                        This does <span className="font-bold">not</span> mean the host is free of vulnerabilities — it means nothing
+                                        has been scanned. Vulnerability scanning requires the Wazuh
+                                        vulnerability-detector module to be enabled on the manager and to
+                                        have completed a scan for this agent.
+                                    </p>
+                                </div>
+                            )
                                 : (
                                     <div className="overflow-x-auto scrollbar-thin">
                                         <table className="w-full text-left text-xs">
@@ -370,9 +384,20 @@ export function AssetDetail({ agentId }: { agentId: string }) {
                             </div>
 
                             {frameworks.length === 0 ? (
-                                <div className="text-center text-emerald-500 bg-emerald-500/5 border border-emerald-500/30 rounded-xl p-5 text-xs">
-                                    No compliance controls are currently implicated by this agent&apos;s vulnerabilities.
-                                </div>
+                                // Green "nothing failing" is only honest when vulnerabilities were
+                                // actually assessed. With no scan data the correct answer is
+                                // "unknown", not a pass — a clean tick here would be read as an
+                                // assurance the platform has no basis to give.
+                                (vulns?.length ?? 0) === 0 ? (
+                                    <div className="text-xs text-foreground-muted bg-card-muted/40 border border-border rounded-xl p-5">
+                                        No compliance impact can be calculated: this agent has no vulnerability
+                                        scan data. This is not a pass — see the Vulnerabilities tab.
+                                    </div>
+                                ) : (
+                                    <div className="text-center text-emerald-500 bg-emerald-500/5 border border-emerald-500/30 rounded-xl p-5 text-xs">
+                                        No compliance controls are currently implicated by this agent&apos;s vulnerabilities.
+                                    </div>
+                                )
                             ) : (
                                 frameworks.map(([fw, data]) => (
                                     <div key={fw} className="border border-red-500/30 bg-red-500/5 rounded-xl p-4">

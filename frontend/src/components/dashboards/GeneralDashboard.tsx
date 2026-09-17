@@ -232,16 +232,39 @@ function ThreatIntelWidget({ ctiStats, orgCti }: { ctiStats: CtiStats | null; or
     );
 }
 
-/* ── SOAR Activity Widget (Row 4, left) — no Shuffle API wired yet, honestly labeled ── */
+/* ── SOAR Activity Widget (Row 4, left) ──────────────────────────────────────────────
+ * Every figure comes from GET /api/incidents/automation-status (real TheHive case counts).
+ * This previously rendered four hardcoded values — "6 playbooks", three zeros and a 0%
+ * automation rate — under a note about a Shuffle workflow. The numbers were not measured and
+ * the third-party engine name is not something to surface in the product, so both are gone.
+ * A count that can't be read renders as "—", never as 0: zero is a finding, unknown is not. */
 function SOARWidget() {
+    const [status, setStatus] = useState<{
+        cases_created_today?: number;
+        auto_resolved_today?: number;
+        open_cases?: number;
+        escalated_open?: number;
+        active?: boolean;
+    } | null>(null);
+    const [failed, setFailed] = useState(false);
+
+    useEffect(() => {
+        apiFetch(apiUrl('/api/incidents/automation-status'), { cache: 'no-store' })
+            .then((r) => r.json())
+            .then((d) => setStatus(d))
+            .catch(() => setFailed(true));
+    }, []);
+
+    const show = (v: number | undefined) => (typeof v === 'number' ? v.toLocaleString() : '—');
+
     return (
         <WidgetCard title="SOAR Automation" linkHref="/admin/secops/soar" linkLabel="View workflows →">
             <div className="grid grid-cols-2 gap-3">
                 {[
-                    { label: 'Playbooks Available', value: 6, color: 'text-purple' },
-                    { label: 'Cases Auto-Created', value: 0, color: 'text-blue' },
-                    { label: 'IPs Auto-Blocked', value: 0, color: 'text-red' },
-                    { label: 'Automation Rate', value: '0%', color: 'text-green' },
+                    { label: 'Cases Created Today', value: show(status?.cases_created_today), color: 'text-blue' },
+                    { label: 'Auto-Resolved Today', value: show(status?.auto_resolved_today), color: 'text-green' },
+                    { label: 'Open Cases', value: show(status?.open_cases), color: 'text-purple' },
+                    { label: 'Escalated', value: show(status?.escalated_open), color: 'text-red' },
                 ].map((s) => (
                     <div key={s.label} className="bg-card-muted rounded-lg p-3">
                         <div className={`text-xl font-black ${s.color}`}>{s.value}</div>
@@ -250,8 +273,14 @@ function SOARWidget() {
                 ))}
             </div>
             <div className="mt-3 flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-card-muted flex-shrink-0" />
-                <span className="text-[10px] text-foreground-muted">Shuffle workflow not yet connected — see SOAR Automation for setup.</span>
+                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${status?.active ? 'bg-green' : 'bg-card-muted'}`} />
+                <span className="text-[10px] text-foreground-muted">
+                    {failed
+                        ? 'Automation status unavailable — could not reach the backend.'
+                        : status?.active
+                            ? 'Automation pipeline active — Wazuh to case creation, status sync and auto-resolve.'
+                            : 'Automation pipeline inactive — see SOAR Automation for setup.'}
+                </span>
             </div>
         </WidgetCard>
     );
