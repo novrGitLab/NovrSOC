@@ -271,7 +271,14 @@ router.post('/jobs/report', async (req, res) => {
         if (error) throw error;
         res.json({ success: true });
     } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        // Supabase rejects with a PostgrestError, which is a plain object, not an Error — so
+        // `String(err)` yields "[object Object]" and tells the operator nothing. The most useful
+        // case here is "relation public.backup_jobs does not exist", which IS the setup step.
+        const message = err instanceof Error
+            ? err.message
+            : (typeof err === 'object' && err !== null && 'message' in err)
+                ? String((err as { message: unknown }).message)
+                : String(err);
         console.error('[recovery/jobs/report] failed:', message);
         // Surfaces a missing table explicitly — an agent silently "succeeding" against a table
         // that does not exist is the failure mode worth avoiding here.
@@ -310,7 +317,14 @@ router.get('/jobs', async (req: AuthRequest, res) => {
             },
         });
     } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        // Supabase rejects with a PostgrestError, which is a plain object, not an Error — so
+        // `String(err)` yields "[object Object]" and tells the operator nothing. The most useful
+        // case here is "relation public.backup_jobs does not exist", which IS the setup step.
+        const message = err instanceof Error
+            ? err.message
+            : (typeof err === 'object' && err !== null && 'message' in err)
+                ? String((err as { message: unknown }).message)
+                : String(err);
         console.error('[recovery/jobs] failed:', message);
         // 200 with an explicit reason, not 500: "the backup_jobs table does not exist yet" is a
         // setup state the page must be able to explain, not a crash.
