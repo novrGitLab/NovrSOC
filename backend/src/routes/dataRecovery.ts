@@ -24,6 +24,27 @@ const router = Router();
 // backup_jobs routes below). Retention chains, restore points and hash verification are not
 // served at all rather than being simulated: they need the agent to report them first.
 
+// Turns a raw Postgres error into something an operator can act on. The two that actually occur
+// here are a missing table (the setup step) and an org_id type mismatch: NovrSOC's JWT carries
+// the org SLUG ('cybernovr'), so backup_jobs.org_id must be TEXT. A table created with
+// `org_id UUID` rejects every query with "invalid input syntax for type uuid", which on its own
+// reads like a NovrSOC bug rather than a schema that needs recreating.
+function explainDbError(err: unknown): string {
+    const raw = err instanceof Error
+        ? err.message
+        : (typeof err === 'object' && err !== null && 'message' in err)
+            ? String((err as { message: unknown }).message)
+            : String(err);
+
+    if (raw.includes('invalid input syntax for type uuid')) {
+        return `${raw} — backup_jobs.org_id is typed UUID but NovrSOC sends the org slug. Recreate the table with org_id TEXT, using the SQL on this page.`;
+    }
+    if (raw.includes('does not exist')) {
+        return `${raw} — create the backup_jobs table using the SQL shown on this page.`;
+    }
+    return raw;
+}
+
 // GET /api/recovery/health — derived from real reported jobs only.
 router.get('/health', async (req: AuthRequest, res) => {
     const supabase = getSupabase();
@@ -59,11 +80,7 @@ router.get('/health', async (req: AuthRequest, res) => {
             // The agent does not report them, so there is nothing truthful to put here.
         });
     } catch (err) {
-        const message = err instanceof Error
-            ? err.message
-            : (typeof err === 'object' && err !== null && 'message' in err)
-                ? String((err as { message: unknown }).message)
-                : String(err);
+        const message = explainDbError(err);
         res.json({ configured: true, reporting: false, overall_status: 'unknown', failed_jobs: 0, reason: message });
     }
 });
@@ -131,11 +148,7 @@ router.post('/jobs/report', async (req, res) => {
         // Supabase rejects with a PostgrestError, which is a plain object, not an Error — so
         // `String(err)` yields "[object Object]" and tells the operator nothing. The most useful
         // case here is "relation public.backup_jobs does not exist", which IS the setup step.
-        const message = err instanceof Error
-            ? err.message
-            : (typeof err === 'object' && err !== null && 'message' in err)
-                ? String((err as { message: unknown }).message)
-                : String(err);
+        const message = explainDbError(err);
         console.error('[recovery/jobs/report] failed:', message);
         // Surfaces a missing table explicitly — an agent silently "succeeding" against a table
         // that does not exist is the failure mode worth avoiding here.
@@ -177,11 +190,7 @@ router.get('/jobs', async (req: AuthRequest, res) => {
         // Supabase rejects with a PostgrestError, which is a plain object, not an Error — so
         // `String(err)` yields "[object Object]" and tells the operator nothing. The most useful
         // case here is "relation public.backup_jobs does not exist", which IS the setup step.
-        const message = err instanceof Error
-            ? err.message
-            : (typeof err === 'object' && err !== null && 'message' in err)
-                ? String((err as { message: unknown }).message)
-                : String(err);
+        const message = explainDbError(err);
         console.error('[recovery/jobs] failed:', message);
         // 200 with an explicit reason, not 500: "the backup_jobs table does not exist yet" is a
         // setup state the page must be able to explain, not a crash.
