@@ -8,6 +8,7 @@ import {
 } from '../services/thehive';
 import { sendSlackAlert, sendSlackMessage } from '../services/slack';
 import { sendEscalationEmail, isEmailEnabled } from '../services/email';
+import { logAudit } from '../lib/audit';
 
 // A TheHive case id always looks like "~1234567" (confirmed live) — Wazuh-derived incident ids
 // look like "INC-2026-1000" (built below). Used to route a given :id to the right backend
@@ -544,6 +545,22 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
                 console.error('[Slack] Resolve notification failed (non-fatal):', err instanceof Error ? err.message : err);
             });
         }
+
+        // Audited because status transitions are the decisions an incident review asks about
+        // later: who moved this to contained, and when. Only status changes are logged, not
+        // assignee-only PATCHes, which are routine queue management.
+        if (status) {
+            logAudit({
+                user: req.user?.email ?? 'unknown',
+                action: 'INCIDENT_STATUS_CHANGED',
+                resource: 'incident',
+                resource_id: id,
+                ip: req.ip ?? 'unknown',
+                result: 'success',
+                details: `${deriveIncidentNumber(updated)} status set to ${status}`,
+                severity: status.toLowerCase() === 'resolved' ? 'warning' : 'info',
+            });
+        }
         res.json({ success: true, id, status, assignee: updated.assignee ?? null, thehive_status: theHiveStatus });
         return;
     }
@@ -714,6 +731,17 @@ router.post('/:id/escalate', async (req: AuthRequest, res: Response) => {
     } catch {
         results.slack = 'failed';
     }
+
+    logAudit({
+        user: escalatedBy,
+        action: 'INCIDENT_ESCALATED',
+        resource: 'incident',
+        resource_id: id,
+        ip: req.ip ?? 'unknown',
+        result: comment ? 'success' : 'failed',
+        details: `${formatted.incident_number} escalated${note ? `: ${note.slice(0, 160)}` : ''}`,
+        severity: 'critical',
+    });
 
     // 207-style semantics without inventing a status code: success is true only when the
     // escalation was actually recorded somewhere durable.

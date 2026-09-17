@@ -7,6 +7,7 @@ import { isInKEV, getKEVCatalog } from '../services/cisa';
 import { circlGetPulses } from '../services/circl';
 import { analyzeSSL } from '../services/sslLabs';
 import { getSupabase } from '../services/geoEnrichment';
+import { search } from '../lib/wazuh-indexer';
 
 const router = Router();
 
@@ -169,6 +170,50 @@ router.post('/webscan/ssl', async (req, res) => {
         res.json(result);
     } catch {
         res.status(500).json({ error: 'SSL analysis failed' });
+    }
+});
+
+// GET /api/threat/advisory/affected-agents
+//
+// Which of this estate's own agents carry each CVE, so the CVE feed can mark an advisory as
+// "2 agents affected" rather than leaving an analyst to guess whether a published CVE is
+// actually their problem.
+//
+// Derived from Wazuh's own vulnerability index, NOT by string-matching NVD's affected-product
+// names against a package inventory. Wazuh has already done that matching properly (CPE-based,
+// per agent); re-deriving it here from product name text would produce both false positives
+// ("openssl" matching "openssl-legacy") and false negatives on any vendor naming difference.
+//
+// Returns a { [cve]: agentNames[] } map — the CVE page holds a few hundred advisories and does
+// the join client-side, which is one request rather than one per CVE.
+router.get('/advisory/affected-agents', async (_req, res) => {
+    interface Bucket { key: string; agents?: { buckets?: { key: string }[] } }
+    interface AggSearch { aggregations?: { by_cve?: { buckets?: Bucket[] } } }
+
+    try {
+        const result = await search<AggSearch>('wazuh-states-vulnerabilities-*', {
+            size: 0,
+            aggs: {
+                by_cve: {
+                    terms: { field: 'vulnerability.id', size: 1000 },
+                    aggs: { agents: { terms: { field: 'agent.name', size: 50 } } },
+                },
+            },
+        });
+
+        const buckets = result?.aggregations?.by_cve?.buckets ?? [];
+        const map: Record<string, string[]> = {};
+        for (const b of buckets) {
+            if (!b.key) continue;
+            map[b.key] = (b.agents?.buckets ?? []).map((a) => a.key).filter(Boolean);
+        }
+
+        res.json({ affected: map, cve_count: Object.keys(map).length });
+    } catch (err) {
+        console.error('[threat/advisory/affected-agents] failed:', err instanceof Error ? err.message : err);
+        // 200 with an empty map: the CVE feed must still render its advisories when the
+        // vulnerability index is unreachable, just without the affected-agent badges.
+        res.json({ affected: {}, cve_count: 0, error: 'Vulnerability index unreachable' });
     }
 });
 

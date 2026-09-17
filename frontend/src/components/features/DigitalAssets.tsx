@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { Monitor, WifiOff } from 'lucide-react';
 import { getPortalContext } from '@/lib/portal-context';
 import { apiUrl, apiFetch } from '@/lib/api';
@@ -52,6 +53,7 @@ function normalizeAgents(data: unknown): Agent[] {
 }
 
 export function DigitalAssets() {
+    const router = useRouter();
     const [search, setSearch] = useState('');
     const [agents, setAgents] = useState<Agent[] | null>(null);
     // Distinguishes "fetched successfully, zero agents enrolled" from "couldn't reach Wazuh
@@ -150,7 +152,19 @@ export function DigitalAssets() {
                                 </thead>
                                 <tbody>
                                     {filtered.map(a => (
-                                        <tr key={a.id} className="border-b border-border hover:bg-card-muted transition-colors">
+                                        <tr
+                                            key={a.id}
+                                            // Whole row navigates to the asset detail page. Uses
+                                            // router.push rather than wrapping each cell in a
+                                            // <Link>, which is the only way to keep a valid
+                                            // table structure (an <a> cannot wrap <td>s).
+                                            onClick={() => router.push(`/admin/infra/assets/${encodeURIComponent(a.id)}`)}
+                                            onKeyDown={(e) => { if (e.key === 'Enter') router.push(`/admin/infra/assets/${encodeURIComponent(a.id)}`); }}
+                                            tabIndex={0}
+                                            role="link"
+                                            aria-label={`Open details for ${a.name}`}
+                                            className="border-b border-border hover:bg-card-muted transition-colors cursor-pointer focus:outline-none focus:bg-card-muted"
+                                        >
                                             <td className="px-4 py-2.5 font-bold text-foreground whitespace-nowrap">{a.name}</td>
                                             <td className="px-4 py-2.5 font-mono text-foreground-muted text-[10px]">{a.ip ?? '—'}</td>
                                             <td className="px-4 py-2.5 text-foreground-muted text-[10px]">{a.os ?? '—'}</td>

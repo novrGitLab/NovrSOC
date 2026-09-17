@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { darkWebSearch } from '../services/darkweb';
 import { z } from 'zod';
 import { validate } from '../middleware/validate';
 import { searchCode as githubSearch, isConfigured as githubConfigured, type GitHubCodeMatch } from '../services/github';
@@ -764,6 +765,43 @@ router.post('/assets/logo', (req, res) => {
     brandAssets.logo_uploaded = true;
     brandAssets.logo_filename = filename ?? 'logo.png';
     res.json({ success: true, message: 'Logo uploaded successfully', logo_filename: brandAssets.logo_filename });
+});
+
+// GET /api/brand/darkweb?company=&domain=
+//
+// Dark web exposure check. Only Ransomwatch is actually consulted — see services/darkweb.ts for
+// why Ahmia and the paste-site APIs are not (both are dead or unusable, and a scraper that
+// silently returns nothing would render as a reassuring "no mentions found"). The `sources`
+// array reports the real state of each so the UI can show coverage honestly.
+//
+// Deliberately does NOT auto-create a TheHive case or fire Slack on a hit. This route is a
+// read-only search an analyst can run repeatedly while tuning search terms; auto-creating a case
+// per scan would spam the incident queue with duplicates of the same finding. The UI offers an
+// explicit "Create incident" action instead, so raising a case stays a decision rather than a
+// side effect of looking.
+router.get('/darkweb', async (req, res) => {
+    const company = typeof req.query.company === 'string' && req.query.company.trim() ? req.query.company.trim() : 'Cybernovr';
+    const domain = typeof req.query.domain === 'string' && req.query.domain.trim() ? req.query.domain.trim() : 'cybernovr.com';
+
+    // The bare second-level label is searched too: leak sites list victims by trading name
+    // ("Cybernovr"), rarely by full domain ("cybernovr.com").
+    const rootLabel = domain.split('.')[0];
+    const terms = Array.from(new Set([company, domain, rootLabel].filter(Boolean)));
+
+    try {
+        const { findings, sources } = await darkWebSearch(terms);
+        res.json({
+            results: findings,
+            total: findings.length,
+            critical: findings.filter((f) => f.severity === 'critical').length,
+            searched: terms,
+            sources,
+            scanned_at: new Date().toISOString(),
+        });
+    } catch (err) {
+        console.error('[brand/darkweb] failed:', err instanceof Error ? err.message : err);
+        res.status(502).json({ error: 'Dark web search failed', results: [], total: 0, critical: 0, searched: terms, sources: [] });
+    }
 });
 
 export default router;

@@ -75,3 +75,35 @@ export interface URLHausPayloadResult {
 export async function urlhausLookupHash(hash: string): Promise<URLHausPayloadResult | null> {
     return urlhausPost<URLHausPayloadResult>('/payload/', new URLSearchParams({ md5_hash: hash }));
 }
+
+// Recent malicious URLs for the live IOC feed — a bulk pull, not a lookup.
+//
+// Uses GET, unlike every other call in this file: the /urls/recent/ endpoint rejects POST with
+// 405 `{"query_status":"http_get_expected"}` (confirmed live on 2026-09-17), so it can't share
+// urlhausPost() above.
+export interface URLHausRecentEntry {
+    id: string;
+    url: string;
+    url_status: string;
+    host: string;
+    date_added: string;
+    threat: string;
+    tags: string[] | null;
+    reporter: string | null;
+    urlhaus_reference: string;
+}
+
+export async function urlhausGetRecent(limit = 100): Promise<URLHausRecentEntry[]> {
+    try {
+        const res = await fetch(`${URLHAUS_BASE}/urls/recent/?limit=${Math.min(limit, 1000)}`, {
+            headers: { 'Auth-Key': KEY },
+            signal: AbortSignal.timeout(10000),
+        });
+        if (!res.ok) return [];
+        const data = (await res.json()) as { query_status?: string; urls?: URLHausRecentEntry[] };
+        if (data.query_status !== 'ok' || !Array.isArray(data.urls)) return [];
+        return data.urls;
+    } catch {
+        return [];
+    }
+}

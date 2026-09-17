@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { wazuhGet } from '../lib/wazuh';
 import { getAgentsForGroup, getAgentNamesForGroup } from '../lib/wazuh-group';
 import { search } from '../lib/wazuh-indexer';
-import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents } from '../services/wazuh';
+import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents, getAgentInventory } from '../services/wazuh';
+import { getComplianceImpact } from '../services/complianceMapping';
 import { isDemoMode, DEMO_AGENTS } from '../lib/demoMode';
 
 const router = Router();
@@ -796,6 +797,157 @@ router.post('/hunt', async (req, res) => {
         });
     } catch (err) {
         res.status(502).json({ error: err instanceof Error ? err.message : 'Hunt query failed', results: [], total: 0 });
+    }
+});
+
+// ── Per-agent detail (Digital Assets → asset detail page) ────────────────────────────
+//
+// Registered after GET /agents so the literal path still wins: Express matches in definition
+// order, and a '/agents/:id' declared earlier would swallow '/agents' itself.
+
+// GET /api/wazuh/agents/:id — one agent's record, read from the same source the list uses so the
+// detail page can never disagree with the row the analyst clicked.
+router.get('/agents/:id', async (req, res) => {
+    const { id } = req.params;
+
+    if (isDemoMode()) {
+        const agent = DEMO_AGENTS.find((a) => String(a.id) === id);
+        if (!agent) { res.status(404).json({ error: 'Agent not found' }); return; }
+        res.json({ agent, source: 'demo' });
+        return;
+    }
+
+    try {
+        const agents = await getWazuhAgents();
+        const agent = agents.find((a) => String(a.id) === id);
+        if (!agent) { res.status(404).json({ error: 'Agent not found' }); return; }
+        res.json({ agent });
+    } catch (err) {
+        console.error('[wazuh/agents/:id] failed:', err instanceof Error ? err.message : err);
+        res.status(502).json({ error: 'Wazuh unreachable' });
+    }
+});
+
+// GET /api/wazuh/agents/:id/vulnerabilities
+//
+// Queries the indexer's wazuh-states-vulnerabilities-* index, NOT wazuh-alerts-4.x-* with
+// data.vulnerability.* fields. Wazuh 4.8 moved vulnerability state into its own index with a
+// flattened schema (vulnerability.id / vulnerability.severity / vulnerability.score.base /
+// package.name); querying the alerts index for data.vulnerability.* returns zero hits here.
+// Same index and field names the existing GET /vulnerabilities route already uses.
+//
+// The compliance impact of these findings is returned alongside them so the asset page's
+// Compliance tab and its Vulnerabilities tab can never disagree about the same asset.
+router.get('/agents/:id/vulnerabilities', async (req, res) => {
+    interface VulnHit {
+        _source?: {
+            vulnerability?: { id?: string; description?: string; severity?: string; under_evaluation?: boolean; score?: { base?: number } };
+            package?: { name?: string; version?: string; condition?: string };
+            agent?: { id?: string; name?: string };
+        };
+    }
+    interface VulnSearch { hits?: { hits?: VulnHit[] } }
+
+    try {
+        const result = await search<VulnSearch>('wazuh-states-vulnerabilities-*', {
+            size: 100,
+            sort: [{ 'vulnerability.score.base': { order: 'desc' } }],
+            _source: [
+                'vulnerability.id', 'vulnerability.description', 'vulnerability.severity',
+                'vulnerability.score.base', 'vulnerability.under_evaluation',
+                'package.name', 'package.version', 'package.condition', 'agent.id', 'agent.name',
+            ],
+            query: { bool: { must: [{ term: { 'agent.id': req.params.id } }] } },
+        });
+
+        const vulnerabilities = (result?.hits?.hits ?? []).map((h) => {
+            const v = h._source?.vulnerability;
+            return {
+                cve: v?.id ?? '',
+                title: v?.description ?? '',
+                severity: v?.severity ?? 'Unknown',
+                cvss_score: v?.score?.base ?? null,
+                package: h._source?.package?.name ?? '',
+                version: h._source?.package?.version ?? '',
+                fix: h._source?.package?.condition ?? '',
+                status: v?.under_evaluation ? 'Under Evaluation' : 'Confirmed',
+            };
+        });
+
+        const compliance = getComplianceImpact(
+            vulnerabilities.map((v) => ({ severity: v.severity, package: v.package, cvss: v.cvss_score ?? undefined })),
+        );
+
+        res.json({ vulnerabilities, agent_id: req.params.id, compliance });
+    } catch (err) {
+        console.error('[wazuh/agents/:id/vulnerabilities] failed:', err instanceof Error ? err.message : err);
+        // 200 with an explicit `error`, not 502: the asset page renders five other tabs and must
+        // not lose all of them because the vulnerability index is unreachable.
+        res.json({
+            vulnerabilities: [], agent_id: req.params.id, error: 'Vulnerability index unreachable',
+            compliance: getComplianceImpact([]),
+        });
+    }
+});
+
+// GET /api/wazuh/agents/:id/packages — installed software from syscollector (Manager REST API,
+// not the indexer: syscollector inventory is not shipped to an index).
+router.get('/agents/:id/packages', async (req, res) => {
+    if (!wazuhConfigured()) {
+        res.json({ packages: [], agent_id: req.params.id, error: 'Wazuh not configured' });
+        return;
+    }
+    try {
+        const packages = await getAgentInventory(req.params.id);
+        res.json({ packages, agent_id: req.params.id, total: packages.length });
+    } catch (err) {
+        console.error('[wazuh/agents/:id/packages] failed:', err instanceof Error ? err.message : err);
+        res.json({ packages: [], agent_id: req.params.id, error: 'Syscollector unavailable - the agent may not have run an inventory scan yet' });
+    }
+});
+
+// GET /api/wazuh/agents/:id/alerts — this agent's recent alerts from the indexer.
+router.get('/agents/:id/alerts', async (req, res) => {
+    interface AlertHit {
+        _source?: {
+            timestamp?: string;
+            rule?: { description?: string; level?: number; id?: string; groups?: string[]; mitre?: { tactic?: string[]; id?: string[] } };
+            agent?: { id?: string; name?: string };
+            data?: { srcip?: string };
+        };
+    }
+    interface AlertSearch { hits?: { hits?: AlertHit[] } }
+
+    const limit = Math.min(Number(req.query.limit) || 20, 100);
+
+    try {
+        const result = await search<AlertSearch>('wazuh-alerts-4.x-*', {
+            size: limit,
+            sort: [{ timestamp: { order: 'desc' } }],
+            query: { bool: { must: [{ term: { 'agent.id': req.params.id } }] } },
+        });
+
+        const alerts = (result?.hits?.hits ?? []).map((h, i) => {
+            const level = h._source?.rule?.level ?? 0;
+            return {
+                id: `${req.params.id}-${i}`,
+                timestamp: h._source?.timestamp ?? '',
+                description: h._source?.rule?.description ?? 'Unknown rule',
+                level,
+                rule_id: h._source?.rule?.id ?? '',
+                // Wazuh rule levels, per its own documentation: 12+ critical, 7-11 high,
+                // 4-6 medium, anything lower is low.
+                severity: level >= 12 ? 'critical' : level >= 7 ? 'high' : level >= 4 ? 'medium' : 'low',
+                mitre_tactic: h._source?.rule?.mitre?.tactic?.[0] ?? null,
+                mitre_id: h._source?.rule?.mitre?.id?.[0] ?? null,
+                source_ip: h._source?.data?.srcip ?? null,
+            };
+        });
+
+        res.json({ alerts, agent_id: req.params.id, total: alerts.length });
+    } catch (err) {
+        console.error('[wazuh/agents/:id/alerts] failed:', err instanceof Error ? err.message : err);
+        res.json({ alerts: [], agent_id: req.params.id, error: 'Alert index unreachable' });
     }
 });
 

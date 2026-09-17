@@ -45,6 +45,22 @@ const SEVERITY_CONFIG: Record<string, { color: string; bg: string; border: strin
 
 const SEVERITY_ORDER = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 
+// Sector filter. Maps a sector to the vendor/product keywords that show up in NVD CVE
+// descriptions for software that sector actually runs. This is a keyword heuristic over free
+// text, NOT an authoritative product taxonomy — it narrows a 30-day CVE firehose to what is
+// plausibly relevant, and the UI says so rather than implying certified sector mapping. A CVE
+// matching no keyword is shown under 'All' only.
+const SECTOR_KEYWORDS: Record<string, string[]> = {
+    Banking: ['oracle', 'sap', 'finacle', 'temenos', 'swift', 'jack henry', 'fiserv', 'core banking'],
+    Telecom: ['cisco', 'juniper', 'nokia', 'ericsson', 'huawei', 'mikrotik', 'zyxel', 'asterisk'],
+    Government: ['sharepoint', 'exchange', 'active directory', 'citrix', 'fortinet', 'ivanti'],
+    Healthcare: ['dicom', 'hl7', 'epic', 'cerner', 'philips', 'ge healthcare', 'medtronic'],
+    Energy: ['scada', 'modbus', 'siemens', 'schneider', 'rockwell', 'iec 61850', 'plc'],
+    Fintech: ['stripe', 'paystack', 'flutterwave', 'node.js', 'postgres', 'redis', 'kubernetes'],
+    Education: ['moodle', 'canvas', 'blackboard', 'wordpress', 'drupal'],
+};
+const SECTORS = ['All', ...Object.keys(SECTOR_KEYWORDS)];
+
 const TABS = [
     { id: 'recent', label: 'Recent CVEs' },
     { id: 'kev', label: 'Known Exploited Vulnerabilities' },
@@ -74,7 +90,13 @@ export function ThreatAdvisory() {
     // hits (services/nvd.ts's getRecentCVEs) rejects a pubStartDate/pubEndDate range wider
     // than 120 days; 90 leaves margin. Both this and severityFilter ride the same request
     // (see loadRecent below), so they already apply as AND, not two separate client-side passes.
-    const [days, setDays] = useState(7);
+    // 30 days, not 7: a week of NVD publications is a thin view for an advisory page, and the
+    // sector filter below needs enough volume to be useful after narrowing.
+    const [days, setDays] = useState(30);
+    const [sector, setSector] = useState('All');
+    // { [cve]: agentNames[] } from GET /api/threat/advisory/affected-agents — which of THIS
+    // estate's agents actually carry each CVE, per Wazuh's own vulnerability index.
+    const [affectedAgents, setAffectedAgents] = useState<Record<string, string[]>>({});
 
     const loadRecent = () => {
         setLoading(true);
@@ -107,6 +129,13 @@ export function ThreatAdvisory() {
             .catch(() => setAssets([]))
             .finally(() => { setLoading(false); setAssetsLoaded(true); });
     };
+
+    useEffect(() => {
+        apiFetch(apiUrl('/api/threat/advisory/affected-agents'), { cache: 'no-store' })
+            .then((r) => r.json())
+            .then((d) => setAffectedAgents(d?.affected && typeof d.affected === 'object' ? d.affected : {}))
+            .catch(() => setAffectedAgents({}));
+    }, []);
 
     useEffect(() => {
         if (activeTab === 'recent') loadRecent();
@@ -189,6 +218,21 @@ export function ThreatAdvisory() {
                             ))}
                         </div>
 
+                        {/* Sector filter — narrows the feed by vendor/product keywords that
+                            appear in the CVE text. Keyword-based, so it is a relevance aid, not
+                            an authoritative sector classification. */}
+                        <select
+                            value={sector}
+                            onChange={(e) => setSector(e.target.value)}
+                            aria-label="Filter CVEs by sector"
+                            title="Keyword-based relevance filter, not an authoritative sector mapping"
+                            className="bg-card border border-border rounded-lg px-2.5 py-1.5 text-xs font-bold text-foreground focus:outline-none"
+                        >
+                            {SECTORS.map((sec) => (
+                                <option key={sec} value={sec}>{sec === 'All' ? 'All sectors' : sec}</option>
+                            ))}
+                        </select>
+
                         <div className="flex items-center gap-2 md:ml-auto text-xs text-foreground-muted">
                             <Clock size={12} />
                             {[
@@ -219,7 +263,12 @@ export function ThreatAdvisory() {
                         </div>
                     ) : (
                         <div className="space-y-2">
-                            {recentCVEs.map((cve) => {
+                            {recentCVEs.filter((cve) => {
+                                if (sector === 'All') return true;
+                                const keywords = SECTOR_KEYWORDS[sector] ?? [];
+                                const haystack = `${cve.id} ${cve.description}`.toLowerCase();
+                                return keywords.some((k) => haystack.includes(k));
+                            }).map((cve) => {
                                 const cfg = SEVERITY_CONFIG[cve.severity] || SEVERITY_CONFIG.LOW;
                                 return (
                                     <div
@@ -237,6 +286,14 @@ export function ThreatAdvisory() {
                                                 <div className="flex-1 min-w-0">
                                                     <div className="flex items-center gap-2 flex-wrap">
                                                         <span className="font-mono font-bold text-sm text-blue">{cve.id}</span>
+                                                        {(affectedAgents[cve.id]?.length ?? 0) > 0 && (
+                                                            <span
+                                                                className="text-[10px] font-bold bg-red-500/10 text-red-500 border border-red-500/30 px-1.5 py-0.5 rounded"
+                                                                title={affectedAgents[cve.id].join(', ')}
+                                                            >
+                                                                {affectedAgents[cve.id].length} agent{affectedAgents[cve.id].length === 1 ? '' : 's'} affected
+                                                            </span>
+                                                        )}
                                                         {cve.is_kev && (
                                                             <span className="text-[10px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded animate-pulse">
                                                                 ACTIVELY EXPLOITED

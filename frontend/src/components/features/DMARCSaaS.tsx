@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { Plus, Copy, CheckCircle2, XCircle, ChevronRight } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { GaugeChart } from '@/components/shared/GaugeChart';
+import { EmailSecurityScan } from './EmailSecurityScan';
 
 interface DmarcDomain {
     domain: string;
@@ -127,6 +128,10 @@ export function DMARCSaaS() {
                     Add Domain
                 </button>
             </div>
+
+            {/* On-demand scan for any domain — including ones not yet added for DMARC report
+                aggregation, so this works as a pre-onboarding check as well as a health check. */}
+            <EmailSecurityScan />
 
             {/* KPIs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

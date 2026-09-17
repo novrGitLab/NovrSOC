@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import {
     CheckCircle, AlertTriangle, RefreshCw, Clock, Shield, Database, RotateCcw, Lock, Server,
 } from 'lucide-react';
+import { BackupAgentStatus } from './BackupAgentStatus';
 import { apiUrl, apiFetch } from '@/lib/api';
 
 type BackupStatus = 'success' | 'failed' | 'running' | 'missed';
@@ -87,7 +88,12 @@ export function DataLossRecovery() {
         setLoading(true);
         try {
             const [jobsRes, healthRes] = await Promise.all([
-                apiFetch(apiUrl('/api/recovery/jobs'), { cache: 'no-store' }),
+                // /jobs/demo, not /jobs: GET /api/recovery/jobs now returns only genuinely
+                // reported backup results (see BackupAgentStatus above, which renders those).
+                // The panels below — retention chains, restore points, hash verification — have
+                // no real equivalent yet and still run on the demo dataset, which now lives at
+                // its own path so the two can't be mistaken for each other.
+                apiFetch(apiUrl('/api/recovery/jobs/demo'), { cache: 'no-store' }),
                 apiFetch(apiUrl('/api/recovery/health'), { cache: 'no-store' }),
             ]);
             const jobsData = await jobsRes.json();
@@ -141,6 +147,11 @@ export function DataLossRecovery() {
                 <h1 className="text-lg font-black text-foreground">Data Loss Recovery</h1>
                 <p className="text-xs text-foreground-muted">Data Continuity · Monitor backup job completion, verify snapshot integrity, and track restore points across all protected servers and databases</p>
             </div>
+
+            {/* Real reported backups. Everything below this block still runs on the demo dataset
+                (see the /jobs/demo note in load()) — this is the only panel on the page backed by
+                results a real agent actually reported. */}
+            <BackupAgentStatus />
 
             {/* Failed job alert banner */}
             {failedJobs.length > 0 && (

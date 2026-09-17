@@ -5,6 +5,9 @@ import { isDemoMode } from '../lib/demoMode';
 import { createCase, isTheHiveConfigured, deriveIncidentNumber } from '../services/thehive';
 import { NIGERIAN_ACTORS, GLOBAL_ACTORS } from '../services/threatActors';
 import { getGreyNoiseCountryStats, isGreyNoiseConfigured } from '../services/greynoise';
+import { threatfoxGetRecent } from '../services/threatfox';
+import { urlhausGetRecent } from '../services/urlhaus';
+import { feodoGetBlocklist } from '../services/feodo';
 
 // SecOps Threat Management console — live security event stream from the Wazuh Indexer
 // (wazuh-alerts-4.x-*, same OpenSearch backend /api/wazuh/alerts-indexer queries), falling
@@ -685,6 +688,145 @@ router.get('/actors', (_req, res) => {
         source: 'curated-reference',
         note: 'Publicly documented threat actors, each linked to its originating vendor or MITRE ATT&CK entry. Not derived from this platform’s own telemetry.',
         generated_at: new Date().toISOString(),
+    });
+});
+
+// GET /api/threats/live-ioc?type=&source=&limit=
+//
+// The live IOC feed. This is NOT /api/cti/feed — that one reads the Supabase `ioc_enrichments`
+// table, which is a cache of IOCs an analyst has manually looked up, so it is empty until
+// somebody runs a lookup and was never a feed of fresh threat intel. Confirmed live: it returned
+// {"iocs":[],"count":0} on a fully working deployment. This route pulls from the upstream feeds
+// directly instead.
+//
+// Three sources, all already credentialed or keyless:
+//   ThreatFox  — ~1,500 IOCs/day across hash/domain/url/ip. Carries the volume.
+//   URLhaus    — recent malicious URLs. NOTE: its /urls/recent/ endpoint is GET-only.
+//   Feodo      — botnet C2 IPs, keyless. Small by design (single digits is normal).
+//
+// Promise.allSettled, not Promise.all: one upstream being rate-limited or down must degrade the
+// feed, not empty it. `sources` in the response reports what each one actually returned so the
+// UI can say which feeds contributed rather than implying all three always do.
+type LiveIOCType = 'ip' | 'domain' | 'url' | 'hash';
+
+interface LiveIOC {
+    value: string;
+    type: LiveIOCType;
+    threat: string;
+    source: string;
+    confidence: number;
+    tags: string[];
+    first_seen: string;
+    severity: Severity;
+    reference: string | null;
+}
+
+// ThreatFox's ioc_type is finer-grained than the feed's four buckets (md5_hash, sha256_hash,
+// ip:port, …), so it is normalised rather than passed through — otherwise the UI's type filter
+// would need to know every abuse.ch variant.
+function normaliseThreatFoxType(raw: string | undefined): LiveIOCType | null {
+    if (!raw) return null;
+    if (raw.includes('hash')) return 'hash';
+    if (raw.startsWith('ip')) return 'ip';
+    if (raw === 'domain') return 'domain';
+    if (raw === 'url') return 'url';
+    return null;
+}
+
+function severityFromConfidence(confidence: number): Severity {
+    if (confidence >= 90) return 'critical';
+    if (confidence >= 70) return 'high';
+    if (confidence >= 40) return 'medium';
+    return 'low';
+}
+
+router.get('/live-ioc', async (req, res) => {
+    const typeFilter = typeof req.query.type === 'string' && req.query.type !== 'all' ? req.query.type : null;
+    const sourceFilter = typeof req.query.source === 'string' && req.query.source !== 'all' ? req.query.source : null;
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+
+    const [threatfox, urlhaus, feodo] = await Promise.allSettled([
+        threatfoxGetRecent(1),
+        urlhausGetRecent(100),
+        feodoGetBlocklist(),
+    ]);
+
+    const tfList = threatfox.status === 'fulfilled' ? threatfox.value : [];
+    const uhList = urlhaus.status === 'fulfilled' ? urlhaus.value : [];
+    const fdList = feodo.status === 'fulfilled' ? feodo.value : [];
+
+    const fromThreatFox: LiveIOC[] = tfList.flatMap((i) => {
+        const type = normaliseThreatFoxType(i.ioc_type);
+        if (!type || !i.ioc) return [];
+        const confidence = Number(i.confidence_level) || 50;
+        return [{
+            value: String(i.ioc),
+            type,
+            threat: i.malware_printable || i.malware || 'Unknown malware',
+            source: 'ThreatFox',
+            confidence,
+            // get_iocs doesn't always return `tags` (search_ioc does), hence the array guard —
+            // the malware family is appended so a tagless entry still carries something useful.
+            tags: [...(Array.isArray(i.tags) ? i.tags : []), i.malware_printable].filter((t): t is string => Boolean(t)),
+            first_seen: i.first_seen ?? '',
+            severity: severityFromConfidence(confidence),
+            reference: i.reference ?? null,
+        }];
+    });
+
+    const fromURLhaus: LiveIOC[] = uhList.flatMap((u) => {
+        if (!u.url) return [];
+        // URLhaus publishes no confidence score. 75 is assigned as a fixed editorial value for
+        // a curated abuse.ch listing — it is NOT a figure returned by the API, and it must not
+        // be presented as one.
+        const confidence = 75;
+        return [{
+            value: u.url,
+            type: 'url' as const,
+            threat: u.threat || 'Malicious URL',
+            source: 'URLhaus',
+            confidence,
+            tags: Array.isArray(u.tags) ? u.tags : [],
+            first_seen: u.date_added ?? '',
+            severity: u.url_status === 'online' ? ('high' as Severity) : ('medium' as Severity),
+            reference: u.urlhaus_reference ?? null,
+        }];
+    });
+
+    const fromFeodo: LiveIOC[] = fdList.flatMap((f) => {
+        if (!f.ip_address) return [];
+        const online = f.status === 'online';
+        return [{
+            value: f.ip_address,
+            type: 'ip' as const,
+            threat: `${f.malware ?? 'Botnet'} C2${f.port ? ` (port ${f.port})` : ''}`,
+            source: 'Feodo Tracker',
+            confidence: online ? 95 : 60,
+            tags: [f.malware, f.country, f.as_name].filter((t): t is string => Boolean(t)),
+            first_seen: f.first_seen ?? '',
+            severity: online ? ('critical' as Severity) : ('medium' as Severity),
+            reference: null,
+        }];
+    });
+
+    const all = [...fromThreatFox, ...fromURLhaus, ...fromFeodo]
+        .filter((i) => !typeFilter || i.type === typeFilter)
+        .filter((i) => !sourceFilter || i.source === sourceFilter)
+        // Newest first. first_seen is an ISO-ish 'YYYY-MM-DD HH:MM:SS UTC' string from every
+        // source, so lexical comparison orders it correctly without parsing.
+        .sort((a, b) => b.first_seen.localeCompare(a.first_seen));
+
+    res.json({
+        iocs: all.slice(0, limit),
+        // Total BEFORE the limit, so the UI can say "showing 100 of 1,531" honestly.
+        total: all.length,
+        returned: Math.min(all.length, limit),
+        sources: [
+            { name: 'ThreatFox', ok: threatfox.status === 'fulfilled', count: fromThreatFox.length },
+            { name: 'URLhaus', ok: urlhaus.status === 'fulfilled', count: fromURLhaus.length },
+            { name: 'Feodo Tracker', ok: feodo.status === 'fulfilled', count: fromFeodo.length },
+        ],
+        last_updated: new Date().toISOString(),
     });
 });
 

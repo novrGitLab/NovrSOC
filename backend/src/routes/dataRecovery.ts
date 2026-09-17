@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import type { AuthRequest } from '../middleware/auth';
+import { getSupabase } from '../services/geoEnrichment';
 
 // Data Loss Recovery — backup job monitoring, hash-integrity verification, restore-point
 // tracking. Demo data for now (real Backup Probe Daemon on EC2-5 doesn't exist yet — same
@@ -151,8 +153,10 @@ const MOCK_RETENTION: Record<string, RetentionEntry[]> = {
     ],
 };
 
-// GET /api/recovery/jobs
-router.get('/jobs', (_req, res) => {
+// GET /api/recovery/jobs/demo — the original demo dataset, kept reachable so the rest of the
+// Data Continuity page (retention, restore points) still has something to render while real
+// backup reporting is being rolled out. The REAL GET /jobs is defined below and reads Supabase.
+router.get('/jobs/demo', (_req, res) => {
     const stats = {
         total: MOCK_BACKUP_JOBS.length,
         success: MOCK_BACKUP_JOBS.filter((j) => j.status === 'success').length,
@@ -204,6 +208,114 @@ router.get('/health', (_req, res) => {
         aws_s3_status: 'operational',
         object_lock_enabled: true,
     });
+});
+
+// ── Real backup job reporting ───────────────────────────────────────────────────────
+//
+// Backup agents on the protected hosts POST their result here after each run; the dashboard
+// reads them back from Supabase. This replaces the demo dataset above as the primary source —
+// that one is still served at GET /jobs/demo for the panels that have no real equivalent yet.
+//
+// Requires a `backup_jobs` table. It is NOT created automatically (this backend has no
+// migration runner and the service key deliberately isn't used for DDL) — the Data Continuity
+// page shows the exact SQL to run. Until the table exists these routes report that plainly
+// rather than failing in a way that looks like "no backups have ever run".
+
+interface BackupJobRow {
+    job_name: string;
+    org_id: string;
+    status: string;
+    size_bytes: number;
+    duration_seconds: number;
+    files_transferred: number;
+    error_message: string | null;
+    last_run: string;
+}
+
+// POST /api/recovery/jobs/report
+//
+// Intentionally unauthenticated: this is called by a cron script on a backup host, which has no
+// interactive session and no way to mint a user JWT. It is a low-risk write — it can only upsert
+// a row keyed by (job_name, org_id) in a reporting table, and holds no read access to anything.
+// Before exposing it beyond a trusted network, give the agents a shared secret and check it here;
+// a note to that effect ships with the script on the Data Continuity page.
+router.post('/jobs/report', async (req, res) => {
+    const {
+        job_name, status, size_bytes, duration_seconds,
+        files_transferred, error_message, org_id,
+    } = req.body ?? {};
+
+    if (!job_name || typeof job_name !== 'string') {
+        res.status(400).json({ error: 'job_name required' });
+        return;
+    }
+
+    const supabase = getSupabase();
+    if (!supabase) {
+        res.status(503).json({ error: 'Database not configured — cannot record backup result' });
+        return;
+    }
+
+    try {
+        const { error } = await supabase.from('backup_jobs').upsert({
+            job_name,
+            org_id: typeof org_id === 'string' && org_id ? org_id : 'cybernovr',
+            status: typeof status === 'string' ? status : 'unknown',
+            size_bytes: Number(size_bytes) || 0,
+            duration_seconds: Number(duration_seconds) || 0,
+            files_transferred: Number(files_transferred) || 0,
+            error_message: typeof error_message === 'string' && error_message ? error_message : null,
+            last_run: new Date().toISOString(),
+        }, { onConflict: 'job_name,org_id' });
+
+        if (error) throw error;
+        res.json({ success: true });
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[recovery/jobs/report] failed:', message);
+        // Surfaces a missing table explicitly — an agent silently "succeeding" against a table
+        // that does not exist is the failure mode worth avoiding here.
+        res.status(500).json({ error: 'Could not record backup result', detail: message });
+    }
+});
+
+// GET /api/recovery/jobs — real reported jobs for the caller's org.
+router.get('/jobs', async (req: AuthRequest, res) => {
+    const supabase = getSupabase();
+    if (!supabase) {
+        res.json({ jobs: [], source: 'unconfigured', message: 'Supabase is not configured, so no backup results can be stored or read.' });
+        return;
+    }
+
+    const orgId = req.user?.org_id ?? 'cybernovr';
+
+    try {
+        const { data, error } = await supabase
+            .from('backup_jobs')
+            .select('*')
+            .eq('org_id', orgId)
+            .order('last_run', { ascending: false });
+
+        if (error) throw error;
+
+        const jobs = (data ?? []) as BackupJobRow[];
+        res.json({
+            jobs,
+            source: 'supabase',
+            stats: {
+                total: jobs.length,
+                success: jobs.filter((j) => j.status === 'success').length,
+                failed: jobs.filter((j) => j.status === 'failed').length,
+                total_bytes: jobs.reduce((sum, j) => sum + (Number(j.size_bytes) || 0), 0),
+            },
+        });
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[recovery/jobs] failed:', message);
+        // 200 with an explicit reason, not 500: "the backup_jobs table does not exist yet" is a
+        // setup state the page must be able to explain, not a crash.
+        res.json({ jobs: [], source: 'error', message, stats: { total: 0, success: 0, failed: 0, total_bytes: 0 } });
+    }
 });
 
 export default router;

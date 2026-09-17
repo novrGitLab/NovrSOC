@@ -5,7 +5,7 @@ import {
     Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network, Cpu,
     Mail, MessageSquare, ShieldAlert, Activity, Siren, ClipboardList, Zap,
     HardDrive, BarChart, CreditCard, Settings, Database, BookOpen, FileText, ScrollText,
-    ClipboardCheck, Bot, WifiOff, Map, Landmark, Radio, Wrench,
+    ClipboardCheck, Bot, WifiOff, Map, Landmark, Radio, Wrench, Cloud, Eye,
 } from 'lucide-react';
 import { Sidebar, type NavGroup } from './Sidebar';
 
@@ -82,6 +82,10 @@ const adminNav: NavGroup[] = [
         groupLabel: 'Global Threat Intel',
         items: [
             { label: 'IOC Lookup', href: '/admin/threat/cti', icon: Crosshair, roles: [...NOT_EXEC] },
+            // Live IOC Feed and Threat Feeds are different things and sit next to each other on
+            // purpose: this one is the live indicator stream, /threat/feeds is where feed
+            // sources are configured.
+            { label: 'Live IOC Feed', href: '/admin/threat/live-ioc', icon: Radio, roles: [...NOT_EXEC] },
             { label: 'Threat Feeds', href: '/admin/threat/feeds', icon: Database, roles: [...NOT_EXEC] },
             { label: 'MITRE ATT&CK', href: '/admin/threat/mitre', icon: ShieldAlert, roles: [...NOT_EXEC] },
             { label: 'Threat Advisory', href: '/admin/threat/advisory', icon: AlertTriangle, roles: [...NOT_EXEC] },
@@ -106,6 +110,7 @@ const adminNav: NavGroup[] = [
             { label: 'Executive Monitoring', href: '/admin/brand/executive', icon: UserCheck },
             { label: 'Mobile App Suite', href: '/admin/brand/mobile', icon: Smartphone },
             { label: 'Intelli CODE', href: '/admin/brand/copyid', icon: Code },
+            { label: 'Dark Web Monitor', href: '/admin/brand/darkweb', icon: Eye },
         ],
     },
     {
@@ -117,6 +122,7 @@ const adminNav: NavGroup[] = [
         items: [
             { label: 'Digital Assets', href: '/admin/infra/assets', icon: Server, roles: [...NOT_EXEC] },
             { label: 'Network Topology', href: '/admin/infra/topology', icon: Network, roles: [...NOT_EXEC] },
+            { label: 'Cloud Assets', href: '/admin/infra/cloud', icon: Cloud, roles: [...NOT_EXEC] },
             { label: 'Vulnerability Management', href: '/admin/infra/vulnerabilities', icon: ShieldAlert, roles: [...NOT_EXEC] },
             { label: 'WebLogic Appliances', href: '/admin/infra/weblogic', icon: Cpu, roles: [...NOT_EXEC] },
             { label: 'Shadow IT', href: '/admin/infra/shadow', icon: WifiOff, roles: [...NOT_EXEC] },

@@ -12,6 +12,12 @@ export interface AuditEntry {
     ip: string;
     result: 'success' | 'failed';
     details?: string;
+    // Operational weight of the event, for filtering and colour-coding in the Audit Log page.
+    // Distinct from `result`: a successful DELETE_ORG is still critical, and a failed read is
+    // only informational. Defaults to 'info' when a call site doesn't classify itself.
+    severity?: 'info' | 'warning' | 'critical';
+    /** The id of the thing acted on (incident id, org id, user id), when there is one. */
+    resource_id?: string;
 }
 
 const auditLog: AuditEntry[] = [];
@@ -21,6 +27,7 @@ export function logAudit(entry: Omit<AuditEntry, 'id' | 'timestamp'>): void {
     auditLog.push({
         id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         timestamp: new Date().toISOString(),
+        severity: 'info',
         ...entry,
     });
     if (auditLog.length > MAX_ENTRIES) auditLog.splice(0, auditLog.length - MAX_ENTRIES);
