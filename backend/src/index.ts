@@ -41,6 +41,7 @@ import assetsRouter from './routes/assets';
 import dashboardRouter from './routes/dashboard';
 import handoverRouter from './routes/handover';
 import emailRouter from './routes/email';
+import emailProxyRouter from './routes/emailProxy';
 import orgCTIRouter from './routes/orgCTI';
 import { runCTIWatcher } from './jobs/ctiWatcher';
 import { startAutoCloseJob } from './jobs/autoClose';
@@ -304,6 +305,7 @@ app.use('/api/email', emailSecurityRouter);
 // Mailgun DMARC inbound webhook. Sub-paths don't collide; kept distinct files since the two
 // are different concerns (sending vs. scanning) that happen to share a URL namespace.
 app.use('/api/email', emailRouter);
+app.use('/api/email-proxy', emailProxyRouter);
 app.use('/api/vendors', vendorsRouter);
 app.use('/api/recovery', dataRecoveryRouter);
 app.use('/api/sla', slaRouter);

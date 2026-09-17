@@ -137,6 +137,7 @@ const adminNav: NavGroup[] = [
         icon: Mail,
         groupLabel: 'Email Security',
         items: [
+            { label: 'Email Monitoring', href: '/admin/email/monitoring', icon: Mail },
             { label: 'DMARC SaaS', href: '/admin/email/dmarc', icon: Mail },
             { label: 'Messaging Suite', href: '/admin/email/messaging', icon: MessageSquare },
             { label: 'PHISHID', href: '/admin/email/phishid', icon: ShieldAlert },
