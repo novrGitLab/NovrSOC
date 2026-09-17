@@ -34,6 +34,16 @@ const SEV_STYLE: Record<Advisory['severity'], string> = {
 };
 const SOURCES = ['All', 'NCC-CSIRT', 'NGCERT'] as const;
 
+// Sources the collector attempts for the *live* advisory feed. `match` is compared against the
+// uppercased `source` field on collected rows, so 'NGCERT' matches both "ngCERT" and
+// "ngCERT (demo)".
+const ADVISORY_SOURCES = [
+    { name: 'ngCERT', match: 'NGCERT', color: 'bg-green/10 text-green border-green/30' },
+    { name: 'NCC-CSIRT', match: 'NCC', color: 'bg-blue/10 text-blue border-blue/30' },
+    { name: 'CBN', match: 'CBN', color: 'bg-purple/10 text-purple border-purple/30' },
+    { name: 'NITDA', match: 'NITDA', color: 'bg-orange/10 text-orange border-orange/30' },
+] as const;
+
 // Sector filtering works off the advisory's own tags. Collected advisories carry an explicit
 // `sector:<slug>` tag (see backend services/nigeriaDemoSeed.ts, which sets sector:banking,
 // sector:telecommunications and so on); older or externally-sourced rows may not, so the
@@ -223,7 +233,29 @@ export function NigerianThreatFeed() {
                 </div>
             </div>
 
-            {/* Live advisories collected from ngCERT + CIRCL */}
+            {/* Source coverage. `active` is derived from whether that source has actually
+                produced a collected advisory — NOT hardcoded true. A badge row asserting four
+                live feeds when three of them have returned nothing is the same class of problem
+                as mock data: it reads as coverage the platform does not have. */}
+            <div>
+                <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-2">Advisory sources</p>
+                <div className="flex gap-2 flex-wrap">
+                    {ADVISORY_SOURCES.map((src) => {
+                        const count = advisories.filter((a) => (a.source ?? '').toUpperCase().includes(src.match)).length;
+                        return (
+                            <span key={src.name}
+                                className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${
+                                    count > 0 ? src.color : 'bg-card-muted text-foreground-muted border-border'
+                                }`}
+                                title={count > 0 ? `${count} advisories collected` : 'No advisories collected from this source yet'}>
+                                {src.name} {count > 0 ? `· ${count}` : '· none yet'}
+                            </span>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {/* Live advisories collected from ngCERT + CIRCL + NITDA */}
             {visibleAdvisories.length > 0 && (
                 <div>
                     <div className="flex items-center gap-2 mb-2">

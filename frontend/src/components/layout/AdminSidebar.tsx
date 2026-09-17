@@ -85,6 +85,9 @@ const adminNav: NavGroup[] = [
             // Live IOC Feed and Threat Feeds are different things and sit next to each other on
             // purpose: this one is the live indicator stream, /threat/feeds is where feed
             // sources are configured.
+            // Also reachable by clicking Nigeria on the global threat map; listed here so it
+            // isn't only discoverable by knowing to click the map.
+            { label: 'Nigeria Deep Dive', href: '/admin/threat/nigeria-detail', icon: Map, roles: [...NOT_EXEC] },
             { label: 'Live IOC Feed', href: '/admin/threat/live-ioc', icon: Radio, roles: [...NOT_EXEC] },
             { label: 'Threat Feeds', href: '/admin/threat/feeds', icon: Database, roles: [...NOT_EXEC] },
             { label: 'MITRE ATT&CK', href: '/admin/threat/mitre', icon: ShieldAlert, roles: [...NOT_EXEC] },

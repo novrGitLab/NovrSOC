@@ -3,6 +3,7 @@
 // unref()'d interval so this never keeps the process alive on its own.
 import { runNigerianIntelCollector, setLastCollectorResult } from '../services/nigerianIntelCollector';
 import { seedNigerianDemoData, isDemoSeedEnabled } from '../services/nigeriaDemoSeed';
+import { collectNITDAAdvisories } from '../services/nitdaFeed';
 
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // hourly
 
@@ -12,6 +13,18 @@ async function tick(): Promise<void> {
         setLastCollectorResult(result);
     } catch (err) {
         console.error('[NigerianIntel] Job tick failed:', err);
+    }
+
+    // NITDA runs in its own try/catch, after the main collector rather than inside it: it is a
+    // search-driven source (services/nitdaFeed.ts) and a Serper outage or exhausted quota must
+    // not take down ngCERT/NCC/CBN collection, which does not depend on it.
+    try {
+        const nitda = await collectNITDAAdvisories();
+        if (nitda.found > 0 || nitda.stored > 0) {
+            console.log(`[NigerianIntel] NITDA: ${nitda.found} advisories found, ${nitda.stored} stored`);
+        }
+    } catch (err) {
+        console.error('[NigerianIntel] NITDA collection failed:', err instanceof Error ? err.message : err);
     }
 }
 

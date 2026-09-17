@@ -28,6 +28,7 @@ interface ThreatActor {
     last_active: string;
     description: string;
     damage: string;
+    known_incidents: Array<{ year: string; title: string; description: string; source: string }>;
     reference: string;
     reference_url: string;
 }
@@ -106,6 +107,31 @@ function ActorCard({ actor }: { actor: ThreatActor }) {
                     </div>
                 </div>
             </div>
+
+            {/* Documented incidents, collapsed by default — a card with three expanded
+                incident write-ups buries the MITRE techniques and the pivot button below it.
+                Each entry names the report it came from; nothing here is summarised from an
+                unattributed source. */}
+            {actor.known_incidents?.length > 0 && (
+                <details className="mb-3 group">
+                    <summary className="cursor-pointer text-[9px] font-bold text-foreground-muted uppercase tracking-wider list-none flex items-center gap-1.5 hover:text-foreground">
+                        <span className="transition-transform group-open:rotate-90">▸</span>
+                        Documented incidents ({actor.known_incidents.length})
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                        {actor.known_incidents.map((incident, i) => (
+                            <div key={`${incident.year}-${i}`} className="border border-border rounded-xl p-3">
+                                <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                    <span className="text-[10px] font-black bg-card-muted text-foreground-muted px-2 py-0.5 rounded-full">{incident.year}</span>
+                                    <span className="text-xs font-bold text-foreground">{incident.title}</span>
+                                </div>
+                                <p className="text-xs text-foreground-muted leading-relaxed mb-1.5">{incident.description}</p>
+                                <p className="text-[10px] text-purple font-medium">Source: {incident.source}</p>
+                            </div>
+                        ))}
+                    </div>
+                </details>
+            )}
 
             <div className="mb-3">
                 <p className="text-[9px] font-bold text-foreground-muted uppercase tracking-wider mb-1">MITRE ATT&amp;CK</p>

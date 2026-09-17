@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import * as d3 from 'd3';
 import { feature } from 'topojson-client';
 import type { Topology, GeometryCollection } from 'topojson-specification';
@@ -28,12 +29,15 @@ interface TooltipState {
     count: number;
     x: number;
     y: number;
+    /** Nigeria only — drives the "click for detail" hint below the count. */
+    clickable?: boolean;
 }
 
 const NIGERIA_NUMERIC = '566';
 const WORLD_ATLAS_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
 
 export function GlobalThreatMap() {
+    const router = useRouter();
     const svgRef = useRef<SVGSVGElement>(null);
     const wrapRef = useRef<HTMLDivElement>(null);
     const [threats, setThreats] = useState<CountryThreat[]>([]);
@@ -110,16 +114,27 @@ export function GlobalThreatMap() {
                     const hit = threatByNumeric.get(code);
                     return hit && hit.threats > 0 ? colorScale(hit.threats) : '#EEF0F6';
                 })
-                .attr('stroke', '#FFFFFF')
-                .attr('stroke-width', (d) => (String(d.id ?? '').padStart(3, '0') === NIGERIA_NUMERIC ? 1.5 : 0.5))
-                .style('cursor', 'pointer')
+                // Nigeria is matched on its ISO numeric code, not d.properties.name — the
+                // world-atlas topojson keys on numeric ids and its name field is not guaranteed
+                // to be present or spelled consistently across releases.
+                .attr('stroke', (d) => (String(d.id ?? '').padStart(3, '0') === NIGERIA_NUMERIC ? '#520385' : '#FFFFFF'))
+                .attr('stroke-width', (d) => (String(d.id ?? '').padStart(3, '0') === NIGERIA_NUMERIC ? 2 : 0.5))
+                // Only Nigeria actually navigates, so only Nigeria gets the pointer — a pointer
+                // on every country promises a drill-down that does not exist for the other 200.
+                .style('cursor', (d) => (String(d.id ?? '').padStart(3, '0') === NIGERIA_NUMERIC ? 'pointer' : 'default'))
+                .on('click', (_event, d) => {
+                    if (String(d.id ?? '').padStart(3, '0') !== NIGERIA_NUMERIC) return;
+                    // router.push, not window.location — a full reload would drop the admin
+                    // shell and re-run every dashboard fetch on the way back.
+                    router.push('/admin/threat/nigeria-detail');
+                })
                 .on('mousemove', function (event: MouseEvent, d) {
                     const code = String(d.id ?? '').padStart(3, '0');
                     const hit = threatByNumeric.get(code);
                     const name = hit?.country ?? d.properties?.name ?? 'Unknown';
                     const [x, y] = d3.pointer(event, wrapEl);
                     d3.select(this).attr('opacity', 0.75);
-                    setTooltip({ name, count: hit?.threats ?? 0, x, y });
+                    setTooltip({ name, count: hit?.threats ?? 0, x, y, clickable: code === NIGERIA_NUMERIC });
                 })
                 .on('mouseout', function () {
                     d3.select(this).attr('opacity', 1);
@@ -221,7 +236,7 @@ export function GlobalThreatMap() {
         observer.observe(wrapEl);
 
         return () => { cancelled = true; observer.disconnect(); };
-    }, [threats]);
+    }, [threats, router]);
 
     return (
         <div className="bg-card border border-border rounded-2xl p-5">
@@ -277,6 +292,9 @@ export function GlobalThreatMap() {
                     >
                         <div className="font-bold text-foreground">{tooltip.name}</div>
                         <div className="text-foreground-muted">{tooltip.count.toLocaleString()} alert{tooltip.count === 1 ? '' : 's'}</div>
+                        {tooltip.clickable && (
+                            <div className="text-purple font-bold mt-0.5">Click for detailed threat analysis →</div>
+                        )}
                     </div>
                 )}
             </div>
