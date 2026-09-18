@@ -144,15 +144,24 @@ const emptySupplemental = (): SupplementalNigeriaData => ({
 // Which Nigerian intelligence sources are wired and keyed right now. Each entry says what it
 // contributes and, when inactive, exactly what's missing — so the UI can explain a quiet map
 // instead of just showing zeros.
+// Every entry's `active` is derived from whether the source can actually run, and an inactive
+// one says why. Sources that were evaluated and found unusable are listed as inactive rather
+// than omitted, so the same dead API isn't re-proposed and re-tried every few months.
 function nigeriaSourceStatus(): Array<{ name: string; active: boolean; detail: string }> {
     const greynoise = !!process.env.GREYNOISE_API_KEY;
     const fofa = !!(process.env.FOFA_API_KEY && process.env.FOFA_EMAIL);
+    const serper = !!process.env.SERPER_API_KEY;
     return [
         { name: 'GreyNoise', active: greynoise, detail: greynoise ? 'Malicious IPs scanning from Nigerian networks' : 'GREYNOISE_API_KEY not set' },
         { name: 'Feodo Tracker', active: true, detail: 'Botnet C2 IPs — free, no key required' },
         { name: 'CIRCL OSINT', active: true, detail: 'Nigeria-tagged events from the public MISP feed — no key required' },
+        { name: 'NITDA', active: serper, detail: serper ? 'NITDA/CERRT advisories discovered via search' : 'SERPER_API_KEY not set' },
         { name: 'FOFA', active: fofa, detail: fofa ? 'Exposed services on Nigerian networks' : 'FOFA_API_KEY/FOFA_EMAIL not set' },
         { name: 'ngCERT', active: false, detail: 'cert.gov.ng returns 403 to this backend — no scrapable feed' },
+        // Checked live on 2026-09-18. Kept visible so the same three aren't re-adopted later.
+        { name: 'Check Point ThreatMap', active: false, detail: 'threatmap-api.checkpoint.com accepts the connection then never responds (45s timeout), even with browser Origin/Referer headers' },
+        { name: 'ThreatMiner', active: false, detail: 'HTTP 522 on both the API and threatminer.org itself — the service is down, not just rate-limiting' },
+        { name: 'Cymon', active: false, detail: 'cymon.io does not resolve — the service shut down in 2019' },
     ];
 }
 
@@ -357,23 +366,40 @@ router.get('/nigeria-threats', async (req, res) => {
         // Distinct from demoData — that table now normally holds REAL collected counts, and
         // reporting those as 'wazuh' would misattribute them to telemetry they didn't come from.
         let fromCollector = false;
-        if (!states.some((s) => s.threats > 0)) {
-            const seeded = await readSeededStates();
-            if (seeded.length > 0) {
-                fromCollector = true;
-                demoData = await hasDemoData();
-                const byName = new Map(seeded.map((r) => [nigeriaStateToMapName(r.state_name), r]));
-                for (const state of states) {
-                    const row = byName.get(state.name);
-                    if (!row) continue;
-                    state.threats = row.attack_count ?? 0;
-                    state.critical = row.critical_flag ? 1 : 0;
+
+        // Collector counts are merged ALWAYS, not only when Wazuh returned zero.
+        //
+        // nigeria_state_threats is written by the Nigerian collector from sources that have
+        // nothing to do with endpoint telemetry — GreyNoise, Feodo, CIRCL. Reading it only as a
+        // zero-fallback made the Nigeria map effectively a Wazuh view: with even one Nigerian
+        // alert in the window, every independently-collected threat was discarded, and the map
+        // implied that one alert was all that was known about the country.
+        //
+        // Adding rather than replacing keeps both contributions: Wazuh reports what THIS estate
+        // saw, the collector reports what is observable about Nigerian networks generally. They
+        // answer different questions and neither is a subset of the other.
+        const seeded = await readSeededStates();
+        if (seeded.length > 0) {
+            fromCollector = true;
+            demoData = await hasDemoData();
+            const byName = new Map(seeded.map((r) => [nigeriaStateToMapName(r.state_name), r]));
+            for (const state of states) {
+                const row = byName.get(state.name);
+                if (!row) continue;
+                const collected = row.attack_count ?? 0;
+                if (collected === 0) continue;
+
+                state.threats += collected;
+                if (row.critical_flag) state.critical += 1;
+                // Wazuh's own dominant type wins when it has one — it is specific to this
+                // estate's alerts; the collector's is a general-population figure.
+                if (!state.top_threat_type || state.top_threat_type === 'None') {
                     state.top_threat_type = row.dominant_type ?? 'None';
-                    state.severity = row.critical_flag ? 'critical' : state.threats > 0 ? 'medium' : 'clean';
-                    state.threat_level = getThreatLevel(state.threats);
-                    totalThreats += state.threats;
-                    totalCritical += state.critical;
                 }
+                state.severity = state.critical > 0 ? 'critical' : state.threats > 0 ? 'medium' : 'clean';
+                state.threat_level = getThreatLevel(state.threats);
+                totalThreats += collected;
+                if (row.critical_flag) totalCritical += 1;
             }
         }
 
@@ -445,10 +471,48 @@ router.get('/nigeria-threats', async (req, res) => {
         console.error('Nigeria threats error:', err);
         const supplemental = await getSupplementalNigeriaData().catch(emptySupplemental);
 
+        // A Wazuh outage must not blank the Nigeria map. The collector's counts come from
+        // GreyNoise/Feodo/CIRCL and are still valid when the indexer is unreachable — previously
+        // this path returned emptyStates(), i.e. a national all-clear, which is the most
+        // misleading thing a threat map can show during an outage.
+        const fallbackStates = emptyStates().map((st) => ({ ...st, severity: st.severity as string }));
+        let recovered = 0;
+        let recoveredCritical = 0;
+        try {
+            const seeded = await readSeededStates();
+            if (seeded.length > 0) {
+                const byName = new Map(seeded.map((r) => [nigeriaStateToMapName(r.state_name), r]));
+                for (const state of fallbackStates) {
+                    const row = byName.get(state.name);
+                    if (!row) continue;
+                    state.threats = row.attack_count ?? 0;
+                    state.critical = row.critical_flag ? 1 : 0;
+                    state.top_threat_type = row.dominant_type ?? 'None';
+                    state.severity = row.critical_flag ? 'critical' : state.threats > 0 ? 'medium' : 'clean';
+                    state.threat_level = getThreatLevel(state.threats);
+                    recovered += state.threats;
+                    recoveredCritical += state.critical;
+                }
+            }
+        } catch (innerErr) {
+            console.error('Nigeria threats — collector fallback also failed:', innerErr);
+        }
+
         res.json({
-            states: emptyStates(),
-            summary: emptySummary('CLEAR', 'Wazuh indexer unavailable — showing zeros'),
-            source: 'wazuh',
+            states: fallbackStates,
+            summary: recovered > 0
+                ? {
+                    ...emptySummary('CLEAR', 'Wazuh indexer unavailable — showing independently collected data only'),
+                    total_threats: recovered,
+                    critical_states: fallbackStates.filter((st) => st.severity === 'critical').length,
+                    states_affected: fallbackStates.filter((st) => st.threats > 0).length,
+                }
+                : emptySummary('CLEAR', 'Wazuh indexer unavailable and no collected data available — this is an outage, not an all-clear'),
+            // Attribution follows the data: reporting collector counts as 'wazuh' would
+            // misattribute them to telemetry they did not come from.
+            source: recovered > 0 ? 'collector' : 'wazuh',
+            collector_only: recovered > 0,
+            wazuh_available: false,
             // Also reported on the failure path — a Wazuh outage shouldn't make the source
             // badges disappear, since which feeds are keyed is independent of it.
             sources_active: nigeriaSourceStatus(),

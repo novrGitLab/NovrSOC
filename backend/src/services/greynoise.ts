@@ -104,10 +104,23 @@ export async function getGreyNoiseNigerianIPs(limit = 50): Promise<GreyNoiseNige
 
     const byIp = new Map<string, GreyNoiseNigerianIP>();
 
-    for (const query of queries) {
+    // Spacing between GNQL calls. These four queries previously fired back to back, which is
+    // what produced the HTTP 429s in the logs: the daily budget is nowhere near exhausted
+    // (4 queries hourly is ~96/day against a 500/day allowance), so the limit being hit is the
+    // per-second burst rate, not the quota. One second between calls keeps the whole loop under
+    // four seconds while staying clear of the burst limit.
+    const GNQL_SPACING_MS = 1000;
+
+    for (const [index, query] of queries.entries()) {
         // Stop early once we have enough — each IP costs an IPregistry lookup downstream, and
         // that free tier is metered.
         if (byIp.size >= limit) break;
+
+        // Before the call rather than after, and skipped for the first one, so the delay is only
+        // ever paid between requests that actually happen — a run that exits early at `break`
+        // above doesn't sit waiting for a query it never makes.
+        if (index > 0) await new Promise((resolve) => setTimeout(resolve, GNQL_SPACING_MS));
+
         try {
             const r = await fetch(
                 `https://api.greynoise.io/v3/gnql?query=${encodeURIComponent(query)}&size=${Math.min(50, limit)}`,

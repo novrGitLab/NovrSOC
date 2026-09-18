@@ -63,6 +63,9 @@ interface NigeriaThreatsResponse {
     // Which intelligence feeds can currently contribute, derived server-side from what's
     // actually configured — so a quiet map can be explained rather than just looking broken.
     sources_active?: Array<{ name: string; active: boolean; detail: string }>;
+    /** Set by /api/dashboard/nigeria-threats when Wazuh was unreachable and the states shown
+     *  came only from the independent collector. */
+    collector_only?: boolean;
     enrichment_coverage?: EnrichmentCoverage;
     generated_at: string;
 }
@@ -231,6 +234,17 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
                                 )}
                             </div>
                         )}
+
+                        {/* Says where this map's numbers come from. The state counts are built
+                            from the sources above — which observe Nigerian networks generally —
+                            and Wazuh alerts are added on top where this estate saw something.
+                            Neither is a subset of the other, and the map still renders if the
+                            Wazuh indexer is down. */}
+                        <p className="text-[10px] text-muted-foreground mt-2 max-w-2xl leading-relaxed">
+                            Nigerian threat data is collected independently of endpoint monitoring.
+                            Wazuh alerts are added on top when this deployment detects an attack
+                            {data?.collector_only ? ' — the Wazuh indexer is currently unreachable, so only independently collected data is shown' : ''}.
+                        </p>
                     </div>
                     <div className="text-right flex items-center gap-4">
                         {isLoading && <RefreshCw size={16} className="animate-spin text-muted-foreground" />}
