@@ -42,6 +42,7 @@ import dashboardRouter from './routes/dashboard';
 import handoverRouter from './routes/handover';
 import emailRouter from './routes/email';
 import emailProxyRouter from './routes/emailProxy';
+import mitreRouter from './routes/mitre';
 import orgCTIRouter from './routes/orgCTI';
 import { runCTIWatcher } from './jobs/ctiWatcher';
 import { startAutoCloseJob } from './jobs/autoClose';
@@ -306,6 +307,7 @@ app.use('/api/email', emailSecurityRouter);
 // are different concerns (sending vs. scanning) that happen to share a URL namespace.
 app.use('/api/email', emailRouter);
 app.use('/api/email-proxy', emailProxyRouter);
+app.use('/api/mitre', mitreRouter);
 app.use('/api/vendors', vendorsRouter);
 app.use('/api/recovery', dataRecoveryRouter);
 app.use('/api/sla', slaRouter);

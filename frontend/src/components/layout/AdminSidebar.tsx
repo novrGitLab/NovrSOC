@@ -57,6 +57,7 @@ const adminNav: NavGroup[] = [
             { label: 'Incidents', href: '/admin/secops/incidents', icon: Siren, roles: [...NOT_EXEC] },
             { label: 'Alerts', href: '/admin/secops/alerts', icon: Activity, roles: [...NOT_EXEC] },
             { label: 'Security Ops Mgmt', href: '/admin/secops/management', icon: Wrench, roles: [...MANAGER_ONLY] },
+            { label: 'MITRE Intelligence', href: '/admin/secops/mitre', icon: Crosshair, roles: [...NOT_EXEC] },
             { label: 'Playbooks', href: '/admin/secops/playbooks', icon: BookOpen, roles: [...NOT_EXEC] },
             { label: 'SOAR Automation', href: '/admin/secops/soar', icon: Zap, roles: [...MANAGER_ONLY] },
         ],
