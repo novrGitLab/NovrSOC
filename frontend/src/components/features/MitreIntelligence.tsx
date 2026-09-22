@@ -448,17 +448,36 @@ export function MitreIntelligence() {
                                             {defendData.overall_score === null ? '—' : `${defendData.overall_score}%`}
                                         </div>
                                         <div className="text-[10px] text-foreground-muted">
-                                            {defendData.overall_score === null ? 'not assessable' : 'of verifiable controls'}
+                                            {defendData.overall_score === null
+                                                ? 'not assessable'
+                                                : `of ${defendData.verifiable_count} verifiable control${defendData.verifiable_count === 1 ? '' : 's'}`}
                                         </div>
                                     </div>
                                 </div>
 
                                 {defendData.overall_score !== null && (
-                                    <div className="h-3 bg-card-muted rounded-full overflow-hidden mb-4">
+                                    <div className="h-3 bg-card-muted rounded-full overflow-hidden mb-3">
                                         <div className={`h-full rounded-full transition-all ${
                                             defendData.overall_score >= 70 ? 'bg-green' : defendData.overall_score >= 40 ? 'bg-amber-500' : 'bg-red-500'
                                         }`} style={{ width: `${defendData.overall_score}%` }} />
                                     </div>
+                                )}
+
+                                {/* A high score over a small assessable subset reads as "well
+                                    defended" at a glance when most of the picture is simply
+                                    unmeasured. Where that is the case, the gap is stated next to
+                                    the number rather than only in the tiles below it. */}
+                                {defendData.overall_score !== null
+                                    && (defendData.unknown_count > 0 || defendData.uncovered_techniques.length > 0) && (
+                                    <p className="text-[11px] text-amber-500 mb-4 leading-relaxed">
+                                        This is not overall defensive coverage.{' '}
+                                        {defendData.uncovered_techniques.length > 0 && (
+                                            <>{defendData.uncovered_techniques.length} of {defendData.detected_count} detected techniques have no D3FEND mapping here and are not in this score. </>
+                                        )}
+                                        {defendData.unknown_count > 0 && (
+                                            <>{defendData.unknown_count} further control{defendData.unknown_count === 1 ? '' : 's'} could not be verified from platform state.</>
+                                        )}
+                                    </p>
                                 )}
 
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
