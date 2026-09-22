@@ -27,6 +27,59 @@ const RANGE_HOURS: Record<string, number> = {
     '1h': 1, '6h': 6, '12h': 12, '24h': 24, '7d': 168, '30d': 720,
 };
 
+// Authoritative technique names.
+//
+// WHY THIS EXISTS: rule.mitre.id and rule.mitre.technique are PARALLEL ARRAYS on each alert —
+// ids[0] pairs with technique[0] — but an Elasticsearch terms aggregation flattens both and
+// loses that pairing. For any alert mapped to more than one technique, the name sub-aggregation
+// can therefore return a sibling technique's name.
+//
+// Observed live on this deployment: T1565.001 came back as "Modify Registry" (it is Stored Data
+// Manipulation), T1070.004 as "Data Destruction" (it is File Deletion) and T1574.002 as
+// "DLL Search Order Hijacking" (it is DLL Side-Loading) — 3 of 22 wrong, all of them
+// sub-techniques that co-occur with another mapping on the same alert.
+//
+// A wrong technique name sitting next to a correct ID is worse than no name on a console an
+// analyst uses to decide what to chase, so names are resolved from here first. Unmapped ids fall
+// back to what Wazuh reported, which is correct for singly-mapped alerts.
+const TECHNIQUE_NAMES: Record<string, string> = {
+    T1027: 'Obfuscated Files or Information',
+    T1053: 'Scheduled Task/Job',
+    'T1053.005': 'Scheduled Task',
+    T1055: 'Process Injection',
+    T1059: 'Command and Scripting Interpreter',
+    'T1059.001': 'PowerShell',
+    'T1059.003': 'Windows Command Shell',
+    T1070: 'Indicator Removal',
+    'T1070.004': 'File Deletion',
+    T1078: 'Valid Accounts',
+    T1087: 'Account Discovery',
+    T1105: 'Ingress Tool Transfer',
+    T1110: 'Brute Force',
+    T1112: 'Modify Registry',
+    T1190: 'Exploit Public-Facing Application',
+    T1046: 'Network Service Discovery',
+    T1021: 'Remote Services',
+    T1484: 'Domain Policy Modification',
+    T1485: 'Data Destruction',
+    T1486: 'Data Encrypted for Impact',
+    T1529: 'System Shutdown/Reboot',
+    T1531: 'Account Access Removal',
+    T1543: 'Create or Modify System Process',
+    'T1543.003': 'Windows Service',
+    T1546: 'Event Triggered Execution',
+    'T1546.011': 'Application Shimming',
+    T1562: 'Impair Defenses',
+    'T1562.001': 'Disable or Modify Tools',
+    T1565: 'Data Manipulation',
+    'T1565.001': 'Stored Data Manipulation',
+    T1566: 'Phishing',
+    T1570: 'Lateral Tool Transfer',
+    T1574: 'Hijack Execution Flow',
+    'T1574.001': 'DLL Search Order Hijacking',
+    'T1574.002': 'DLL Side-Loading',
+};
+
 // Wazuh rule levels, per its own documentation.
 const SEVERITY_LEVELS: Record<string, number[]> = {
     critical: [13, 14, 15],
@@ -170,7 +223,9 @@ export async function collectTechniques(params: {
             const maxLevel = Math.round(b.max_level?.value ?? 0);
             return {
                 technique_id: b.key,
-                technique_name: b.technique_names?.buckets?.[0]?.key ?? b.key,
+                // Curated name first — see TECHNIQUE_NAMES on why Wazuh's reported name can
+                // belong to a sibling technique on multi-mapped alerts.
+                technique_name: TECHNIQUE_NAMES[b.key] ?? b.technique_names?.buckets?.[0]?.key ?? b.key,
                 count: b.doc_count,
                 severity: severityForLevel(maxLevel),
                 max_level: maxLevel,
