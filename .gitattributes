@@ -1,0 +1,2 @@
+# Deployed to Linux hosts — a CRLF shebang or env file breaks there.
+infra/** text eol=lf

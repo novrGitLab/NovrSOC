@@ -63,14 +63,14 @@ export function DarkWebMonitor() {
     };
 
     // Raising a case is an explicit action, not a side effect of scanning — running a search
-    // several times while tuning terms must not fill the incident queue with duplicates.
+    // several times while tuning terms must not fill the case queue with duplicates.
     const createIncident = async () => {
         if (!result || result.critical === 0) return;
         setCreating(true);
         setCaseMsg(null);
         try {
             const top = result.results[0];
-            const res = await apiFetch(apiUrl('/api/incidents'), {
+            const res = await apiFetch(apiUrl('/api/cases'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -80,9 +80,9 @@ export function DarkWebMonitor() {
                 }),
             });
             const data = await res.json();
-            setCaseMsg(res.ok ? `Incident created: ${data?.incident?.incident_number ?? data?.incident?.id ?? 'see Incidents'}` : (data?.error ?? 'Could not create incident'));
+            setCaseMsg(res.ok ? `Case ${data?.case_number ?? ''} created — see Cases` : (data?.error ?? 'Could not create case'));
         } catch {
-            setCaseMsg('Could not create incident — backend unreachable');
+            setCaseMsg('Could not create case — backend unreachable');
         } finally {
             setCreating(false);
         }
@@ -174,7 +174,7 @@ export function DarkWebMonitor() {
                                 </div>
                                 <button onClick={() => void createIncident()} disabled={creating}
                                     className="flex items-center gap-1.5 bg-red-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl hover:bg-red-600 disabled:opacity-50 transition-colors">
-                                    <Siren size={13} /> {creating ? 'Creating…' : 'Create incident'}
+                                    <Siren size={13} /> {creating ? 'Creating…' : 'Create case'}
                                 </button>
                             </div>
                             {caseMsg && <p className="text-[11px] text-foreground-muted">{caseMsg}</p>}

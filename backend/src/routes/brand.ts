@@ -774,10 +774,10 @@ router.post('/assets/logo', (req, res) => {
 // silently returns nothing would render as a reassuring "no mentions found"). The `sources`
 // array reports the real state of each so the UI can show coverage honestly.
 //
-// Deliberately does NOT auto-create a TheHive case or fire Slack on a hit. This route is a
+// Deliberately does NOT auto-create a case or fire Slack on a hit. This route is a
 // read-only search an analyst can run repeatedly while tuning search terms; auto-creating a case
-// per scan would spam the incident queue with duplicates of the same finding. The UI offers an
-// explicit "Create incident" action instead, so raising a case stays a decision rather than a
+// per scan would spam the case queue with duplicates of the same finding. The UI offers an
+// explicit "Create case" action instead, so raising a case stays a decision rather than a
 // side effect of looking.
 router.get('/darkweb', async (req, res) => {
     const company = typeof req.query.company === 'string' && req.query.company.trim() ? req.query.company.trim() : 'Cybernovr';

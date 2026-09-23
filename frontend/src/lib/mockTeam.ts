@@ -37,7 +37,7 @@ export const MOCK_TEAM: TeamMember[] = [
 ];
 
 // Only members who can actually be handed an alert/incident — matches ThreatManagement's
-// "Assign to..." picker and IncidentResponse's assigned-analyst concept. Viewers are
+// "Assign to..." picker and the case workbench's assigned-analyst concept. Viewers are
 // read-only and super_admin is the org owner, not a triage seat, so neither belongs here.
 export const ASSIGNABLE_ANALYSTS = MOCK_TEAM.filter((m) => m.role === 'analyst').map((m) => m.name);
 

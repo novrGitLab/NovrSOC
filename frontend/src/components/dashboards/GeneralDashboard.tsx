@@ -39,14 +39,14 @@ const WidgetCard = ({ title, linkHref, linkLabel, children }: { title: string; l
     </div>
 );
 
-/* ── Incident Queue Widget (Row 2, right) ── */
+/* ── Case Queue Widget (Row 2, right) — open cases from /api/cases ── */
 export interface QueueIncident {
     id: string;
     name: string;
     asset: string;
     severity: 'critical' | 'high' | 'medium' | 'low';
     status: 'Open' | 'Investigating' | 'Contained' | 'Resolved';
-    slaTime: string;
+    openedAt: string;
     ruleId?: string;
 }
 
@@ -73,13 +73,13 @@ export function IncidentQueueWidget({ incidents, loading }: { incidents: QueueIn
             <div className="p-4 sm:px-5 sm:py-4 border-b border-border flex items-center justify-between">
                 <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                    <h3 className="text-sm font-bold text-foreground tracking-tight">Active Incident Queue</h3>
+                    <h3 className="text-sm font-bold text-foreground tracking-tight">Active Case Queue</h3>
                     <span className="text-[11px] font-semibold text-foreground-muted bg-card-muted px-2 py-0.5 rounded-full border border-border">
                         {rows.length} Active
                     </span>
                 </div>
                 <Link
-                    href="/admin/secops/incidents"
+                    href="/admin/secops/cases"
                     className="flex items-center gap-1 text-xs font-bold text-orange hover:text-orange-hover transition-colors"
                 >
                     View all
@@ -100,17 +100,17 @@ export function IncidentQueueWidget({ incidents, loading }: { incidents: QueueIn
                         <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mx-auto mb-2.5">
                             <CheckCircle size={18} className="text-emerald-500" />
                         </div>
-                        <p className="text-xs font-semibold text-foreground">Zero Active Incidents</p>
-                        <p className="text-[11px] text-foreground-muted mt-0.5">All monitored endpoints are operating within normal baseline.</p>
+                        <p className="text-xs font-semibold text-foreground">No open cases</p>
+                        <p className="text-[11px] text-foreground-muted mt-0.5">Nothing is waiting for an analyst.</p>
                     </div>
                 ) : (
                     <div>
                         {/* Table Column Labels */}
                         <div className="grid grid-cols-12 gap-3 px-3 py-2 text-[10px] font-bold text-foreground-muted uppercase tracking-wider border-b border-border/60">
                             <span className="col-span-2">Severity</span>
-                            <span className="col-span-6">Incident & Target Host</span>
+                            <span className="col-span-6">Case & Host</span>
                             <span className="col-span-2 text-center">Status</span>
-                            <span className="col-span-2 text-right">SLA Target</span>
+                            <span className="col-span-2 text-right">Opened</span>
                         </div>
 
                         {/* List Items */}
@@ -122,7 +122,7 @@ export function IncidentQueueWidget({ incidents, loading }: { incidents: QueueIn
                                 return (
                                     <Link
                                         key={inc.id}
-                                        href={`/admin/secops/incidents`}
+                                        href="/admin/secops/cases"
                                         className="grid grid-cols-12 gap-3 items-center px-3 py-3 rounded-xl hover:bg-card-muted/50 transition-colors group"
                                     >
                                         {/* Severity Tag */}
@@ -154,10 +154,10 @@ export function IncidentQueueWidget({ incidents, loading }: { incidents: QueueIn
                                             </span>
                                         </div>
 
-                                        {/* SLA Remaining */}
+                                        {/* Opened (WAT) */}
                                         <div className="col-span-2 flex items-center justify-end gap-1 font-mono text-[11px] text-foreground-muted">
                                             <Clock size={11} className="text-foreground-muted/80" />
-                                            <span>{inc.slaTime || '02:00:00'}</span>
+                                            <span>{inc.openedAt}</span>
                                         </div>
                                     </Link>
                                 );
@@ -233,10 +233,10 @@ function ThreatIntelWidget({ ctiStats, orgCti }: { ctiStats: CtiStats | null; or
 }
 
 /* ── SOAR Activity Widget (Row 4, left) ──────────────────────────────────────────────
- * Every figure comes from GET /api/incidents/automation-status (real TheHive case counts).
+ * Every figure comes from GET /api/soar/stats (Supabase case counts).
  * This previously rendered four hardcoded values — "6 playbooks", three zeros and a 0%
- * automation rate — under a note about a Shuffle workflow. The numbers were not measured and
- * the third-party engine name is not something to surface in the product, so both are gone.
+ * automation rate — under a note naming a third-party workflow engine. The numbers were not
+ * measured and the engine name is not something to surface in the product, so both are gone.
  * A count that can't be read renders as "—", never as 0: zero is a finding, unknown is not. */
 function SOARWidget() {
     const [status, setStatus] = useState<{
@@ -244,14 +244,13 @@ function SOARWidget() {
         auto_resolved_today?: number;
         open_cases?: number;
         escalated_open?: number;
-        active?: boolean;
+        engine_active?: boolean;
     } | null>(null);
     const [failed, setFailed] = useState(false);
 
     useEffect(() => {
-        apiFetch(apiUrl('/api/incidents/automation-status'), { cache: 'no-store' })
-            .then((r) => r.json())
-            .then((d) => setStatus(d))
+        apiFetch(apiUrl('/api/soar/stats'), { cache: 'no-store' })
+            .then(async (r) => { if (!r.ok) throw new Error(); setStatus(await r.json()); })
             .catch(() => setFailed(true));
     }, []);
 
@@ -273,13 +272,13 @@ function SOARWidget() {
                 ))}
             </div>
             <div className="mt-3 flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${status?.active ? 'bg-green' : 'bg-card-muted'}`} />
+                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${status?.engine_active ? 'bg-green' : 'bg-card-muted'}`} />
                 <span className="text-[10px] text-foreground-muted">
                     {failed
                         ? 'Automation status unavailable — could not reach the backend.'
-                        : status?.active
-                            ? 'Automation pipeline active — Wazuh to case creation, status sync and auto-resolve.'
-                            : 'Automation pipeline inactive — see SOAR Automation for setup.'}
+                        : status?.engine_active
+                            ? 'SOAR engine active — a Wazuh alert was cased in the last 24 hours.'
+                            : 'No case from the SOAR engine in 24 hours — see SOAR Automation.'}
                 </span>
             </div>
         </WidgetCard>
@@ -556,11 +555,22 @@ export const GeneralDashboard = () => {
     }, []);
 
     useEffect(() => {
-        apiFetch(apiUrl('/api/wazuh/incidents'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+        // Real cases (analyst queue: auto-closed tier-1 excluded), newest first; unresolved only.
+        const STATUS_LABEL: Record<string, QueueIncident['status']> = { open: 'Open', investigating: 'Investigating', contained: 'Contained', resolved: 'Resolved' };
+        apiFetch(apiUrl('/api/cases?exclude_auto_closed=true&limit=50'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then(r => r.json())
             .then(data => {
-                setIncidentKpis({ total: data?.kpis?.total ?? 0, critical: data?.kpis?.critical ?? 0 });
-                setIncidentQueue(Array.isArray(data?.incidents) ? data.incidents : []);
+                setIncidentKpis({ total: data?.summary?.active ?? 0, critical: data?.summary?.critical ?? 0 });
+                const rows = (Array.isArray(data?.cases) ? data.cases : []) as Array<{ id: string; title: string; agent_name: string | null; severity: QueueIncident['severity']; status: string; created_at: string; rule_id: string | null }>;
+                setIncidentQueue(rows.filter(c => c.status !== 'resolved').map(c => ({
+                    id: c.id,
+                    name: c.title,
+                    asset: c.agent_name || '—',
+                    severity: c.severity,
+                    status: STATUS_LABEL[c.status] ?? 'Open',
+                    openedAt: new Date(c.created_at).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
+                    ruleId: c.rule_id ?? undefined,
+                })));
             })
             .catch(() => { setIncidentKpis({ total: 0, critical: 0 }); setIncidentQueue([]); })
             .finally(() => setIncidentsLoading(false));
@@ -651,9 +661,9 @@ export const GeneralDashboard = () => {
 
     const kpiCards: KpiCardProps[] = [
         { label: 'Assets Monitored', value: (wazuhStatus?.agent_count ?? 0).toLocaleString(), trend: '', type: 'purple', icon: Monitor, subValue: `${wazuhStatus?.active_agents ?? 0} active` },
-        { label: 'Active Incidents', value: String(incidentKpis?.total ?? 0), trend: '', type: 'orange', icon: Siren, subValue: `${incidentKpis?.critical ?? 0} critical` },
+        { label: 'Open Cases', value: String(incidentKpis?.total ?? 0), trend: '', type: 'orange', icon: Siren, subValue: `${incidentKpis?.critical ?? 0} critical` },
         { label: 'Critical Alerts', value: criticalAlertsCount !== null ? String(criticalAlertsCount) : '0', trend: '', type: 'red', icon: ShieldAlert, subValue: 'last 24 hours' },
-        { label: 'Open Incidents', value: openIncidentsCount !== null ? String(openIncidentsCount) : '0', trend: '', type: 'orange', icon: Shield, subValue: 'last 24 hours' },
+        { label: 'Alerts Level 7+', value: openIncidentsCount !== null ? String(openIncidentsCount) : '0', trend: '', type: 'orange', icon: Shield, subValue: 'last 24 hours' },
         { label: 'Clients Protected', value: customerCount !== null ? String(customerCount) : '0', trend: '', type: 'blue', icon: Building2, subValue: 'organisations' },
         { label: 'Mean Time to Detect', value: '—', trend: '', type: 'purple', icon: Timer, subValue: 'no data yet' },
         { label: 'Mean Time to Respond', value: '—', trend: '', type: 'blue', icon: Zap, subValue: 'no data yet' },
@@ -679,7 +689,7 @@ export const GeneralDashboard = () => {
                 {kpiCards.map((kpi, idx) => <KpiCard key={idx} {...kpi} />)}
             </div>
 
-            {/* Row 2: Nigeria map (60%) + Incident queue (40%) */}
+            {/* Row 2: Nigeria map (60%) + Case queue (40%) */}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
                 <div className="lg:col-span-5"><NigeriaThreatMap advisories={nigeriaAdvisories} /></div>
             </div>

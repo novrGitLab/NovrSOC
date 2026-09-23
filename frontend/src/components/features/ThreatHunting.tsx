@@ -42,7 +42,7 @@ export function ThreatHunting() {
     const [escalating, setEscalating] = useState(false);
     const [escalateResult, setEscalateResult] = useState<{ ok: boolean; message: string } | null>(null);
 
-    // Adds the event's source IP to the shared IOC intelligence table AND opens a TheHive case
+    // Adds the event's source IP to the shared IOC intelligence table AND opens a case
     // tagged 'threat-hunt' — see backend/src/routes/secops.ts's POST /hunting/escalate for both
     // writes.
     const addToThreats = async (event: HuntEvent) => {
@@ -65,7 +65,7 @@ export function ThreatHunting() {
             });
             const data = await res.json();
             if (!res.ok || !data?.success) throw new Error(data?.error || `HTTP ${res.status}`);
-            setEscalateResult({ ok: true, message: `Added to threat intel and case ${data.incident_id} created.` });
+            setEscalateResult({ ok: true, message: data.created === false ? `Added to threat intel — this IOC already has case ${data.case_number}.` : `Added to threat intel and case ${data.case_number} created.` });
         } catch (err) {
             setEscalateResult({ ok: false, message: err instanceof Error ? err.message : 'Failed to escalate' });
         } finally {

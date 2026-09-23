@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
-import { createTask } from '../services/thehive';
+import { addTasks, addTimeline, isUuid } from '../services/cases';
 
 // Supabase-backed playbook library — real columns confirmed live against the actual table:
 // id, name, org_id, icon, severity, description, steps (jsonb array, round-trips as native
@@ -10,12 +10,10 @@ import { createTask } from '../services/thehive';
 // here), estimated_time, created_at, updated_at, created_by. No steps_count/avg_duration/tags/
 // use_count/last_used/is_default columns, despite those being reasonable guesses.
 //
-// Not gated with requireAuth at the router level: GET and the /run action are reachable from
-// IncidentResponse.tsx's Attach Playbook picker, which the client portal also renders
-// (frontend/src/app/client/secops/incidents/page.tsx) — a portal_token can't be verified by
-// requireAuth, same constraint as /api/incidents and /api/notifications. The mutating CRUD
-// routes (create/update/delete) are individually gated to super_admin/soc_manager below, since
-// those are only reachable from the admin-only Security Ops Management page.
+// Not gated with requireAuth at the router level: GET is also read by the client portal's
+// Playbooks view, whose portal_token requireAuth can't verify. /run writes to a case, and cases
+// are analyst-only (routes/cases.ts), so it is gated individually; the mutating CRUD routes are
+// gated to super_admin/soc_manager, since only Security Ops Management reaches them.
 
 const router = Router();
 
@@ -239,14 +237,14 @@ router.delete('/:id', requireAuth, requireRole('super_admin', 'soc_manager'), as
     res.json({ success: true });
 });
 
-// POST /api/playbooks/:id/run — attaches a playbook to an existing incident: fetches the
-// playbook, creates one TheHive task per step (existing createTask(), the same primitive
-// IncidentResponse.tsx's own "+ New task" button already uses), so the steps show up as
-// Response Tasks in the incident slide-over and can be ticked off there like any other task.
-router.post('/:id/run', async (req, res) => {
-    const { incident_id } = req.body as { incident_id?: string };
-    if (!incident_id) {
-        res.status(400).json({ error: 'incident_id required' });
+// POST /api/playbooks/:id/run { case_id } — attaches a playbook to a case: one case_tasks row per
+// step, so the steps appear as Response Tasks in the case slide-over and can be ticked off
+// there. Also records the playbook on the case and in its timeline.
+router.post('/:id/run', requireAuth, async (req: AuthRequest, res) => {
+    const { case_id, incident_id } = req.body as { case_id?: string; incident_id?: string };
+    const caseId = case_id ?? incident_id; // incident_id still accepted from old callers
+    if (!caseId || !isUuid(caseId)) {
+        res.status(400).json({ error: 'case_id required' });
         return;
     }
     const supabase = getSupabase();
@@ -262,11 +260,19 @@ router.post('/:id/run', async (req, res) => {
     }
 
     const steps: PlaybookStep[] = Array.isArray(playbook.steps) ? playbook.steps : [];
-    const createdTasks = [];
-    for (const step of steps.length > 0 ? steps : [{ order: 1, title: `Follow the ${playbook.name} playbook`, phase: 'General', est_mins: 0, description: playbook.description }]) {
-        const task = await createTask(incident_id, { title: `[${playbook.name}] ${step.title}`, description: step.description });
-        if (task) createdTasks.push({ _id: task._id, title: task.title, description: task.description ?? '', status: task.status });
+    const source = steps.length > 0 ? steps : [{ order: 1, title: `Follow the ${playbook.name} playbook`, phase: 'General', est_mins: 0, description: playbook.description }];
+    const createdTasks = await addTasks(caseId, source.map((step) => ({
+        step_id: `playbook:${playbook.id}:${step.order}`,
+        title: `[${playbook.name}] ${step.title}`,
+        description: step.description,
+    })));
+    if (createdTasks.length === 0) {
+        res.status(502).json({ error: 'Could not add playbook tasks to the case' });
+        return;
     }
+
+    await supabase.from('cases').update({ playbook_id: playbook.id, updated_at: new Date().toISOString() }).eq('id', caseId);
+    await addTimeline(caseId, req.user?.email || 'analyst', `Playbook attached: ${playbook.name} (${createdTasks.length} tasks)`);
 
     res.json({ success: true, tasks_created: createdTasks.length, tasks: createdTasks });
 });

@@ -27,9 +27,9 @@ export interface ChatMessage {
 
 const SUGGESTED_PROMPTS = [
     {
-        title: 'Critical Incident Triage',
-        prompt: 'Show me critical incidents in the last 24 hours and recommend containment steps.',
-        category: 'Incidents'
+        title: 'Critical Case Triage',
+        prompt: 'Show me critical cases in the last 24 hours and recommend containment steps.',
+        category: 'Cases'
     },
     {
         title: 'MITRE ATT&CK Breakdown',

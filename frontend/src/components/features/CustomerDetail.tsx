@@ -173,7 +173,7 @@ function IncidentsTab({ org }: { org: Org }) {
                     ))}
                 </div>
             )}
-            <Link href="/admin/secops/incidents" className="text-[11px] font-bold text-blue hover:underline">View full Incidents workbench →</Link>
+            <Link href="/admin/secops/cases" className="text-[11px] font-bold text-blue hover:underline">Open Cases →</Link>
         </div>
     );
 }

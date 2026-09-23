@@ -35,7 +35,8 @@ import alertsRouter from './routes/alerts';
 import threatManagementRouter from './routes/threatManagement';
 import publicRouter from './routes/public';
 import intelligenceRouter from './routes/intelligence';
-import incidentResponseRouter from './routes/incidentResponse';
+import casesRouter from './routes/cases';
+import soarRouter from './routes/soar';
 import weblogicRouter from './routes/weblogic';
 import assetsRouter from './routes/assets';
 import dashboardRouter from './routes/dashboard';
@@ -45,7 +46,6 @@ import emailProxyRouter from './routes/emailProxy';
 import mitreRouter from './routes/mitre';
 import orgCTIRouter from './routes/orgCTI';
 import { runCTIWatcher } from './jobs/ctiWatcher';
-import { startAutoCloseJob } from './jobs/autoClose';
 import { startEscalationJob } from './jobs/incidentEscalation';
 import { startNigerianIntelJob } from './jobs/nigerianIntelJob';
 import { startGlobalIntelJob } from './jobs/globalIntelJob';
@@ -95,14 +95,14 @@ app.get('/', (_req, res) => {
 // exposure — see the per-route comment below. It is NOT mounted globally, and NOT mounted
 // on most feature routes, for a reason specific to this app's architecture:
 //
-// 22 feature components (ThreatManagement, IncidentResponse, CtiPlatform, DnsSuite,
+// 22 feature components (ThreatManagement, CtiPlatform, DnsSuite,
 // BrandSuite, DomainSuite, UrlScanSuite, WebsiteScanning, VendorAssessments,
 // WebLogicAppliances, MessagingSuite, PHISHIDProtection, DataLossRecovery, RecoveryCredit,
 // AlertCommunication, DMARCSaaS, MobileAppSuite, SocialSuite, CopyIdSuite, ExecutiveMonitor,
 // ThreatAdvisory, DigitalAssets — cross-checked by diffing every component imported by any
 // /admin page against every component imported by any /client page) are rendered by BOTH the
 // admin app and the client portal, and call the same backend routes either way: /api/wazuh,
-// /api/incidents, /api/threats, /api/threat, /api/brand, /api/dns, /api/urlscan,
+// /api/threats, /api/threat, /api/brand, /api/dns, /api/urlscan,
 // /api/webscan, /api/vendor-assessments, /api/sla, /api/org-cti, /api/recovery,
 // /api/weblogic, /api/alerts, /api/advisories.
 //
@@ -315,7 +315,15 @@ app.use('/api/alerts', alertsRouter);
 app.use('/api/threats', threatManagementRouter);
 // STIX export — gated: a bundle is the org's whole accumulated IOC set in one file.
 app.use('/api/intelligence', requireAuth, intelligenceRouter);
-app.use('/api/incidents', incidentResponseRouter);
+// Cases (Supabase). Analyst-only: case records carry source IPs, host names
+// and CISO escalations for the whole SOC. /api/incidents is kept as an alias for old callers,
+// and is gated the same way — an open alias would make gating /api/cases pointless. This
+// removes /api/incidents from the open, portal-shared list above; the client portal's case
+// page shows a sign-in notice instead (see routes/cases.ts).
+app.use('/api/cases', requireAuth, casesRouter);
+app.use('/api/incidents', requireAuth, casesRouter);
+// SOAR reporting (requireAuth per route) + the engine's token-authenticated /enrich.
+app.use('/api/soar', soarRouter);
 app.use('/api/weblogic', weblogicRouter);
 app.use('/api/assets', assetsRouter);
 // admin-only — no client-portal component calls these, confirmed safe to gate now (see the
@@ -372,11 +380,9 @@ const startCTIWatcher = () => {
 startCTIWatcher();
 setInterval(startCTIWatcher, 5 * 60 * 1000).unref();
 
-// Auto-close job for low/medium-severity TheHive cases — see jobs/autoClose.ts for the
-// resolve-after-30-minutes-idle logic. No-ops (with a log line) when TheHive isn't configured.
-startAutoCloseJob();
+// (No auto-close job: the SOAR engine closes tier-1 cases as it creates them — infra/soar.)
 // Escalation emails for unresolved HIGH/CRITICAL cases — see jobs/incidentEscalation.ts.
-// No-ops (with a log line) when TheHive isn't configured.
+// No-ops (with a log line) when the case store isn't configured.
 startEscalationJob();
 // Hourly Nigerian threat-intel collection (ngCERT + CIRCL + Feodo Tracker -> Nigeria heatmap +
 // MISP). Each source degrades to zero independently — see nigerianIntelCollector.ts's header

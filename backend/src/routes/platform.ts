@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents } from '../services/wazuh';
 import { getAuditLog } from '../lib/audit';
 import { getMISPStats, isMISPConfigured, checkMISPBrowseRedirect } from '../services/misp';
-import { isTheHiveConfigured, testConnection as testTheHive } from '../services/thehive';
 import { isConfigured as leakixConfigured } from '../services/leakix';
 import { isConfigured as fofaConfigured } from '../services/fofa';
 
@@ -85,23 +84,6 @@ async function checkMISP(): Promise<ServiceCheck & { detail?: string }> {
     return { name: 'MISP', status: 'down', latency_ms: latency, detail: stats.error };
 }
 
-// TheHive goes through the service's own testConnection(), which sends the Basic Auth header
-// this instance requires. A bare unauthenticated GET to /api/v1/status (the obvious approach)
-// returns 401 whether or not TheHive is healthy, so it would report "down" permanently — the
-// same trap checkWazuh() above already documents.
-async function checkTheHive(): Promise<ServiceCheck & { detail?: string }> {
-    const start = Date.now();
-    if (!isTheHiveConfigured()) {
-        return { name: 'TheHive', status: 'down', latency_ms: 0, detail: 'Not configured' };
-    }
-    const result = await testTheHive();
-    const latency = Date.now() - start;
-    if (result.ok) return { name: 'TheHive', status: 'up', latency_ms: latency };
-    // Reachable but rejecting credentials is degraded, not down — same distinction as MISP.
-    if (result.status > 0) return { name: 'TheHive', status: 'degraded', latency_ms: latency, detail: result.error };
-    return { name: 'TheHive', status: 'down', latency_ms: latency, detail: result.error };
-}
-
 // Credential-shape diagnostics for the integrations that are keyed but not otherwise probed on
 // every health poll. These answer "is the key even present, and the right shape?" without a
 // network round-trip per integration, so a misconfigured key is diagnosable from the Platform
@@ -160,11 +142,11 @@ function integrationConfig() {
 }
 
 // GET /api/platform/health — real checks for Wazuh Manager, Database (Supabase), Claude AI,
-// MISP and TheHive, plus a per-integration credential summary. Every other service on the
+// and MISP, plus a per-integration credential summary. Every other service on the
 // Platform Health page stays mock until it has its own real check built — see
 // frontend/src/components/features/PlatformHealth.tsx.
 router.get('/health', async (_req, res) => {
-    const results = await Promise.all([checkWazuh(), checkDatabase(), checkClaudeAI(), checkMISP(), checkTheHive()]);
+    const results = await Promise.all([checkWazuh(), checkDatabase(), checkClaudeAI(), checkMISP()]);
 
     const allUp = results.every((r) => r.status === 'up');
     const anyDown = results.some((r) => r.status === 'down');

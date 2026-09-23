@@ -2,7 +2,7 @@
 //
 // Produces a `bundle` containing one `identity` SDO (the producing organisation) and one
 // `indicator` SDO per IOC, each with a STIX pattern so the bundle is directly consumable by
-// MISP, OpenCTI, TheHive, Anomali and anything else that speaks STIX.
+// MISP, OpenCTI, Anomali and anything else that speaks STIX.
 //
 // On object IDs: the 2.1 spec says SDOs SHOULD use UUIDv4, but a random id means every export
 // of the same IOC produces a *different* indicator, so a TIP re-importing this feed accumulates

@@ -89,10 +89,10 @@ export function Header({ initials, onSignOut }: HeaderProps) {
 
     const goToIncident = (n: Notification) => {
         setOpen(false);
-        // Admin and client portal both have a SecOps incidents page, just under different
+        // Admin and client portal both have a SecOps cases page, just under different
         // prefixes — route to whichever one this session is actually in.
         const base = pathname.startsWith('/client') ? '/client' : '/admin';
-        router.push(n.type === 'case' ? `${base}/secops/incidents` : `${base}/secops/alerts`);
+        router.push(n.type === 'case' ? `${base}/secops/cases` : `${base}/secops/alerts`);
     };
 
     return (

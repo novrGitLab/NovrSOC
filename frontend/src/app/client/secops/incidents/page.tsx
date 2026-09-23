@@ -1,5 +1,6 @@
-import { IncidentResponse } from '@/components/features/IncidentResponse';
+import { permanentRedirect } from 'next/navigation';
 
+// Incidents were renamed to Cases. Kept so old links and bookmarks still land somewhere.
 export default function Page() {
-    return <IncidentResponse />;
+    permanentRedirect('/client/secops/cases');
 }

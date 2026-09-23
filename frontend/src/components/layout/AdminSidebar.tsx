@@ -3,9 +3,9 @@
 import {
     LayoutDashboard, FileBarChart, Globe, Users, Shield, UserCheck, Smartphone, Code,
     Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network, Cpu,
-    Mail, MessageSquare, ShieldAlert, Activity, Siren, ClipboardList, Zap,
+    Mail, MessageSquare, ShieldAlert, Activity, ClipboardList, Zap,
     HardDrive, BarChart, CreditCard, Settings, Database, BookOpen, FileText, ScrollText,
-    ClipboardCheck, Bot, WifiOff, Map, Landmark, Radio, Wrench, Cloud, Eye,
+    ClipboardCheck, Bot, WifiOff, Map, Landmark, Radio, Cloud, Eye, Bell,
 } from 'lucide-react';
 import { Sidebar, type NavGroup } from './Sidebar';
 
@@ -45,21 +45,20 @@ const adminNav: NavGroup[] = [
         collapsible: true,
         icon: Activity,
         groupLabel: 'Security Operations',
-        // Cases, Threat Hunting, Shift Handover, and Reports Center are off the nav per the
-        // Security Operations redesign — moved into Security Ops Management as tabs (Threat
-        // Hunting, Shift Handover, Reports) or, for Cases, just no longer linked (TheHive case
-        // management isn't surfaced to analysts as a separate concept from Incidents — see
-        // CasesPage.tsx). All four routes still work if visited directly; nothing was deleted.
+        // Incidents were renamed Cases (Supabase case management); /admin/secops/incidents
+        // redirects to /admin/secops/cases. Threat Hunting, Shift Handover and Reports are tabs
+        // inside Sec Ops Management rather than nav entries.
         //
-        // Whole section is executive: ❌ (NOT_EXEC on every item); Sec Ops Mgmt and SOAR are
-        // additionally analyst: ❌ (MANAGER_ONLY) per the matrix's per-item breakdown.
+        // Whole section is executive: ❌ (NOT_EXEC). Sec Ops Management is CISO-only
+        // (MANAGER_ONLY: super_admin / soc_manager). SOAR Automation is a read-only report and
+        // is visible to analysts, per the SOAR rebuild spec.
         items: [
-            { label: 'Incidents', href: '/admin/secops/incidents', icon: Siren, roles: [...NOT_EXEC] },
-            { label: 'Alerts', href: '/admin/secops/alerts', icon: Activity, roles: [...NOT_EXEC] },
-            { label: 'Security Ops Mgmt', href: '/admin/secops/management', icon: Wrench, roles: [...MANAGER_ONLY] },
-            { label: 'MITRE Intelligence', href: '/admin/secops/mitre', icon: Crosshair, roles: [...NOT_EXEC] },
+            { label: 'Cases', href: '/admin/secops/cases', icon: FileText, roles: [...NOT_EXEC] },
+            { label: 'Alerts', href: '/admin/secops/alerts', icon: Bell, roles: [...NOT_EXEC] },
+            { label: 'MITRE Intelligence', href: '/admin/secops/mitre', icon: Shield, roles: [...NOT_EXEC] },
             { label: 'Playbooks', href: '/admin/secops/playbooks', icon: BookOpen, roles: [...NOT_EXEC] },
-            { label: 'SOAR Automation', href: '/admin/secops/soar', icon: Zap, roles: [...MANAGER_ONLY] },
+            { label: 'SOAR Automation', href: '/admin/secops/soar', icon: Zap, roles: [...NOT_EXEC] },
+            { label: 'Sec Ops Management', href: '/admin/secops/management', icon: Settings, roles: [...MANAGER_ONLY] },
         ],
     },
     {

@@ -7,13 +7,20 @@ import { getAdminUser } from '@/lib/admin-auth';
 import { exportDataAsPDF } from '@/lib/exportPDF';
 import { ASSIGNABLE_ANALYSTS } from '@/lib/mockTeam';
 
+// A case from /api/cases, reduced to what the handover needs. `id` is the case number, which
+// is what an analyst coming on shift will search for.
 interface Incident {
     id: string;
     title: string;
     severity: 'critical' | 'high' | 'medium' | 'low';
-    status: 'new' | 'investigating' | 'contained' | 'resolved' | 'escalated';
+    status: 'open' | 'investigating' | 'contained' | 'resolved';
     assigned_analyst: string;
     updated_at: string;
+}
+
+interface CaseRow {
+    case_number: string; title: string; severity: Incident['severity']; status: Incident['status'];
+    assigned_to: string | null; updated_at: string;
 }
 
 interface HandoverLog {
@@ -60,10 +67,13 @@ export function ShiftHandover() {
     const load = () => {
         setLoading(true);
         Promise.all([
-            apiFetch(apiUrl('/api/incidents'), { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
+            apiFetch(apiUrl('/api/cases?exclude_auto_closed=true&limit=100'), { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
             apiFetch(apiUrl('/api/handover'), { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
         ]).then(([incData, logData]) => {
-            setIncidents(Array.isArray(incData?.incidents) ? incData.incidents : []);
+            setIncidents(Array.isArray(incData?.cases) ? (incData.cases as CaseRow[]).map((c) => ({
+                id: c.case_number, title: c.title, severity: c.severity, status: c.status,
+                assigned_analyst: c.assigned_to || 'Unassigned', updated_at: c.updated_at,
+            })) : []);
             setPastLogs(Array.isArray(logData?.logs) ? logData.logs : []);
             setLogSource(logData?.source === 'supabase' ? 'supabase' : logData ? 'memory' : null);
             setLoading(false);
@@ -72,7 +82,7 @@ export function ShiftHandover() {
 
     useEffect(() => { load(); }, []);
 
-    // Real incident data (from /api/incidents, the same feed Incident Response uses) —
+    // Real case data (from /api/cases, the same queue the Cases page shows) —
     // "critical incidents handled this shift" and "ongoing incidents" are derived views over
     // it, not a separate fabricated list.
     const criticalIncidents = incidents.filter((i) => i.severity === 'critical');
@@ -96,13 +106,13 @@ export function ShiftHandover() {
                 ],
             },
             {
-                heading: 'Critical Incidents This Shift',
+                heading: 'Critical Cases This Shift',
                 rows: criticalIncidents.length > 0
                     ? criticalIncidents.map((i) => ({ label: i.id, value: `${i.title} (${i.status})` }))
-                    : [{ label: 'None', value: 'No critical incidents this shift' }],
+                    : [{ label: 'None', value: 'No critical cases this shift' }],
             },
             {
-                heading: 'Ongoing Incidents Requiring Follow-Up',
+                heading: 'Ongoing Cases Requiring Follow-Up',
                 rows: ongoingIncidents.length > 0
                     ? ongoingIncidents.map((i) => ({ label: i.id, value: `${i.title} — ${i.status}, assigned to ${i.assigned_analyst}` }))
                     : [{ label: 'None', value: 'Nothing carried forward' }],
@@ -230,11 +240,11 @@ export function ShiftHandover() {
 
                     {/* Critical incidents */}
                     <div className="bg-card border border-border rounded-xl p-4">
-                        <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-3">Critical Incidents This Shift</p>
+                        <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-3">Critical Cases This Shift</p>
                         {loading ? (
                             <div className="h-12 bg-card-muted rounded-lg animate-pulse" />
                         ) : criticalIncidents.length === 0 ? (
-                            <p className="text-xs text-foreground-muted">No critical incidents this shift.</p>
+                            <p className="text-xs text-foreground-muted">No critical cases this shift.</p>
                         ) : (
                             <div className="space-y-2">
                                 {criticalIncidents.map((i) => (
@@ -250,11 +260,11 @@ export function ShiftHandover() {
 
                     {/* Ongoing incidents */}
                     <div className="bg-card border border-border rounded-xl p-4">
-                        <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-3">Ongoing Incidents Requiring Follow-Up</p>
+                        <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-3">Ongoing Cases Requiring Follow-Up</p>
                         {loading ? (
                             <div className="h-12 bg-card-muted rounded-lg animate-pulse" />
                         ) : ongoingIncidents.length === 0 ? (
-                            <p className="text-xs text-foreground-muted">Nothing carried forward — all incidents resolved.</p>
+                            <p className="text-xs text-foreground-muted">Nothing carried forward — all cases resolved.</p>
                         ) : (
                             <div className="space-y-2">
                                 {ongoingIncidents.map((i) => (
@@ -342,7 +352,7 @@ export function ShiftHandover() {
                                     </div>
                                     <p className="text-xs text-foreground mt-1">{log.analyst_on} took over from {log.analyst_off}</p>
                                     <p className="text-[10px] text-foreground-muted">
-                                        {log.alerts_pending} pending · {log.ongoing_incidents.length} ongoing incident{log.ongoing_incidents.length === 1 ? '' : 's'}
+                                        {log.alerts_pending} pending · {log.ongoing_incidents.length} ongoing case{log.ongoing_incidents.length === 1 ? '' : 's'}
                                     </p>
                                 </div>
                             ))}

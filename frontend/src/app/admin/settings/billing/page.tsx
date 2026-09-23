@@ -11,8 +11,8 @@ import { apiUrl, apiFetch } from '@/lib/api';
 // invented MRR, plan distribution, per-client payment status and renewal schedule. There is no
 // billing table anywhere in this stack, so every one of those figures was fiction.
 //
-// What's here now: real counts from real endpoints (organisations, platform users, TheHive
-// incidents, Wazuh alerts, SLA credits), plus an explicit revenue *projection* the operator
+// What's here now: real counts from real endpoints (organisations, platform users, open
+// cases, Wazuh alerts, SLA credits), plus an explicit revenue *projection* the operator
 // drives by entering a price per client. The projection is labelled as one and the input is
 // remembered per browser — it isn't billing data, and nothing here should be read as invoiced.
 //
@@ -22,7 +22,7 @@ import { apiUrl, apiFetch } from '@/lib/api';
 
 interface Org { id: string; name: string; slug: string }
 interface SLASummary { total_endpoints: number; breached: number; total_credits_usd: number }
-interface IncidentSummary { total: number; critical: number; resolvedToday: number }
+interface CaseSummary { active: number; critical: number; resolvedToday: number }
 
 const PRICE_KEY = 'novrsoc.billing.price-per-client';
 
@@ -30,7 +30,7 @@ export default function BillingPage() {
     const [orgs, setOrgs] = useState<Org[] | null>(null);
     const [orgsError, setOrgsError] = useState<string | null>(null);
     const [userCount, setUserCount] = useState<number | null>(null);
-    const [incidents, setIncidents] = useState<IncidentSummary | null>(null);
+    const [incidents, setIncidents] = useState<CaseSummary | null>(null);
     const [alertCount, setAlertCount] = useState<number | null>(null);
     const [slaSummary, setSlaSummary] = useState<SLASummary | null>(null);
     const [slaError, setSlaError] = useState(false);
@@ -87,9 +87,9 @@ export default function BillingPage() {
             })
             .catch((err) => setOrgsError(err instanceof Error ? err.message : 'Failed to load organisations'));
 
-        apiFetch(apiUrl('/api/incidents'), { cache: 'no-store' })
+        apiFetch(apiUrl('/api/cases?limit=1'), { cache: 'no-store' })
             .then((r) => r.json())
-            .then((d) => { if (d?.summary) setIncidents(d.summary as IncidentSummary); })
+            .then((d) => { if (d?.summary) setIncidents(d.summary as CaseSummary); })
             .catch(() => {});
 
         apiFetch(apiUrl('/api/wazuh/trend?range=30d'), { cache: 'no-store' })
@@ -122,7 +122,7 @@ export default function BillingPage() {
                 {[
                     { label: 'Total Clients', value: clientCount, sub: 'organisations table', tone: 'text-purple' },
                     { label: 'Platform Users', value: userCount, sub: 'across all organisations', tone: 'text-foreground' },
-                    { label: 'Open Incidents', value: incidents?.total ?? null, sub: 'TheHive, severity high+', tone: 'text-amber' },
+                    { label: 'Open Cases', value: incidents?.active ?? null, sub: 'analyst queue, unresolved', tone: 'text-amber' },
                     { label: 'Alerts (30d)', value: alertCount, sub: 'Wazuh indexer', tone: 'text-blue' },
                 ].map((s) => (
                     <div key={s.label} className="bg-card border border-border rounded-xl p-4">

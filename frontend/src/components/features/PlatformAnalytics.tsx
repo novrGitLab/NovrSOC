@@ -8,19 +8,18 @@ import { apiUrl, apiFetch } from '@/lib/api';
 // Platform analytics — every figure is fetched from a live endpoint, nothing is synthesised.
 //
 // Sources, and what each can actually answer:
-//   GET /api/incidents          → TheHive case counts (total/open/critical/resolved today).
+//   GET /api/cases              → case queue counts (open/critical/investigating/resolved today).
 //   GET /api/wazuh/trend?range= → alert volume per bucket, from the Wazuh indexer.
 //   GET /api/wazuh/agents       → active vs total agents.
 //   GET /api/wazuh/mitre-stats  → MITRE tactic counts over 24h.
 //   GET /api/platform/health    → how many live service checks are passing.
 //
-// MTTD/MTTR are deliberately NOT shown. Neither TheHive's case list nor the Wazuh alert
-// aggregation exposes a detection or resolution timestamp pair through the routes above, so
-// computing them here would mean inventing the inputs. Add them once a route returns real
-// created/detected/resolved timestamps per case; don't approximate them from case counts.
+// MTTD/MTTR are deliberately NOT shown. Cases now carry created_at/resolved_at, but no route
+// aggregates them yet, and averaging one page of cases client-side would misreport the whole
+// population. Add them once a route computes them server-side.
 
 interface IncidentSummary {
-    total: number; open: number; critical: number; investigating: number; resolved: number; resolvedToday: number;
+    active: number; open: number; critical: number; investigating: number; resolved: number; resolvedToday: number;
 }
 interface TrendPoint { label: string; alerts: number; incidents: number; critical: number }
 interface AgentStats { active: number; total: number }
@@ -54,7 +53,7 @@ export function PlatformAnalytics() {
         const get = (path: string) => apiFetch(apiUrl(path), { cache: 'no-store' }).then((r) => r.json());
 
         Promise.allSettled([
-            get('/api/incidents'),
+            get('/api/cases?limit=1'),
             get('/api/wazuh/agents'),
             get('/api/wazuh/mitre-stats'),
             get('/api/platform/health'),
@@ -108,13 +107,13 @@ export function PlatformAnalytics() {
             <div>
                 <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-2">Security Metrics</p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <Stat label="Incidents (open cases)" value={incidents ? String(incidents.total) : loading ? '…' : '—'} sub="TheHive, severity high+" />
+                    <Stat label="Open cases" value={incidents ? String(incidents.active) : loading ? '…' : '—'} sub="analyst queue, unresolved" />
                     <Stat label="Critical" value={incidents ? String(incidents.critical) : loading ? '…' : '—'} tone="text-red" />
                     <Stat label="Investigating" value={incidents ? String(incidents.investigating) : loading ? '…' : '—'} tone="text-amber" />
                     <Stat label="Resolved Today" value={incidents ? String(incidents.resolvedToday) : loading ? '…' : '—'} tone="text-green" />
                 </div>
                 {!incidents && !loading && (
-                    <p className="text-[11px] text-foreground-muted mt-2">Incident metrics unavailable — TheHive did not respond.</p>
+                    <p className="text-[11px] text-foreground-muted mt-2">Case metrics unavailable — the case store did not respond.</p>
                 )}
             </div>
 

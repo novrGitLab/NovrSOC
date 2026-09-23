@@ -86,6 +86,7 @@ export function ThreatManagement() {
     const [alerts, setAlerts] = useState<ThreatAlert[]>([]);
     const [stats, setStats] = useState<Stats | null>(null);
     const [loading, setLoading] = useState(true);
+    const [caseMsg, setCaseMsg] = useState<{ ok: boolean; text: string } | null>(null);
     const [severityFilter, setSeverityFilter] = useState<'all' | Severity>('all');
     const [statusFilter, setStatusFilter] = useState<'all' | AlertStatus>('all');
     const [queueFilter, setQueueFilter] = useState<'all' | 'mine'>('all');
@@ -141,11 +142,22 @@ export function ThreatManagement() {
         }
     }
 
-    async function createIncident(id: string) {
+    // The backend refuses demo alerts and returns the existing case if the SOAR engine already
+    // opened one for this alert — its message is shown as-is either way.
+    async function createCase(id: string) {
         setBusy(true);
+        setCaseMsg(null);
         try {
-            await apiFetch(apiUrl(`/api/threats/alerts/${id}/create-incident`), { method: 'POST' });
+            const res = await apiFetch(apiUrl(`/api/threats/alerts/${id}/create-incident`), { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setCaseMsg({ ok: false, text: data?.error ?? `Could not create case (HTTP ${res.status})` });
+                return;
+            }
+            setCaseMsg({ ok: true, text: data?.message ?? `Case ${data?.case_number ?? ''} created` });
             await updateStatus(id, 'investigating');
+        } catch {
+            setCaseMsg({ ok: false, text: 'Could not create case — backend unreachable' });
         } finally {
             setBusy(false);
         }
@@ -463,11 +475,14 @@ export function ThreatManagement() {
                                 </button>
                                 <button
                                     disabled={busy}
-                                    onClick={() => createIncident(selected.id)}
+                                    onClick={() => createCase(selected.id)}
                                     className="flex items-center gap-1.5 text-[11px] font-bold text-red-500 border border-red-500/30 bg-red-500/10 rounded-lg px-3 py-1.5 disabled:opacity-50"
                                 >
-                                    <MessageSquarePlus className="w-3.5 h-3.5" /> Create Incident
+                                    <MessageSquarePlus className="w-3.5 h-3.5" /> Create Case
                                 </button>
+                                {caseMsg && (
+                                    <span className={`text-[11px] font-bold self-center ${caseMsg.ok ? 'text-emerald-500' : 'text-red-500'}`}>{caseMsg.text}</span>
+                                )}
                                 {selected.source_ip && (
                                     <a
                                         href={`/admin/threat/cti?q=${encodeURIComponent(selected.source_ip)}`}

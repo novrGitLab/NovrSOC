@@ -70,7 +70,7 @@ const clientNav: NavGroup[] = [
         groupLabel: 'SecOps & Response',
         items: [
             { label: 'Threat Management', href: '/client/secops/threats', icon: Activity },
-            { label: 'Incident Response', href: '/client/secops/incidents', icon: Siren },
+            { label: 'Cases', href: '/client/secops/cases', icon: Siren },
             { label: 'Alert Communication', href: '/client/secops/alerts', icon: Bell },
         ],
     },

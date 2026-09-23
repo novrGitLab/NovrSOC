@@ -1,8 +1,9 @@
 import { Router } from 'express';
+import { requireAuth, type AuthRequest } from '../middleware/auth';
 import { search } from '../lib/wazuh-indexer';
 import { sendCriticalAlertEmail } from '../services/email';
 import { isDemoMode } from '../lib/demoMode';
-import { createCase, isTheHiveConfigured, deriveIncidentNumber } from '../services/thehive';
+import { createCase, type CaseSeverity } from '../services/cases';
 import { NIGERIAN_ACTORS, GLOBAL_ACTORS } from '../services/threatActors';
 import { getGreyNoiseCountryStats, isGreyNoiseConfigured } from '../services/greynoise';
 import { threatfoxGetRecent } from '../services/threatfox';
@@ -31,6 +32,10 @@ interface ThreatAlert {
     status: AlertStatus;
     mitre_tactic: string;
     mitre_technique: string;
+    // Live alerts only. Technique ID (T1110) — mitre_technique above is the display name.
+    mitre_technique_id?: string;
+    // Live alerts only. Wazuh's alert id, distinct from the indexer document id in `id`.
+    wazuh_alert_id?: string;
     source_ip: string | null;
     source_country: string | null;
     source_isp: string | null;
@@ -233,13 +238,14 @@ const MOCK_STATS = {
 interface IndexerAlertHit {
     _id: string;
     _source: {
+        id?: string; // Wazuh's own alert id — what the SOAR engine keys cases on
         timestamp?: string;
         rule?: {
             id?: number | string;
             level?: number;
             description?: string;
             groups?: string[];
-            mitre?: { tactic?: string[]; technique?: string[] };
+            mitre?: { tactic?: string[]; technique?: string[]; id?: string[] };
         };
         agent?: { id?: string; name?: string };
         data?: { srcip?: string };
@@ -257,8 +263,7 @@ interface IndexerSearchResponse {
 // getAlertSeverity — level 13+ critical, 10+ high, 7+ medium, matching the Security Operations
 // redesign's spec exactly. LOW (below 7) is filtered out entirely in loadAlerts() below, not
 // just relabeled — this route no longer shows level 1-6 alerts at all; SOAR handles them
-// silently (autoClose.ts resolves the low-severity TheHive cases the Wazuh->TheHive pipeline
-// still opens for them).
+// silently (the SOAR engine, infra/soar/soar.py, cases level 7+ alerts and auto-closes tier 1).
 function getAlertSeverity(level: number): Severity {
     if (level >= 13) return 'critical';
     if (level >= 10) return 'high';
@@ -278,6 +283,8 @@ function mapIndexerAlert(hit: IndexerAlertHit): ThreatAlert {
         status: 'open',
         mitre_tactic: src.rule?.mitre?.tactic?.[0] ?? '—',
         mitre_technique: src.rule?.mitre?.technique?.[0] ?? '—',
+        mitre_technique_id: src.rule?.mitre?.id?.[0],
+        wazuh_alert_id: src.id,
         source_ip: src.data?.srcip ?? null,
         source_country: null,
         source_isp: null,
@@ -425,33 +432,48 @@ router.patch('/alerts/:id', (req, res) => {
     res.json({ success: true, alert });
 });
 
-// Was entirely fake before this — returned a `INC-${Date.now()}` string without creating
-// anything anywhere. Now opens a real TheHive case, same as POST /api/incidents does for a
-// manually-created incident.
-router.post('/alerts/:id/create-incident', async (req, res) => {
+// Opens a case from an alert. Keyed on the Wazuh alert id (source 'wazuh'), the same key the
+// SOAR engine uses, so an alert the engine already cased returns that case instead of a
+// duplicate. Refused while the list is serving demo/mock alerts — a real case must never be
+// opened from a fabricated alert.
+router.post('/alerts/:id/create-incident', requireAuth, async (req: AuthRequest, res) => {
     const alert = liveAlerts.find((a) => a.id === req.params.id);
     if (!alert) {
         res.status(404).json({ error: 'Alert not found' });
         return;
     }
-    if (!isTheHiveConfigured()) {
-        res.status(503).json({ error: 'TheHive not configured' });
+    if (usingMockStats) {
+        res.status(409).json({ error: 'Alerts are demo data right now — cases can only be opened from live Wazuh alerts.' });
         return;
     }
 
-    const newCase = await createCase({
+    const result = await createCase({
         title: alert.rule_description,
         description: `Alert detected by Wazuh\nAgent: ${alert.agent_name}\nSource IP: ${alert.source_ip ?? 'N/A'}\nRule ID: ${alert.rule_id}\nLevel: ${alert.rule_level}`,
-        severity: alert.severity,
-        tags: ['wazuh', 'manual', `level-${alert.rule_level}`, alert.agent_name].filter(Boolean),
-    });
-    if (!newCase) {
-        res.status(502).json({ error: 'Failed to create TheHive case — see server logs' });
+        severity: alert.severity as CaseSeverity,
+        source: 'wazuh',
+        source_id: alert.wazuh_alert_id ?? alert.id,
+        org_id: req.user?.org_id,
+        agent_id: alert.agent_id || null,
+        agent_name: alert.agent_name,
+        source_ip: alert.source_ip,
+        rule_id: alert.rule_id,
+        rule_level: alert.rule_level,
+        mitre_technique: alert.mitre_technique_id ?? null,
+        mitre_tactic: alert.mitre_tactic !== '—' ? alert.mitre_tactic : null,
+        tags: ['wazuh', 'manual', `level-${alert.rule_level}`],
+    }, req.user?.email || 'analyst');
+    if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
         return;
     }
 
     alert.status = 'investigating';
-    res.json({ success: true, incident_id: newCase._id, incident_number: deriveIncidentNumber(newCase), message: `Incident ${deriveIncidentNumber(newCase)} created from alert ${alert.rule_id}` });
+    const n = result.case.case_number;
+    res.json({
+        success: true, case_id: result.case.id, case_number: n, created: result.created,
+        message: result.created ? `Case ${n} created from alert ${alert.rule_id}` : `Alert already has case ${n}`,
+    });
 });
 
 // GET /api/threats/global-map — country-level threat origins for the flat world map on the

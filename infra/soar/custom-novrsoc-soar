@@ -1,0 +1,11 @@
+#!/bin/bash
+# Wazuh integratord wrapper for the NovrSOC SOAR engine.
+# integratord calls: custom-novrsoc-soar <alert_file> <api_key> <hook_url>
+#
+# Secrets live in /opt/novrsoc/soar.env (chmod 640 root:wazuh), not in this file — this file
+# sits in /var/ossec/integrations, which is readable more widely and gets copied around.
+set -a
+. /opt/novrsoc/soar.env
+set +a
+
+exec /usr/bin/python3 /opt/novrsoc/soar.py "$1"

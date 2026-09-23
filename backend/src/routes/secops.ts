@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
-import { createCase } from '../services/thehive';
+import { createCase } from '../services/cases';
 import { sendSlackMessage } from '../services/slack';
 import { sendBroadcastEmail } from '../services/email';
 import { getSupabase } from '../services/geoEnrichment';
@@ -51,7 +51,8 @@ router.post('/broadcast', async (req: AuthRequest, res) => {
 // routes/cti.ts's manual lookup already caches into — confirmed live against the real table:
 // its actual columns are ioc_value/ioc_type/risk_score/tags/org_id/source/first_seen/last_seen,
 // no separate "verdict" column, so the malicious classification rides on risk_score + tags
-// instead), and a TheHive case is opened for analyst follow-up, same as any other incident.
+// instead), and a case is opened for analyst follow-up. source_id is the IOC, so hunting the
+// same IP twice returns the existing case rather than opening a second one.
 router.post('/hunting/escalate', async (req: AuthRequest, res) => {
     const { ioc_value, ioc_type, finding, source_alert_id } = req.body as {
         ioc_value?: string; ioc_type?: string; finding?: string; source_alert_id?: string;
@@ -80,19 +81,23 @@ router.post('/hunting/escalate', async (req: AuthRequest, res) => {
         if (error) console.error('[secops/hunting/escalate] ioc_enrichments upsert failed:', error.message);
     }
 
-    const newCase = await createCase({
+    const result = await createCase({
         title: `Threat Hunt Finding: ${ioc_value}`,
         description: `${finding}${source_alert_id ? `\n\nSource alert: ${source_alert_id}` : ''}`,
         severity: 'high',
+        source: 'threat_hunt',
+        source_id: `${ioc_type}:${ioc_value}`,
+        source_ip: ioc_type === 'ip' ? ioc_value : null,
+        org_id: req.user?.org_id,
         tags: ['threat-hunt', 'manual'],
-    });
+    }, req.user?.email || 'analyst');
 
-    if (!newCase) {
-        res.status(502).json({ error: 'Failed to create TheHive case', ioc_saved: iocSaved });
+    if (!result.ok) {
+        res.status(result.status).json({ error: result.error, ioc_saved: iocSaved });
         return;
     }
 
-    res.json({ success: true, incident_id: newCase._id, ioc_saved: iocSaved });
+    res.json({ success: true, case_id: result.case.id, case_number: result.case.case_number, created: result.created, ioc_saved: iocSaved });
 });
 
 export default router;

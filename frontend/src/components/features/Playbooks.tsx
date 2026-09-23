@@ -13,8 +13,8 @@ import { apiUrl, apiFetch } from '@/lib/api';
 // confirms that against the live table), so those are no longer displayed rather than shown as
 // permanent zeros. Step count is derived from the steps array itself.
 //
-// "Start Playbook" is unchanged and still real: it POSTs to routes/incidentResponse.ts and
-// creates an actual incident with the playbook's steps pre-filled as its containment checklist.
+// "Start Playbook" is real: it POSTs to /api/cases (routes/cases.ts) and creates an actual case
+// with the playbook's steps added as its response tasks.
 
 export interface PlaybookStep {
     order: number;
@@ -214,7 +214,7 @@ function StartModal({ playbook, form, setForm, onClose }: {
         setStatus('creating');
         setErrorMsg(null);
         try {
-            const res = await apiFetch(apiUrl('/api/incidents'), {
+            const res = await apiFetch(apiUrl('/api/cases'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -235,10 +235,10 @@ function StartModal({ playbook, form, setForm, onClose }: {
             });
             const data = await res.json();
             if (!res.ok || !data?.success) throw new Error(data?.error || `HTTP ${res.status}`);
-            setCreatedId(data.incident_number ?? data.id ?? null);
+            setCreatedId(data.case_number ?? null);
             setStatus('created');
         } catch (err) {
-            setErrorMsg(err instanceof Error ? err.message : 'Failed to create incident');
+            setErrorMsg(err instanceof Error ? err.message : 'Failed to create case');
             setStatus('failed');
         }
     };
@@ -247,18 +247,18 @@ function StartModal({ playbook, form, setForm, onClose }: {
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
             <div className="bg-card border border-border rounded-xl p-6 max-w-md w-full" onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center justify-between mb-4">
-                    <h3 className="font-heading font-semibold text-sm text-foreground">Create incident from this playbook</h3>
+                    <h3 className="font-heading font-semibold text-sm text-foreground">Create a case from this playbook</h3>
                     <button onClick={onClose} className="text-foreground-muted hover:text-foreground"><X size={16} /></button>
                 </div>
                 {status === 'created' ? (
                     <div className="text-center py-4">
-                        <p className="text-sm text-green font-bold mb-1">Incident {createdId} created</p>
-                        <p className="text-xs text-foreground-muted">All {(playbook.steps ?? []).length} steps were added as a containment checklist in Incident Response.</p>
+                        <p className="text-sm text-green font-bold mb-1">Case {createdId} created</p>
+                        <p className="text-xs text-foreground-muted">All {(playbook.steps ?? []).length} steps were added as response tasks on the case.</p>
                     </div>
                 ) : (
                     <div className="space-y-3">
                         <div>
-                            <label className="text-xs font-medium text-foreground-muted uppercase tracking-wide">Incident Title</label>
+                            <label className="text-xs font-medium text-foreground-muted uppercase tracking-wide">Case Title</label>
                             <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder={title}
                                 className="w-full mt-1 border border-border bg-card-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue text-foreground" />
                         </div>
@@ -281,7 +281,7 @@ function StartModal({ playbook, form, setForm, onClose }: {
                         )}
                         <button onClick={createIncident} disabled={status === 'creating'}
                             className="w-full bg-orange hover:bg-orange-hover text-white text-sm font-bold py-2.5 rounded-lg disabled:opacity-50 transition-colors">
-                            {status === 'creating' ? 'Creating…' : 'Create Incident'}
+                            {status === 'creating' ? 'Creating…' : 'Create Case'}
                         </button>
                     </div>
                 )}
