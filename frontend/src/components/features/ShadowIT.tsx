@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { Info } from 'lucide-react';
 
 // Genuinely not connected — despite the nav spec's "existing (OPNsense)" label, no OPNsense
@@ -19,7 +20,7 @@ export function ShadowIT() {
             <div>
                 <h1 className="text-lg font-black text-foreground">Shadow IT Discovery</h1>
                 <p className="text-xs text-foreground-muted">
-                    Infrastructure · Unsanctioned devices, applications and services on your network
+                    Network · Unsanctioned devices, applications and services on your network
                 </p>
             </div>
 
@@ -40,8 +41,9 @@ export function ShadowIT() {
                         This page has no live data because no OPNsense firewall is deployed or reachable from this
                         backend yet. There is nothing to show, and nothing is being hidden. Once OPNsense is installed
                         at the network perimeter and its API is configured, discovered devices and services will appear
-                        here automatically. Contact your NovrSOC administrator to schedule deployment.
+                        here automatically.
                     </p>
+                    <Link href="/admin/infra/opnsense-setup" className="inline-block mt-2 text-xs font-bold text-purple hover:underline">Set up OPNsense →</Link>
                 </div>
             </div>
 

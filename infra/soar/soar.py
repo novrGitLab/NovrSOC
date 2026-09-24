@@ -7,9 +7,9 @@ the integration's <level>. Reads the alert, creates a case in Supabase (deduplic
 Wazuh alert id), then responds by tier:
 
   Tier 1  level 7-9    medium   enrich, auto-close
-  Tier 2  level 10-12  high     enrich, block source IP, Slack; an analyst reviews
+  Tier 2  level 10-12  high     enrich, block source IP, email the SOC; an analyst reviews
   Tier 3  level 13+    critical enrich, block source IP, isolate agent (selected techniques),
-                                Slack, CISO email
+                                CISO email
 
 Every action writes its real outcome to soar_log and the case timeline. Nothing is recorded as
 done unless the remote system accepted it; a skipped action says why (e.g. not configured).
@@ -52,10 +52,11 @@ SOAR_TOKEN = os.environ.get('SOAR_ENGINE_TOKEN', '')
 APP_URL = os.environ.get('NOVRSOC_APP_URL', 'https://novr-soc.vercel.app').rstrip('/')
 ORG_ID = os.environ.get('NOVRSOC_ORG_ID', 'cybernovr')
 
-SLACK_URL = os.environ.get('SLACK_WEBHOOK_URL', '')
 RESEND_KEY = os.environ.get('RESEND_API_KEY', '')
-RESEND_FROM = os.environ.get('RESEND_FROM', 'NovrSOC Alerts <alerts@cybernovr.com>')
+RESEND_FROM = os.environ.get('RESEND_FROM', 'NovrSOC by Cybernovr <alerts@cybernovr.com>')
 CISO_EMAIL = os.environ.get('CISO_EMAIL', 'soc@cybernovr.com')
+# Team notifications (tier 2, and tier 3 when it differs from CISO_EMAIL).
+SOC_EMAIL = os.environ.get('SOC_EMAIL') or os.environ.get('ALERT_EMAIL_TO') or CISO_EMAIL
 
 # OPNsense API auth is an API key + secret pair (System → Access → Users → API keys), used as
 # HTTP basic auth — not root + key.
@@ -349,36 +350,28 @@ def isolate_agent(case: dict, tier: int) -> bool:
     return False
 
 
-def notify_slack(case: dict, tier: int):
-    if not SLACK_URL:
-        add_soar_log(case['id'], tier, 'Slack notification', 'SKIPPED — SLACK_WEBHOOK_URL not set')
-        return
-    severity = (case.get('severity') or 'medium').upper()
-    emoji = '🔴' if severity == 'CRITICAL' else '🟠' if severity == 'HIGH' else '🟡'
-    text = (f"{emoji} *{case.get('case_number')} — {severity}*\n*{case.get('title')}*\n"
-            f"Agent: {case.get('agent_name') or 'N/A'} | IP: {case.get('source_ip') or 'N/A'} | MITRE: {case.get('mitre_technique') or 'N/A'}\n"
-            f"<{APP_URL}/admin/secops/cases|View in NovrSOC →>")
+def send_resend(to: str, subject: str, body: str):
+    """One Resend send. Returns (ok, detail)."""
     try:
-        resp = requests.post(SLACK_URL, json={'text': f'{emoji} {severity} case created', 'blocks': [{'type': 'section', 'text': {'type': 'mrkdwn', 'text': text}}]}, timeout=5)
-    except requests.RequestException as e:
-        add_soar_log(case['id'], tier, 'Slack notification', f'ERROR: {e}')
-        return
+        resp = requests.post(
+            'https://api.resend.com/emails',
+            headers={'Authorization': f'Bearer {RESEND_KEY}'},
+            json={'from': RESEND_FROM, 'to': [to], 'subject': subject, 'html': body},
+            timeout=10,
+        )
+    except requests.RequestException as err:
+        return False, f'ERROR: {err}'
     if resp.ok:
-        add_timeline(case['id'], 'Slack notification sent')
-        add_soar_log(case['id'], tier, 'Slack notification', 'SUCCESS')
-    else:
-        add_soar_log(case['id'], tier, 'Slack notification', f'FAILED: HTTP {resp.status_code}')
+        return True, 'SUCCESS'
+    return False, f'FAILED: HTTP {resp.status_code} {resp.text[:120]}'
 
 
-def notify_ciso(case: dict, tier: int):
-    if not RESEND_KEY:
-        add_soar_log(case['id'], tier, 'CISO email', 'SKIPPED — RESEND_API_KEY not set')
-        return
+def case_email_body(case: dict, heading: str, colour: str) -> str:
     e = lambda v: html.escape(str(v or 'N/A'))  # alert text is interpolated into HTML
-    body = f"""
+    return f"""
         <div style="font-family:sans-serif;max-width:600px">
-            <div style="background:#CC2B2B;padding:20px;border-radius:12px 12px 0 0">
-                <h2 style="color:white;margin:0">Critical Case — Immediate Action Required</h2>
+            <div style="background:{colour};padding:20px;border-radius:12px 12px 0 0">
+                <h2 style="color:white;margin:0">{e(heading)}</h2>
             </div>
             <div style="background:#f8f9fc;padding:20px;border-radius:0 0 12px 12px">
                 <p><strong>Case:</strong> {e(case.get('case_number'))}</p>
@@ -387,26 +380,41 @@ def notify_ciso(case: dict, tier: int):
                 <p><strong>Agent:</strong> {e(case.get('agent_name'))}</p>
                 <p><strong>Source IP:</strong> {e(case.get('source_ip'))}</p>
                 <p><strong>MITRE:</strong> {e(case.get('mitre_technique'))}</p>
-                <a href="{APP_URL}/admin/secops/cases" style="display:inline-block;background:#520385;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin-top:16px">View in NovrSOC →</a>
+                <a href="{APP_URL}/admin/secops/cases?id={e(case.get('id'))}" style="display:inline-block;background:#520385;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin-top:16px">View in NovrSOC →</a>
             </div>
         </div>"""
-    try:
-        resp = requests.post(
-            'https://api.resend.com/emails',
-            headers={'Authorization': f'Bearer {RESEND_KEY}'},
-            json={'from': RESEND_FROM, 'to': [CISO_EMAIL], 'subject': f"🚨 CRITICAL: {case.get('case_number')} — {case.get('title')}", 'html': body},
-            timeout=10,
-        )
-    except requests.RequestException as err:
-        add_soar_log(case['id'], tier, 'CISO email', f'ERROR: {err}')
+
+
+def notify_email(case: dict, tier: int):
+    """Team notification to the SOC mailbox (SOC_EMAIL)."""
+    if not RESEND_KEY:
+        add_soar_log(case['id'], tier, 'Email notification', 'SKIPPED — RESEND_API_KEY not set')
         return
-    # Marked escalated only when Resend accepted the message — the spec set it unconditionally.
-    if resp.ok:
+    severity = (case.get('severity') or 'medium').upper()
+    ok, detail = send_resend(
+        SOC_EMAIL,
+        f"[NovrSOC] {severity}: {case.get('case_number')} — {case.get('title')}",
+        case_email_body(case, f'New {severity.lower()} case', '#E8730C' if severity == 'HIGH' else '#520385'),
+    )
+    add_soar_log(case['id'], tier, 'Email notification', detail)
+    if ok:
+        add_timeline(case['id'], f'Email notification sent to {SOC_EMAIL}')
+
+
+def notify_ciso(case: dict, tier: int):
+    if not RESEND_KEY:
+        add_soar_log(case['id'], tier, 'CISO email', 'SKIPPED — RESEND_API_KEY not set')
+        return
+    ok, detail = send_resend(
+        CISO_EMAIL,
+        f"🚨 CRITICAL: {case.get('case_number')} — {case.get('title')}",
+        case_email_body(case, 'Critical Case — Immediate Action Required', '#CC2B2B'),
+    )
+    add_soar_log(case['id'], tier, 'CISO email', detail)
+    # Marked escalated only when Resend accepted the message.
+    if ok:
         add_timeline(case['id'], f'CISO escalation email sent to {CISO_EMAIL}')
-        add_soar_log(case['id'], tier, 'CISO email', 'SUCCESS')
         update_case(case['id'], {'escalated': True})
-    else:
-        add_soar_log(case['id'], tier, 'CISO email', f'FAILED: HTTP {resp.status_code} {resp.text[:120]}')
 
 
 def auto_close(case: dict, level: int):
@@ -440,9 +448,14 @@ def process_alert(alert: dict):
     block_ip(case, tier)
     if tier == 3:
         isolate_agent(case, tier)
-    notify_slack(case, tier)
-    if tier == 3:
+    if tier == 2:
+        notify_email(case, tier)
+    else:
         notify_ciso(case, tier)
+        # Only when it's a different inbox — by default both are soc@, and the CISO email
+        # already carries everything the team one would.
+        if SOC_EMAIL.lower() != CISO_EMAIL.lower():
+            notify_email(case, tier)
     add_soar_log(case['id'], tier, f'Tier {tier} processing complete',
                  'Awaiting analyst review.' if tier == 2 else 'Automated response finished; see entries above for each action.')
 

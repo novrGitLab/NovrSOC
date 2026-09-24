@@ -2,10 +2,10 @@
 
 import {
     LayoutDashboard, FileBarChart, Globe, Users, Shield, UserCheck, Smartphone, Code,
-    Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network, Cpu,
+    Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network,
     Mail, MessageSquare, ShieldAlert, Activity, ClipboardList, Zap,
     HardDrive, BarChart, CreditCard, Settings, Database, BookOpen, FileText, ScrollText,
-    ClipboardCheck, Bot, WifiOff, Map, Landmark, Radio, Cloud, Eye, Bell,
+    ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor, Router, Laptop,
 } from 'lucide-react';
 import { Sidebar, type NavGroup } from './Sidebar';
 
@@ -17,7 +17,7 @@ import { Sidebar, type NavGroup } from './Sidebar';
 // rather than moved, since renaming a route breaks bookmarks/links for no benefit.
 //
 // `roles` restrictions below (added for the customer-onboarding + multitenancy pass) follow
-// that spec's role matrix section-by-section: THREAT INTELLIGENCE (both threat-intel groups),
+// that spec's role matrix section-by-section: THREAT INTELLIGENCE, NETWORK,
 // INFRASTRUCTURE, and SECURITY OPERATIONS are hidden from `executive`; COMPLIANCE and DATA
 // CONTINUITY are hidden from `analyst`; the individually-listed Sec Ops items (Sec Ops
 // Management, SOAR Automation) are additionally hidden from `analyst`. OVERVIEW's Dashboard,
@@ -56,38 +56,27 @@ const adminNav: NavGroup[] = [
             { label: 'Cases', href: '/admin/secops/cases', icon: FileText, roles: [...NOT_EXEC] },
             { label: 'Alerts', href: '/admin/secops/alerts', icon: Bell, roles: [...NOT_EXEC] },
             { label: 'MITRE Intelligence', href: '/admin/secops/mitre', icon: Shield, roles: [...NOT_EXEC] },
+            // Moved from Infrastructure: vulnerabilities are triaged as security work.
+            { label: 'Vulnerability Mgmt', href: '/admin/secops/vulnerabilities', icon: Bug, roles: [...NOT_EXEC] },
             { label: 'Playbooks', href: '/admin/secops/playbooks', icon: BookOpen, roles: [...NOT_EXEC] },
             { label: 'SOAR Automation', href: '/admin/secops/soar', icon: Zap, roles: [...NOT_EXEC] },
             { label: 'Sec Ops Management', href: '/admin/secops/management', icon: Settings, roles: [...MANAGER_ONLY] },
         ],
     },
     {
-        section: 'Nigerian Threat Advisory',
+        section: 'Threat Intelligence',
         collapsible: true,
-        icon: Globe,
-        groupLabel: 'Nigerian Threat Advisory',
-        // THREAT INTELLIGENCE in the matrix covers both this section and Global Threat Intel
-        // below — executive: ❌ on both.
+        icon: Crosshair,
+        groupLabel: 'Threat Intelligence',
+        // One section for Nigerian and global intelligence (previously two). executive: ❌.
         items: [
             { label: 'Nigeria Threat Map', href: '/admin/threat/nigeria-map', icon: Map, roles: [...NOT_EXEC] },
             { label: 'Cyber Advisory', href: '/admin/threat/nigeria', icon: Globe, roles: [...NOT_EXEC] },
             { label: 'CBN Advisories', href: '/admin/threat/cbn', icon: Landmark, roles: [...NOT_EXEC] },
             { label: 'NCC Advisories', href: '/admin/threat/ncc', icon: Radio, roles: [...NOT_EXEC] },
-        ],
-    },
-    {
-        section: 'Global Threat Intel',
-        collapsible: true,
-        icon: Crosshair,
-        groupLabel: 'Global Threat Intel',
-        items: [
-            { label: 'IOC Lookup', href: '/admin/threat/cti', icon: Crosshair, roles: [...NOT_EXEC] },
-            // Live IOC Feed and Threat Feeds are different things and sit next to each other on
-            // purpose: this one is the live indicator stream, /threat/feeds is where feed
-            // sources are configured.
-            // Also reachable by clicking Nigeria on the global threat map; listed here so it
-            // isn't only discoverable by knowing to click the map.
             { label: 'Nigeria Deep Dive', href: '/admin/threat/nigeria-detail', icon: Map, roles: [...NOT_EXEC] },
+            { label: 'IOC Lookup', href: '/admin/threat/cti', icon: Crosshair, roles: [...NOT_EXEC] },
+            // Live IOC Feed is the indicator stream; Threat Feeds is where sources are configured.
             { label: 'Live IOC Feed', href: '/admin/threat/live-ioc', icon: Radio, roles: [...NOT_EXEC] },
             { label: 'Threat Feeds', href: '/admin/threat/feeds', icon: Database, roles: [...NOT_EXEC] },
             { label: 'MITRE ATT&CK', href: '/admin/threat/mitre', icon: ShieldAlert, roles: [...NOT_EXEC] },
@@ -117,18 +106,29 @@ const adminNav: NavGroup[] = [
         ],
     },
     {
+        section: 'Network',
+        collapsible: true,
+        icon: Network,
+        groupLabel: 'Network',
+        // Network visibility and the sensor setup guides that feed it. executive: ❌.
+        items: [
+            { label: 'Network Topology', href: '/admin/network/topology', icon: Network, roles: [...NOT_EXEC] },
+            { label: 'Shadow IT', href: '/admin/network/shadow', icon: Eye, roles: [...NOT_EXEC] },
+            { label: 'OPNsense Setup', href: '/admin/infra/opnsense-setup', icon: Router, roles: [...NOT_EXEC] },
+            { label: 'Windows (Sysmon)', href: '/admin/infra/sysmon-setup', icon: Monitor, roles: [...NOT_EXEC] },
+            { label: 'Mac (osquery)', href: '/admin/infra/osquery-setup', icon: Laptop, roles: [...NOT_EXEC] },
+        ],
+    },
+    {
         section: 'Infrastructure & Assets',
         collapsible: true,
         icon: Server,
         groupLabel: 'Infrastructure & Assets',
         // INFRASTRUCTURE in the matrix — executive: ❌.
         items: [
-            { label: 'Digital Assets', href: '/admin/infra/assets', icon: Server, roles: [...NOT_EXEC] },
-            { label: 'Network Topology', href: '/admin/infra/topology', icon: Network, roles: [...NOT_EXEC] },
+            { label: 'Digital Assets', href: '/admin/infra/assets', icon: Monitor, roles: [...NOT_EXEC] },
             { label: 'Cloud Assets', href: '/admin/infra/cloud', icon: Cloud, roles: [...NOT_EXEC] },
-            { label: 'Vulnerability Management', href: '/admin/infra/vulnerabilities', icon: ShieldAlert, roles: [...NOT_EXEC] },
-            { label: 'WebLogic Appliances', href: '/admin/infra/weblogic', icon: Cpu, roles: [...NOT_EXEC] },
-            { label: 'Shadow IT', href: '/admin/infra/shadow', icon: WifiOff, roles: [...NOT_EXEC] },
+            { label: 'WebLogic Appliances', href: '/admin/infra/weblogic', icon: Server, roles: [...NOT_EXEC] },
         ],
     },
     {

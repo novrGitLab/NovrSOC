@@ -22,7 +22,7 @@ interface Outcome { done: boolean; detail: string | null }
 interface TierCase {
     id: string; case_number: string; title: string; agent_name: string | null; source_ip: string | null;
     severity: string; status: string; created_at: string; resolved_at: string | null; assigned_to: string | null;
-    ip_blocked: Outcome; agent_isolated: Outcome; slack_sent: boolean; ciso_notified: boolean; enriched: boolean;
+    ip_blocked: Outcome; agent_isolated: Outcome; email_sent: boolean; ciso_notified: boolean; enriched: boolean;
     close_reason: string | null;
 }
 interface LogEntry {
@@ -157,8 +157,8 @@ export function SOARAutomation() {
 
                 <p className="px-4 pt-3 text-[11px] text-foreground-muted">
                     {tier === 1 && 'Level 7–9 alerts. Enriched, then closed automatically.'}
-                    {tier === 2 && 'Level 10–12 alerts. Enriched, source IP blocked, Slack notified. An analyst reviews and resolves.'}
-                    {tier === 3 && 'Level 13+ alerts. Enriched, IP blocked, agent isolated for selected techniques, Slack and CISO notified.'}
+                    {tier === 2 && 'Level 10–12 alerts. Enriched, source IP blocked, SOC emailed. An analyst reviews and resolves.'}
+                    {tier === 3 && 'Level 13+ alerts. Enriched, IP blocked, agent isolated for selected techniques, CISO emailed.'}
                 </p>
 
                 <div className="overflow-x-auto p-4">
@@ -186,7 +186,7 @@ export function SOARAutomation() {
                                         <>
                                             <th className="py-2 pr-3 font-bold text-center">IP blocked</th>
                                             {tier === 3 && <th className="py-2 pr-3 font-bold text-center">Agent isolated</th>}
-                                            <th className="py-2 pr-3 font-bold text-center">{tier === 2 ? 'Slack sent' : 'CISO notified'}</th>
+                                            <th className="py-2 pr-3 font-bold text-center">{tier === 2 ? 'Email sent' : 'CISO notified'}</th>
                                             <th className="py-2 pr-3 font-bold">{tier === 2 ? 'Analyst' : 'Status'}</th>
                                             <th className="py-2 font-bold">Resolved</th>
                                         </>
@@ -210,7 +210,7 @@ export function SOARAutomation() {
                                             <>
                                                 <td className="py-2 pr-3"><div className="flex justify-center">{outcomeFlag(c.ip_blocked)}</div></td>
                                                 {tier === 3 && <td className="py-2 pr-3"><div className="flex justify-center">{outcomeFlag(c.agent_isolated)}</div></td>}
-                                                <td className="py-2 pr-3"><div className="flex justify-center"><Flag ok={tier === 2 ? c.slack_sent : c.ciso_notified} /></div></td>
+                                                <td className="py-2 pr-3"><div className="flex justify-center"><Flag ok={tier === 2 ? c.email_sent : c.ciso_notified} /></div></td>
                                                 <td className="py-2 pr-3 text-foreground-muted">{tier === 2 ? c.assigned_to || 'Unassigned' : <span className="capitalize">{c.status}</span>}</td>
                                                 <td className="py-2 text-foreground-muted whitespace-nowrap">{c.resolved_at ? wat(c.resolved_at) : 'Open'}</td>
                                             </>

@@ -61,7 +61,7 @@ The test creates a tier-2 case. It appears on **Cases**. Its actions are listed 
 | Tier | Level | Actions |
 | --- | --- | --- |
 | 1 | 7–9 | Enrich IOC, then auto-close |
-| 2 | 10–12 | Enrich IOC, block source IP (OPNsense), Slack. An analyst then reviews the case |
-| 3 | 13+ | Enrich IOC, block IP, isolate agent (T1486/T1021/T1055/T1210 only), Slack, CISO email |
+| 2 | 10–12 | Enrich IOC, block source IP (OPNsense), email the SOC mailbox. An analyst then reviews the case |
+| 3 | 13+ | Enrich IOC, block IP, isolate agent (T1486/T1021/T1055/T1210 only), CISO email (plus a SOC email if `SOC_EMAIL` is a different inbox) |
 
 Each action whose configuration is missing is skipped and logged with the reason. An action is logged as SUCCESS only when the remote system accepted it. Isolation is logged as REQUESTED, because the Wazuh manager accepting the command does not confirm that it ran on the endpoint.

@@ -4,18 +4,17 @@
 // the backend for one case on demand. Each returns an honest outcome: 'success' only when the
 // remote system accepted the action, 'skipped' when it isn't configured or doesn't apply (with
 // the reason), 'failed' otherwise. soar_log and timeline wording matches the engine's, so the
-// SOAR Automation page's derived flags (IP blocked, Slack sent, CISO notified) count manual runs
+// SOAR Automation page's derived flags (IP blocked, email sent, CISO notified) count manual runs
 // the same way as automated ones.
 import https from 'https';
 import { URL } from 'url';
 import { getSupabase } from './geoEnrichment';
 import { enrichIOC } from './iocEnrichment';
 import { runActiveResponse } from './wazuh';
-import { sendSlackAlert } from './slack';
-import { sendEscalationEmail, isEmailEnabled } from './email';
+import { sendEscalationEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients } from './email';
 import { addTimeline, formatWAT, dbErrorMessage, type CaseRow } from './cases';
 
-export const EXECUTABLE_STEPS = ['block_ip', 'isolate_agent', 'enrich_iocs', 'notify_slack', 'notify_ciso'] as const;
+export const EXECUTABLE_STEPS = ['block_ip', 'isolate_agent', 'enrich_iocs', 'notify_email', 'notify_ciso'] as const;
 export type ExecutableStep = (typeof EXECUTABLE_STEPS)[number];
 export const isExecutableStep = (v: unknown): v is ExecutableStep => typeof v === 'string' && (EXECUTABLE_STEPS as readonly string[]).includes(v);
 
@@ -165,24 +164,28 @@ async function enrichIocs(c: CaseRow): Promise<ActionResult> {
     }
 }
 
-async function notifySlack(c: CaseRow, by: string): Promise<ActionResult> {
-    if (!process.env.SLACK_WEBHOOK_URL) {
-        const r = skip('Slack not configured — set SLACK_WEBHOOK_URL on Railway');
-        await soarLog(c, 'Slack notification', `SKIPPED — ${r.message}`);
+// Team notification by email. Goes to the SOC mailbox
+// (ALERT_EMAIL_TO, else CISO_EMAIL, else soc@cybernovr.com).
+async function notifyEmail(c: CaseRow, by: string): Promise<ActionResult> {
+    const to = socNotificationRecipients();
+    if (!isEmailEnabled()) {
+        const r = skip('Email is disabled — set EMAIL_ENABLED=true and RESEND_API_KEY on Railway');
+        await soarLog(c, 'Email notification', `SKIPPED — ${r.message}`);
         return r;
     }
-    const sent = await sendSlackAlert({
-        title: `Case update: ${c.title}`, severity: c.severity,
-        description: `${c.case_number} — sent by ${by}`,
-        affected_host: c.agent_name || 'See case in NovrSOC', incident_id: c.case_number, detected_at: formatWAT(c.created_at),
-    }).catch(() => false);
-    if (!sent) {
-        await soarLog(c, 'Slack notification', 'FAILED: webhook did not accept the message');
-        return fail('Slack did not accept the message');
+    try {
+        await sendCaseNotificationEmail({
+            to, case_number: c.case_number, title: c.title, severity: c.severity,
+            headline: `Case update from ${by}`, agent: c.agent_name, source_ip: c.source_ip, detail: c.description,
+        });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await soarLog(c, 'Email notification', `FAILED: ${msg}`);
+        return fail(`Email failed: ${msg}`);
     }
-    await soarLog(c, 'Slack notification', 'SUCCESS');
-    await addTimeline(c.id, 'NovrSOC', 'Slack notification sent', { automated: true });
-    return ok('Slack notification sent');
+    await soarLog(c, 'Email notification', 'SUCCESS');
+    await addTimeline(c.id, 'NovrSOC', `Email notification sent to ${to.join(', ')}`, { automated: true });
+    return ok(`Email notification sent to ${to.join(', ')}`);
 }
 
 async function notifyCiso(c: CaseRow, by: string): Promise<ActionResult> {
@@ -214,7 +217,7 @@ export async function executeStep(step: ExecutableStep, c: CaseRow, by: string):
         case 'block_ip': return blockIp(c);
         case 'isolate_agent': return isolateAgent(c);
         case 'enrich_iocs': return enrichIocs(c);
-        case 'notify_slack': return notifySlack(c, by);
+        case 'notify_email': return notifyEmail(c, by);
         case 'notify_ciso': return notifyCiso(c, by);
     }
 }

@@ -52,8 +52,60 @@ const NITDA_HOSTS = ['nitda.gov.ng', 'cerrt.nitda.gov.ng'];
 // merely mentions "contact" in its title is not dropped.
 const NON_ADVISORY_PATHS = [
     '/contact', '/about', '/team', '/kids-advisory', '/privacy', '/rfc',
-    '/category', '/tag/', '/author', '/feed',
+    '/category', '/tag/', '/author', '/feed', '/report-incidence', '/report-incident',
+    '/home', '/login', '/register', '/search', '/sitemap', '/terms', '/cookie', '/faq',
 ];
+
+// Page TITLES that are site furniture, not advisories. The URL list above missed CERRT's
+// "Report Incidence" form page, which then passed the keyword check because its snippet says
+// "threats" — so titles are checked too.
+//
+// Whole words only. Plain substring matching (as first specified) drops real advisories:
+// "tag" is inside "outage", "search" inside "research", "home" inside "homeland",
+// "error" inside "terrorism".
+const NAV_TITLE_WORDS = [
+    'contact', 'contact us', 'about', 'about us', 'home', 'homepage', 'menu', 'navigation',
+    'report incidence', 'report an incident', 'report incident', 'sitemap', 'privacy',
+    'privacy policy', 'terms', 'terms of use', 'login', 'log in', 'sign in', 'register',
+    'search', 'tag', 'tags', 'category', 'categories', '404', 'page not found', 'error',
+    'cookie', 'cookies', 'cookie policy', 'faq', 'faqs',
+];
+const NAV_TITLE_RE = new RegExp(`\\b(${NAV_TITLE_WORDS.map((w) => w.replace(/ /g, '\\s+')).join('|')})\\b`, 'i');
+
+// Title minus a "[PDF] " prefix and the site-name suffix
+// ("Report Incidence – CERRT" -> "Report Incidence").
+function pageTitle(title: string): string {
+    return title.replace(/^\s*\[[a-z]+\]\s*/i, '').split(/\s[|\u2013\u2014-]\s/)[0].trim();
+}
+
+// Listing pages: the advisories index itself, not an advisory.
+const INDEX_TITLE_RE = /^(general |security |all |latest |recent )?(advisories|alerts|news|publications|resources|downloads)$/i;
+
+// The TITLE must name a security issue. Checking the snippet as well (as first specified) lets
+// through almost every page on a CERT's site, because their snippets all mention threats — the
+// live table held a charter, an RFC 2350 description, a cloud-computing guideline and a
+// trustmark press release that way. "vuln" is a prefix on purpose: NITDA's own advisory titles
+// include the misspelling "Vulnurability".
+const TITLE_SECURITY_RE = /\b(advisory|alert|warning|vuln\w*|cve-\d{4}-\d+|ransomware|phishing|malware|breach|exploit\w*|threat|attack|patch|security update|critical update|scam|fraud|ddos|zero-day|0-day|compromise\w*|botnet|trojan|spyware|backdoor|data leak)\b/i;
+
+/** True when a search result's title reads as an actual advisory rather than a site page. */
+export function isAdvisoryTitle(title: string): boolean {
+    const t = pageTitle(title);
+    if (!t || isNavigationTitle(title) || INDEX_TITLE_RE.test(t)) return false;
+    return TITLE_SECURITY_RE.test(t);
+}
+
+/**
+ * True when a page title is site navigation. A title counts as navigation when it is short
+ * (≤ 5 words once the site name is stripped) AND contains a navigation word — so
+ * "Contact Us" and "Report Incidence" are dropped, while "Advisory on phishing campaigns
+ * targeting login pages" is kept.
+ */
+export function isNavigationTitle(title: string): boolean {
+    const t = pageTitle(title);
+    if (!t) return true;
+    return t.split(/\s+/).length <= 5 && NAV_TITLE_RE.test(t);
+}
 
 function isAdvisoryLike(result: SearchResult): boolean {
     let url: URL;
@@ -69,16 +121,9 @@ function isAdvisoryLike(result: SearchResult): boolean {
     const path = url.pathname.replace(/\/+$/, '');
     if (path === '' || path === '/') return false;
     if (NON_ADVISORY_PATHS.some((p) => path.toLowerCase().startsWith(p))) return false;
-
-    // Require at least one security word in the title or snippet. Without this the feed fills
-    // with agency news — appointments, MoUs, digital-literacy programmes — which NITDA's site
-    // carries far more of than it does advisories.
-    const text = `${result.title} ${result.snippet}`.toLowerCase();
-    const SECURITY_WORDS = [
-        'advisory', 'alert', 'vulnerability', 'cve', 'ransomware', 'phishing', 'malware',
-        'breach', 'exploit', 'threat', 'attack', 'patch', 'scam', 'fraud', 'ddos',
-    ];
-    return SECURITY_WORDS.some((w) => text.includes(w));
+    // Title must itself name a security issue (see isAdvisoryTitle). "cyber" never counts:
+    // every page on a cybersecurity agency's site says it.
+    return isAdvisoryTitle(result.title);
 }
 
 // Stable per-URL id. A hash rather than the raw URL so the value is a predictable length and
@@ -199,8 +244,30 @@ export async function storeNITDAAdvisories(advisories: NITDAAdvisory[]): Promise
 }
 
 /** Fetch + store in one call, for the scheduled job. */
-export async function collectNITDAAdvisories(): Promise<{ found: number; stored: number }> {
+export async function collectNITDAAdvisories(): Promise<{ found: number; stored: number; pruned: number }> {
     const advisories = await fetchNITDAAdvisories();
     const stored = await storeNITDAAdvisories(advisories);
-    return { found: advisories.length, stored };
+    const pruned = await pruneNavigationPages();
+    return { found: advisories.length, stored, pruned };
+}
+
+/**
+ * Removes NITDA rows saved under the older, looser filter that the current one rejects (the
+ * "Report Incidence" form page, index pages, charters, press releases). Scoped to
+ * source = 'NITDA' and to titles isAdvisoryTitle() rejects — nothing else is touched.
+ */
+export async function pruneNavigationPages(): Promise<number> {
+    const supabase = getSupabase();
+    if (!supabase) return 0;
+    const { data, error } = await supabase.from('nigeria_advisories').select('advisory_id, title').eq('source', 'NITDA');
+    if (error || !data) return 0;
+    const stale = data.filter((r) => !isAdvisoryTitle(r.title ?? '')).map((r) => r.advisory_id);
+    if (stale.length === 0) return 0;
+    const { error: delErr } = await supabase.from('nigeria_advisories').delete().eq('source', 'NITDA').in('advisory_id', stale);
+    if (delErr) {
+        console.error('[NITDA] prune failed:', delErr.message);
+        return 0;
+    }
+    console.log(`[NITDA] pruned ${stale.length} non-advisory page(s): ${data.filter((r) => stale.includes(r.advisory_id)).map((r) => r.title).join('; ')}`);
+    return stale.length;
 }

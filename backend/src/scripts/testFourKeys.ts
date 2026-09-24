@@ -22,42 +22,10 @@ interface NVDCVEResponse {
 }
 
 async function run() {
-    console.log('\n=== Testing 4 New API Keys ===\n');
+    console.log('\n=== Testing API Keys ===\n');
 
-    // 1. Slack Webhook
-    console.log('1. Slack Webhook...');
-    const slackUrl = process.env.SLACK_WEBHOOK_URL;
-    if (!slackUrl || slackUrl === 'REPLACE_WHEN_OBTAINED') {
-        console.log('   ⚠️  Not configured');
-    } else {
-        try {
-            const res = await fetch(slackUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    text: '🚨 *NovrSOC Alert Communication* — Slack webhook verified and active. Platform connected.',
-                    attachments: [{
-                        color: '#2B3BCC',
-                        fields: [
-                            { title: 'Status', value: 'Connected ✅', short: true },
-                            { title: 'Platform', value: 'NovrSOC by Cybernovr', short: true },
-                        ],
-                    }],
-                }),
-                signal: AbortSignal.timeout(8000),
-            });
-            if (res.ok) {
-                console.log('   ✅ Slack: webhook verified — check your Slack channel for the test message');
-            } else {
-                console.log(`   ❌ Slack: HTTP ${res.status}`);
-            }
-        } catch (err) {
-            console.log(`   ❌ Slack: ${err}`);
-        }
-    }
-
-    // 2. GitLab
-    console.log('\n2. GitLab...');
+    // 1. GitLab
+    console.log('1. GitLab...');
     const gitlabToken = process.env.GITLAB_TOKEN;
     if (!gitlabToken || gitlabToken === 'REPLACE_WHEN_OBTAINED') {
         console.log('   ⚠️  Not configured');
@@ -78,8 +46,8 @@ async function run() {
         }
     }
 
-    // 3. GitHub
-    console.log('\n3. GitHub...');
+    // 2. GitHub
+    console.log('\n2. GitHub...');
     const githubToken = process.env.GITHUB_TOKEN;
     if (!githubToken || githubToken === 'REPLACE_WHEN_OBTAINED') {
         console.log('   ⚠️  Not configured');
@@ -119,8 +87,8 @@ async function run() {
         }
     }
 
-    // 4. NVD API
-    console.log('\n4. NVD (NIST) API...');
+    // 3. NVD API
+    console.log('\n3. NVD (NIST) API...');
     const nvdKey = process.env.NVD_API_KEY;
     if (!nvdKey || nvdKey === 'REPLACE_WHEN_OBTAINED' || nvdKey === 'REPLACE_WITH_REAL_KEY') {
         console.log('   ⚠️  Not configured');

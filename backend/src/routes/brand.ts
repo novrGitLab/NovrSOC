@@ -775,7 +775,7 @@ router.post('/assets/logo', (req, res) => {
 // silently returns nothing would render as a reassuring "no mentions found"). The `sources`
 // array reports the real state of each so the UI can show coverage honestly.
 //
-// Deliberately does NOT auto-create a case or fire Slack on a hit. This route is a
+// Deliberately does NOT auto-create a case or send a notification on a hit. This route is a
 // read-only search an analyst can run repeatedly while tuning search terms; auto-creating a case
 // per scan would spam the case queue with duplicates of the same finding. The UI offers an
 // explicit "Create case" action instead, so raising a case stays a decision rather than a

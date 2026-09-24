@@ -5,8 +5,7 @@ import {
     createCase, addTasks, addTimeline, isCaseSeverity, isCaseStatus, isUuid, startOfTodayWAT, formatWAT,
     dbErrorMessage, DEFAULT_ORG_ID, type CaseRow,
 } from '../services/cases';
-import { sendSlackAlert, sendSlackMessage } from '../services/slack';
-import { sendEscalationEmail, isEmailEnabled } from '../services/email';
+import { sendEscalationEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients } from '../services/email';
 import { logAudit } from '../lib/audit';
 import { executeStep, isExecutableStep, EXECUTABLE_STEPS } from '../services/responseActions';
 
@@ -132,15 +131,19 @@ router.post('/', async (req: AuthRequest, res) => {
             .map((s: { action: string; description?: string }) => ({ step_id: 'playbook', title: s.action, description: s.description ?? null })));
     }
 
-    if (result.case.severity === 'critical' || result.case.severity === 'high') {
-        sendSlackAlert({
+    // New high/critical cases notify the SOC mailbox. Fire-and-forget: a mail failure must not
+    // fail case creation, and only newly created cases notify (not a returned duplicate).
+    if (result.created && isEmailEnabled() && (result.case.severity === 'critical' || result.case.severity === 'high')) {
+        sendCaseNotificationEmail({
+            to: socNotificationRecipients(),
+            case_number: result.case.case_number,
             title: result.case.title,
             severity: result.case.severity,
-            description: result.case.description || result.case.title,
-            affected_host: result.case.agent_name || 'See case in NovrSOC',
-            incident_id: result.case.case_number,
-            detected_at: formatWAT(result.case.created_at),
-        }).catch(() => {});
+            headline: 'New case',
+            agent: result.case.agent_name,
+            source_ip: result.case.source_ip,
+            detail: result.case.description,
+        }).catch((err) => console.error('[cases] notification email failed:', err instanceof Error ? err.message : err));
     }
 
     res.status(201).json({ success: true, created: result.created, case: result.case, id: result.case.id, case_number: result.case.case_number });
@@ -213,7 +216,6 @@ router.patch('/:id', async (req: AuthRequest, res) => {
             ip: req.ip ?? 'unknown', result: 'success',
             details: `${row.case_number} status set to ${status}`, severity: status === 'resolved' ? 'warning' : 'info',
         });
-        if (status === 'resolved') sendSlackMessage(`✅ Case resolved: ${row.case_number} — ${row.title}`).catch(() => {});
     }
 
     res.json({ success: true, case: row });
@@ -319,13 +321,6 @@ router.post('/:id/escalate', async (req: AuthRequest, res) => {
             results.email = 'failed — see server logs';
         }
     }
-
-    const slackSent = await sendSlackAlert({
-        title: `Case escalated: ${c.title}`, severity: c.severity,
-        description: `Escalated by ${by}${note ? `\n${note}` : ''}`,
-        affected_host: c.agent_name || 'See case in NovrSOC', incident_id: c.case_number, detected_at: formatWAT(c.created_at),
-    }).catch(() => false);
-    results.slack = slackSent ? 'sent' : 'not sent';
 
     logAudit({
         user: by, action: 'CASE_ESCALATED', resource: 'case', resource_id: id, ip: req.ip ?? 'unknown',

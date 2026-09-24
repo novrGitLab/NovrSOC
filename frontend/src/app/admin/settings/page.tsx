@@ -50,7 +50,6 @@ export default function SettingsPage() {
     const [critEmail, setCritEmail]   = useState(true);
 
     const [emailNotifs, setEmailNotifs] = useState(true);
-    const [slackNotifs, setSlackNotifs] = useState(false);
     const [smsAlerts,   setSmsAlerts]   = useState(false);
 
     const [alertRet,  setAlertRet]  = useState('90');
@@ -112,9 +111,6 @@ export default function SettingsPage() {
                 <Section title="Notification Settings">
                     <Row label="Email notifications">
                         <Toggle value={emailNotifs} onChange={setEmailNotifs} />
-                    </Row>
-                    <Row label="Slack notifications">
-                        <Toggle value={slackNotifs} onChange={setSlackNotifs} />
                     </Row>
                     <Row label="SMS alerts">
                         <Toggle value={smsAlerts} onChange={setSmsAlerts} />

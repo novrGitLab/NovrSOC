@@ -52,7 +52,7 @@ interface CaseTask { id: string; step_id: string; title: string; description: st
 
 // Tasks whose step_id is one of these have an action the backend can run (POST
 // /api/cases/:id/execute-step). Must match EXECUTABLE_STEPS in backend services/responseActions.ts.
-const EXECUTABLE_STEPS = new Set(['block_ip', 'isolate_agent', 'enrich_iocs', 'notify_slack', 'notify_ciso']);
+const EXECUTABLE_STEPS = new Set(['block_ip', 'isolate_agent', 'enrich_iocs', 'notify_email', 'notify_ciso']);
 interface TimelineEntry { id: string; actor: string; action: string; details: string | null; automated: boolean; created_at: string }
 interface CaseIoc { id: string; type: string; value: string; verdict: string | null; risk_score: number | null }
 interface CaseDetail { case: CaseItem; notes: CaseNote[]; tasks: CaseTask[]; timeline: TimelineEntry[]; iocs: CaseIoc[] }

@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import {
-    Bell, CheckCircle, AlertTriangle, Send, MessageSquare, Mail, Phone, Zap, RefreshCw,
+    Bell, Send, Mail, Phone, Zap, RefreshCw,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
@@ -14,64 +15,12 @@ interface ChannelStatus {
 }
 
 interface AlertChannels {
-    slack: ChannelStatus;
     email: ChannelStatus;
     sms: ChannelStatus;
     pagerduty: ChannelStatus;
 }
 
-type Severity = 'critical' | 'high' | 'medium' | 'low';
-
-interface RecentAlert {
-    id: string;
-    title: string;
-    severity: Severity;
-    channels: string[];
-    sent_at: string;
-    acknowledged: boolean;
-    affected_host: string;
-}
-
-// Demo history — real dispatch history isn't persisted anywhere yet (POST /api/alerts/incident
-// is fire-and-forget); this shows what the feed will look like once it is.
-const MOCK_RECENT_ALERTS: RecentAlert[] = [
-    {
-        id: 'al_001',
-        title: 'Critical: Tor Exit Node Detected on Network',
-        severity: 'critical',
-        channels: ['slack'],
-        sent_at: '2026-08-12 14:23:11',
-        acknowledged: false,
-        affected_host: 'ec2-sensor (10.0.1.30)',
-    },
-    {
-        id: 'al_002',
-        title: 'High: SSH Brute Force Attempt — 47 Failed Logins',
-        severity: 'high',
-        channels: ['slack'],
-        sent_at: '2026-08-12 11:45:02',
-        acknowledged: true,
-        affected_host: 'ec2-app-server (10.0.1.10)',
-    },
-    {
-        id: 'al_003',
-        title: 'Medium: CVE-2024-3094 Detected — xz-utils Backdoor',
-        severity: 'medium',
-        channels: ['slack'],
-        sent_at: '2026-08-11 09:15:44',
-        acknowledged: true,
-        affected_host: 'ec2-wazuh-server (10.0.1.20)',
-    },
-];
-
-const SEVERITY_CONFIG: Record<Severity, { color: string; bg: string; border: string; dot: string }> = {
-    critical: { color: 'text-red-500', bg: 'bg-red-500/10', border: 'border-red-500/30', dot: 'bg-red-500 animate-pulse' },
-    high: { color: 'text-amber', bg: 'bg-grey-100', border: 'border-amber/30', dot: 'bg-amber' },
-    medium: { color: 'text-amber', bg: 'bg-grey-100', border: 'border-amber/30', dot: 'bg-amber' },
-    low: { color: 'text-blue', bg: 'bg-blue/10', border: 'border-blue/30', dot: 'bg-blue' },
-};
-
-const CHANNEL_ICONS: Record<string, LucideIcon> = { slack: MessageSquare, email: Mail, sms: Phone, pagerduty: Zap };
+const CHANNEL_ICONS: Record<string, LucideIcon> = { email: Mail, sms: Phone, pagerduty: Zap };
 
 const TABS = [
     { id: 'channels', label: 'Channels' },
@@ -180,7 +129,7 @@ export function AlertCommunication() {
         <div className="space-y-4">
             <div>
                 <h1 className="text-lg font-black text-foreground">Alert Communication</h1>
-                <p className="text-xs text-foreground-muted">SecOps & Response · Multi-channel incident notifications. Escalate critical alerts to on-call SOC teams via Slack, email, SMS, and PagerDuty.</p>
+                <p className="text-xs text-foreground-muted">SecOps & Response · Incident notifications to the SOC team. Email is live; SMS and PagerDuty light up once their keys are set.</p>
             </div>
 
             {/* Tabs */}
@@ -221,7 +170,7 @@ export function AlertCommunication() {
                                         <div className="text-xs text-foreground-muted bg-card-muted rounded-lg p-2">
                                             {key === 'sms' && 'Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER to .env'}
                                             {key === 'pagerduty' && 'Add PAGERDUTY_API_KEY to .env ($21/user/month)'}
-                                            {key === 'email' && 'Add SENDGRID_API_KEY to .env (free 100/day at signup.sendgrid.com)'}
+                                            {key === 'email' && 'Set EMAIL_ENABLED=true and RESEND_API_KEY on Railway (sender: alerts@cybernovr.com)'}
                                         </div>
                                     )}
                                 </div>
@@ -234,7 +183,7 @@ export function AlertCommunication() {
                         <div className="flex items-center justify-between gap-3 flex-wrap">
                             <div>
                                 <div className="font-medium text-sm text-foreground">Test Alert Channels</div>
-                                <div className="text-xs text-foreground-muted">Sends a test message to all configured channels</div>
+                                <div className="text-xs text-foreground-muted">Sends a test alert by email to the SOC mailbox</div>
                             </div>
                             <button onClick={sendTest} disabled={testing}
                                 className="flex items-center gap-2 bg-blue hover:opacity-90 text-white text-xs font-bold px-4 py-2 rounded-lg disabled:opacity-50 transition-colors">
@@ -252,9 +201,9 @@ export function AlertCommunication() {
                         <h3 className="font-heading font-semibold text-sm text-foreground mb-4">Escalation Rules</h3>
                         <div className="space-y-3">
                             {[
-                                { severity: 'CRITICAL', rule: 'Slack + SMS + PagerDuty', threshold: 'Rule level ≥ 13' },
-                                { severity: 'HIGH', rule: 'Slack + Email', threshold: 'Rule level ≥ 10' },
-                                { severity: 'MEDIUM', rule: 'Slack only', threshold: 'Rule level ≥ 7' },
+                                { severity: 'CRITICAL', rule: 'Case + CISO email', threshold: 'Rule level ≥ 13' },
+                                { severity: 'HIGH', rule: 'Case + SOC email', threshold: 'Rule level ≥ 10' },
+                                { severity: 'MEDIUM', rule: 'Case, auto-closed', threshold: 'Rule level ≥ 7' },
                                 { severity: 'LOW', rule: 'Log only', threshold: 'Rule level < 7' },
                             ].map((row) => (
                                 <div key={row.severity} className="flex items-center justify-between text-sm flex-wrap gap-2">
@@ -272,7 +221,7 @@ export function AlertCommunication() {
                             ))}
                         </div>
                         <div className="mt-3 text-xs text-foreground-muted">
-                            Escalation rules apply automatically when Wazuh is connected. Configure custom rules in Settings.
+                            Applied by the SOAR engine on the Wazuh manager (infra/soar). SMS and PagerDuty are not part of the pipeline yet.
                         </div>
                     </div>
                 </div>
@@ -280,32 +229,16 @@ export function AlertCommunication() {
 
             {/* HISTORY TAB */}
             {activeTab === 'history' && (
-                <div className="space-y-3">
-                    {MOCK_RECENT_ALERTS.map((alert) => {
-                        const cfg = SEVERITY_CONFIG[alert.severity];
-                        return (
-                            <div key={alert.id} className={`bg-card border rounded-xl p-4 ${cfg.border}`}>
-                                <div className="flex items-start justify-between gap-3">
-                                    <div className="flex items-start gap-3 min-w-0">
-                                        <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${cfg.dot}`} />
-                                        <div className="min-w-0">
-                                            <div className="font-medium text-sm text-foreground">{alert.title}</div>
-                                            <div className="text-xs text-foreground-muted mt-0.5">{alert.affected_host} · {alert.sent_at}</div>
-                                            <div className="flex items-center gap-2 mt-2">
-                                                {alert.channels.map((ch) => (
-                                                    <span key={ch} className="text-[10px] bg-blue/10 text-blue px-2 py-0.5 rounded-full font-medium">{ch}</span>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2 flex-shrink-0">
-                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${cfg.bg} ${cfg.color} ${cfg.border}`}>{alert.severity.toUpperCase()}</span>
-                                        {alert.acknowledged ? <CheckCircle size={14} className="text-green" /> : <AlertTriangle size={14} className="text-red-500" />}
-                                    </div>
-                                </div>
-                            </div>
-                        );
-                    })}
+                <div className="bg-card border border-dashed border-border rounded-xl p-8 text-center">
+                    <p className="text-sm font-bold text-foreground">No dispatch history is stored yet</p>
+                    <p className="text-xs text-foreground-muted mt-1 max-w-md mx-auto">
+                        Manual alerts sent from this page are not recorded. Automated notifications are: each case&apos;s timeline
+                        shows every email the SOAR engine or an analyst sent for it, and SOAR Automation lists the engine&apos;s actions.
+                    </p>
+                    <div className="flex items-center justify-center gap-4 mt-4 text-xs font-bold">
+                        <Link href="/admin/secops/cases" className="text-purple hover:underline">Cases →</Link>
+                        <Link href="/admin/secops/soar" className="text-purple hover:underline">SOAR Automation →</Link>
+                    </div>
                 </div>
             )}
 

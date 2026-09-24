@@ -124,7 +124,7 @@ router.get('/cases', requireAuth, async (req: AuthRequest, res) => {
                 ...c,
                 ip_blocked: outcome(c.id, 'Block IP'),
                 agent_isolated: outcome(c.id, 'Isolate agent'),
-                slack_sent: tl.some((t) => t.action.startsWith('Slack notification sent')),
+                email_sent: tl.some((t) => t.action.startsWith('Email notification sent')),
                 ciso_notified: tl.some((t) => t.action.startsWith('CISO escalation email sent')),
                 enriched: tl.some((t) => t.action.startsWith('IOC enriched')),
                 close_reason: closeEntry ? closeEntry.action.replace(/^Case auto-closed:\s*/, '') : null,

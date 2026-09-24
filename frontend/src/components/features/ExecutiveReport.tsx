@@ -5,26 +5,34 @@ import { apiUrl, apiFetch } from '@/lib/api';
 import { exportPageAsPDF } from '@/lib/exportPDF';
 
 // Board/CISO-facing summary — real data only, composed from endpoints already built
-// elsewhere (compliance, incidents, alerts). No fabricated "Overall Score: 74" or "vs last
+// elsewhere (compliance, cases, alerts, Wazuh agents). No fabricated "Overall Score: 74" or "vs last
 // month" trend arrow — this backend has no historical snapshot mechanism to compare against,
 // so a trend number here would be invented, not measured. The overall score is a genuine
 // average of assessed compliance frameworks; "Not yet assessed" is the honest state until at
 // least one framework has real control assessments.
 
 interface Framework { shortName: string; score: number; assessed: number }
-interface IncidentKpis { total: number; critical: number; high: number }
+interface CaseKpis { active: number; critical: number }
+interface AgentCounts { total: number; active: number; disconnected: number }
 
 export function ExecutiveReport() {
     const [frameworks, setFrameworks] = useState<Framework[] | null>(null);
-    const [incidentKpis, setIncidentKpis] = useState<IncidentKpis | null>(null);
+    const [caseKpis, setCaseKpis] = useState<CaseKpis | null>(null);
+    const [agents, setAgents] = useState<AgentCounts | null>(null);
     const [criticalAlerts, setCriticalAlerts] = useState<number | null>(null);
     const [customerCount, setCustomerCount] = useState<number | null>(null);
 
     useEffect(() => {
         apiFetch(apiUrl('/api/compliance?orgId=1'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then((r) => r.json()).then((d) => setFrameworks(Array.isArray(d) ? d : [])).catch(() => setFrameworks([]));
-        apiFetch(apiUrl('/api/wazuh/incidents'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then((r) => r.json()).then((d) => setIncidentKpis(d?.kpis ?? null)).catch(() => setIncidentKpis(null));
+        apiFetch(apiUrl('/api/cases?limit=1'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+            .then((r) => r.json()).then((d) => setCaseKpis(d?.summary ? { active: d.summary.active, critical: d.summary.critical } : null)).catch(() => setCaseKpis(null));
+        // Endpoint counts from the Wazuh manager — the same source as every other agent figure.
+        // An unreachable manager leaves this null ("—"), not 0: zero endpoints is a finding.
+        apiFetch(apiUrl('/api/wazuh/status'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+            .then((r) => r.json())
+            .then((d) => setAgents(d?.connected ? { total: d.agent_count ?? 0, active: d.active_agents ?? 0, disconnected: d.disconnected_agents ?? 0 } : null))
+            .catch(() => setAgents(null));
         apiFetch(apiUrl('/api/wazuh/alerts-indexer?minLevel=7&range=24h'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then((r) => r.json()).then((d) => setCriticalAlerts(typeof d?.criticalCount === 'number' ? d.criticalCount : 0)).catch(() => setCriticalAlerts(0));
         apiFetch(apiUrl('/api/customers'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
@@ -59,16 +67,18 @@ export function ExecutiveReport() {
                 </div>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                 {[
-                    { label: 'Open Incidents', value: incidentKpis?.total ?? '—' },
-                    { label: 'Critical Incidents', value: incidentKpis?.critical ?? '—' },
+                    { label: 'Endpoints Monitored', value: agents?.total ?? '—', sub: agents ? `${agents.active} online · ${agents.disconnected} offline` : 'Wazuh unreachable' },
+                    { label: 'Open Cases', value: caseKpis?.active ?? '—' },
+                    { label: 'Critical Cases (open)', value: caseKpis?.critical ?? '—' },
                     { label: 'Critical Alerts (24h)', value: criticalAlerts ?? '—' },
                     { label: 'Clients Protected', value: customerCount ?? '—' },
                 ].map((s) => (
                     <div key={s.label} className="bg-card border border-border rounded-xl p-5">
                         <div className="text-3xl font-black text-foreground">{s.value}</div>
                         <div className="text-xs text-foreground-muted mt-1">{s.label}</div>
+                        {'sub' in s && s.sub && <div className="text-[10px] text-foreground-muted/80 mt-0.5">{s.sub}</div>}
                     </div>
                 ))}
             </div>
@@ -94,10 +104,15 @@ export function ExecutiveReport() {
 
             <div className="bg-card border border-border rounded-xl p-5">
                 <h2 className="font-bold text-sm text-foreground mb-2">Top Risks</h2>
-                {incidentKpis && incidentKpis.critical > 0 ? (
-                    <p className="text-xs text-foreground-muted">{incidentKpis.critical} critical-severity incident{incidentKpis.critical === 1 ? '' : 's'} open in the last 7 days — see Incident Response for detail.</p>
+                {caseKpis === null ? (
+                    <p className="text-xs text-foreground-muted">Case data unavailable.</p>
+                ) : caseKpis.critical > 0 ? (
+                    <p className="text-xs text-foreground-muted">{caseKpis.critical} critical-severity case{caseKpis.critical === 1 ? '' : 's'} open — see Cases for detail.</p>
                 ) : (
-                    <p className="text-xs text-foreground-muted">No critical incidents open in the last 7 days.</p>
+                    <p className="text-xs text-foreground-muted">No critical cases open.</p>
+                )}
+                {agents && agents.disconnected > 0 && (
+                    <p className="text-xs text-foreground-muted mt-1">{agents.disconnected} endpoint{agents.disconnected === 1 ? ' is' : 's are'} offline and not currently monitored.</p>
                 )}
             </div>
 

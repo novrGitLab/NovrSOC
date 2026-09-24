@@ -1,30 +1,23 @@
 'use client';
 
 import { useState } from 'react';
-import { Send, MessageSquare, Mail } from 'lucide-react';
+import { Send, Mail } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
-
-type Channel = 'slack' | 'email';
 
 export function TeamCommunication() {
     const [message, setMessage] = useState('');
-    const [channels, setChannels] = useState<Channel[]>(['slack', 'email']);
     const [sending, setSending] = useState(false);
     const [result, setResult] = useState<Record<string, string> | null>(null);
 
-    const toggleChannel = (c: Channel) => {
-        setChannels((prev) => (prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]));
-    };
-
     const send = async () => {
-        if (!message.trim() || channels.length === 0) return;
+        if (!message.trim()) return;
         setSending(true);
         setResult(null);
         try {
             const res = await apiFetch(apiUrl('/api/secops/broadcast'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: message.trim(), channels }),
+                body: JSON.stringify({ message: message.trim() }),
             });
             const data = await res.json();
             setResult(data.results ?? { error: data.error || 'Broadcast failed' });
@@ -41,7 +34,7 @@ export function TeamCommunication() {
             <div className="bg-card border border-border rounded-xl p-5 space-y-4">
                 <div>
                     <h3 className="text-sm font-bold text-foreground mb-1">Broadcast to Analysts</h3>
-                    <p className="text-xs text-foreground-muted">Security advisory, shift instructions, urgent notice — sent to every analyst on the team.</p>
+                    <p className="text-xs text-foreground-muted">Security advisory, shift instructions, urgent notice — emailed to every analyst on the team.</p>
                 </div>
 
                 <textarea
@@ -53,24 +46,13 @@ export function TeamCommunication() {
                 />
 
                 <div className="flex items-center gap-2">
-                    {([
-                        { id: 'slack' as const, label: 'Slack', icon: MessageSquare },
-                        { id: 'email' as const, label: 'Email', icon: Mail },
-                    ]).map(({ id, label, icon: Icon }) => (
-                        <button
-                            key={id}
-                            onClick={() => toggleChannel(id)}
-                            className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border transition-colors ${
-                                channels.includes(id) ? 'bg-purple/10 border-purple text-purple' : 'border-border text-foreground-muted'
-                            }`}
-                        >
-                            <Icon size={13} /> {label}
-                        </button>
-                    ))}
+                    <span className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border bg-purple/10 border-purple text-purple">
+                        <Mail size={13} /> Email
+                    </span>
 
                     <button
                         onClick={send}
-                        disabled={sending || !message.trim() || channels.length === 0}
+                        disabled={sending || !message.trim()}
                         className="ml-auto flex items-center gap-1.5 bg-orange hover:bg-orange-hover text-white text-xs font-bold px-4 py-2 rounded-lg disabled:opacity-50 transition-colors"
                     >
                         <Send size={13} /> {sending ? 'Sending…' : 'Send Broadcast'}

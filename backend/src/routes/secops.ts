@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { createCase } from '../services/cases';
-import { sendSlackMessage } from '../services/slack';
 import { sendBroadcastEmail } from '../services/email';
 import { getSupabase } from '../services/geoEnrichment';
 
@@ -13,37 +12,22 @@ const router = Router();
 // exists; until then, keep both lists in sync by hand.
 const ANALYST_EMAILS = ['rayne@cybernovr.com', 'karl@cybernovr.com'];
 
-// POST /api/secops/broadcast — Security Ops Management's "Team Communication" tab. Sends the
-// same message to whichever channels the analyst picked (Slack, email, or both) — never treats
-// either channel's failure as fatal to the other, same reasoning as every other fire-and-forget
-// notification in this codebase (e.g. incidentResponse.ts's notifySlackOfIncident).
+// POST /api/secops/broadcast — Security Ops Management's "Team Communication" tab. Email is the
+// only team channel. `success` reflects whether the email actually went.
 router.post('/broadcast', async (req: AuthRequest, res) => {
-    const { message, channels } = req.body as { message?: string; channels?: ('slack' | 'email')[] };
+    const { message } = req.body as { message?: string };
     if (!message?.trim()) {
         res.status(400).json({ error: 'message required' });
         return;
     }
-    const wantSlack = !channels || channels.includes('slack');
-    const wantEmail = !channels || channels.includes('email');
     const from = req.user?.email || 'NovrSOC Analyst';
 
-    const results: Record<string, string> = {};
-
-    if (wantSlack) {
-        const sent = await sendSlackMessage(`📢 *Team Broadcast from ${from}*\n${message.trim()}`);
-        results.slack = sent ? 'sent' : 'failed';
+    try {
+        await sendBroadcastEmail({ to: ANALYST_EMAILS, from, message: message.trim() });
+        res.json({ success: true, results: { email: 'sent' } });
+    } catch (err) {
+        res.status(502).json({ success: false, results: { email: `failed: ${err instanceof Error ? err.message : String(err)}` } });
     }
-
-    if (wantEmail) {
-        try {
-            await sendBroadcastEmail({ to: ANALYST_EMAILS, from, message: message.trim() });
-            results.email = 'sent';
-        } catch (err) {
-            results.email = `failed: ${err instanceof Error ? err.message : String(err)}`;
-        }
-    }
-
-    res.json({ success: true, results });
 });
 
 // POST /api/secops/hunting/escalate — Threat Hunting's "Add to Threats" action. Two writes:

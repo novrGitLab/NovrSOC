@@ -60,7 +60,7 @@ export function PlatformHealth() {
     const [testResult, setTestResult] = useState<Record<string, string> | null>(null);
 
     const [emailTesting, setEmailTesting] = useState(false);
-    const [emailResult, setEmailResult] = useState<{ ok: boolean; text: string } | null>(null);
+    const [emailResult, setEmailResult] = useState<{ ok: boolean; text: string; domain?: string; domainStatus?: string; domainDetail?: string } | null>(null);
 
     // Resend only, no fallback — the backend reports Resend's own verdict (e.g. an unverified
     // sending domain) instead of quietly delivering through another provider.
@@ -70,9 +70,10 @@ export function PlatformHealth() {
         try {
             const r = await apiFetch(apiUrl('/api/test/email'), { method: 'POST' });
             const data = await r.json().catch(() => ({}));
+            const domainInfo = { domain: data?.domain, domainStatus: data?.domain_status, domainDetail: data?.domain_detail };
             setEmailResult(data?.success
-                ? { ok: true, text: `Test email accepted by Resend for ${data.to}${data.id ? ` (id ${data.id})` : ''}. From: ${data.from}` }
-                : { ok: false, text: data?.error ?? (r.status === 403 ? 'Only super admins and SOC managers can send test emails.' : `Email test failed (HTTP ${r.status})`) });
+                ? { ok: true, text: `Test email accepted by Resend for ${data.to}${data.id ? ` (id ${data.id})` : ''}. From: ${data.from}`, ...domainInfo }
+                : { ok: false, text: data?.error ?? (r.status === 403 ? 'Only super admins and SOC managers can send test emails.' : `Email test failed (HTTP ${r.status})`), ...domainInfo });
         } catch {
             setEmailResult({ ok: false, text: 'Email test failed — could not reach the backend' });
         } finally {
@@ -142,7 +143,7 @@ export function PlatformHealth() {
                 <div className="flex items-center justify-between gap-4 flex-wrap">
                     <div>
                         <p className="text-sm font-bold text-foreground">Alert Communications</p>
-                        <p className="text-[11px] text-foreground-muted">Send Test Email checks Resend alone and sends one message to the CISO address. Test Alert Communications sends through Slack and the full email fallback chain.</p>
+                        <p className="text-[11px] text-foreground-muted">Send Test Email checks Resend alone and sends one message to the CISO address. Test Alert Communications sends an alert email through the full provider chain.</p>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
                         <button
@@ -163,7 +164,18 @@ export function PlatformHealth() {
                 </div>
 
                 {emailResult && (
-                    <p role="status" className={`mt-3 text-xs font-bold ${emailResult.ok ? 'text-green' : 'text-red'}`}>{emailResult.text}</p>
+                    <div role="status" className="mt-3 space-y-1">
+                        <p className={`text-xs font-bold ${emailResult.ok ? 'text-green' : 'text-red'}`}>{emailResult.text}</p>
+                        {emailResult.domain && (
+                            <p className="text-[11px] text-foreground-muted">
+                                Sending domain <span className="font-mono font-bold text-foreground">{emailResult.domain}</span>:{' '}
+                                <span className={`font-bold ${emailResult.domainStatus === 'verified' ? 'text-green' : emailResult.domainStatus === 'unknown' ? 'text-foreground' : 'text-red'}`}>
+                                    {emailResult.domainStatus === 'verified' ? 'verified in Resend' : emailResult.domainStatus === 'unknown' ? 'verification status unknown' : `not verified (${(emailResult.domainStatus ?? '').replace('_', ' ')})`}
+                                </span>
+                                {emailResult.domainDetail && emailResult.domainStatus !== 'verified' && <> — {emailResult.domainDetail}</>}
+                            </p>
+                        )}
+                    </div>
                 )}
 
                 {testResult && (

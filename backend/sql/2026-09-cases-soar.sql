@@ -163,7 +163,7 @@ INSERT INTO public.playbook_steps (step_id, name, description, category, automat
   ('block_ip',        'Block Source IP',              'Block source IP at OPNsense firewall',           'containment',    true,  'block_ip.py'),
   ('enrich_iocs',     'Enrich IOCs',                  'Enrich all IOCs across 9 CTI sources',           'investigation',  true,  'enrich_iocs.py'),
   ('isolate_agent',   'Isolate Wazuh Agent',          'Run active response to isolate endpoint',        'containment',    true,  'isolate_agent.py'),
-  ('notify_slack',    'Send Slack Notification',      'Notify SOC team on Slack',                       'notification',   true,  'notify_slack.py'),
+  ('notify_email',    'Send Email Notification',      'Email the SOC team mailbox',                     'notification',   true,  'notify_email.py'),
   ('notify_ciso',     'Email CISO',                   'Send escalation email to CISO',                  'escalation',     true,  'notify_ciso.py'),
   ('get_processes',   'Snapshot Running Processes',   'Get list of running processes on endpoint',      'investigation',  true,  'get_processes.py'),
   ('search_related',  'Search Related Alerts',        'Find related alerts from same IP/technique',     'investigation',  true,  'search_related.py'),
@@ -176,13 +176,13 @@ ON CONFLICT (step_id) DO NOTHING;
 -- Existing playbooks that cover the same ground get triggers attached instead of a duplicate
 -- row. The spec's "Phishing Response" maps onto the existing "Phishing Investigation".
 UPDATE public.playbooks SET trigger_technique = 'T1110', trigger_severity = 'high',
-  step_ids = ARRAY['block_ip','enrich_iocs','search_related','notify_slack','generate_report']
+  step_ids = ARRAY['block_ip','enrich_iocs','search_related','notify_email','generate_report']
   WHERE org_id = 'cybernovr' AND name = 'Brute Force Response';
 UPDATE public.playbooks SET trigger_technique = 'T1486', trigger_severity = 'critical',
   step_ids = ARRAY['isolate_agent','block_ip','notify_ciso','get_processes','generate_report']
   WHERE org_id = 'cybernovr' AND name = 'Ransomware Response';
 UPDATE public.playbooks SET trigger_technique = 'T1566', trigger_severity = 'high',
-  step_ids = ARRAY['enrich_iocs','block_ip','notify_slack','generate_report']
+  step_ids = ARRAY['enrich_iocs','block_ip','notify_email','generate_report']
   WHERE org_id = 'cybernovr' AND name = 'Phishing Investigation';
 
 -- The three with no existing equivalent. `steps` is filled so the Playbooks page and the
@@ -194,8 +194,8 @@ FROM (VALUES
    '[{"order":1,"phase":"Containment","title":"Isolate Wazuh Agent","est_mins":0,"description":"Run active response to isolate endpoint"},{"order":2,"phase":"Containment","title":"Block Source IP","est_mins":0,"description":"Block source IP at OPNsense firewall"},{"order":3,"phase":"Investigation","title":"Snapshot Running Processes","est_mins":0,"description":"Get list of running processes on endpoint"},{"order":4,"phase":"Escalation","title":"Email CISO","est_mins":0,"description":"Send escalation email to CISO"},{"order":5,"phase":"Reporting","title":"Generate Incident Report","est_mins":0,"description":"Generate full incident report as markdown"}]',
    'T1021', 'critical', ARRAY['isolate_agent','block_ip','get_processes','notify_ciso','generate_report']),
   ('cybernovr', 'Generic High Severity', '🟠', 'high', 'Default response for high severity', '1-2 hours',
-   '[{"order":1,"phase":"Investigation","title":"Enrich IOCs","est_mins":0,"description":"Enrich all IOCs across CTI sources"},{"order":2,"phase":"Investigation","title":"Search Related Alerts","est_mins":0,"description":"Find related alerts from same IP/technique"},{"order":3,"phase":"Notification","title":"Send Slack Notification","est_mins":0,"description":"Notify SOC team on Slack"},{"order":4,"phase":"Reporting","title":"Generate Incident Report","est_mins":0,"description":"Generate full incident report as markdown"}]',
-   NULL, 'high', ARRAY['enrich_iocs','search_related','notify_slack','generate_report']),
+   '[{"order":1,"phase":"Investigation","title":"Enrich IOCs","est_mins":0,"description":"Enrich all IOCs across CTI sources"},{"order":2,"phase":"Investigation","title":"Search Related Alerts","est_mins":0,"description":"Find related alerts from same IP/technique"},{"order":3,"phase":"Notification","title":"Send Email Notification","est_mins":0,"description":"Email the SOC team mailbox"},{"order":4,"phase":"Reporting","title":"Generate Incident Report","est_mins":0,"description":"Generate full incident report as markdown"}]',
+   NULL, 'high', ARRAY['enrich_iocs','search_related','notify_email','generate_report']),
   ('cybernovr', 'Generic Critical', '🔴', 'critical', 'Default response for critical severity', '1-4 hours',
    '[{"order":1,"phase":"Containment","title":"Block Source IP","est_mins":0,"description":"Block source IP at OPNsense firewall"},{"order":2,"phase":"Investigation","title":"Enrich IOCs","est_mins":0,"description":"Enrich all IOCs across CTI sources"},{"order":3,"phase":"Escalation","title":"Email CISO","est_mins":0,"description":"Send escalation email to CISO"},{"order":4,"phase":"Reporting","title":"Generate Incident Report","est_mins":0,"description":"Generate full incident report as markdown"}]',
    NULL, 'critical', ARRAY['block_ip','enrich_iocs','notify_ciso','generate_report'])

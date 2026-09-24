@@ -509,7 +509,7 @@ const OnboardedClientsWidget = ({ clients, loading }: { clients: OnboardedClient
 
 /* ── Main ── */
 export const GeneralDashboard = () => {
-    const [wazuhStatus, setWazuhStatus] = useState<{ connected: boolean; agent_count: number; active_agents: number } | null>(null);
+    const [wazuhStatus, setWazuhStatus] = useState<{ connected: boolean; agent_count: number; active_agents: number; disconnected_agents: number } | null>(null);
     const [platformHealth, setPlatformHealth] = useState<{ overall: string; services: Array<{ name: string; status: string; latency_ms: number }> } | null>(null);
     const [criticalAlertsCount, setCriticalAlertsCount] = useState<number | null>(null);
     const [openIncidentsCount, setOpenIncidentsCount] = useState<number | null>(null);
@@ -530,8 +530,8 @@ export const GeneralDashboard = () => {
     useEffect(() => {
         apiFetch(apiUrl('/api/wazuh/status'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then(r => r.json())
-            .then(data => setWazuhStatus({ connected: !!data?.connected, agent_count: data?.agent_count ?? 0, active_agents: data?.active_agents ?? 0 }))
-            .catch(() => setWazuhStatus({ connected: false, agent_count: 0, active_agents: 0 }));
+            .then(data => setWazuhStatus({ connected: !!data?.connected, agent_count: data?.agent_count ?? 0, active_agents: data?.active_agents ?? 0, disconnected_agents: data?.disconnected_agents ?? 0 }))
+            .catch(() => setWazuhStatus({ connected: false, agent_count: 0, active_agents: 0, disconnected_agents: 0 }));
     }, []);
 
     useEffect(() => {
@@ -660,7 +660,16 @@ export const GeneralDashboard = () => {
     const platformHealthType: KpiCardProps['type'] = platformHealth?.overall === 'operational' ? 'green' : platformHealth?.overall === 'degraded' ? 'orange' : 'red';
 
     const kpiCards: KpiCardProps[] = [
-        { label: 'Assets Monitored', value: (wazuhStatus?.agent_count ?? 0).toLocaleString(), trend: '', type: 'purple', icon: Monitor, subValue: `${wazuhStatus?.active_agents ?? 0} active` },
+        // Registered / online / offline, from /api/wazuh/status. When the manager can't be reached
+        // the card says so instead of showing 0 agents, which would read as "nothing monitored".
+        {
+            label: 'Agents',
+            value: wazuhStatus?.connected ? wazuhStatus.agent_count.toLocaleString() : '—',
+            trend: '', type: 'purple', icon: Monitor,
+            subValue: wazuhStatus === null ? 'checking…' : wazuhStatus.connected
+                ? `${wazuhStatus.active_agents} online · ${wazuhStatus.disconnected_agents} offline`
+                : 'Wazuh manager unreachable',
+        },
         { label: 'Open Cases', value: String(incidentKpis?.total ?? 0), trend: '', type: 'orange', icon: Siren, subValue: `${incidentKpis?.critical ?? 0} critical` },
         { label: 'Critical Alerts', value: criticalAlertsCount !== null ? String(criticalAlertsCount) : '0', trend: '', type: 'red', icon: ShieldAlert, subValue: 'last 24 hours' },
         { label: 'Alerts Level 7+', value: openIncidentsCount !== null ? String(openIncidentsCount) : '0', trend: '', type: 'orange', icon: Shield, subValue: 'last 24 hours' },

@@ -22,10 +22,25 @@ import sgMail from '@sendgrid/mail';
 import nodemailer, { type Transporter } from 'nodemailer';
 import { Resend } from 'resend';
 
-const FROM = {
-    email: process.env.SENDGRID_FROM_EMAIL || 'alerts@novrsoc.com',
-    name: process.env.SENDGRID_FROM_NAME || 'NovrSOC by Cybernovr',
-};
+// Sender. RESEND_FROM accepts "Name <addr@domain>" or a bare address; the fallback is on
+// cybernovr.com, the domain verified in Resend. novrsoc.com is NOT verified there — the earlier
+// default of alerts@novrsoc.com is why Resend rejected the test email — so it is never used,
+// and SENDGRID_FROM_EMAIL no longer feeds the sender (a stale value there would bring the
+// rejection back).
+function parseFrom(raw: string | undefined): { email: string; name: string } {
+    const fallback = { email: 'alerts@cybernovr.com', name: 'NovrSOC by Cybernovr' };
+    const v = (raw ?? '').trim();
+    if (!v) return fallback;
+    const m = v.match(/^\s*"?([^"<]*?)"?\s*<\s*([^>\s]+@[^>\s]+)\s*>\s*$/);
+    if (m) return { name: m[1].trim() || fallback.name, email: m[2] };
+    return /^[^\s@]+@[^\s@]+$/.test(v) ? { email: v, name: fallback.name } : fallback;
+}
+const FROM = parseFrom(process.env.RESEND_FROM);
+
+/** The sender every email uses, for diagnostics. */
+export function senderAddress(): { email: string; name: string; domain: string } {
+    return { ...FROM, domain: FROM.email.split('@')[1] ?? '' };
+}
 
 let initialized = false;
 function ensureInitialized(): void {
@@ -129,6 +144,35 @@ async function sendEmail(params: { to: string | string[]; subject: string; html:
 // answer. sendEmail() above falls through silently, so a "test" routed through it can report
 // success while Resend is broken and SendGrid carried the mail. Uses the same From address as
 // every real alert, so a pass here means escalation emails will leave the same way.
+export type DomainStatus = 'verified' | 'not_started' | 'pending' | 'failed' | 'temporary_failure' | 'not_added' | 'unknown';
+
+/**
+ * The sending domain's status in Resend (GET /domains). A sending-only API key is not allowed to
+ * list domains (Resend answers 401 restricted_api_key) — that comes back as 'unknown' with the
+ * reason, rather than being guessed.
+ */
+export async function resendDomainStatus(domain: string): Promise<{ status: DomainStatus; detail: string }> {
+    if (!isResendConfigured()) return { status: 'unknown', detail: 'RESEND_API_KEY is not set' };
+    try {
+        const r = await fetch('https://api.resend.com/domains', {
+            headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
+            signal: AbortSignal.timeout(8000),
+        });
+        const body = (await r.json().catch(() => null)) as { data?: { name?: string; status?: string }[]; name?: string; message?: string } | null;
+        if (!r.ok) {
+            return { status: 'unknown', detail: body?.name === 'restricted_api_key'
+                ? 'This API key can only send email, so it cannot read domain status. Check the Resend dashboard, or use a full-access key.'
+                : `Resend answered HTTP ${r.status}${body?.message ? `: ${body.message}` : ''}` };
+        }
+        const match = (body?.data ?? []).find((d) => d.name?.toLowerCase() === domain.toLowerCase());
+        if (!match) return { status: 'not_added', detail: `${domain} is not added to this Resend account` };
+        const status = (['verified', 'not_started', 'pending', 'failed', 'temporary_failure'] as const).find((x) => x === match.status) ?? 'unknown';
+        return { status, detail: `Resend reports ${domain} as ${match.status}` };
+    } catch (err) {
+        return { status: 'unknown', detail: `Could not reach Resend: ${err instanceof Error ? err.message : err}` };
+    }
+}
+
 export async function testResendDelivery(to: string): Promise<{ id: string | null; from: string }> {
     const from = `${FROM.name} <${FROM.email}>`;
     if (!isResendConfigured()) throw new Error('RESEND_API_KEY is not set on the backend');
@@ -802,6 +846,48 @@ export async function sendBroadcastEmail(params: { to: string[]; from: string; m
         subject: '[NovrSOC] Team Broadcast',
         html: baseTemplate('NovrSOC Team Broadcast', `Broadcast from ${params.from}`, body),
     });
+}
+
+// Team notification (new case, SOAR notify step). Goes to the SOC mailbox; the team broadcast
+// has its own recipient list.
+export async function sendCaseNotificationEmail(params: {
+    to: string[];
+    case_number: string;
+    title: string;
+    severity: string;
+    headline: string;
+    agent?: string | null;
+    source_ip?: string | null;
+    detail?: string | null;
+}): Promise<void> {
+    if (!isEmailEnabled()) throw new Error('Email not configured');
+    const row = (label: string, value: string) => `
+        <tr><td style="padding:6px 0;color:#7A8099;font-size:12px;width:120px;">${label}</td>
+            <td style="padding:6px 0;color:#1C1F2E;font-size:13px;font-weight:600;">${escapeHtml(value)}</td></tr>`;
+    const body = `
+      <tr>
+        <td style="padding:32px;">
+          <p style="color:#7A8099;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin:0 0 8px;">${escapeHtml(params.headline)}</p>
+          <h2 style="color:#1C1F2E;font-size:18px;margin:0 0 16px;">${escapeHtml(params.case_number)} — ${escapeHtml(params.title)}</h2>
+          <table style="width:100%;border-collapse:collapse;">
+            ${row('Severity', params.severity.toUpperCase())}
+            ${row('Agent', params.agent || 'N/A')}
+            ${row('Source IP', params.source_ip || 'N/A')}
+          </table>
+          ${params.detail ? `<p style="color:#1C1F2E;font-size:13px;line-height:1.6;margin:16px 0 0;white-space:pre-wrap;">${escapeHtml(params.detail)}</p>` : ''}
+          <a href="https://novr-soc.vercel.app/admin/secops/cases" style="display:inline-block;background:#520385;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;margin-top:20px;">View in NovrSOC →</a>
+        </td>
+      </tr>`;
+    await sendEmail({
+        to: params.to,
+        subject: `[NovrSOC] ${params.severity.toUpperCase()}: ${params.case_number} — ${params.title}`,
+        html: baseTemplate(`${params.case_number} — ${params.headline}`, params.title, body),
+    });
+}
+
+/** Where team notifications go: ALERT_EMAIL_TO, else CISO_EMAIL, else the SOC mailbox. */
+export function socNotificationRecipients(): string[] {
+    return [process.env.ALERT_EMAIL_TO || process.env.CISO_EMAIL || 'soc@cybernovr.com'];
 }
 
 // 7. TEST EMAIL

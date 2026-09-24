@@ -1,3 +1,4 @@
+import { senderAddress } from './email';
 // SendGrid — send incident report emails and alerts
 // Free: 100 emails/day forever
 // Get key: signup.sendgrid.com → Settings → API Keys
@@ -8,7 +9,8 @@
 // where this codebase uses token classes throughout).
 
 const SENDGRID_BASE = 'https://api.sendgrid.com/v3';
-const FROM_EMAIL = 'alerts@novrsoc.com';
+// Same sender as services/email.ts — cybernovr.com is the verified sending domain.
+const FROM_EMAIL = senderAddress().email;
 const FROM_NAME = 'NovrSOC Alerts';
 
 function getKey(): string | null {

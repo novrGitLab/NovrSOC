@@ -359,7 +359,7 @@ export function AssetDetail({ agentId }: { agentId: string }) {
                     <div className="space-y-3">
                         <p className="text-sm font-bold text-foreground">Per-agent network connections are not collected</p>
                         <p className="text-xs text-foreground-muted leading-relaxed max-w-2xl">
-                            NovrSOC has a network view at <Link href="/admin/infra/topology" className="text-purple hover:underline">Infrastructure → Topology</Link>,
+                            NovrSOC has a network view at <Link href="/admin/network/topology" className="text-purple hover:underline">Network → Topology</Link>,
                             but it aggregates connection data across the whole estate from alert
                             records — it is not per-agent, and the Wazuh agents here do not ship
                             per-process socket inventory.

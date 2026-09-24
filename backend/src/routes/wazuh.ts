@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { requireAuth } from '../middleware/auth';
 import { wazuhGet } from '../lib/wazuh';
 import { getAgentsForGroup, getAgentNamesForGroup } from '../lib/wazuh-group';
 import { search } from '../lib/wazuh-indexer';
@@ -29,16 +30,32 @@ router.get('/status', async (_req, res) => {
         return;
     }
     if (!wazuhConfigured()) {
-        res.json({ connected: false, agent_count: 0, active_agents: 0 });
+        res.json({ connected: false, agent_count: 0, active_agents: 0, disconnected_agents: 0, never_connected_agents: 0 });
         return;
     }
     try {
         const agents = await getWazuhAgents();
-        const active = agents.filter((a) => a.status === 'active').length;
-        res.json({ connected: true, agent_count: agents.length, active_agents: active });
+        const count = (...states: string[]) => agents.filter((a) => states.includes(a.status)).length;
+        // Registered = active + disconnected + never_connected/pending, so the dashboard can
+        // show all three without inferring one from the others.
+        res.json({
+            connected: true,
+            agent_count: agents.length,
+            active_agents: count('active'),
+            disconnected_agents: count('disconnected'),
+            never_connected_agents: count('never_connected', 'pending'),
+        });
     } catch {
-        res.json({ connected: false, agent_count: 0, active_agents: 0 });
+        res.json({ connected: false, agent_count: 0, active_agents: 0, disconnected_agents: 0, never_connected_agents: 0 });
     }
+});
+
+// GET /api/wazuh/enrollment — the manager address the setup guides (OPNsense, Sysmon, osquery)
+// tell agents to enrol against. WAZUH_AGENT_MANAGER overrides WAZUH_HOST for when agents reach
+// the manager on a different address than the backend does (e.g. over the VPN). Analyst-only.
+router.get('/enrollment', requireAuth, (_req, res) => {
+    const manager = (process.env.WAZUH_AGENT_MANAGER || process.env.WAZUH_HOST || '').trim();
+    res.json({ manager: manager || null, enrollment_port: 1515, events_port: 1514 });
 });
 
 // GET /api/wazuh/alerts — was previously its own hand-rolled https.request call with a
@@ -403,6 +420,9 @@ router.get('/vulnerabilities', async (req, res) => {
 
         const groupFilters: Record<string, unknown>[] = [];
         if (agentNames) groupFilters.push({ terms: { 'agent.name': agentNames } });
+        // ?agent=<name> narrows to one endpoint (the page's agent selector, fed by /agents).
+        const agentName = typeof req.query.agent === 'string' && req.query.agent.trim() ? req.query.agent.trim() : null;
+        if (agentName) groupFilters.push({ term: { 'agent.name': agentName } });
 
         const aggsQuery = groupFilters.length ? { bool: { must: groupFilters } } : { match_all: {} };
 
@@ -453,9 +473,11 @@ router.get('/vulnerabilities', async (req, res) => {
             total: buckets.reduce((sum, b) => sum + (b.doc_count ?? 0), 0),
         };
 
-        res.json({ vulnerabilities, summary });
+        // index_available separates "no vulnerabilities found" from "couldn't read the index" —
+        // both would otherwise render as an empty list.
+        res.json({ vulnerabilities, summary, index_available: aggsRes !== null });
     } catch {
-        res.status(502).json({ vulnerabilities: [], summary: { critical: 0, high: 0, medium: 0, low: 0, total: 0 } });
+        res.status(502).json({ vulnerabilities: [], summary: { critical: 0, high: 0, medium: 0, low: 0, total: 0 }, index_available: false });
     }
 });
 
