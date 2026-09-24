@@ -59,6 +59,27 @@ export function PlatformHealth() {
     const [testing, setTesting] = useState(false);
     const [testResult, setTestResult] = useState<Record<string, string> | null>(null);
 
+    const [emailTesting, setEmailTesting] = useState(false);
+    const [emailResult, setEmailResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+    // Resend only, no fallback — the backend reports Resend's own verdict (e.g. an unverified
+    // sending domain) instead of quietly delivering through another provider.
+    const runEmailTest = async () => {
+        setEmailTesting(true);
+        setEmailResult(null);
+        try {
+            const r = await apiFetch(apiUrl('/api/test/email'), { method: 'POST' });
+            const data = await r.json().catch(() => ({}));
+            setEmailResult(data?.success
+                ? { ok: true, text: `Test email accepted by Resend for ${data.to}${data.id ? ` (id ${data.id})` : ''}. From: ${data.from}` }
+                : { ok: false, text: data?.error ?? (r.status === 403 ? 'Only super admins and SOC managers can send test emails.' : `Email test failed (HTTP ${r.status})`) });
+        } catch {
+            setEmailResult({ ok: false, text: 'Email test failed — could not reach the backend' });
+        } finally {
+            setEmailTesting(false);
+        }
+    };
+
     const runAlertTest = async () => {
         setTesting(true);
         setTestResult(null);
@@ -66,7 +87,7 @@ export function PlatformHealth() {
             const r = await apiFetch(apiUrl('/api/alerts/test'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: 'rayne@cybernovr.com' }),
+                body: JSON.stringify({}),
             });
             const data = await r.json();
             setTestResult(data.results ?? { error: data.error || 'Unknown response' });
@@ -121,16 +142,29 @@ export function PlatformHealth() {
                 <div className="flex items-center justify-between gap-4 flex-wrap">
                     <div>
                         <p className="text-sm font-bold text-foreground">Alert Communications</p>
-                        <p className="text-[11px] text-foreground-muted">Send a live test alert through Slack and email to confirm both channels are working.</p>
+                        <p className="text-[11px] text-foreground-muted">Send Test Email checks Resend alone and sends one message to the CISO address. Test Alert Communications sends through Slack and the full email fallback chain.</p>
                     </div>
-                    <button
-                        onClick={runAlertTest}
-                        disabled={testing}
-                        className="flex items-center gap-1.5 bg-primary text-white text-xs font-bold px-4 py-2.5 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 shrink-0"
-                    >
-                        <Send size={13} /> {testing ? 'Sending...' : 'Test Alert Communications'}
-                    </button>
+                    <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                            onClick={runEmailTest}
+                            disabled={emailTesting}
+                            className="flex items-center gap-1.5 bg-purple text-white text-xs font-bold px-4 py-2.5 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 shrink-0"
+                        >
+                            <Send size={13} /> {emailTesting ? 'Sending…' : 'Send Test Email'}
+                        </button>
+                        <button
+                            onClick={runAlertTest}
+                            disabled={testing}
+                            className="flex items-center gap-1.5 bg-primary text-white text-xs font-bold px-4 py-2.5 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 shrink-0"
+                        >
+                            <Send size={13} /> {testing ? 'Sending...' : 'Test Alert Communications'}
+                        </button>
+                    </div>
                 </div>
+
+                {emailResult && (
+                    <p role="status" className={`mt-3 text-xs font-bold ${emailResult.ok ? 'text-green' : 'text-red'}`}>{emailResult.text}</p>
+                )}
 
                 {testResult && (
                     <div className="mt-4 bg-card-muted/60 rounded-xl p-4">

@@ -23,7 +23,8 @@ interface WazuhHttpResponse {
     json: unknown;
 }
 
-function request(path: string, authHeader: string, method: 'GET' | 'POST' = 'GET'): Promise<WazuhHttpResponse> {
+function request(path: string, authHeader: string, method: 'GET' | 'POST' | 'PUT' = 'GET', body?: unknown): Promise<WazuhHttpResponse> {
+    const payload = body === undefined ? undefined : JSON.stringify(body);
     return new Promise((resolve, reject) => {
         const req = https.request(
             {
@@ -31,7 +32,9 @@ function request(path: string, authHeader: string, method: 'GET' | 'POST' = 'GET
                 port: WAZUH_PORT,
                 path,
                 method,
-                headers: { Authorization: authHeader },
+                headers: payload === undefined
+                    ? { Authorization: authHeader }
+                    : { Authorization: authHeader, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
                 rejectUnauthorized: false,
             },
             (res) => {
@@ -47,6 +50,7 @@ function request(path: string, authHeader: string, method: 'GET' | 'POST' = 'GET
             }
         );
         req.on('error', reject);
+        if (payload !== undefined) req.write(payload);
         req.end();
     });
 }
@@ -80,6 +84,27 @@ export async function authenticate(): Promise<string> {
 async function authedGet(path: string): Promise<WazuhHttpResponse> {
     const token = await authenticate();
     return request(path, `Bearer ${token}`, 'GET');
+}
+
+/**
+ * PUT /active-response?agents_list=<id> — runs an active-response command on one agent.
+ * Returns whether the manager accepted it for that agent. Acceptance is not execution: whether
+ * the script succeeded is only visible in the agent's own active-responses.log.
+ */
+export async function runActiveResponse(agentId: string, command: string, srcip?: string): Promise<{ accepted: boolean; status: number; detail: string }> {
+    const token = await authenticate();
+    const { status, json } = await request(
+        `/active-response?agents_list=${encodeURIComponent(agentId)}`,
+        `Bearer ${token}`,
+        'PUT',
+        { command, alert: { data: { srcip: srcip ?? '' } } },
+    );
+    const data = (json as { data?: { affected_items?: unknown[]; failed_items?: { error?: { message?: string } }[] }; message?: string; detail?: string } | null);
+    const accepted = status < 300 && (data?.data?.affected_items ?? []).map(String).includes(agentId);
+    const detail = accepted
+        ? 'accepted by Wazuh manager'
+        : data?.data?.failed_items?.[0]?.error?.message ?? data?.detail ?? data?.message ?? `HTTP ${status}`;
+    return { accepted, status, detail };
 }
 
 function affectedItems(json: unknown): Record<string, unknown>[] {

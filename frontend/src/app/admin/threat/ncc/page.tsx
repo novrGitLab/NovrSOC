@@ -72,7 +72,7 @@ export default function Page() {
     return (
         <RegulatoryAdvisories
             title="NCC Advisories"
-            subtitle="Nigerian Threat Intel · Nigerian Communications Commission CSIRT guidance"
+            subtitle="Nigerian Threat Advisory · Nigerian Communications Commission CSIRT guidance"
             issuer="NCC-CSIRT"
             issuerUrl="https://www.ncc.gov.ng/technical-regulation/csirt"
             advisories={NCC_ADVISORIES}

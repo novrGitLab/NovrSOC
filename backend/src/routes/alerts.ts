@@ -39,7 +39,7 @@ router.post('/test', async (req, res) => {
     }
 
     if (isEmailEnabled()) {
-        const to = req.body?.email || process.env.ALERT_EMAIL_TO || 'rayne@cybernovr.com';
+        const to = req.body?.email || process.env.ALERT_EMAIL_TO || process.env.CISO_EMAIL || 'soc@cybernovr.com';
         try {
             await sendTestEmail(to);
             results.email = 'sent';

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { darkWebSearch } from '../services/darkweb';
+import { requireAuth } from '../middleware/auth';
 import { z } from 'zod';
 import { validate } from '../middleware/validate';
 import { searchCode as githubSearch, isConfigured as githubConfigured, type GitHubCodeMatch } from '../services/github';
@@ -779,14 +780,21 @@ router.post('/assets/logo', (req, res) => {
 // per scan would spam the case queue with duplicates of the same finding. The UI offers an
 // explicit "Create case" action instead, so raising a case stays a decision rather than a
 // side effect of looking.
-router.get('/darkweb', async (req, res) => {
-    const company = typeof req.query.company === 'string' && req.query.company.trim() ? req.query.company.trim() : 'Cybernovr';
-    const domain = typeof req.query.domain === 'string' && req.query.domain.trim() ? req.query.domain.trim() : 'cybernovr.com';
-
-    // The bare second-level label is searched too: leak sites list victims by trading name
-    // ("Cybernovr"), rarely by full domain ("cybernovr.com").
-    const rootLabel = domain.split('.')[0];
-    const terms = Array.from(new Set([company, domain, rootLabel].filter(Boolean)));
+// Terms: repeated ?keywords= (company, domains, executive or product names), max 20. The old
+// ?company=&domain= form still works. For any keyword that looks like a domain, its bare label
+// is searched too — leak sites list victims by trading name ("Cybernovr"), rarely by the full
+// domain. Analyst-only: only the admin Dark Web Monitor calls this.
+router.get('/darkweb', requireAuth, async (req, res) => {
+    const asList = (v: unknown): string[] => (Array.isArray(v) ? v : v === undefined ? [] : [v]).filter((x): x is string => typeof x === 'string');
+    let keywords = asList(req.query.keywords).map((k) => k.trim()).filter(Boolean);
+    if (keywords.length === 0) {
+        const company = typeof req.query.company === 'string' && req.query.company.trim() ? req.query.company.trim() : 'Cybernovr';
+        const domain = typeof req.query.domain === 'string' && req.query.domain.trim() ? req.query.domain.trim() : 'cybernovr.com';
+        keywords = [company, domain];
+    }
+    keywords = keywords.slice(0, 20).map((k) => k.slice(0, 100));
+    const expanded = keywords.flatMap((k) => (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(k) ? [k, k.split('.')[0]] : [k]));
+    const terms = Array.from(new Set(expanded.map((t) => t.trim()).filter(Boolean)));
 
     try {
         const { findings, sources } = await darkWebSearch(terms);
@@ -795,6 +803,7 @@ router.get('/darkweb', async (req, res) => {
             total: findings.length,
             critical: findings.filter((f) => f.severity === 'critical').length,
             searched: terms,
+            keywords,
             sources,
             scanned_at: new Date().toISOString(),
         });

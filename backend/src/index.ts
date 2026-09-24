@@ -37,6 +37,8 @@ import publicRouter from './routes/public';
 import intelligenceRouter from './routes/intelligence';
 import casesRouter from './routes/cases';
 import soarRouter from './routes/soar';
+import searchRouter from './routes/search';
+import testRouter from './routes/test';
 import weblogicRouter from './routes/weblogic';
 import assetsRouter from './routes/assets';
 import dashboardRouter from './routes/dashboard';
@@ -324,6 +326,9 @@ app.use('/api/cases', requireAuth, casesRouter);
 app.use('/api/incidents', requireAuth, casesRouter);
 // SOAR reporting (requireAuth per route) + the engine's token-authenticated /enrich.
 app.use('/api/soar', soarRouter);
+// Header global search (requireAuth inside) and operator diagnostics (manager-only inside).
+app.use('/api/search', searchRouter);
+app.use('/api/test', testRouter);
 app.use('/api/weblogic', weblogicRouter);
 app.use('/api/assets', assetsRouter);
 // admin-only — no client-portal component calls these, confirmed safe to gate now (see the

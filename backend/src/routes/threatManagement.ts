@@ -342,7 +342,7 @@ function notifyCriticalAlerts(alerts: ThreatAlert[]): void {
     for (const alert of toNotify) {
         emailedAlertIds.add(alert.id); // mark before send completes so a slow response can't duplicate-send on the next poll
         sendCriticalAlertEmail({
-            to: [process.env.ALERT_EMAIL_TO || 'rayne@cybernovr.com'],
+            to: [process.env.ALERT_EMAIL_TO || process.env.CISO_EMAIL || 'soc@cybernovr.com'],
             alertTitle: alert.rule_description,
             severity: alert.severity,
             agentName: alert.agent_name,

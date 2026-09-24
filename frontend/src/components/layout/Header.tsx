@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { Search, Bell, Sun, Moon } from 'lucide-react';
+import { Bell, Sun, Moon } from 'lucide-react';
 import { Logo } from '@/components/shared/Logo';
+import { GlobalSearch } from './GlobalSearch';
 import { useTheme } from '@/components/providers/ThemeProvider';
 import { apiUrl, apiFetch } from '@/lib/api';
 
@@ -92,7 +93,7 @@ export function Header({ initials, onSignOut }: HeaderProps) {
         // Admin and client portal both have a SecOps cases page, just under different
         // prefixes — route to whichever one this session is actually in.
         const base = pathname.startsWith('/client') ? '/client' : '/admin';
-        router.push(n.type === 'case' ? `${base}/secops/cases` : `${base}/secops/alerts`);
+        router.push(n.type === 'case' ? `${base}/secops/cases?id=${encodeURIComponent(n.id)}` : `${base}/secops/alerts`);
     };
 
     return (
@@ -104,17 +105,10 @@ export function Header({ initials, onSignOut }: HeaderProps) {
                 <span className="text-sm text-grey-500">{pageTitle}</span>
             </div>
 
-            {/* Center — search */}
+            {/* Center — search. Admin only: /api/search reads cases, which portal tokens can't
+                access, so the portal gets no box rather than one that always comes back empty. */}
             <div className="flex-1 flex justify-center">
-                <div className="relative w-full max-w-[480px]">
-                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-grey-500" />
-                    <input
-                        type="text"
-                        placeholder="Search incidents, alerts, assets, threats..."
-                        className="w-full bg-grey-50 border border-grey-100 rounded-lg pl-9 pr-16 py-2 text-sm text-grey-800 placeholder:text-grey-500 focus:outline-none focus:border-blue focus:ring-1 focus:ring-blue/20"
-                    />
-                    <kbd className="absolute right-3 top-1/2 -translate-y-1/2 border border-grey-100 rounded px-1.5 py-0.5 text-xs text-grey-500 font-mono">⌘K</kbd>
-                </div>
+                {!pathname.startsWith('/client') && <GlobalSearch />}
             </div>
 
             {/* Right */}

@@ -125,6 +125,36 @@ async function sendEmail(params: { to: string | string[]; subject: string; html:
     await sgMail.send({ to: params.to, from: FROM, subject: params.subject, html: params.html });
 }
 
+// Sends one message through Resend ONLY — no SMTP/SendGrid fallback — and returns Resend's own
+// answer. sendEmail() above falls through silently, so a "test" routed through it can report
+// success while Resend is broken and SendGrid carried the mail. Uses the same From address as
+// every real alert, so a pass here means escalation emails will leave the same way.
+export async function testResendDelivery(to: string): Promise<{ id: string | null; from: string }> {
+    const from = `${FROM.name} <${FROM.email}>`;
+    if (!isResendConfigured()) throw new Error('RESEND_API_KEY is not set on the backend');
+    const sentAt = new Date().toLocaleString('en-GB', { timeZone: 'Africa/Lagos' });
+    const { data, error } = await (getResendClient() as Resend).emails.send({
+        from,
+        to: [to],
+        subject: 'NovrSOC Email Test — SOAR Pipeline',
+        html: `
+            <div style="font-family:sans-serif;max-width:500px">
+                <div style="background:#520385;padding:20px;border-radius:12px 12px 0 0">
+                    <h2 style="color:white;margin:0">Email test successful</h2>
+                </div>
+                <div style="background:#f8f9fc;padding:20px;border-radius:0 0 12px 12px">
+                    <p>Your NovrSOC email pipeline delivered this message through Resend.</p>
+                    <p><strong>Sent at:</strong> ${sentAt} WAT</p>
+                    <p><strong>From:</strong> ${escapeHtml(from)}</p>
+                    <p>Case escalation emails will be delivered to this address.</p>
+                </div>
+            </div>`,
+    });
+    // Resend reports rejections (unverified domain, bad key) in `error`, not by throwing.
+    if (error) throw new Error(`Resend rejected the message: ${error.message}`);
+    return { id: data?.id ?? null, from };
+}
+
 // ─── BASE HTML TEMPLATE ──────────────────────────────────────────────────────
 
 function baseTemplate(title: string, preheader: string, body: string): string {

@@ -62,15 +62,15 @@ const adminNav: NavGroup[] = [
         ],
     },
     {
-        section: 'Nigerian Threat Intel',
+        section: 'Nigerian Threat Advisory',
         collapsible: true,
         icon: Globe,
-        groupLabel: 'Nigerian Threat Intel',
+        groupLabel: 'Nigerian Threat Advisory',
         // THREAT INTELLIGENCE in the matrix covers both this section and Global Threat Intel
         // below — executive: ❌ on both.
         items: [
             { label: 'Nigeria Threat Map', href: '/admin/threat/nigeria-map', icon: Map, roles: [...NOT_EXEC] },
-            { label: 'Nigerian Threat Feed', href: '/admin/threat/nigeria', icon: Globe, roles: [...NOT_EXEC] },
+            { label: 'Cyber Advisory', href: '/admin/threat/nigeria', icon: Globe, roles: [...NOT_EXEC] },
             { label: 'CBN Advisories', href: '/admin/threat/cbn', icon: Landmark, roles: [...NOT_EXEC] },
             { label: 'NCC Advisories', href: '/admin/threat/ncc', icon: Radio, roles: [...NOT_EXEC] },
         ],

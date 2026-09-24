@@ -55,7 +55,7 @@ ORG_ID = os.environ.get('NOVRSOC_ORG_ID', 'cybernovr')
 SLACK_URL = os.environ.get('SLACK_WEBHOOK_URL', '')
 RESEND_KEY = os.environ.get('RESEND_API_KEY', '')
 RESEND_FROM = os.environ.get('RESEND_FROM', 'NovrSOC Alerts <alerts@cybernovr.com>')
-CISO_EMAIL = os.environ.get('CISO_EMAIL', 'rayne@cybernovr.com')
+CISO_EMAIL = os.environ.get('CISO_EMAIL', 'soc@cybernovr.com')
 
 # OPNsense API auth is an API key + secret pair (System → Access → Users → API keys), used as
 # HTTP basic auth — not root + key.

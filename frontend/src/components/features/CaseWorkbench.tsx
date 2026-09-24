@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { exportDataAsPDF } from '@/lib/exportPDF';
 import { ASSIGNABLE_ANALYSTS } from '@/lib/mockTeam';
 import {
     AlertTriangle, Clock, CheckCircle, RefreshCw, TrendingUp, FileText, ChevronRight, MessageSquarePlus,
     FileDown, Briefcase, Server, Terminal, UserCheck, ListChecks, Plus, X, UserPlus, BookOpen,
-    ClipboardList, Crosshair, Lock,
+    ClipboardList, Crosshair, Lock, Play,
 } from 'lucide-react';
 
 // Case workbench — reads and writes /api/cases (Supabase). Cases come from two places: the SOAR
@@ -47,7 +48,11 @@ interface CaseItem {
 }
 
 interface CaseNote { id: string; author: string; type: NoteType; content: string; created_at: string }
-interface CaseTask { id: string; title: string; description: string | null; status: string; executed_by?: string | null }
+interface CaseTask { id: string; step_id: string; title: string; description: string | null; status: string; result?: string | null; executed_by?: string | null }
+
+// Tasks whose step_id is one of these have an action the backend can run (POST
+// /api/cases/:id/execute-step). Must match EXECUTABLE_STEPS in backend services/responseActions.ts.
+const EXECUTABLE_STEPS = new Set(['block_ip', 'isolate_agent', 'enrich_iocs', 'notify_slack', 'notify_ciso']);
 interface TimelineEntry { id: string; actor: string; action: string; details: string | null; automated: boolean; created_at: string }
 interface CaseIoc { id: string; type: string; value: string; verdict: string | null; risk_score: number | null }
 interface CaseDetail { case: CaseItem; notes: CaseNote[]; tasks: CaseTask[]; timeline: TimelineEntry[]; iocs: CaseIoc[] }
@@ -148,8 +153,50 @@ export function CaseWorkbench() {
     const [showPlaybookModal, setShowPlaybookModal] = useState(false);
     const [playbooks, setPlaybooks] = useState<PlaybookSummary[] | null>(null);
     const [attachingPlaybook, setAttachingPlaybook] = useState<string | null>(null);
+    const [executing, setExecuting] = useState<string | null>(null);
+    const [execResult, setExecResult] = useState<{ taskId: string; ok: boolean; text: string } | null>(null);
 
     useEffect(() => { void loadCases('all', setList); }, []);
+
+    // ?id=<case uuid> opens that case — how the header search and the notification bell link to a
+    // specific case. Synced during render (React's "adjusting state when a prop changes"
+    // pattern) rather than in an effect, so a new ?id reopens the right case even when this page
+    // is already mounted.
+    const router = useRouter();
+    const pathname = usePathname();
+    const linkedId = useSearchParams().get('id');
+    const [seenLink, setSeenLink] = useState<string | null>(null);
+    if (linkedId !== seenLink) {
+        setSeenLink(linkedId);
+        if (linkedId) openCase(linkedId);
+    }
+
+    // Detail + this analyst's checklist load whenever a case is opened. State is only set in the
+    // promise callbacks.
+    useEffect(() => {
+        if (!selectedId) return;
+        apiFetch(apiUrl(`/api/cases/${selectedId}`), { cache: 'no-store' })
+            .then(async (r) => {
+                const data = await r.json();
+                if (!r.ok) { setDetailError(data?.error ?? `HTTP ${r.status}`); return; }
+                const d = data as CaseDetail;
+                setDetail(d);
+                setList((prev) => (prev.kind === 'ready' ? { ...prev, cases: prev.cases.map((x) => (x.id === d.case.id ? d.case : x)) } : prev));
+                try {
+                    const raw = localStorage.getItem(CHECKLIST_KEY(selectedId));
+                    setCheckedSteps(new Set(raw ? (JSON.parse(raw) as string[]) : []));
+                } catch {
+                    setCheckedSteps(new Set());
+                }
+            })
+            .catch(() => setDetailError('Could not reach the backend'));
+    }, [selectedId]);
+
+    function closeCase() {
+        setSelectedId(null);
+        // Drop ?id so the same search result can open this case again later.
+        if (linkedId) router.replace(pathname);
+    }
 
     const reload = (f: Filter = filter) => {
         setFilter(f);
@@ -185,13 +232,8 @@ export function CaseWorkbench() {
         setEscalationNote('');
         setEscalationResult(null);
         setShowAddNote(false);
-        try {
-            const raw = localStorage.getItem(CHECKLIST_KEY(id));
-            setCheckedSteps(new Set(raw ? (JSON.parse(raw) as string[]) : []));
-        } catch {
-            setCheckedSteps(new Set());
-        }
-        void refreshDetail(id);
+        setExecResult(null);
+        setCheckedSteps(new Set());
     }
 
     function toggleStep(caseId: string, stepId: string) {
@@ -226,6 +268,28 @@ export function CaseWorkbench() {
     const updateStatus = (id: string, status: CaseStatus) => mutate(id, '', { method: 'PATCH', body: JSON.stringify({ status }) });
     const assignAnalyst = (id: string, assigned_to: string) => mutate(id, '', { method: 'PATCH', body: JSON.stringify({ assigned_to }) });
     const setTask = (id: string, taskId: string, status: 'pending' | 'completed') => mutate(id, `/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+
+    // Runs a task's response action. The backend completes the task only when the action
+    // succeeded; a skip or failure comes back with its reason, shown under the task.
+    async function executeTask(caseId: string, task: CaseTask) {
+        setExecuting(task.id);
+        setExecResult(null);
+        try {
+            const res = await apiFetch(apiUrl(`/api/cases/${caseId}/execute-step`), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ step_id: task.step_id, task_id: task.id }),
+            });
+            const data = await res.json().catch(() => ({}));
+            const text = data?.message ?? data?.error ?? `HTTP ${res.status}`;
+            setExecResult({ taskId: task.id, ok: Boolean(data?.success), text: data?.outcome === 'skipped' ? `Skipped — ${text}` : text });
+            await refreshDetail(caseId);
+        } catch {
+            setExecResult({ taskId: task.id, ok: false, text: 'Could not reach the backend' });
+        } finally {
+            setExecuting(null);
+        }
+    }
 
     async function addNote(id: string) {
         if (!noteText.trim()) return;
@@ -456,12 +520,12 @@ export function CaseWorkbench() {
             )}
 
             {selectedId && (
-                <div className="fixed inset-0 bg-black/40 z-50 flex items-stretch justify-end" onClick={() => setSelectedId(null)}>
+                <div className="fixed inset-0 bg-black/40 z-50 flex items-stretch justify-end" onClick={closeCase}>
                     <div className="bg-card border-l border-border h-full w-full max-w-4xl overflow-y-auto scrollbar-thin" onClick={(e) => e.stopPropagation()}>
                         {!selected ? (
                             <div className="p-6 flex items-center justify-between">
                                 <p className="text-xs text-foreground-muted">{detailError ? `Could not load case: ${detailError}` : 'Loading case…'}</p>
-                                <button onClick={() => setSelectedId(null)} className="text-foreground-muted hover:text-foreground" aria-label="Close"><X className="w-5 h-5" /></button>
+                                <button onClick={closeCase} className="text-foreground-muted hover:text-foreground" aria-label="Close"><X className="w-5 h-5" /></button>
                             </div>
                         ) : (() => {
                             const c = selected.case;
@@ -480,7 +544,7 @@ export function CaseWorkbench() {
                                             <h2 className="text-xl font-black text-foreground mt-2 tracking-tight">{c.title}</h2>
                                             <p className="text-xs text-foreground-muted mt-0.5">Created {wat(c.created_at)} · source: {c.source}</p>
                                         </div>
-                                        <button onClick={() => setSelectedId(null)} className="text-foreground-muted hover:text-foreground shrink-0" aria-label="Close"><X className="w-5 h-5" /></button>
+                                        <button onClick={closeCase} className="text-foreground-muted hover:text-foreground shrink-0" aria-label="Close"><X className="w-5 h-5" /></button>
                                     </div>
 
                                     {/* Status bar — every step stays clickable so a premature
@@ -706,17 +770,38 @@ export function CaseWorkbench() {
                                                     <div className="space-y-2 mb-3">
                                                         {selected.tasks.map((t) => {
                                                             const done = t.status === 'completed';
+                                                            const runnable = EXECUTABLE_STEPS.has(t.step_id);
                                                             return (
-                                                                <button
-                                                                    key={t.id}
-                                                                    disabled={busy}
-                                                                    onClick={() => setTask(c.id, t.id, done ? 'pending' : 'completed')}
-                                                                    aria-pressed={done}
-                                                                    className="w-full flex items-center gap-2.5 p-2 rounded-lg bg-card-muted/30 border border-border text-left disabled:opacity-60"
-                                                                >
-                                                                    <div className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 ${done ? 'bg-emerald-500 border-emerald-500' : 'border-border'}`} />
-                                                                    <span className={`text-xs flex-1 min-w-0 ${done ? 'text-foreground-muted line-through' : 'text-foreground'}`}>{t.title}</span>
-                                                                </button>
+                                                                <div key={t.id} className="rounded-lg bg-card-muted/30 border border-border p-2">
+                                                                    <div className="flex items-center gap-2">
+                                                                        <button
+                                                                            disabled={busy}
+                                                                            onClick={() => setTask(c.id, t.id, done ? 'pending' : 'completed')}
+                                                                            aria-pressed={done}
+                                                                            aria-label={done ? `Reopen ${t.title}` : `Mark ${t.title} done`}
+                                                                            className="flex items-center gap-2.5 flex-1 min-w-0 text-left disabled:opacity-60"
+                                                                        >
+                                                                            <div className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 ${done ? 'bg-emerald-500 border-emerald-500' : 'border-border'}`} />
+                                                                            <span className={`text-xs flex-1 min-w-0 ${done ? 'text-foreground-muted line-through' : 'text-foreground'}`}>{t.title}</span>
+                                                                        </button>
+                                                                        {runnable && (
+                                                                            <button
+                                                                                onClick={() => executeTask(c.id, t)}
+                                                                                disabled={done || executing !== null}
+                                                                                className={`flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg shrink-0 transition-colors ${
+                                                                                    done ? 'bg-emerald-500/10 text-emerald-500' : 'bg-purple text-white hover:opacity-90 disabled:opacity-40'
+                                                                                }`}
+                                                                            >
+                                                                                {executing === t.id ? 'Running…' : done ? '✓ Done' : <><Play size={10} /> Execute</>}
+                                                                            </button>
+                                                                        )}
+                                                                    </div>
+                                                                    {execResult?.taskId === t.id ? (
+                                                                        <p role="status" className={`text-[10px] mt-1 pl-6 ${execResult.ok ? 'text-emerald-500' : 'text-amber-500'}`}>{execResult.text}</p>
+                                                                    ) : t.result ? (
+                                                                        <p className="text-[10px] mt-1 pl-6 text-foreground-muted">{t.result}</p>
+                                                                    ) : null}
+                                                                </div>
                                                             );
                                                         })}
                                                     </div>

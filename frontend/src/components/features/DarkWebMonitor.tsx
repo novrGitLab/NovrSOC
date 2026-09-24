@@ -35,14 +35,24 @@ interface ScanResult {
     scanned_at: string;
 }
 
+const MAX_KEYWORDS = 20; // matches the backend's cap
+
 export function DarkWebMonitor() {
-    const [company, setCompany] = useState('Cybernovr');
-    const [domain, setDomain] = useState('cybernovr.com');
+    const [keywords, setKeywords] = useState<string[]>(['Cybernovr', 'cybernovr.com']);
+    const [newKeyword, setNewKeyword] = useState('');
     const [scanning, setScanning] = useState(false);
     const [result, setResult] = useState<ScanResult | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [creating, setCreating] = useState(false);
     const [caseMsg, setCaseMsg] = useState<string | null>(null);
+
+    const addKeyword = () => {
+        const kw = newKeyword.trim();
+        if (!kw || keywords.length >= MAX_KEYWORDS) return;
+        if (!keywords.some((k) => k.toLowerCase() === kw.toLowerCase())) setKeywords((prev) => [...prev, kw]);
+        setNewKeyword('');
+    };
+    const removeKeyword = (kw: string) => setKeywords((prev) => prev.filter((k) => k !== kw));
 
     const scan = async () => {
         setScanning(true);
@@ -50,7 +60,8 @@ export function DarkWebMonitor() {
         setResult(null);
         setCaseMsg(null);
         try {
-            const params = new URLSearchParams({ company: company.trim(), domain: domain.trim() });
+            const params = new URLSearchParams();
+            keywords.forEach((k) => params.append('keywords', k));
             const res = await apiFetch(apiUrl(`/api/brand/darkweb?${params}`), { cache: 'no-store' });
             const data = await res.json();
             if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
@@ -74,7 +85,7 @@ export function DarkWebMonitor() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    title: `CRITICAL: ${company} listed on ransomware leak site`,
+                    title: `CRITICAL: ${top.matched_query || keywords[0]} listed on ransomware leak site`,
                     severity: 'critical',
                     summary: `Dark web scan matched ${result.critical} ransomware leak-site listing(s). First match: "${top.title}" posted by group "${top.group ?? 'unknown'}"${top.date ? ` on ${top.date.slice(0, 10)}` : ''}. Search terms: ${result.searched.join(', ')}.`,
                 }),
@@ -108,19 +119,32 @@ export function DarkWebMonitor() {
 
             {/* Search */}
             <div className="bg-card border border-border rounded-xl p-4 space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                        <label htmlFor="dw-company" className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">Company name</label>
-                        <input id="dw-company" value={company} onChange={(e) => setCompany(e.target.value)}
-                            className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm text-foreground focus:outline-none focus:border-purple" />
+                <div>
+                    <label htmlFor="dw-keyword" className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">Search keywords</label>
+                    <div className="flex flex-wrap gap-2 mt-2 mb-2">
+                        {keywords.length === 0 && <span className="text-[11px] text-foreground-muted">Add at least one keyword to scan.</span>}
+                        {keywords.map((kw) => (
+                            <span key={kw} className="flex items-center gap-1 bg-purple/10 text-purple px-3 py-1.5 rounded-full text-xs font-bold">
+                                {kw}
+                                <button onClick={() => removeKeyword(kw)} aria-label={`Remove ${kw}`} className="ml-0.5 hover:text-red-500 font-black leading-none">×</button>
+                            </span>
+                        ))}
                     </div>
-                    <div>
-                        <label htmlFor="dw-domain" className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">Domain</label>
-                        <input id="dw-domain" value={domain} onChange={(e) => setDomain(e.target.value)}
-                            className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm text-foreground focus:outline-none focus:border-purple" />
+                    <div className="flex gap-2">
+                        <input id="dw-keyword" value={newKeyword} onChange={(e) => setNewKeyword(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addKeyword(); } }}
+                            placeholder="Company name, domain, executive or product name…"
+                            className="flex-1 min-w-0 bg-card border border-border rounded-xl px-3 py-2.5 text-sm text-foreground focus:outline-none focus:border-purple" />
+                        <button onClick={addKeyword} disabled={!newKeyword.trim() || keywords.length >= MAX_KEYWORDS}
+                            className="bg-purple text-white text-xs font-bold px-4 py-2.5 rounded-xl hover:opacity-90 disabled:opacity-50">
+                            Add
+                        </button>
                     </div>
+                    <p className="text-[10px] text-foreground-muted mt-2">
+                        Up to {MAX_KEYWORDS} keywords. For a domain, its bare name is searched too (cybernovr.com also searches &quot;cybernovr&quot;).
+                    </p>
                 </div>
-                <button onClick={() => void scan()} disabled={scanning || !company.trim()}
+                <button onClick={() => void scan()} disabled={scanning || keywords.length === 0}
                     className="flex items-center justify-center gap-2 w-full bg-purple text-white text-xs font-black px-6 py-3 rounded-xl hover:opacity-90 disabled:opacity-50 transition-opacity">
                     <Search size={14} /> {scanning ? 'Scanning…' : 'Scan Now'}
                 </button>
@@ -156,7 +180,7 @@ export function DarkWebMonitor() {
                     {result.total === 0 ? (
                         <div className="bg-emerald-500/5 border border-emerald-500/30 rounded-xl p-8 text-center">
                             <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-3" />
-                            <p className="text-sm font-bold text-emerald-500 mb-1">No listings found for {company}</p>
+                            <p className="text-sm font-bold text-emerald-500 mb-1">No listings found for {keywords.join(', ')}</p>
                             <p className="text-xs text-foreground-muted max-w-md mx-auto">
                                 No ransomware leak-site listing matched your search terms. This covers the
                                 sources marked active above only — it is not a guarantee of no dark web exposure.

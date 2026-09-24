@@ -3,6 +3,7 @@ import type { AuthRequest } from '../middleware/auth';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { addTasks, addTimeline, isUuid } from '../services/cases';
+import { isExecutableStep } from '../services/responseActions';
 
 // Supabase-backed playbook library — real columns confirmed live against the actual table:
 // id, name, org_id, icon, severity, description, steps (jsonb array, round-trips as native
@@ -266,6 +267,21 @@ router.post('/:id/run', requireAuth, async (req: AuthRequest, res) => {
         title: `[${playbook.name}] ${step.title}`,
         description: step.description,
     })));
+
+    // Automated steps (playbooks.step_ids, e.g. block_ip) become tasks keyed by that step id, which
+    // is what gives them an Execute button in the case slide-over. Only ones the backend can
+    // actually run are added — a get_processes task with no action behind it would just be a
+    // button that does nothing.
+    const automated: string[] = Array.isArray(playbook.step_ids) ? playbook.step_ids.filter(isExecutableStep) : [];
+    if (automated.length > 0) {
+        const { data: stepRows } = await supabase.from('playbook_steps').select('step_id, name, description').in('step_id', automated);
+        const byId = new Map((stepRows ?? []).map((r: { step_id: string; name: string; description: string | null }) => [r.step_id, r]));
+        createdTasks.push(...await addTasks(caseId, automated.map((sid) => ({
+            step_id: sid,
+            title: `[${playbook.name}] ${byId.get(sid)?.name ?? sid}`,
+            description: byId.get(sid)?.description ?? null,
+        }))));
+    }
     if (createdTasks.length === 0) {
         res.status(502).json({ error: 'Could not add playbook tasks to the case' });
         return;

@@ -11,7 +11,7 @@ import { addTimeline, formatWAT, dbErrorMessage, type CaseRow } from '../service
 const CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const HIGH_MINUTES = Number(process.env.ESCALATION_HIGH_MINUTES) || 120;
 const CRITICAL_MINUTES = Number(process.env.ESCALATION_CRITICAL_MINUTES) || 30;
-const CISO_EMAIL = process.env.CISO_EMAIL || 'rayne@cybernovr.com';
+const CISO_EMAIL = process.env.CISO_EMAIL || 'soc@cybernovr.com';
 
 async function runEscalationCheck(): Promise<void> {
     const supabase = getSupabase();

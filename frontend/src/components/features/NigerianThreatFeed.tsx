@@ -176,8 +176,8 @@ export function NigerianThreatFeed() {
     return (
         <div className="space-y-4">
             <div>
-                <h1 className="text-lg font-black text-foreground">Nigerian Threat Intelligence Feed</h1>
-                <p className="text-xs text-foreground-muted">NCC-CSIRT and NGCERT advisories (mock — no live scraper wired yet), plus live cyber news and exposure stats below.</p>
+                <h1 className="text-lg font-black text-foreground">Cyber Advisory</h1>
+                <p className="text-xs text-foreground-muted">Nigerian Threat Advisory · NCC-CSIRT and NGCERT advisories (mock — no live scraper wired yet), plus live cyber news and exposure stats below.</p>
             </div>
 
             {/* Collector status — real counts from the live intel run, plus a manual trigger */}

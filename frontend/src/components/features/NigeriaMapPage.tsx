@@ -28,7 +28,7 @@ export function NigeriaMapPage() {
                 </div>
                 <div>
                     <h1 className="text-lg font-black text-foreground">Nigeria Threat Map</h1>
-                    <p className="text-xs text-foreground-muted">Nigerian Threat Intel · State-by-state threat landscape across all 37 states and the FCT</p>
+                    <p className="text-xs text-foreground-muted">Nigerian Threat Advisory · State-by-state threat landscape across all 37 states and the FCT</p>
                 </div>
             </div>
 

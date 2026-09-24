@@ -8,6 +8,7 @@ import {
 import { sendSlackAlert, sendSlackMessage } from '../services/slack';
 import { sendEscalationEmail, isEmailEnabled } from '../services/email';
 import { logAudit } from '../lib/audit';
+import { executeStep, isExecutableStep, EXECUTABLE_STEPS } from '../services/responseActions';
 
 // Cases API — Supabase-backed.
 //
@@ -302,7 +303,7 @@ router.post('/:id/escalate', async (req: AuthRequest, res) => {
     await addTimeline(id, by, `Case escalated to CISO${note ? `. Note: ${note}` : ''}`);
 
     const results: Record<string, string> = { case: recorded ? 'recorded' : `failed: ${dbErrorMessage(updErr)}` };
-    const cisoEmail = process.env.CISO_EMAIL || 'rayne@cybernovr.com';
+    const cisoEmail = process.env.CISO_EMAIL || 'soc@cybernovr.com';
     if (!isEmailEnabled()) {
         results.email = 'skipped — EMAIL_ENABLED is not set';
     } else {
@@ -338,6 +339,97 @@ router.post('/:id/escalate', async (req: AuthRequest, res) => {
     });
 });
 
+// POST /api/cases/:id/execute-step { step_id, task_id? } — runs one response action for this
+// case (services/responseActions.ts). The matching task is marked completed ONLY on success;
+// a skipped or failed action leaves it pending with the reason in `result`, so the checklist
+// never shows a containment step as done when nothing happened.
+router.post('/:id/execute-step', async (req: AuthRequest, res) => {
+    if (noStore(res)) return;
+    const { id } = req.params;
+    if (!isUuid(id)) { res.status(404).json({ error: 'Case not found' }); return; }
+    const stepId = req.body?.step_id;
+    if (!isExecutableStep(stepId)) {
+        res.status(400).json({ error: `step_id must be one of ${EXECUTABLE_STEPS.join(', ')} — other tasks are completed by ticking them off` });
+        return;
+    }
+    const supabase = getSupabase()!;
+    const { data } = await supabase.from('cases').select('*').eq('id', id).eq('org_id', orgOf(req)).maybeSingle();
+    if (!data) { res.status(404).json({ error: 'Case not found' }); return; }
+    const by = actorOf(req);
+
+    const result = await executeStep(stepId, data as CaseRow, by);
+    const done = result.outcome === 'success';
+
+    const taskId = typeof req.body?.task_id === 'string' && isUuid(req.body.task_id) ? req.body.task_id : null;
+    let taskUpdate = supabase.from('case_tasks').update({
+        status: done ? 'completed' : 'pending',
+        result: `${result.outcome.toUpperCase()}: ${result.message}`,
+        executed_at: done ? new Date().toISOString() : null,
+        executed_by: done ? by : null,
+    }).eq('case_id', id);
+    taskUpdate = taskId ? taskUpdate.eq('id', taskId) : taskUpdate.eq('step_id', stepId);
+    await taskUpdate;
+
+    await addTimeline(id, by, `Executed ${stepId}: ${result.outcome} — ${result.message}`);
+    logAudit({
+        user: by, action: 'CASE_STEP_EXECUTED', resource: 'case', resource_id: id, ip: req.ip ?? 'unknown',
+        result: done ? 'success' : 'failed', details: `${stepId}: ${result.message}`.slice(0, 200), severity: done ? 'warning' : 'info',
+    });
+
+    // 200 for success and for a skip (the request was valid; the action didn't apply or isn't
+    // configured), 502 when the remote system refused or was unreachable.
+    res.status(result.outcome === 'failed' ? 502 : 200).json({
+        success: done, outcome: result.outcome, result: result.message, message: result.message, affected_count: result.affected,
+    });
+});
+
+// General hardening guidance per ATT&CK technique, keyed on the base technique (T1110.001 uses
+// T1110's). Labelled in the report as guidance for the technique, not as findings about this
+// environment — nothing here was checked against the affected host.
+const REMEDIATION: Record<string, string[]> = {
+    T1110: [
+        'Enforce an account lockout policy (for example 5 failed attempts)',
+        'Require multi-factor authentication on all accounts, remote access first',
+        'Review and rotate credentials for the targeted accounts',
+        'Restrict SSH/RDP exposure with IP allowlisting or a VPN',
+        'Rate-limit authentication (Fail2Ban or equivalent) on exposed services',
+    ],
+    T1566: [
+        'Run phishing awareness training for affected staff',
+        'Filter email with attachment and link scanning',
+        'Enforce DMARC (p=quarantine or reject), DKIM and SPF on all company domains',
+        'Block Office macros from internet-sourced documents',
+        "Report the phishing URL to the hosting provider's abuse contact and Google Safe Browsing",
+    ],
+    T1486: [
+        'Keep affected systems isolated from the network until they are rebuilt',
+        'Do not pay the ransom; report to law enforcement and ngCERT',
+        'Restore from the last known-good backup after verifying it is clean',
+        'Identify and close the initial access vector before reconnecting systems',
+        'Keep offline or immutable backups (3-2-1)',
+        'Deploy EDR with ransomware behaviour detection',
+    ],
+    T1021: [
+        'Disable remote services (RDP, SSH, VNC) where they are not needed',
+        'Segment the network to limit lateral movement',
+        'Require MFA for all remote access',
+        'Alert on unusual authentication patterns between internal hosts',
+        'Review and restrict service account privileges',
+    ],
+    T1055: [
+        'Deploy application allowlisting',
+        'Enable Credential Guard on Windows hosts',
+        'Monitor for process injection behaviour with EDR memory protection',
+        'Keep operating systems and applications patched',
+    ],
+    DEFAULT: [
+        'Review and update the relevant security policies',
+        'Hold a post-incident review within 72 hours',
+        'Update detection rules to catch similar events',
+        'Document lessons learned and share them with the team',
+    ],
+};
+
 // GET /api/cases/:id/report — Markdown report download. Every section comes from the case; an
 // empty section says so rather than silently disappearing.
 router.get('/:id/report', async (req: AuthRequest, res) => {
@@ -355,6 +447,15 @@ router.get('/:id/report', async (req: AuthRequest, res) => {
     ]);
     const c = caseRes.data as CaseRow | null;
     if (!c) { res.status(404).json({ error: 'Case not found' }); return; }
+
+    const baseTechnique = (c.mitre_technique ?? '').split('.')[0].toUpperCase();
+    const remediationKey = REMEDIATION[baseTechnique] ? baseTechnique : 'DEFAULT';
+    const remediation = REMEDIATION[remediationKey];
+    const remediationNote = remediationKey !== 'DEFAULT'
+        ? `General guidance for MITRE ATT&CK ${remediationKey}${c.mitre_technique !== remediationKey ? ` (case technique ${c.mitre_technique})` : ''} — not verified against the affected host.`
+        : c.mitre_technique
+            ? `No technique-specific guidance for ${c.mitre_technique}; general post-incident steps shown.`
+            : 'No MITRE technique on this case; general post-incident steps shown.';
 
     const list = <T,>(rows: T[] | null, fmt: (r: T) => string, empty: string) => (rows && rows.length > 0 ? rows.map(fmt).join('\n') : `_${empty}_`);
 
@@ -389,7 +490,7 @@ ${list(iocsRes.data, (i: { type: string; value: string; verdict: string | null; 
 
 ## Response Tasks
 
-${list(tasksRes.data, (t: { title: string; status: string; executed_by: string | null }) => `- [${t.status === 'completed' ? 'x' : ' '}] ${t.title}${t.status === 'skipped' ? ' (skipped)' : ''}${t.executed_by ? ` — ${t.executed_by}` : ''}`, 'No response tasks recorded.')}
+${list(tasksRes.data, (t: { title: string; status: string; executed_by: string | null; result: string | null }) => `- [${t.status === 'completed' ? 'x' : ' '}] ${t.title}${t.status === 'skipped' ? ' (skipped)' : ''}${t.executed_by ? ` — ${t.executed_by}` : ''}${t.result ? ` (${t.result})` : ''}`, 'No response tasks recorded.')}
 
 ## Timeline
 
@@ -398,6 +499,22 @@ ${list(timelineRes.data, (t: { created_at: string; actor: string; action: string
 ## Analyst Notes
 
 ${list(notesRes.data, (n: { id: string; author: string; content: string; created_at: string }) => { const d = decodeNote(n); return `- **${d.author}** [${d.type}] (${formatWAT(d.created_at)}): ${d.content}`; }, 'No analyst notes recorded.')}
+
+## Remediation Plan
+
+**Priority:** ${c.severity === 'critical' ? 'Immediate (within 24 hours)' : c.severity === 'high' ? 'Urgent (within 72 hours)' : 'Standard (within 7 days)'}
+
+${remediation.map((r, i) => `${i + 1}. ${r}`).join('\n')}
+
+_${remediationNote}_
+
+## Post-Incident Actions
+
+- [ ] Hold the post-incident review
+- [ ] Update the playbook with lessons learned
+- [ ] Verify all containment measures are still in place
+- [ ] Monitor for recurrence over the next 30 days
+- [ ] If personal data was affected, notify the NDPC within 72 hours (NDPA 2023)
 
 ---
 

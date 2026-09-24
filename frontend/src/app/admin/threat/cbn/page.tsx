@@ -68,7 +68,7 @@ export default function Page() {
     return (
         <RegulatoryAdvisories
             title="CBN Advisories"
-            subtitle="Nigerian Threat Intel · Central Bank of Nigeria cybersecurity guidance"
+            subtitle="Nigerian Threat Advisory · Central Bank of Nigeria cybersecurity guidance"
             issuer="CBN"
             issuerUrl="https://www.cbn.gov.ng/documents/circulars.asp"
             advisories={CBN_ADVISORIES}
