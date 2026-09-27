@@ -3,6 +3,10 @@ import { requireAuth, type AuthRequest } from '../middleware/auth';
 import { search } from '../lib/wazuh-indexer';
 import { sendCriticalAlertEmail } from '../services/email';
 import { createCase, type CaseSeverity } from '../services/cases';
+import { loadThreats, readTriage, writeTriage, applyTriage, type Threat, type Triage } from '../services/threatBoard';
+import { blockAddress } from '../services/responseActions';
+import { getSupabase } from '../services/geoEnrichment';
+import { logAudit } from '../lib/audit';
 import { NIGERIAN_ACTORS, GLOBAL_ACTORS } from '../services/threatActors';
 import { getGreyNoiseCountryStats, isGreyNoiseConfigured } from '../services/greynoise';
 import { threatfoxGetRecent } from '../services/threatfox';
@@ -704,6 +708,140 @@ router.get('/live-ioc', async (req, res) => {
         ],
         last_updated: new Date().toISOString(),
     });
+});
+
+// ── Threat board (/admin/secops/threats) ────────────────────────────────────────────────────
+// Distinct threats derived from live Wazuh alerts (services/threatBoard.ts), with analyst
+// decisions layered on. Each route is gated individually — this router is mounted open because
+// the client portal reads /alerts.
+
+const RANGE_HOURS: Record<string, number> = { '24h': 24, '7d': 168, '30d': 720 };
+const threatCache = new Map<string, Threat>();
+
+async function findThreat(orgId: string, id: string): Promise<Threat | null> {
+    const cached = threatCache.get(id);
+    if (cached) return cached;
+    const { map } = await readTriage(orgId);
+    for (const t of await loadThreats(720)) threatCache.set(t.id, applyTriage(t, map.get(t.id)));
+    return threatCache.get(id) ?? null;
+}
+
+// GET /api/threats?range=24h|7d|30d
+router.get('/', requireAuth, async (req: AuthRequest, res) => {
+    const orgId = req.user?.org_id || 'cybernovr';
+    const range = typeof req.query.range === 'string' && RANGE_HOURS[req.query.range] ? req.query.range : '7d';
+    const checkedAt = new Date().toISOString();
+    try {
+        const [raw, { map, store }] = await Promise.all([loadThreats(RANGE_HOURS[range]), readTriage(orgId)]);
+        const threats = raw.map((t) => applyTriage(t, map.get(t.id)));
+        for (const t of threats) threatCache.set(t.id, t);
+        const weekAgo = Date.now() - 7 * 24 * 3600_000;
+        res.json({
+            threats,
+            summary: {
+                active: threats.filter((t) => t.status === 'active').length,
+                contained: threats.filter((t) => t.status === 'contained').length,
+                resolved_this_week: [...map.values()].filter((t) => t.status === 'resolved' && Date.parse(t.updated_at) >= weekAgo).length,
+                critical_unresolved: threats.filter((t) => t.severity === 'critical' && t.status !== 'resolved').length,
+            },
+            store, range, checked_at: checkedAt,
+        });
+    } catch (err) {
+        res.status(502).json({ threats: [], summary: null, error: err instanceof Error ? err.message : 'Wazuh indexer unreachable', checked_at: checkedAt });
+    }
+});
+
+async function decide(req: AuthRequest, threat: Threat, patch: Partial<Triage>): Promise<'supabase' | 'memory'> {
+    const orgId = req.user?.org_id || 'cybernovr';
+    const { map } = await readTriage(orgId);
+    const prev = map.get(threat.id);
+    const next: Triage = {
+        threat_id: threat.id, org_id: orgId,
+        status: prev?.status ?? null, assigned_to: prev?.assigned_to ?? null,
+        case_id: prev?.case_id ?? null, case_number: prev?.case_number ?? null, note: prev?.note ?? null,
+        ...patch,
+        updated_by: req.user?.email ?? 'analyst', updated_at: new Date().toISOString(),
+    };
+    const store = await writeTriage(next);
+    threatCache.set(threat.id, applyTriage(threat, next));
+    logAudit({
+        user: req.user?.email ?? 'unknown', action: 'THREAT_DECISION', resource: 'threat', resource_id: threat.id, ip: req.ip ?? 'unknown',
+        result: 'success', details: `${threat.name.slice(0, 80)}: ${JSON.stringify(patch).slice(0, 100)}`, severity: 'info',
+    });
+    return store;
+}
+
+async function withThreat(req: AuthRequest, res: import('express').Response): Promise<Threat | null> {
+    const threat = await findThreat(req.user?.org_id || 'cybernovr', req.params.id).catch(() => null);
+    if (!threat) res.status(404).json({ success: false, error: 'Threat not found — refresh the list' });
+    return threat;
+}
+
+// POST /api/threats/:id/contain { reason? } — blocks the threat's source IP at the firewall (real
+// action). Marked contained only when the block succeeded; host-only threats have no IP to block.
+router.post('/:id/contain', requireAuth, async (req: AuthRequest, res) => {
+    const threat = await withThreat(req, res);
+    if (!threat) return;
+    if (!threat.source_ip) {
+        res.json({ success: false, outcome: 'skipped', message: 'This threat has no source IP to block — contain the affected host from its case instead (escalate it first).' });
+        return;
+    }
+    const reason = typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : `Threat ${threat.id}: ${threat.name}`;
+    const result = await blockAddress(threat.source_ip, { reason });
+    if (result.outcome !== 'success') {
+        res.status(result.outcome === 'failed' ? 502 : 200).json({ success: false, outcome: result.outcome, message: result.message });
+        return;
+    }
+    const store = await decide(req, threat, { status: 'contained', note: reason });
+    res.json({ success: true, outcome: 'success', message: result.message, store });
+});
+
+// POST /api/threats/:id/escalate — opens a case (real) for the threat; repeat calls return it.
+router.post('/:id/escalate', requireAuth, async (req: AuthRequest, res) => {
+    const threat = await withThreat(req, res);
+    if (!threat) return;
+    const result = await createCase({
+        title: threat.name,
+        description: `Escalated from threat ${threat.id} (${threat.type}).\nRule ${threat.rule_id} (level ${threat.rule_level}), ${threat.alert_count} alerts.\nSource IP: ${threat.source_ip ?? 'none'}\nAssets: ${threat.assets.join(', ')}\nFirst seen ${threat.first_seen}, last seen ${threat.last_seen}.`,
+        severity: threat.severity as CaseSeverity,
+        source: 'threat',
+        source_id: threat.id,
+        org_id: req.user?.org_id,
+        agent_name: threat.assets[0] ?? null,
+        source_ip: threat.source_ip,
+        rule_id: threat.rule_id,
+        rule_level: threat.rule_level,
+        mitre_technique: threat.mitre_technique_id,
+        mitre_tactic: threat.mitre_tactic,
+        tags: ['threat', threat.type.toLowerCase().replace(/\s+/g, '-')],
+    }, req.user?.email || 'analyst');
+    if (!result.ok) { res.status(result.status).json({ success: false, error: result.error }); return; }
+    const store = await decide(req, threat, { case_id: result.case.id, case_number: result.case.case_number });
+    res.json({
+        success: true, store, case_id: result.case.id, case_number: result.case.case_number,
+        message: result.created ? `Case ${result.case.case_number} opened` : `Already escalated as ${result.case.case_number}`,
+    });
+});
+
+// POST /api/threats/:id/resolve { note? }
+router.post('/:id/resolve', requireAuth, async (req: AuthRequest, res) => {
+    const threat = await withThreat(req, res);
+    if (!threat) return;
+    const note = typeof req.body?.note === 'string' ? req.body.note.trim() || null : null;
+    const store = await decide(req, threat, { status: 'resolved', note });
+    res.json({ success: true, store, message: 'Marked resolved — it will show as Active again if the rule fires after now.' });
+});
+
+// POST /api/threats/:id/assign { analyst_id } — a team member's email (platform_users).
+router.post('/:id/assign', requireAuth, async (req: AuthRequest, res) => {
+    const threat = await withThreat(req, res);
+    if (!threat) return;
+    const email = typeof req.body?.analyst_id === 'string' ? req.body.analyst_id.trim().toLowerCase() : '';
+    const { data: member } = email ? await getSupabase()!.from('platform_users').select('email, name, status').ilike('email', email).maybeSingle() : { data: null };
+    if (!member || (member.status && member.status !== 'active')) { res.status(400).json({ success: false, error: 'That analyst is not an active team member' }); return; }
+    const name = member.name || member.email;
+    const store = await decide(req, threat, { assigned_to: name });
+    res.json({ success: true, store, message: `Assigned to ${name}` });
 });
 
 export default router;

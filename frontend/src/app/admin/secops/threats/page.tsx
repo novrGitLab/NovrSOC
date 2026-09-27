@@ -1,5 +1,5 @@
-import { ThreatManagement } from '@/components/features/ThreatManagement';
+import { ThreatBoard } from '@/components/features/ThreatBoard';
 
 export default function Page() {
-    return <ThreatManagement />;
+    return <ThreatBoard />;
 }

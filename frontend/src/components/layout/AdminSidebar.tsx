@@ -52,6 +52,7 @@ const adminNav: NavGroup[] = [
         items: [
             { label: 'Cases', href: '/admin/secops/cases', icon: FileText, roles: [...NOT_EXEC] },
             { label: 'Alerts', href: '/admin/secops/alerts', icon: Bell, roles: [...NOT_EXEC] },
+            { label: 'Threats', href: '/admin/secops/threats', icon: ShieldAlert, roles: [...NOT_EXEC] },
             { label: 'MITRE Intelligence', href: '/admin/secops/mitre', icon: Shield, roles: [...NOT_EXEC] },
             // Moved from Infrastructure: vulnerabilities are triaged as security work.
             { label: 'Vulnerability Mgmt', href: '/admin/secops/vulnerabilities', icon: Bug, roles: [...NOT_EXEC] },
