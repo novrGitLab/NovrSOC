@@ -323,7 +323,7 @@ const FEED_SEV_STYLE: Record<string, string> = {
     medium: 'bg-amber/10 text-amber', low: 'bg-card-muted text-foreground-muted',
 };
 
-function AlertsFeed({ alerts, source, loading }: { alerts: FeedAlert[]; source: 'wazuh' | 'mock' | 'demo' | null; loading: boolean }) {
+function AlertsFeed({ alerts, source, loading }: { alerts: FeedAlert[]; source: 'wazuh' | 'error' | null; loading: boolean }) {
     return (
         <Card>
             <div className="p-5">
@@ -336,26 +336,22 @@ function AlertsFeed({ alerts, source, loading }: { alerts: FeedAlert[]; source: 
                                 <span className="text-[10px] font-bold text-green">LIVE</span>
                             </div>
                         )}
-                        {source === 'demo' && (
-                            <div className="flex items-center gap-1.5 bg-purple/10 border border-purple/30 rounded-full px-2.5 py-1">
-                                <div className="w-1.5 h-1.5 rounded-full bg-purple" />
-                                <span className="text-[10px] font-bold text-purple">DEMO</span>
-                            </div>
-                        )}
-                        {source === 'mock' && (
-                            <div className="flex items-center gap-1.5 bg-amber/10 border border-amber/30 rounded-full px-2.5 py-1">
-                                <div className="w-1.5 h-1.5 rounded-full bg-amber" />
-                                <span className="text-[10px] font-bold text-amber">DEMO DATA</span>
+                        {source === 'error' && (
+                            <div className="flex items-center gap-1.5 bg-red-500/10 border border-red-500/30 rounded-full px-2.5 py-1">
+                                <div className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                                <span className="text-[10px] font-bold text-red-500">WAZUH UNREACHABLE</span>
                             </div>
                         )}
                     </div>
-                    <Link href="/admin/secops/threats" className="text-xs text-purple font-medium hover:underline">View all alerts →</Link>
+                    <Link href="/admin/secops/alerts" className="text-xs text-purple font-medium hover:underline">View all alerts →</Link>
                 </div>
 
                 {loading ? (
                     <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-8 bg-card-muted rounded animate-pulse" />)}</div>
+                ) : source === 'error' ? (
+                    <p className="text-xs text-red-500 text-center py-8">Alerts unavailable — the Wazuh indexer did not answer.</p>
                 ) : alerts.length === 0 ? (
-                    <p className="text-xs text-foreground-muted text-center py-8">No recent alerts.</p>
+                    <p className="text-xs text-foreground-muted text-center py-8">No alerts at this time.</p>
                 ) : (
                     <div className="overflow-x-auto scrollbar-thin">
                         <table className="w-full text-left">
@@ -374,7 +370,7 @@ function AlertsFeed({ alerts, source, loading }: { alerts: FeedAlert[]; source: 
                                         <td className="px-4 py-3 text-foreground font-medium max-w-xs truncate">{a.rule_description}</td>
                                         <td className="px-4 py-3 text-foreground-muted whitespace-nowrap">{a.agent_name}</td>
                                         <td className="px-4 py-3 text-foreground font-mono whitespace-nowrap">{a.source_ip || '—'}</td>
-                                        <td className="px-4 py-3 whitespace-nowrap"><Link href="/admin/secops/threats" className="text-[10px] text-purple font-medium hover:underline">Investigate</Link></td>
+                                        <td className="px-4 py-3 whitespace-nowrap"><Link href="/admin/secops/alerts" className="text-[10px] text-purple font-medium hover:underline">Investigate</Link></td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -523,7 +519,7 @@ export const GeneralDashboard = () => {
     const [frameworks, setFrameworks] = useState<FrameworkScore[] | null>(null);
     const [frameworksLoading, setFrameworksLoading] = useState(true);
     const [feedAlerts, setFeedAlerts] = useState<FeedAlert[]>([]);
-    const [feedSource, setFeedSource] = useState<'wazuh' | 'mock' | 'demo' | null>(null);
+    const [feedSource, setFeedSource] = useState<'wazuh' | 'error' | null>(null);
     const [feedLoading, setFeedLoading] = useState(true);
     const [customerCount, setCustomerCount] = useState<number | null>(null);
 
@@ -612,9 +608,9 @@ export const GeneralDashboard = () => {
             .then(r => r.json())
             .then(data => {
                 setFeedAlerts(Array.isArray(data?.alerts) ? data.alerts : []);
-                setFeedSource(data?.source === 'wazuh' ? 'wazuh' : data?.source === 'demo' ? 'demo' : 'mock');
+                setFeedSource(data?.source === 'wazuh' ? 'wazuh' : 'error');
             })
-            .catch(() => { setFeedAlerts([]); setFeedSource('mock'); })
+            .catch(() => { setFeedAlerts([]); setFeedSource('error'); })
             .finally(() => setFeedLoading(false));
     }, []);
 

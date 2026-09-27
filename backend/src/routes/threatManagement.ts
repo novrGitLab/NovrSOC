@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { requireAuth, type AuthRequest } from '../middleware/auth';
 import { search } from '../lib/wazuh-indexer';
 import { sendCriticalAlertEmail } from '../services/email';
-import { isDemoMode } from '../lib/demoMode';
 import { createCase, type CaseSeverity } from '../services/cases';
 import { NIGERIAN_ACTORS, GLOBAL_ACTORS } from '../services/threatActors';
 import { getGreyNoiseCountryStats, isGreyNoiseConfigured } from '../services/greynoise';
@@ -11,9 +10,9 @@ import { urlhausGetRecent } from '../services/urlhaus';
 import { feodoGetBlocklist } from '../services/feodo';
 
 // SecOps Threat Management console — live security event stream from the Wazuh Indexer
-// (wazuh-alerts-4.x-*, same OpenSearch backend /api/wazuh/alerts-indexer queries), falling
-// back to demo data when the indexer isn't configured, unreachable, or has nothing indexed
-// yet. The Manager REST API's GET /alerts (services/wazuh.ts's getAlerts) 404s on this
+// (wazuh-alerts-4.x-*, same OpenSearch backend /api/wazuh/alerts-indexer queries). There is no
+// demo or mock fallback: an empty index is an empty list, and an unreachable indexer is a 502
+// with the real error, never fabricated alerts. The Manager REST API's GET /alerts (services/wazuh.ts's getAlerts) 404s on this
 // deployment (Wazuh v4.7.5) — alert search only works through the indexer here. Not to be
 // confused with routes/threat-intel.ts / routes/ctip.ts, which power the separate
 // CTIP-backed threat-intel dashboards.
@@ -55,183 +54,6 @@ interface ThreatAlert {
     assigned_to: string | null;
 }
 
-const MOCK_ALERTS: ThreatAlert[] = [
-    {
-        id: 'al_001',
-        rule_id: 'WR-100234',
-        rule_level: 14,
-        rule_description: 'Tor Exit Node Communication Detected',
-        severity: 'critical',
-        status: 'open',
-        mitre_tactic: 'Command and Control',
-        mitre_technique: 'T1090 - Proxy',
-        source_ip: '185.220.101.47',
-        source_country: 'DE',
-        source_isp: 'Stiftung Erneuerbare Freiheit (Tor)',
-        destination_ip: '10.0.1.10',
-        destination_host: 'ec2-app-server',
-        destination_port: 443,
-        protocol: 'TCP',
-        agent_id: 'ec2-app-server',
-        agent_name: 'EC2-1 App Server',
-        alert_count: 1,
-        raw_log: 'zeek:conn.log — connection from 185.220.101.47:58291 to 10.0.1.10:443 (3.2KB sent, 0.8KB received)',
-        detected_at: '2026-08-12 14:23:11',
-        tags: ['tor', 'c2', 'proxy'],
-        abuseipdb_confidence: 94,
-        vt_malicious: 16,
-        pulse_matches: 8,
-        assigned_to: null,
-    },
-    {
-        id: 'al_002',
-        rule_id: 'WR-100087',
-        rule_level: 13,
-        rule_description: 'Multiple Failed SSH Logins from Foreign IP — Possible Brute Force',
-        severity: 'critical',
-        status: 'investigating',
-        mitre_tactic: 'Credential Access',
-        mitre_technique: 'T1110 - Brute Force',
-        source_ip: '45.155.205.233',
-        source_country: 'CN',
-        source_isp: 'Shenzhen Tencent Computer Systems',
-        destination_ip: '10.0.1.20',
-        destination_host: 'ec2-wazuh-server',
-        destination_port: 22,
-        protocol: 'TCP',
-        agent_id: 'ec2-wazuh',
-        agent_name: 'EC2-2 Wazuh Server',
-        alert_count: 47,
-        raw_log: "wazuh:auth — 47 failed SSH login attempts for root from 45.155.205.233 between 03:14:22 and 03:47:08",
-        detected_at: '2026-08-12 03:47:08',
-        tags: ['brute-force', 'ssh', 'china'],
-        abuseipdb_confidence: 87,
-        vt_malicious: 12,
-        pulse_matches: 3,
-        assigned_to: 'Karl Mensah',
-    },
-    {
-        id: 'al_003',
-        rule_id: 'WR-100412',
-        rule_level: 13,
-        rule_description: 'Known Ransomware C2 Server Communication',
-        severity: 'critical',
-        status: 'open',
-        mitre_tactic: 'Command and Control',
-        mitre_technique: 'T1071 - Application Layer Protocol',
-        source_ip: '10.0.1.30',
-        source_country: 'NG',
-        source_isp: 'Internal — EC2 Sensor',
-        destination_ip: '91.215.153.180',
-        destination_host: 'ec2-sensor (outbound)',
-        destination_port: 8080,
-        protocol: 'HTTP',
-        agent_id: 'ec2-sensor',
-        agent_name: 'EC2-3 Sensor',
-        alert_count: 1,
-        raw_log: 'suricata:eve.json — ET MALWARE Ryuk Ransomware C2 Beacon detected. dst=91.215.153.180:8080',
-        detected_at: '2026-08-12 09:15:44',
-        tags: ['ransomware', 'ryuk', 'c2', 'suricata'],
-        abuseipdb_confidence: 98,
-        vt_malicious: 58,
-        pulse_matches: 24,
-        assigned_to: null,
-    },
-    {
-        id: 'al_004',
-        rule_id: 'WR-100056',
-        rule_level: 10,
-        rule_description: 'New File Created in Sensitive Directory',
-        severity: 'high',
-        status: 'open',
-        mitre_tactic: 'Persistence',
-        mitre_technique: 'T1543 - Create or Modify System Process',
-        source_ip: null,
-        source_country: null,
-        source_isp: null,
-        destination_ip: '10.0.1.10',
-        destination_host: 'ec2-app-server',
-        destination_port: null,
-        protocol: 'N/A',
-        agent_id: 'ec2-app-server',
-        agent_name: 'EC2-1 App Server',
-        alert_count: 1,
-        raw_log: 'wazuh:syscheck — New file: /etc/cron.d/cleanup (md5: a3f5c2d8, sha256: b7e2d4f6...)',
-        detected_at: '2026-08-12 06:44:22',
-        tags: ['fim', 'persistence', 'cron'],
-        abuseipdb_confidence: null,
-        vt_malicious: null,
-        pulse_matches: null,
-        assigned_to: null,
-    },
-    {
-        id: 'al_005',
-        rule_id: 'WR-100198',
-        rule_level: 8,
-        rule_description: 'Outbound Connection to Newly Registered Domain',
-        severity: 'medium',
-        status: 'open',
-        mitre_tactic: 'Exfiltration',
-        mitre_technique: 'T1048 - Exfiltration Over Alternative Protocol',
-        source_ip: '10.0.1.50',
-        source_country: 'NG',
-        source_isp: 'Internal — EC2 Auxiliary',
-        destination_ip: '104.21.18.99',
-        destination_host: 'novrsoc-free-tools.xyz',
-        destination_port: 443,
-        protocol: 'HTTPS',
-        agent_id: 'ec2-auxiliary',
-        agent_name: 'EC2-5 Auxiliary',
-        alert_count: 3,
-        raw_log: "zeek:dns.log — query: novrsoc-free-tools.xyz (registered 3 days ago, cert: Let's Encrypt)",
-        detected_at: '2026-08-12 16:02:33',
-        tags: ['nrd', 'suspicious-domain', 'exfil'],
-        abuseipdb_confidence: 12,
-        vt_malicious: 0,
-        pulse_matches: 0,
-        assigned_to: null,
-    },
-    {
-        id: 'al_006',
-        rule_id: 'WR-100301',
-        rule_level: 6,
-        rule_description: 'User Account Created Outside Business Hours',
-        severity: 'low',
-        status: 'acknowledged',
-        mitre_tactic: 'Persistence',
-        mitre_technique: 'T1136 - Create Account',
-        source_ip: '10.0.1.10',
-        source_country: 'NG',
-        source_isp: 'Internal',
-        destination_ip: '10.0.1.10',
-        destination_host: 'ec2-app-server',
-        destination_port: null,
-        protocol: 'N/A',
-        agent_id: 'ec2-app-server',
-        agent_name: 'EC2-1 App Server',
-        alert_count: 1,
-        raw_log: 'wazuh:eventlog — New user account "deploy-svc" created by root at 02:31:14 (outside business hours)',
-        detected_at: '2026-08-11 02:31:14',
-        tags: ['account-creation', 'after-hours'],
-        abuseipdb_confidence: null,
-        vt_malicious: null,
-        pulse_matches: null,
-        assigned_to: null,
-    },
-];
-
-const MOCK_STATS = {
-    total_alerts_24h: 47,
-    critical: 3,
-    high: 8,
-    medium: 12,
-    low: 24,
-    open: 18,
-    investigating: 4,
-    acknowledged: 25,
-    active_agents: 5,
-    mitre_tactics_seen: ['Command and Control', 'Credential Access', 'Persistence', 'Exfiltration'],
-};
 
 // Shape of a wazuh-alerts-4.x-* document as returned by the Indexer's _search — see
 // routes/wazuh.ts's /alerts-indexer, /trend, /incidents for the same interface pattern.
@@ -305,14 +127,17 @@ function mapIndexerAlert(hit: IndexerAlertHit): ThreatAlert {
     };
 }
 
-function computeStats(alerts: ThreatAlert[]) {
+function computeStats(alerts: ThreatAlert[], day: { total: number; critical: number; high: number; medium: number } | null) {
     const countBy = (pred: (a: ThreatAlert) => boolean) => alerts.filter(pred).length;
     return {
-        total_alerts_24h: alerts.length,
-        critical: countBy((a) => a.severity === 'critical'),
-        high: countBy((a) => a.severity === 'high'),
-        medium: countBy((a) => a.severity === 'medium'),
-        low: countBy((a) => a.severity === 'low'),
+        // null (not 0) when the 24h count query itself failed, so the page shows "—".
+        total_alerts_24h: day?.total ?? null,
+        critical: day?.critical ?? null,
+        high: day?.high ?? null,
+        medium: day?.medium ?? null,
+        // Level < 7 is never queried, so there is no low count to report.
+        low: null,
+        // Triage state only exists for alerts in the loaded list.
         open: countBy((a) => a.status === 'open'),
         investigating: countBy((a) => a.status === 'investigating'),
         acknowledged: countBy((a) => a.status === 'acknowledged'),
@@ -321,17 +146,26 @@ function computeStats(alerts: ThreatAlert[]) {
     };
 }
 
-// Cache of whatever list GET /alerts last served — MOCK_ALERTS until (and unless) a live
-// Wazuh fetch succeeds. /:id, PATCH, and create-incident all read/write this, not MOCK_ALERTS
-// directly, so they stay consistent with whatever the list view is currently showing.
-let liveAlerts: ThreatAlert[] = MOCK_ALERTS;
-let usingMockStats = true;
+// The list GET /alerts last served. /:id, PATCH and create-incident read this so they act on
+// what the analyst is looking at.
+let liveAlerts: ThreatAlert[] = [];
+
+// Analyst triage (status, assignee) keyed by indexer document id. Kept apart from liveAlerts
+// because that list is rebuilt from the indexer on every load — storing triage on it (as
+// before) reset every alert to Open/Unassigned on the next refresh. In-process, so it survives
+// refreshes but not a backend restart; anything that must be durable belongs in a case.
+const triage = new Map<string, { status?: AlertStatus; assigned_to?: string | null }>();
+
+function withTriage(alert: ThreatAlert): ThreatAlert {
+    const t = triage.get(alert.id);
+    if (!t) return alert;
+    return { ...alert, ...(t.status ? { status: t.status } : {}), ...(t.assigned_to !== undefined ? { assigned_to: t.assigned_to } : {}) };
+}
 
 // Wazuh alert ids we've already emailed about — in-memory, so it resets on redeploy (an
 // occasional re-send after a restart beats the alternative of persisting yet more state for
 // this). GET /alerts polls repeatedly, so without this dedup every poll would re-email every
-// still-critical alert. Only checked from the live-indexer branch of loadAlerts — MOCK_ALERTS
-// stays severity:'critical' by design and must never trigger a real send to ALERT_EMAIL_TO.
+// still-critical alert.
 const emailedAlertIds = new Set<string>();
 
 // CRITICAL and HIGH both email (via sendCriticalAlertEmail -> services/email.ts's sendEmail,
@@ -355,14 +189,9 @@ function notifyCriticalAlerts(alerts: ThreatAlert[]): void {
     }
 }
 
-async function loadAlerts(limit: number): Promise<ThreatAlert[]> {
-    // Explicit opt-in only — see lib/demoMode.ts. Short-circuits before even attempting the
-    // real indexer, same as routes/wazuh.ts's /status and /agents.
-    if (isDemoMode()) {
-        liveAlerts = MOCK_ALERTS;
-        usingMockStats = true;
-        return liveAlerts;
-    }
+type LoadResult = { ok: true; alerts: ThreatAlert[] } | { ok: false; error: string };
+
+async function loadAlerts(limit: number): Promise<LoadResult> {
     try {
         const result = await search<IndexerSearchResponse>('wazuh-alerts-4.x-*', {
             size: limit,
@@ -371,43 +200,71 @@ async function loadAlerts(limit: number): Promise<ThreatAlert[]> {
             // so a LOW alert never even counts against `limit` here.
             query: { range: { 'rule.level': { gte: 7 } } },
         });
-        const hits = result?.hits?.hits ?? [];
-        if (hits.length > 0) {
-            liveAlerts = hits.map(mapIndexerAlert);
-            usingMockStats = false;
-            notifyCriticalAlerts(liveAlerts); // fire-and-forget — must not add latency to the alert list response
-            return liveAlerts;
-        }
-    } catch {
-        // Indexer not configured, unreachable, or auth failed — fall through to mock below.
+        liveAlerts = (result?.hits?.hits ?? []).map(mapIndexerAlert).map(withTriage);
+        notifyCriticalAlerts(liveAlerts); // fire-and-forget — must not add latency to the alert list response
+        return { ok: true, alerts: liveAlerts };
+    } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : 'Wazuh indexer unreachable' };
     }
-    liveAlerts = MOCK_ALERTS;
-    usingMockStats = true;
-    return liveAlerts;
+}
+
+interface CountsResponse {
+    hits?: { total?: { value?: number } };
+    aggregations?: { levels?: { buckets?: Record<string, { doc_count?: number }> } };
+}
+
+// Real 24-hour counts from the indexer (level 7+), by severity. The previous "Alerts (24h)" was
+// the length of the loaded list — capped at the page size, and not a 24h figure at all.
+async function counts24h(): Promise<{ total: number; critical: number; high: number; medium: number } | null> {
+    try {
+        const r = await search<CountsResponse>('wazuh-alerts-4.x-*', {
+            size: 0,
+            track_total_hits: true,
+            query: { bool: { filter: [{ range: { timestamp: { gte: 'now-24h' } } }, { range: { 'rule.level': { gte: 7 } } }] } },
+            aggs: {
+                levels: {
+                    range: {
+                        field: 'rule.level',
+                        keyed: true,
+                        ranges: [{ key: 'medium', from: 7, to: 10 }, { key: 'high', from: 10, to: 13 }, { key: 'critical', from: 13 }],
+                    },
+                },
+            },
+        });
+        const b = r?.aggregations?.levels?.buckets ?? {};
+        return {
+            total: r?.hits?.total?.value ?? 0,
+            critical: b.critical?.doc_count ?? 0,
+            high: b.high?.doc_count ?? 0,
+            medium: b.medium?.doc_count ?? 0,
+        };
+    } catch {
+        return null;
+    }
 }
 
 router.get('/alerts', async (req, res) => {
     const { severity, status, limit = '50' } = req.query;
     const parsedLimit = parseInt(String(limit), 10) || 50;
 
-    const all = await loadAlerts(parsedLimit);
-    let alerts = [...all];
+    const checkedAt = new Date().toISOString();
+    const [loaded, day] = await Promise.all([loadAlerts(parsedLimit), counts24h()]);
+    if (!loaded.ok) {
+        // The real reason, not an empty list that reads as "all quiet".
+        res.status(502).json({ alerts: [], stats: null, source: 'error', error: loaded.error, checked_at: checkedAt });
+        return;
+    }
+
+    let alerts = [...loaded.alerts];
     if (severity && severity !== 'all') alerts = alerts.filter((a) => a.severity === severity);
     if (status && status !== 'all') alerts = alerts.filter((a) => a.status === status);
     alerts = alerts.slice(0, parsedLimit);
 
     res.json({
         alerts,
-        stats: usingMockStats ? MOCK_STATS : computeStats(all),
-        // usingMockStats was already tracked internally (loadAlerts sets it) but never left
-        // this function — the frontend had no way to tell a real Wazuh-indexer alert queue
-        // from the MOCK_ALERTS fallback it silently serves when the indexer is unreachable.
-        // 'demo' vs 'mock' distinguishes *why* — DEMO_MODE was explicitly set (a presentation
-        // in progress) vs. an actual unplanned indexer outage — even though both currently
-        // serve the same MOCK_ALERTS; the frontend banner text differs ("Demo mode" vs
-        // "Wazuh indexer unreachable") so an analyst never mistakes a real outage for a demo.
-        source: usingMockStats ? (isDemoMode() ? 'demo' : 'mock') : 'wazuh',
-        wazuh_connected: !usingMockStats,
+        stats: computeStats(loaded.alerts, day),
+        source: 'wazuh',
+        checked_at: checkedAt,
     });
 });
 
@@ -429,6 +286,7 @@ router.patch('/alerts/:id', (req, res) => {
     }
     if (status) alert.status = status;
     if (assigned_to !== undefined) alert.assigned_to = assigned_to;
+    triage.set(alert.id, { ...triage.get(alert.id), ...(status ? { status } : {}), ...(assigned_to !== undefined ? { assigned_to } : {}) });
     res.json({ success: true, alert });
 });
 
@@ -442,11 +300,6 @@ router.post('/alerts/:id/create-incident', requireAuth, async (req: AuthRequest,
         res.status(404).json({ error: 'Alert not found' });
         return;
     }
-    if (usingMockStats) {
-        res.status(409).json({ error: 'Alerts are demo data right now — cases can only be opened from live Wazuh alerts.' });
-        return;
-    }
-
     const result = await createCase({
         title: alert.rule_description,
         description: `Alert detected by Wazuh\nAgent: ${alert.agent_name}\nSource IP: ${alert.source_ip ?? 'N/A'}\nRule ID: ${alert.rule_id}\nLevel: ${alert.rule_level}`,
@@ -469,6 +322,7 @@ router.post('/alerts/:id/create-incident', requireAuth, async (req: AuthRequest,
     }
 
     alert.status = 'investigating';
+    triage.set(alert.id, { ...triage.get(alert.id), status: 'investigating' });
     const n = result.case.case_number;
     res.json({
         success: true, case_id: result.case.id, case_number: n, created: result.created,
@@ -692,8 +546,8 @@ router.get('/global-map', async (req, res) => {
     }
 });
 
-router.get('/stats', (_req, res) => {
-    res.json(usingMockStats ? MOCK_STATS : computeStats(liveAlerts));
+router.get('/stats', async (_req, res) => {
+    res.json(computeStats(liveAlerts, await counts24h()));
 });
 
 // GET /api/threats/actors — threat actor reference library.

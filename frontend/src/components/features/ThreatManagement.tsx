@@ -40,16 +40,39 @@ interface ThreatAlert {
     assigned_to: string | null;
 }
 
+// 24h figures come from an indexer count (null if that query failed); open/investigating are
+// triage states of the loaded list.
 interface Stats {
-    total_alerts_24h: number;
-    critical: number;
-    high: number;
-    medium: number;
-    low: number;
+    total_alerts_24h: number | null;
+    critical: number | null;
+    high: number | null;
+    medium: number | null;
     open: number;
     investigating: number;
     acknowledged: number;
     active_agents: number;
+}
+
+const watTime = (iso: string) =>
+    new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(iso)) + ' WAT';
+
+// Live Wazuh only — no demo or mock fallback. A failure shows the backend's real error; an
+// empty index shows an empty state with when it was last checked.
+function fetchAlerts(onDone: (r: { alerts: ThreatAlert[]; stats: Stats | null; error: string | null; checkedAt: string }) => void) {
+    return apiFetch(apiUrl('/api/threats/alerts'), { cache: 'no-store', signal: AbortSignal.timeout(15000) })
+        .then(async (r) => {
+            const data = await r.json().catch(() => null);
+            const checkedAt = data?.checked_at ?? new Date().toISOString();
+            if (!r.ok || !data) {
+                onDone({ alerts: [], stats: null, error: data?.error ?? `Alert service returned HTTP ${r.status}`, checkedAt });
+                return;
+            }
+            onDone({ alerts: Array.isArray(data.alerts) ? data.alerts : [], stats: data.stats ?? null, error: null, checkedAt });
+        })
+        .catch((e: unknown) => onDone({
+            alerts: [], stats: null, checkedAt: new Date().toISOString(),
+            error: e instanceof Error && e.name === 'TimeoutError' ? 'The alert service did not respond within 15 seconds.' : 'Could not reach the alert service.',
+        }));
 }
 
 const SEV_STYLE: Record<Severity, string> = {
@@ -93,31 +116,29 @@ export function ThreatManagement() {
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [showAssignMenu, setShowAssignMenu] = useState(false);
-    // 'demo' (DEMO_MODE=true, explicitly set for a presentation) is kept distinct from 'mock'
-    // (an actual unplanned Wazuh indexer outage) — same underlying data, but an analyst should
-    // never read "someone deliberately started a demo" and "the indexer is down right now" as
-    // the same event. See backend/src/routes/threatManagement.ts's source field comment.
-    const [alertSource, setAlertSource] = useState<'wazuh' | 'mock' | 'demo' | null>(null);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [checkedAt, setCheckedAt] = useState<string | null>(null);
 
     const currentAnalyst = getAdminUser().name;
 
-    const load = () => {
-        setLoading(true);
-        apiFetch(apiUrl('/api/threats/alerts'), { signal: AbortSignal.timeout(10000) })
-            .then((r) => r.json())
-            .then((data) => {
-                setAlerts(Array.isArray(data?.alerts) ? data.alerts : []);
-                setStats(data?.stats ?? null);
-                setAlertSource(data?.source === 'wazuh' ? 'wazuh' : data?.source === 'demo' ? 'demo' : 'mock');
-                setLoading(false);
-            })
-            .catch(() => {
-                setAlertSource('mock');
-                setLoading(false);
-            });
+    const apply = (r: { alerts: ThreatAlert[]; stats: Stats | null; error: string | null; checkedAt: string }) => {
+        setAlerts(r.alerts);
+        setStats(r.stats);
+        setLoadError(r.error);
+        setCheckedAt(r.checkedAt);
+        setLoading(false);
     };
 
-    useEffect(() => { load(); }, []);
+    useEffect(() => {
+        let active = true;
+        void fetchAlerts((r) => { if (active) apply(r); });
+        return () => { active = false; };
+    }, []);
+
+    const load = () => {
+        setLoading(true);
+        void fetchAlerts(apply);
+    };
 
     const filtered = useMemo(() => alerts.filter((a) => {
         const matchSev = severityFilter === 'all' || a.severity === severityFilter;
@@ -190,43 +211,33 @@ export function ThreatManagement() {
                 </button>
             </div>
 
-            {alertSource === 'mock' && (
-                <div className="flex items-center gap-3 bg-amber/10 border border-amber/30 rounded-xl px-4 py-3">
-                    <div className="w-2 h-2 rounded-full bg-amber flex-shrink-0" />
+            {loadError ? (
+                <div role="alert" className="flex items-start gap-3 bg-red-500/5 border border-red-500/30 rounded-xl px-4 py-3">
+                    <div className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0 mt-1.5" />
                     <div>
-                        <span className="text-sm font-semibold text-amber">Demo data — Wazuh indexer unreachable</span>
-                        <span className="text-xs text-foreground-muted ml-2">Alerts shown are not real. Connect Wazuh to see live events.</span>
+                        <p className="text-sm font-semibold text-red-500">Could not load alerts</p>
+                        <p className="text-xs text-foreground-muted mt-0.5">{loadError}{checkedAt ? ` · tried ${watTime(checkedAt)}` : ''}</p>
                     </div>
                 </div>
-            )}
-            {alertSource === 'demo' && (
-                <div className="flex items-center gap-3 bg-purple/10 border border-purple/30 rounded-xl px-4 py-3">
-                    <div className="w-2 h-2 rounded-full bg-purple flex-shrink-0" />
-                    <div>
-                        <span className="text-sm font-semibold text-purple">Demo mode</span>
-                        <span className="text-xs text-foreground-muted ml-2">Showing fixed presentation data — DEMO_MODE is enabled on this backend.</span>
-                    </div>
-                </div>
-            )}
-            {alertSource === 'wazuh' && (
+            ) : checkedAt && (
                 <div className="flex items-center gap-2 bg-green/10 border border-green/30 rounded-xl px-4 py-3">
                     <span className="relative flex h-2 w-2 flex-shrink-0">
                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green opacity-60" />
                         <span className="relative inline-flex h-2 w-2 rounded-full bg-green" />
                     </span>
-                    <span className="text-sm font-semibold text-green">Live — Real Wazuh alerts</span>
+                    <span className="text-sm font-semibold text-green">Live — Wazuh alerts</span>
+                    <span className="text-xs text-foreground-muted ml-auto">Last checked {watTime(checkedAt)}</span>
                 </div>
             )}
 
             {/* KPI strip */}
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                 {[
                     { label: 'Alerts (24h)', value: stats?.total_alerts_24h, color: 'text-foreground' },
-                    { label: 'Critical', value: stats?.critical, color: 'text-red-500' },
-                    { label: 'High', value: stats?.high, color: 'text-amber' },
-                    { label: 'Medium', value: stats?.medium, color: 'text-amber' },
-                    { label: 'Low', value: stats?.low, color: 'text-foreground-muted' },
-                    { label: 'Open', value: stats?.open, color: 'text-red-500' },
+                    { label: 'Critical (24h)', value: stats?.critical, color: 'text-red-500' },
+                    { label: 'High (24h)', value: stats?.high, color: 'text-amber' },
+                    { label: 'Medium (24h)', value: stats?.medium, color: 'text-amber' },
+                    { label: 'Open (in queue)', value: stats?.open, color: 'text-red-500' },
                     { label: 'Investigating', value: stats?.investigating, color: 'text-blue' },
                 ].map((k) => (
                     <div key={k.label} className="bg-card border border-border rounded-xl p-3">
@@ -282,6 +293,13 @@ export function ThreatManagement() {
                     </div>
                     {loading ? (
                         <div className="p-4 space-y-2">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-14 bg-card-muted rounded animate-pulse" />)}</div>
+                    ) : loadError ? (
+                        <p className="text-xs text-red-500 text-center py-10 px-4">Alerts unavailable — see the error above.</p>
+                    ) : alerts.length === 0 ? (
+                        <div className="text-center py-10 px-4">
+                            <p className="text-sm font-bold text-foreground">No alerts at this time</p>
+                            {checkedAt && <p className="text-[11px] text-foreground-muted mt-1">Last checked {watTime(checkedAt)}</p>}
+                        </div>
                     ) : filtered.length === 0 ? (
                         <p className="text-xs text-foreground-muted text-center py-10">No alerts match the current filters.</p>
                     ) : (
