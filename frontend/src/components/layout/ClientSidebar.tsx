@@ -71,6 +71,7 @@ const clientNav: NavGroup[] = [
         items: [
             { label: 'Threat Management', href: '/client/secops/threats', icon: Activity },
             { label: 'Cases', href: '/client/secops/cases', icon: Siren },
+            { label: 'Security Report Card', href: '/client/secops/security-assessment', icon: Activity },
             { label: 'Alert Communication', href: '/client/secops/alerts', icon: Bell },
         ],
     },

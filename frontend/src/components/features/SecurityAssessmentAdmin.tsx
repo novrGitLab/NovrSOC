@@ -120,7 +120,7 @@ export function SecurityAssessmentAdmin({ presence }: { presence?: React.ReactNo
                                     ) : data.clients.map((c) => (
                                         <tr key={c.org_id} className="border-b border-border/60 last:border-0">
                                             <td className="px-4 py-3">
-                                                <Link href={`/client/security-assessment?org=${encodeURIComponent(c.org_id)}`} className="font-bold text-foreground hover:text-purple hover:underline">{c.org_name}</Link>
+                                                <Link href={`/admin/secops/security-assessment/report?org=${encodeURIComponent(c.org_id)}`} className="font-bold text-foreground hover:text-purple hover:underline">{c.org_name}</Link>
                                             </td>
                                             <td className="px-4 py-3 text-foreground-muted" title={data.definitions.detection_time}>—</td>
                                             <td className="px-4 py-3 text-foreground">{fmtHrs(c.close_time_hrs)}</td>
