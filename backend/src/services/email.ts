@@ -885,6 +885,38 @@ export async function sendCaseNotificationEmail(params: {
     });
 }
 
+/**
+ * A free-form alert communication (Alert Communication page, playbook notification step).
+ * Real send through the provider chain; throws with the provider's error on failure.
+ */
+export async function sendAlertCommunicationEmail(params: {
+    to: string[];
+    subject: string;
+    body: string;
+    severity: string;
+    sentBy: string;
+    caseNumber?: string | null;
+}): Promise<void> {
+    if (!isEmailEnabled()) throw new Error('Email is disabled — set EMAIL_ENABLED=true and RESEND_API_KEY on Railway');
+    const colours: Record<string, string> = { critical: '#CC2B2B', high: '#E8730C', medium: '#D4A017', low: '#2B3BCC', informational: '#7A8099' };
+    const colour = colours[params.severity.toLowerCase()] ?? '#7A8099';
+    const body = `
+      <tr>
+        <td style="padding:32px;">
+          <span style="display:inline-block;background:${colour};color:#fff;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:4px 10px;border-radius:999px;">${escapeHtml(params.severity)}</span>
+          ${params.caseNumber ? `<span style="color:#7A8099;font-size:12px;margin-left:8px;">${escapeHtml(params.caseNumber)}</span>` : ''}
+          <h2 style="color:#1C1F2E;font-size:18px;margin:16px 0 12px;">${escapeHtml(params.subject)}</h2>
+          <p style="color:#1C1F2E;font-size:14px;line-height:1.6;margin:0;white-space:pre-wrap;">${escapeHtml(params.body)}</p>
+          <p style="color:#7A8099;font-size:11px;margin:24px 0 0;">Sent by ${escapeHtml(params.sentBy)} via NovrSOC</p>
+        </td>
+      </tr>`;
+    await sendEmail({
+        to: params.to,
+        subject: `[NovrSOC ${params.severity.toUpperCase()}] ${params.subject}`,
+        html: baseTemplate(params.subject, params.body.slice(0, 120), body),
+    });
+}
+
 /** Where team notifications go: ALERT_EMAIL_TO, else CISO_EMAIL, else the SOC mailbox. */
 export function socNotificationRecipients(): string[] {
     return [process.env.ALERT_EMAIL_TO || process.env.CISO_EMAIL || 'soc@cybernovr.com'];

@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { search } from '../lib/wazuh-indexer';
 import { getSupabase } from '../services/geoEnrichment';
+import { requireAuth, type AuthRequest } from '../middleware/auth';
+import { sendAlertCommunicationEmail, socNotificationRecipients } from '../services/email';
 
 // Not gated with requireAuth — Header.tsx (which polls this) is shared by both the admin app
 // and the client portal, and client-portal users carry a portal_token this backend's
@@ -87,6 +89,32 @@ router.get('/', async (_req, res) => {
 
     notifications.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
     res.json({ notifications, unread: notifications.filter((n) => !n.read).length });
+});
+
+// POST /api/notifications/send { subject, message, severity?, to?, recipient? } — emails the SOC mailbox
+// (or the given addresses). Real send; success is false with the provider's error otherwise.
+// Gated individually: the GET above is shared with the client portal, this is analyst-only.
+router.post('/send', requireAuth, async (req: AuthRequest, res) => {
+    const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim() : '';
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    const severity = typeof req.body?.severity === 'string' && req.body.severity ? req.body.severity : 'informational';
+    // recipient: 'ciso' sends to CISO_EMAIL (the address stays server-side); otherwise explicit
+    // `to` addresses, else the SOC mailbox.
+    const to: string[] = req.body?.recipient === 'ciso'
+        ? [process.env.CISO_EMAIL || 'soc@cybernovr.com']
+        : Array.isArray(req.body?.to) && req.body.to.length > 0
+            ? req.body.to.filter((x: unknown): x is string => typeof x === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x))
+            : socNotificationRecipients();
+    if (!subject || !message) { res.status(400).json({ success: false, error: 'subject and message are required' }); return; }
+    if (to.length === 0) { res.status(400).json({ success: false, error: 'no valid recipient address' }); return; }
+    try {
+        await sendAlertCommunicationEmail({ to, subject, body: message, severity, sentBy: req.user?.email ?? 'NovrSOC analyst' });
+        res.json({ success: true, outcome: 'success', message: `Sent to ${to.join(', ')}` });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const notConnected = /disabled|not configured/i.test(msg);
+        res.status(notConnected ? 200 : 502).json({ success: false, outcome: notConnected ? 'skipped' : 'failed', message: msg });
+    }
 });
 
 export default router;

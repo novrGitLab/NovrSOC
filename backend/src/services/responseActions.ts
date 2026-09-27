@@ -1,4 +1,5 @@
-// Analyst-run response actions for a case — the "Execute" button on a case's response tasks.
+// Analyst-run response actions — the "Execute" button on a case's response tasks, and on a
+// playbook's automated steps (case-less: blockAddress / isolateEndpoint, logged with tier 0).
 //
 // These are the same actions the SOAR engine (infra/soar/soar.py) runs automatically, done from
 // the backend for one case on demand. Each returns an honest outcome: 'success' only when the
@@ -42,12 +43,19 @@ function isPublicIPv4(ip: string): boolean {
     return true;
 }
 
-async function soarLog(c: CaseRow, action: string, result: string): Promise<void> {
+/**
+ * Records an action in soar_log. Case-less actions (run from the Playbooks page) have no case
+ * and use tier 0. Returns the row id, used as the action_id the caller reports.
+ */
+async function logAction(caseId: string | null, tier: number, action: string, result: string): Promise<string | null> {
     const supabase = getSupabase();
-    if (!supabase) return;
-    const { error } = await supabase.from('soar_log').insert({ case_id: c.id, tier: c.tier, action, result, automated: false });
+    if (!supabase) return null;
+    const { data, error } = await supabase.from('soar_log').insert({ case_id: caseId, tier, action, result, automated: false }).select('id').maybeSingle();
     if (error) console.error('[responseActions] soar_log insert failed:', dbErrorMessage(error));
+    return (data as { id?: string } | null)?.id ?? null;
 }
+
+const soarLog = (c: CaseRow, action: string, result: string) => logAction(c.id, c.tier, action, result);
 
 // OPNsense's API usually sits behind a self-signed certificate; verification is opt-in, as in
 // the engine. Node's fetch can't relax TLS per request, hence https.request.
@@ -78,14 +86,35 @@ function opnsensePost(path: string, body: unknown): Promise<{ status: number; js
     });
 }
 
-async function blockIp(c: CaseRow): Promise<ActionResult> {
-    const ip = c.source_ip ?? '';
-    if (!ip) return skip('No source IP on this case');
-    if (!isPublicIPv4(ip)) return skip(`${ip} is not a public IPv4 address — nothing to block at the edge`);
+export interface ActionContext {
+    /** The case this action is for, if any — its log, timeline and containment flag are updated. */
+    case?: CaseRow;
+    /** Free-text reason recorded with a case-less action. */
+    reason?: string;
+}
+
+export type LoggedResult = ActionResult & { action_id: string | null };
+
+async function record(ctx: ActionContext, action: string, result: string): Promise<string | null> {
+    const note = ctx.reason ? ` (reason: ${ctx.reason.slice(0, 200)})` : '';
+    return ctx.case ? soarLog(ctx.case, action, result) : logAction(null, 0, action, `${result}${note}`);
+}
+
+async function markContained(ctx: ActionContext, timeline: string): Promise<void> {
+    if (!ctx.case) return;
+    await getSupabase()?.from('cases').update({ containment_done: true, updated_at: new Date().toISOString() }).eq('id', ctx.case.id);
+    await addTimeline(ctx.case.id, 'NovrSOC', timeline, { automated: true });
+}
+
+/** Adds an IP to the OPNsense block alias. Used by case tasks and the Playbooks page. */
+export async function blockAddress(ip: string, ctx: ActionContext = {}): Promise<LoggedResult> {
+    const withId = (r: ActionResult, id: string | null = null): LoggedResult => ({ ...r, action_id: id });
+    if (!ip) return withId(skip(ctx.case ? 'No source IP on this case' : 'No IP address given'));
+    if (!isPublicIPv4(ip)) return withId(skip(`${ip} is not a public IPv4 address — nothing to block at the edge`));
+    const action = `Block IP ${ip}`;
     if (!process.env.OPNSENSE_URL || !process.env.OPNSENSE_KEY || !process.env.OPNSENSE_SECRET) {
-        const r = skip('OPNsense not configured — set OPNSENSE_URL, OPNSENSE_KEY and OPNSENSE_SECRET on Railway');
-        await soarLog(c, `Block IP ${ip}`, `SKIPPED — ${r.message}`);
-        return r;
+        const r = skip('OPNsense not connected — set OPNSENSE_URL, OPNSENSE_KEY and OPNSENSE_SECRET on Railway');
+        return withId(r, await record(ctx, action, `SKIPPED — ${r.message}`));
     }
     const alias = process.env.OPNSENSE_ALIAS || 'novrsoc_blocked';
     try {
@@ -94,50 +123,51 @@ async function blockIp(c: CaseRow): Promise<ActionResult> {
         // the verdict in `status`.
         const { status, json } = await opnsensePost(`/api/firewall/alias_util/add/${encodeURIComponent(alias)}`, { address: ip });
         if (status < 300 && String(json?.status ?? '').toLowerCase() === 'done') {
-            await getSupabase()?.from('cases').update({ containment_done: true, updated_at: new Date().toISOString() }).eq('id', c.id);
-            await soarLog(c, `Block IP ${ip}`, 'SUCCESS');
-            await addTimeline(c.id, 'NovrSOC', `Source IP ${ip} blocked at OPNsense (alias ${alias})`, { automated: true });
-            return ok(`IP ${ip} blocked at OPNsense (alias ${alias})`);
+            await markContained(ctx, `Source IP ${ip} blocked at OPNsense (alias ${alias})`);
+            return withId(ok(`IP ${ip} blocked at OPNsense (alias ${alias})`), await record(ctx, action, 'SUCCESS'));
         }
         const r = fail(`OPNsense refused the block: HTTP ${status} ${JSON.stringify(json ?? {}).slice(0, 120)}`);
-        await soarLog(c, `Block IP ${ip}`, `FAILED: ${r.message}`);
-        return r;
+        return withId(r, await record(ctx, action, `FAILED: ${r.message}`));
     } catch (err) {
         const r = fail(`Could not reach OPNsense: ${err instanceof Error ? err.message : err}`);
-        await soarLog(c, `Block IP ${ip}`, `ERROR: ${r.message}`);
-        return r;
+        return withId(r, await record(ctx, action, `ERROR: ${r.message}`));
     }
 }
 
-async function isolateAgent(c: CaseRow): Promise<ActionResult> {
-    const agentId = (c.agent_id ?? '').padStart(3, '0');
-    if (!c.agent_id || agentId === '000') return skip('No endpoint agent on this case (000 is the manager itself)');
+/** Sends the isolation active response to one Wazuh agent. Used by case tasks and Playbooks. */
+export async function isolateEndpoint(rawAgentId: string, ctx: ActionContext & { agentName?: string | null; sourceIp?: string | null } = {}): Promise<LoggedResult> {
+    const withId = (r: ActionResult, id: string | null = null): LoggedResult => ({ ...r, action_id: id });
+    const agentId = (rawAgentId ?? '').trim().padStart(3, '0');
+    if (!rawAgentId || agentId === '000') return withId(skip('No endpoint agent given (000 is the Wazuh manager itself)'));
+    if (!/^\d{3,}$/.test(agentId)) return withId(skip(`"${rawAgentId}" is not a Wazuh agent id`));
+    const action = `Isolate agent ${agentId}`;
     const command = process.env.WAZUH_ISOLATE_COMMAND;
     if (!command) {
         // No default on purpose. Wazuh ships no host-isolation response, and the obvious
         // stand-in, firewall-drop, only blocks one source IP on the agent — reporting that as
         // "isolated" would tell an analyst an endpoint is cut off when it isn't.
-        const r = skip('WAZUH_ISOLATE_COMMAND not set — deploy an isolation active response to agents and name it here');
-        await soarLog(c, `Isolate agent ${agentId}`, `SKIPPED — ${r.message}`);
-        return r;
+        const r = skip('Isolation not connected — WAZUH_ISOLATE_COMMAND is not set (deploy an isolation active response to agents and name it here)');
+        return withId(r, await record(ctx, action, `SKIPPED — ${r.message}`));
     }
     try {
-        const res = await runActiveResponse(agentId, command, c.source_ip ?? undefined);
+        const res = await runActiveResponse(agentId, command, ctx.sourceIp ?? undefined);
         if (res.accepted) {
-            await getSupabase()?.from('cases').update({ containment_done: true, updated_at: new Date().toISOString() }).eq('id', c.id);
-            await soarLog(c, `Isolate agent ${agentId}`, 'REQUESTED — accepted by Wazuh manager');
-            await addTimeline(c.id, 'NovrSOC', `Isolation (${command}) sent to agent ${agentId} via Wazuh active response`, { automated: true });
-            return ok(`Isolation requested for ${c.agent_name ?? agentId} — accepted by the Wazuh manager (check the agent's active-responses.log to confirm it ran)`);
+            await markContained(ctx, `Isolation (${command}) sent to agent ${agentId} via Wazuh active response`);
+            return withId(
+                ok(`Isolation requested for ${ctx.agentName ?? `agent ${agentId}`} — accepted by the Wazuh manager (check the agent's active-responses.log to confirm it ran)`),
+                await record(ctx, action, 'REQUESTED — accepted by Wazuh manager'),
+            );
         }
-        const r = fail(`Wazuh did not accept the command: ${res.detail}`);
-        await soarLog(c, `Isolate agent ${agentId}`, `FAILED: ${res.detail}`);
-        return r;
+        return withId(fail(`Wazuh did not accept the command: ${res.detail}`), await record(ctx, action, `FAILED: ${res.detail}`));
     } catch (err) {
         const r = fail(`Wazuh API error: ${err instanceof Error ? err.message : err}`);
-        await soarLog(c, `Isolate agent ${agentId}`, `ERROR: ${r.message}`);
-        return r;
+        return withId(r, await record(ctx, action, `ERROR: ${r.message}`));
     }
 }
+
+const blockIp = (c: CaseRow): Promise<ActionResult> => blockAddress(c.source_ip ?? '', { case: c });
+const isolateAgent = (c: CaseRow): Promise<ActionResult> =>
+    isolateEndpoint(c.agent_id ?? '', { case: c, agentName: c.agent_name, sourceIp: c.source_ip });
 
 async function enrichIocs(c: CaseRow): Promise<ActionResult> {
     const ip = c.source_ip ?? '';

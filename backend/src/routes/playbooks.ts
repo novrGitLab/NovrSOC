@@ -168,6 +168,16 @@ router.get('/', async (req: AuthRequest, res) => {
     }
 });
 
+// GET /api/playbooks/steps — the automated step catalog (playbook_steps), so the Playbooks page
+// can name each playbook's step_ids. Registered before /:id-style routes.
+router.get('/steps', async (_req, res) => {
+    const supabase = getSupabase();
+    if (!supabase) { res.status(503).json({ error: 'Supabase not configured' }); return; }
+    const { data, error } = await supabase.from('playbook_steps').select('step_id, name, description, category');
+    if (error) { res.status(502).json({ error: error.message }); return; }
+    res.json({ steps: data ?? [] });
+});
+
 router.post('/', requireAuth, requireRole('super_admin', 'soc_manager'), async (req: AuthRequest, res) => {
     const { name, icon, severity, description, steps, estimated_time } = req.body as Partial<PlaybookRow>;
     if (!name || !severity) {

@@ -2,6 +2,8 @@ import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { createCase } from '../services/cases';
 import { sendBroadcastEmail } from '../services/email';
+import { blockAddress, isolateEndpoint, type LoggedResult } from '../services/responseActions';
+import { logAudit } from '../lib/audit';
 import { getSupabase } from '../services/geoEnrichment';
 
 const router = Router();
@@ -82,6 +84,37 @@ router.post('/hunting/escalate', async (req: AuthRequest, res) => {
     }
 
     res.json({ success: true, case_id: result.case.id, case_number: result.case.case_number, created: result.created, ioc_saved: iocSaved });
+});
+
+// Playbook step execution (Playbooks page → automated steps). These run the same real actions
+// as a case's Execute button, without a case. success is true only when the remote system
+// accepted the action; a "not connected" action comes back as outcome 'skipped' with the reason.
+function sendActionResult(req: AuthRequest, res: import('express').Response, action: string, target: string, r: LoggedResult) {
+    logAudit({
+        user: req.user?.email ?? 'unknown', action: 'PLAYBOOK_ACTION', resource: action, resource_id: target,
+        ip: req.ip ?? 'unknown', result: r.outcome === 'success' ? 'success' : 'failed',
+        details: `${action} ${target}: ${r.outcome} — ${r.message}`.slice(0, 200), severity: r.outcome === 'success' ? 'warning' : 'info',
+    });
+    res.status(r.outcome === 'failed' ? 502 : 200).json({
+        success: r.outcome === 'success', outcome: r.outcome, message: r.message, action_id: r.action_id,
+    });
+}
+
+// POST /api/secops/actions/isolate { endpoint_id, reason? } — endpoint_id is the Wazuh agent id.
+router.post('/actions/isolate', async (req: AuthRequest, res) => {
+    const endpointId = typeof req.body?.endpoint_id === 'string' ? req.body.endpoint_id.trim() : '';
+    if (!endpointId) { res.status(400).json({ success: false, error: 'endpoint_id is required' }); return; }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined;
+    sendActionResult(req, res, 'isolate', endpointId, await isolateEndpoint(endpointId, { reason, agentName: req.body?.endpoint_name ?? null }));
+});
+
+// POST /api/secops/actions/block-ip { ip, reason }
+router.post('/actions/block-ip', async (req: AuthRequest, res) => {
+    const ip = typeof req.body?.ip === 'string' ? req.body.ip.trim() : '';
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (!ip) { res.status(400).json({ success: false, error: 'ip is required' }); return; }
+    if (!reason) { res.status(400).json({ success: false, error: 'reason is required — it is recorded with the block' }); return; }
+    sendActionResult(req, res, 'block-ip', ip, await blockAddress(ip, { reason }));
 });
 
 export default router;

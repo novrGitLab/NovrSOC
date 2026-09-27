@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, Play, Plus, X, Clock, AlertTriangle, ListChecks } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
+import { PlaybookActions } from './PlaybookActions';
 
 // Playbooks now come from GET /api/playbooks (routes/playbooks.ts, Supabase-backed) — the same
 // source the CISO's Security Ops Management → Playbooks tab creates and edits, so both pages
@@ -33,6 +34,8 @@ export interface Playbook {
     description: string;
     estimated_time?: string;
     steps?: PlaybookStep[];
+    /** Automated steps (playbook_steps.step_id), executable from the detail view. */
+    step_ids?: string[] | null;
 }
 
 const SEVERITY_BADGE: Record<string, string> = {
@@ -118,12 +121,14 @@ export function Playbooks() {
                             </div>
                         </div>
                     ))}
-                    {steps.length === 0 && (
+                    {steps.length === 0 && (selected.step_ids ?? []).length === 0 && (
                         <div className="bg-card border border-dashed border-grey-300 rounded-xl p-6 text-center text-xs text-foreground-muted">
                             No steps have been added to this playbook yet — add them in Security Ops Management → Playbooks.
                         </div>
                     )}
                 </div>
+
+                <PlaybookActions playbookId={selected.id} playbookName={selected.name} stepIds={selected.step_ids ?? []} />
 
                 {startModal && (
                     <StartModal playbook={startModal} form={form} setForm={setForm} onClose={() => setStartModal(null)} />
@@ -167,11 +172,12 @@ export function Playbooks() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {playbooks.map((pb) => {
                         const stepCount = (pb.steps ?? []).length;
+                        const autoCount = (pb.step_ids ?? []).length;
                         return (
                             <div key={pb.id} className="bg-card border border-border rounded-xl p-4">
                                 <div className="flex items-start justify-between gap-2 mb-2">
                                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase ${severityClass(pb.severity)}`}>{pb.severity}</span>
-                                    <span className="text-[10px] text-foreground-muted flex-shrink-0">{stepCount} step{stepCount === 1 ? '' : 's'}</span>
+                                    <span className="text-[10px] text-foreground-muted flex-shrink-0">{stepCount} step{stepCount === 1 ? '' : 's'}{autoCount > 0 ? ` · ${autoCount} automated` : ''}</span>
                                 </div>
                                 <p className="text-sm font-bold text-foreground mb-1">{pb.icon ? `${pb.icon} ` : ''}{pb.name}</p>
                                 <p className="text-xs text-foreground-muted mb-3">{pb.description}</p>
