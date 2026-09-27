@@ -9,12 +9,9 @@ import {
 } from 'lucide-react';
 import { Sidebar, type NavGroup } from './Sidebar';
 
-// Reorganised per the platform-wide nav restructure. Every href below points at a route that
-// actually exists (either pre-existing or newly built alongside this reorg) — several of the
-// requested paths in the original spec didn't match this codebase's real routes (e.g. IOC
-// Lookup is /admin/threat/cti not /admin/threat/ioc-lookup, URL Scanner is
-// /admin/threat/urlscan not /admin/threat/url) and were kept at their real, working paths
-// rather than moved, since renaming a route breaks bookmarks/links for no benefit.
+// Every href below points at a route that exists. Paths follow the approved route spec after
+// the 2026-09-27 cleanup (duplicates removed, misplaced pages moved — e.g. Executive Report is
+// /admin/dashboard/executive, Audit Log and Platform Health are under /admin/settings).
 //
 // `roles` restrictions below (added for the customer-onboarding + multitenancy pass) follow
 // that spec's role matrix section-by-section: THREAT INTELLIGENCE, NETWORK,
@@ -37,7 +34,7 @@ const adminNav: NavGroup[] = [
             { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
             // "Executive Dashboard" in the role matrix — analyst is the one role that doesn't
             // get this view.
-            { label: 'Executive Report', href: '/admin/executive', icon: FileBarChart, roles: [...MANAGER_PLUS_EXEC] },
+            { label: 'Executive Report', href: '/admin/dashboard/executive', icon: FileBarChart, roles: [...MANAGER_PLUS_EXEC] },
         ],
     },
     {
@@ -70,19 +67,18 @@ const adminNav: NavGroup[] = [
         groupLabel: 'Threat Intelligence',
         // One section for Nigerian and global intelligence (previously two). executive: ❌.
         items: [
-            { label: 'Nigeria Threat Map', href: '/admin/threat/nigeria-map', icon: Map, roles: [...NOT_EXEC] },
-            { label: 'Cyber Advisory', href: '/admin/threat/nigeria', icon: Globe, roles: [...NOT_EXEC] },
+            { label: 'Nigeria Threat Map', href: '/admin/threat/nigeria', icon: Map, roles: [...NOT_EXEC] },
+            { label: 'Cyber Advisory', href: '/admin/threat/cyber-advisory', icon: Globe, roles: [...NOT_EXEC] },
             { label: 'CBN Advisories', href: '/admin/threat/cbn', icon: Landmark, roles: [...NOT_EXEC] },
             { label: 'NCC Advisories', href: '/admin/threat/ncc', icon: Radio, roles: [...NOT_EXEC] },
-            { label: 'Nigeria Deep Dive', href: '/admin/threat/nigeria-detail', icon: Map, roles: [...NOT_EXEC] },
+            { label: 'Nigeria Deep Dive', href: '/admin/threat/nigeria-deep-dive', icon: Map, roles: [...NOT_EXEC] },
             { label: 'IOC Lookup', href: '/admin/threat/cti', icon: Crosshair, roles: [...NOT_EXEC] },
             // Live IOC Feed is the indicator stream; Threat Feeds is where sources are configured.
             { label: 'Live IOC Feed', href: '/admin/threat/live-ioc', icon: Radio, roles: [...NOT_EXEC] },
             { label: 'Threat Feeds', href: '/admin/threat/feeds', icon: Database, roles: [...NOT_EXEC] },
-            { label: 'MITRE ATT&CK', href: '/admin/threat/mitre', icon: ShieldAlert, roles: [...NOT_EXEC] },
             { label: 'Threat Advisory', href: '/admin/threat/advisory', icon: AlertTriangle, roles: [...NOT_EXEC] },
             { label: 'Threat Actors', href: '/admin/threat/actors', icon: Users, roles: [...NOT_EXEC] },
-            { label: 'URL & Web Scanner', href: '/admin/threat/scanner', icon: LinkIcon, roles: [...NOT_EXEC] },
+            { label: 'URL & Web Scanner', href: '/admin/threat/urlscan', icon: LinkIcon, roles: [...NOT_EXEC] },
             { label: 'Vendor Assessments', href: '/admin/threat/vendor', icon: Building, roles: [...NOT_EXEC] },
         ],
     },
@@ -92,11 +88,10 @@ const adminNav: NavGroup[] = [
         icon: Shield,
         groupLabel: 'Brand Protection',
         items: [
-            // Replaces the old 'Domain & DNS Suite' entry, which pointed at two separate tools
-            // behind a tab switch (each with its own input). /admin/brand/domain-dns and the
-            // individual /admin/brand/domain and /admin/infra/dns routes all still resolve —
-            // only the nav entry moved, so existing links and bookmarks don't break.
-            { label: 'Domain Intelligence', href: '/admin/brand/domain-intelligence', icon: Globe },
+            // Domain Intelligence (one query across domain, DNS and lookalike checks) is the
+            // canonical domain page at /admin/brand/domain. /admin/infra/dns stays as the
+            // standalone DNS tool.
+            { label: 'Domain Intelligence', href: '/admin/brand/domain', icon: Globe },
             { label: 'Social Suite', href: '/admin/brand/social', icon: Users },
             { label: 'Brand Suite', href: '/admin/brand/brand', icon: Shield },
             { label: 'Executive Monitoring', href: '/admin/brand/executive', icon: UserCheck },
@@ -112,8 +107,8 @@ const adminNav: NavGroup[] = [
         groupLabel: 'Network',
         // Network visibility and the sensor setup guides that feed it. executive: ❌.
         items: [
-            { label: 'Network Topology', href: '/admin/network/topology', icon: Network, roles: [...NOT_EXEC] },
-            { label: 'Shadow IT', href: '/admin/network/shadow', icon: Eye, roles: [...NOT_EXEC] },
+            { label: 'Network Topology', href: '/admin/infra/topology', icon: Network, roles: [...NOT_EXEC] },
+            { label: 'Shadow IT', href: '/admin/infra/shadow', icon: Eye, roles: [...NOT_EXEC] },
             { label: 'OPNsense Setup', href: '/admin/infra/opnsense-setup', icon: Router, roles: [...NOT_EXEC] },
             { label: 'Windows (Sysmon)', href: '/admin/infra/sysmon-setup', icon: Monitor, roles: [...NOT_EXEC] },
             { label: 'Mac (osquery)', href: '/admin/infra/osquery-setup', icon: Laptop, roles: [...NOT_EXEC] },
@@ -177,7 +172,7 @@ const adminNav: NavGroup[] = [
         items: [
             { label: 'Data Loss Recovery', href: '/admin/data/recovery', icon: HardDrive, roles: [...MANAGER_PLUS_EXEC] },
             { label: 'Recovery Credit', href: '/admin/data/sla', icon: BarChart, roles: [...MANAGER_PLUS_EXEC] },
-            { label: 'Disaster Recovery Plan', href: '/admin/data/recovery-plan', icon: ClipboardList, roles: [...MANAGER_PLUS_EXEC] },
+            { label: 'Disaster Recovery Plan', href: '/admin/data/drp', icon: ClipboardList, roles: [...MANAGER_PLUS_EXEC] },
         ],
     },
     {
@@ -187,7 +182,6 @@ const adminNav: NavGroup[] = [
         groupLabel: 'Customers',
         items: [
             { label: 'All Customers', href: '/admin/customers', icon: Building2, adminOnly: true },
-            { label: 'Client Portals', href: '/admin/platform/clients', icon: Building2, adminOnly: true },
         ],
     },
     {
@@ -200,8 +194,8 @@ const adminNav: NavGroup[] = [
             { label: 'Organisations', href: '/admin/settings/organisations', icon: Building2, adminOnly: true },
             { label: 'Billing', href: '/admin/settings/billing', icon: CreditCard, adminOnly: true },
             { label: 'Analytics', href: '/admin/settings/analytics', icon: BarChart, adminOnly: true },
-            { label: 'Audit Log', href: '/admin/platform/audit', icon: ScrollText, adminOnly: true },
-            { label: 'Platform Health', href: '/admin/platform/health', icon: Activity, managerOnly: true },
+            { label: 'Audit Log', href: '/admin/settings/audit', icon: ScrollText, adminOnly: true },
+            { label: 'Platform Health', href: '/admin/settings/health', icon: Activity, managerOnly: true },
         ],
     },
 ];

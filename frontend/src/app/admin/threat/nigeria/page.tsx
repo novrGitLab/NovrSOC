@@ -1,5 +1,5 @@
-import { NigerianThreatFeed } from '@/components/features/NigerianThreatFeed';
+import { NigeriaMapPage } from '@/components/features/NigeriaMapPage';
 
 export default function Page() {
-    return <NigerianThreatFeed />;
+    return <NigeriaMapPage />;
 }

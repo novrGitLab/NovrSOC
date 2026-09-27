@@ -5,10 +5,9 @@ import { Link as LinkIcon, Globe2 } from 'lucide-react';
 import { UrlScanSuite } from './UrlScanSuite';
 import { WebsiteScanning } from './WebsiteScanning';
 
-// Combined entry point for the two scanners that used to live on separate, mostly-unlinked
-// pages (/admin/threat/urlscan and /admin/threat/webscan — the latter had no sidebar nav entry
-// at all). Both underlying pages/components are untouched and still reachable directly; this
-// just gives them one shared home with a tab switch, since they're closely related (both are
+// Combined URL and website scanner — the admin page at /admin/threat/urlscan. The website
+// scanner is also reachable alone at /admin/threat/webscan, and the client portal uses both
+// components directly. One home with a tab switch, since they're closely related (both are
 // "check this thing for me" security scanners) but scan different targets (a single URL's
 // reputation vs. a domain's overall security posture) and call different backend endpoints.
 const TABS = [

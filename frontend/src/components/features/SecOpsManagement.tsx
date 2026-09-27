@@ -14,7 +14,7 @@ import { PlaybookManagement } from './PlaybookManagement';
 // the tab itself stays visible to everyone the way this whole page already is). Each tab's
 // component is unchanged from its own standalone page where one exists (still reachable
 // directly at /admin/secops/reports, /hunting, /handover) — this is purely a second, tabbed
-// home for them, same pattern as DomainDnsSuite.tsx and UrlWebScanner.tsx elsewhere in this app.
+// home for them, same pattern as UrlWebScanner.tsx elsewhere in this app.
 const TABS = [
     { id: 'reports', label: 'Reports', icon: FileText },
     { id: 'hunting', label: 'Threat Hunting', icon: Crosshair },

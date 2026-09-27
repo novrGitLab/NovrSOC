@@ -1,5 +1,5 @@
-import { UrlScanSuite } from '@/components/features/UrlScanSuite';
+import { UrlWebScanner } from '@/components/features/UrlWebScanner';
 
 export default function Page() {
-    return <UrlScanSuite />;
+    return <UrlWebScanner />;
 }

@@ -1,6 +1,5 @@
-import { permanentRedirect } from 'next/navigation';
+import { ShadowIT } from '@/components/features/ShadowIT';
 
-// Moved to /admin/network/shadow — kept so old links and bookmarks still land.
 export default function Page() {
-    permanentRedirect('/admin/network/shadow');
+    return <ShadowIT />;
 }

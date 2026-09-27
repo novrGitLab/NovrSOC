@@ -54,5 +54,5 @@ export function setPortalSession(token: string, user: PortalUser): void {
 export function portalSignOut(): void {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
-    window.location.href = '/portal/login';
+    window.location.href = '/client/login';
 }

@@ -177,7 +177,7 @@ function MITREWidget({ tactics, source }: { tactics: Record<string, number> | nu
     const data = tactics ?? {};
     const maxCount = Math.max(...Object.values(data), 1);
     return (
-        <WidgetCard title="MITRE ATT&CK" linkHref="/admin/threat/mitre" linkLabel="View full MITRE dashboard →">
+        <WidgetCard title="MITRE ATT&CK" linkHref="/admin/secops/mitre" linkLabel="View MITRE Intelligence →">
             <div className="flex items-center justify-end mb-2 -mt-2">
                 <span className="text-[9px] bg-purple/10 text-purple px-2 py-0.5 rounded-full font-bold uppercase">{source === 'wazuh' ? 'Last 24h' : source === 'demo' ? 'Demo' : 'No data'}</span>
             </div>
