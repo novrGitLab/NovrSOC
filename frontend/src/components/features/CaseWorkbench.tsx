@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { exportDataAsPDF } from '@/lib/exportPDF';
-import { ASSIGNABLE_ANALYSTS } from '@/lib/mockTeam';
 import {
     AlertTriangle, Clock, CheckCircle, RefreshCw, TrendingUp, FileText, ChevronRight, MessageSquarePlus,
     FileDown, Briefcase, Server, Terminal, UserCheck, ListChecks, Plus, X, UserPlus, BookOpen,
@@ -19,7 +18,13 @@ import {
 type Severity = 'critical' | 'high' | 'medium' | 'low';
 type CaseStatus = 'open' | 'investigating' | 'contained' | 'resolved';
 type NoteType = 'Update' | 'Evidence' | 'Decision' | 'Escalation';
-type Filter = 'all' | CaseStatus;
+type Filter = 'all' | CaseStatus | 'escalated';
+type SevFilter = 'all' | Severity;
+
+const FILTERS: { id: Filter; label: string }[] = [
+    { id: 'all', label: 'All' }, { id: 'open', label: 'Open' }, { id: 'investigating', label: 'Investigating' },
+    { id: 'contained', label: 'Contained' }, { id: 'escalated', label: 'Escalated' }, { id: 'resolved', label: 'Closed' },
+];
 
 interface CaseItem {
     id: string;
@@ -55,7 +60,9 @@ interface CaseTask { id: string; step_id: string; title: string; description: st
 const EXECUTABLE_STEPS = new Set(['block_ip', 'isolate_agent', 'enrich_iocs', 'notify_email', 'notify_ciso']);
 interface TimelineEntry { id: string; actor: string; action: string; details: string | null; automated: boolean; created_at: string }
 interface CaseIoc { id: string; type: string; value: string; verdict: string | null; risk_score: number | null }
-interface CaseDetail { case: CaseItem; notes: CaseNote[]; tasks: CaseTask[]; timeline: TimelineEntry[]; iocs: CaseIoc[] }
+interface LinkedCase { id: string; case_number: string; title: string; severity: Severity; status: CaseStatus; created_at: string; reason: string }
+interface CaseDetail { case: CaseItem; notes: CaseNote[]; tasks: CaseTask[]; timeline: TimelineEntry[]; iocs: CaseIoc[]; linked?: LinkedCase[] }
+interface TeamMember { name: string; email: string }
 
 interface Summary { open: number; investigating: number; contained: number; active: number; critical: number; resolved: number; resolvedToday: number }
 
@@ -120,9 +127,11 @@ type ListState =
 
 // State is only set in the promise callbacks, so this is safe to start from the mount effect;
 // handlers that refetch set the loading state themselves first.
-function loadCases(f: Filter, setList: (s: ListState) => void) {
+function loadCases(f: Filter, sev: SevFilter, setList: (s: ListState) => void) {
     const params = new URLSearchParams({ exclude_auto_closed: 'true', limit: '100' });
-    if (f !== 'all') params.set('status', f);
+    if (f === 'escalated') params.set('escalated', 'true');
+    else if (f !== 'all') params.set('status', f);
+    if (sev !== 'all') params.set('severity', sev);
     return apiFetch(apiUrl(`/api/cases?${params}`), { cache: 'no-store' })
         .then(async (r) => {
             if (r.status === 401 || r.status === 403) { setList({ kind: 'unauthorised' }); return; }
@@ -135,6 +144,11 @@ function loadCases(f: Filter, setList: (s: ListState) => void) {
 
 export function CaseWorkbench() {
     const [filter, setFilter] = useState<Filter>('all');
+    const [sevFilter, setSevFilter] = useState<SevFilter>('all');
+    const [team, setTeam] = useState<TeamMember[] | null>(null);
+    const [actionOk, setActionOk] = useState<string | null>(null);
+    const [closing, setClosing] = useState(false);
+    const [resolutionNotes, setResolutionNotes] = useState('');
     const [list, setList] = useState<ListState>({ kind: 'loading' });
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [detail, setDetail] = useState<CaseDetail | null>(null);
@@ -156,7 +170,16 @@ export function CaseWorkbench() {
     const [executing, setExecuting] = useState<string | null>(null);
     const [execResult, setExecResult] = useState<{ taskId: string; ok: boolean; text: string } | null>(null);
 
-    useEffect(() => { void loadCases('all', setList); }, []);
+    useEffect(() => {
+        let active = true;
+        void loadCases('all', 'all', setList);
+        // The real team (platform_users) for assignment — not the old hardcoded list.
+        apiFetch(apiUrl('/api/communications/recipients'), { cache: 'no-store' })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => { if (active) setTeam(Array.isArray(d?.analysts) ? d.analysts.map((a: TeamMember) => ({ name: a.name, email: a.email })) : []); })
+            .catch(() => { if (active) setTeam([]); });
+        return () => { active = false; };
+    }, []);
 
     // ?id=<case uuid> opens that case — how the header search and the notification bell link to a
     // specific case. Synced during render (React's "adjusting state when a prop changes"
@@ -198,10 +221,11 @@ export function CaseWorkbench() {
         if (linkedId) router.replace(pathname);
     }
 
-    const reload = (f: Filter = filter) => {
+    const reload = (f: Filter = filter, sev: SevFilter = sevFilter) => {
         setFilter(f);
+        setSevFilter(sev);
         setList({ kind: 'loading' });
-        void loadCases(f, setList);
+        void loadCases(f, sev, setList);
     };
 
     const cases = list.kind === 'ready' ? list.cases : [];
@@ -233,6 +257,9 @@ export function CaseWorkbench() {
         setEscalationResult(null);
         setShowAddNote(false);
         setExecResult(null);
+        setActionOk(null);
+        setClosing(false);
+        setResolutionNotes('');
         setCheckedSteps(new Set());
     }
 
@@ -251,6 +278,7 @@ export function CaseWorkbench() {
     async function mutate(id: string, path: string, init: RequestInit): Promise<boolean> {
         setBusy(true);
         setActionError(null);
+        setActionOk(null);
         try {
             const res = await apiFetch(apiUrl(`/api/cases/${id}${path}`), { headers: { 'Content-Type': 'application/json' }, ...init });
             const data = await res.json().catch(() => ({}));
@@ -266,7 +294,18 @@ export function CaseWorkbench() {
     }
 
     const updateStatus = (id: string, status: CaseStatus) => mutate(id, '', { method: 'PATCH', body: JSON.stringify({ status }) });
-    const assignAnalyst = (id: string, assigned_to: string) => mutate(id, '', { method: 'PATCH', body: JSON.stringify({ assigned_to }) });
+    const assignAnalyst = async (id: string, email: string) => {
+        const member = team?.find((m) => m.email === email);
+        if (await mutate(id, '/assign', { method: 'POST', body: JSON.stringify({ analyst_id: email }) })) setActionOk(`Assigned to ${member?.name ?? email}`);
+    };
+    const closeWithResolution = async (id: string) => {
+        if (resolutionNotes.trim().length < 5) { setActionError('Write a resolution note (what was found and done) before closing.'); return; }
+        if (await mutate(id, '/close', { method: 'POST', body: JSON.stringify({ resolution_notes: resolutionNotes.trim() }) })) {
+            setActionOk('Case closed with resolution notes.');
+            setClosing(false);
+            setResolutionNotes('');
+        }
+    };
     const setTask = (id: string, taskId: string, status: 'pending' | 'completed') => mutate(id, `/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify({ status }) });
 
     // Runs a task's response action. The backend completes the task only when the action
@@ -454,16 +493,25 @@ export function CaseWorkbench() {
                 ))}
             </div>
 
-            <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg p-1 w-fit max-w-full overflow-x-auto">
-                {(['all', 'open', 'investigating', 'contained', 'resolved'] as const).map((s) => (
-                    <button
-                        key={s}
-                        onClick={() => reload(s)}
-                        className={`text-xs font-bold px-3 py-1.5 rounded-md capitalize transition-all whitespace-nowrap ${filter === s ? 'bg-blue text-white shadow-xs' : 'text-foreground-muted hover:text-foreground'}`}
-                    >
-                        {s === 'all' ? 'All Cases' : s}
-                    </button>
-                ))}
+            <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg p-1 w-fit max-w-full overflow-x-auto" role="tablist" aria-label="Status">
+                    {FILTERS.map((f) => (
+                        <button
+                            key={f.id}
+                            role="tab"
+                            aria-selected={filter === f.id}
+                            onClick={() => reload(f.id)}
+                            className={`text-xs font-bold px-3 py-1.5 rounded-md transition-all whitespace-nowrap ${filter === f.id ? 'bg-blue text-white shadow-xs' : 'text-foreground-muted hover:text-foreground'}`}
+                        >
+                            {f.label}
+                        </button>
+                    ))}
+                </div>
+                <select value={sevFilter} onChange={(e) => reload(filter, e.target.value as SevFilter)} aria-label="Severity"
+                    className="bg-card border border-border rounded-lg px-2.5 py-2 text-xs font-bold text-foreground">
+                    <option value="all">All severities</option>
+                    {(['critical', 'high', 'medium', 'low'] as const).map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+                </select>
             </div>
 
             {list.kind === 'loading' ? (
@@ -478,7 +526,7 @@ export function CaseWorkbench() {
             ) : cases.length === 0 ? (
                 <div className="bg-card border border-border rounded-xl py-12 text-center shadow-xs">
                     <p className="text-xs text-foreground-muted">
-                        {filter === 'all' ? 'No cases yet. Cases appear here when the SOAR engine or an analyst opens one.' : `No ${filter} cases.`}
+                        {filter === 'all' && sevFilter === 'all' ? 'No cases yet. Cases appear here when the SOAR engine or an analyst opens one.' : 'No cases match this filter.'}
                     </p>
                 </div>
             ) : (
@@ -588,15 +636,37 @@ export function CaseWorkbench() {
                                                 <FileDown size={14} /> PDF
                                             </button>
                                         </div>
-                                        {actionError && <p className="text-[11px] font-bold text-red-500">{actionError}</p>}
+                                        {c.status !== 'resolved' && (closing ? (
+                                            <div className="bg-card-muted/40 border border-border rounded-xl p-3 space-y-2">
+                                                <label htmlFor="resolution" className="text-[10px] font-bold uppercase tracking-wider text-foreground-muted">Resolution notes (required)</label>
+                                                <textarea id="resolution" value={resolutionNotes} onChange={(e) => setResolutionNotes(e.target.value)} rows={3}
+                                                    placeholder="What was found, what was done, and why the case can close…"
+                                                    className="w-full bg-card border border-border rounded-lg p-2.5 text-xs text-foreground resize-none focus:outline-none focus:border-purple" />
+                                                <div className="flex justify-end gap-2">
+                                                    <button onClick={() => { setClosing(false); setResolutionNotes(''); }} className="text-xs font-semibold text-foreground-muted px-3 py-1.5">Cancel</button>
+                                                    <button onClick={() => closeWithResolution(c.id)} disabled={busy || resolutionNotes.trim().length < 5}
+                                                        className="flex items-center gap-1.5 text-xs font-bold text-white bg-emerald-500 hover:bg-emerald-600 px-3.5 py-1.5 rounded-lg disabled:opacity-50">
+                                                        {busy ? 'Closing…' : 'Close case'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <button onClick={() => { setClosing(true); setActionOk(null); }} className="flex items-center gap-1.5 text-xs font-bold text-emerald-600 border border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10 px-3.5 py-2 rounded-lg">
+                                                <CheckCircle size={14} /> Close with resolution notes
+                                            </button>
+                                        ))}
+                                        {actionError && <p role="alert" className="text-[11px] font-bold text-red-500">{actionError}</p>}
+                                        {actionOk && !actionError && <p role="status" className="text-[11px] font-bold text-emerald-500">{actionOk}</p>}
                                     </div>
 
-                                    {(c.severity === 'high' || c.severity === 'critical') && c.status !== 'resolved' && (
+                                    {c.status !== 'resolved' && (
                                         <div className="bg-red-500/5 border border-red-500/30 rounded-xl p-4 sm:p-5 space-y-3">
                                             <div>
                                                 <h3 className="text-sm font-bold text-red-500">Escalation{c.escalated ? ' — already escalated' : ''}</h3>
                                                 <p className="text-[11px] text-red-500/80 mt-0.5">
-                                                    {c.severity === 'critical' ? 'Critical case — escalate within 30 minutes' : 'High severity — escalate if unresolved after 2 hours'}
+                                                    {c.severity === 'critical' ? 'Critical case — escalate within 30 minutes'
+                                                        : c.severity === 'high' ? 'High severity — escalate if unresolved after 2 hours'
+                                                        : 'Escalate if this needs the CISO\u2019s attention'}
                                                 </p>
                                             </div>
                                             <textarea
@@ -623,14 +693,14 @@ export function CaseWorkbench() {
                                         <UserPlus size={14} className="text-foreground-muted" />
                                         <span className="text-xs text-foreground-muted">Assigned to</span>
                                         <select
-                                            value={c.assigned_to ?? ''}
+                                            value=""
                                             onChange={(e) => e.target.value && assignAnalyst(c.id, e.target.value)}
-                                            disabled={busy}
+                                            disabled={busy || team === null}
                                             aria-label="Assign analyst"
                                             className="bg-card border border-border rounded-lg px-2.5 py-1 text-xs font-bold text-foreground focus:outline-none focus:border-purple disabled:opacity-50"
                                         >
                                             <option value="">{c.assigned_to ? c.assigned_to : 'Unassigned'}</option>
-                                            {ASSIGNABLE_ANALYSTS.filter((n) => n !== c.assigned_to).map((n) => <option key={n} value={n}>{n}</option>)}
+                                            {(team ?? []).filter((m) => m.name !== c.assigned_to).map((m) => <option key={m.email} value={m.email}>{m.name}</option>)}
                                         </select>
                                     </div>
 
@@ -824,6 +894,27 @@ export function CaseWorkbench() {
                                                         <Plus size={13} />
                                                     </button>
                                                 </div>
+                                            </div>
+
+                                            <div className="bg-card border border-border rounded-xl p-4 sm:p-5 shadow-xs">
+                                                <h3 className="text-xs font-bold text-foreground uppercase tracking-wider mb-3">Linked Cases</h3>
+                                                {(selected.linked ?? []).length === 0 ? (
+                                                    <p className="text-xs text-foreground-muted">No other case in the last 30 days shares this source IP, or this agent and rule.</p>
+                                                ) : (
+                                                    <div className="space-y-2">
+                                                        {(selected.linked ?? []).map((l) => (
+                                                            <button key={l.id} onClick={() => openCase(l.id)} className="w-full text-left p-2 rounded-lg bg-card-muted/30 border border-border hover:border-purple/40">
+                                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border uppercase ${SEV_STYLE[l.severity]}`}>{l.severity}</span>
+                                                                    <span className="font-mono text-[10px] font-bold text-foreground-muted">{l.case_number}</span>
+                                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border capitalize ${STATUS_STYLE[l.status]}`}>{l.status}</span>
+                                                                </div>
+                                                                <p className="text-xs text-foreground mt-1 truncate">{l.title}</p>
+                                                                <p className="text-[10px] text-foreground-muted">{l.reason} · {wat(l.created_at)}</p>
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                )}
                                             </div>
 
                                             <div className="bg-card border border-border rounded-xl p-4 sm:p-5 shadow-xs">

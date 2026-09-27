@@ -42,6 +42,7 @@ function noStore(res: Response): boolean {
 // GET /api/cases — list, filterable, with queue summary.
 //   ?status=open|investigating|contained|resolved   ?severity=…   ?tier=1|2|3
 //   ?exclude_auto_closed=true (analyst queue)       ?auto_closed=true (SOAR tier-1 report)
+//   ?escalated=true (escalated and unresolved)
 //   ?since=<ISO date>   ?limit (max 200)   ?offset
 router.get('/', async (req: AuthRequest, res) => {
     if (noStore(res)) return;
@@ -69,6 +70,8 @@ router.get('/', async (req: AuthRequest, res) => {
     if (q.tier) query = query.eq('tier', Number(q.tier));
     if (q.exclude_auto_closed === 'true') query = query.eq('auto_closed', false);
     if (q.auto_closed === 'true') query = query.eq('auto_closed', true);
+    // Escalated = escalated and not yet resolved (a resolved case is no longer "escalated work").
+    if (q.escalated === 'true') query = query.eq('escalated', true).neq('status', 'resolved');
     if (q.since && !Number.isNaN(Date.parse(q.since))) query = query.gte('created_at', new Date(q.since).toISOString());
 
     // Queue summary: separate head-only counts so the figures cover every case, not just the
@@ -173,6 +176,75 @@ router.get('/:id', async (req: AuthRequest, res) => {
         tasks: tasksRes.data ?? [],
         timeline: timelineRes.data ?? [],
         iocs: iocsRes.data ?? [],
+        linked: await linkedCases(caseRes.data as CaseRow),
+    });
+});
+
+// Linked cases, derived rather than hand-maintained: other cases in the last 30 days with the
+// same public source IP, or the same agent tripping the same rule. Each carries the reason.
+async function linkedCases(c: CaseRow) {
+    const supabase = getSupabase();
+    if (!supabase) return [];
+    const since = new Date(Date.now() - 30 * 24 * 3600_000).toISOString();
+    const base = () => supabase.from('cases')
+        .select('id, case_number, title, severity, status, created_at, auto_closed')
+        .eq('org_id', c.org_id).neq('id', c.id).gte('created_at', since)
+        .order('created_at', { ascending: false }).limit(10);
+    const [byIp, byRule] = await Promise.all([
+        c.source_ip ? base().eq('source_ip', c.source_ip) : Promise.resolve({ data: [] as never[] }),
+        c.agent_name && c.rule_id ? base().eq('agent_name', c.agent_name).eq('rule_id', c.rule_id) : Promise.resolve({ data: [] as never[] }),
+    ]);
+    const out = new Map<string, Record<string, unknown>>();
+    for (const r of byIp.data ?? []) out.set(r.id, { ...r, reason: `Same source IP ${c.source_ip}` });
+    for (const r of byRule.data ?? []) if (!out.has(r.id)) out.set(r.id, { ...r, reason: `Same agent and rule ${c.rule_id}` });
+    return [...out.values()].slice(0, 10);
+}
+
+// POST /api/cases/:id/assign { analyst_id } — analyst_id is a team member's email
+// (platform_users). Their name is stored, as assigned_to has always held names.
+router.post('/:id/assign', async (req: AuthRequest, res) => {
+    if (noStore(res)) return;
+    const { id } = req.params;
+    if (!isUuid(id)) { res.status(404).json({ success: false, error: 'Case not found' }); return; }
+    const supabase = getSupabase()!;
+    const analystId = typeof req.body?.analyst_id === 'string' ? req.body.analyst_id.trim().toLowerCase() : '';
+    if (!analystId) { res.status(400).json({ success: false, error: 'analyst_id is required' }); return; }
+    const { data: member } = await supabase.from('platform_users').select('email, name, status').ilike('email', analystId).maybeSingle();
+    if (!member || (member.status && member.status !== 'active')) { res.status(400).json({ success: false, error: 'That analyst is not an active team member' }); return; }
+    const name = member.name || member.email;
+
+    const { data, error } = await supabase.from('cases').update({ assigned_to: name, updated_at: new Date().toISOString() })
+        .eq('id', id).eq('org_id', orgOf(req)).select().maybeSingle();
+    if (error) { res.status(502).json({ success: false, error: dbErrorMessage(error) }); return; }
+    if (!data) { res.status(404).json({ success: false, error: 'Case not found' }); return; }
+    await addTimeline(id, actorOf(req), `Assigned to ${name}`);
+    res.json({ success: true, message: `Assigned to ${name}`, case: data });
+});
+
+// POST /api/cases/:id/close { resolution_notes } — resolves the case with a required
+// resolution note, recorded as a Decision note and on the timeline.
+router.post('/:id/close', async (req: AuthRequest, res) => {
+    if (noStore(res)) return;
+    const { id } = req.params;
+    if (!isUuid(id)) { res.status(404).json({ success: false, error: 'Case not found' }); return; }
+    const notes = typeof req.body?.resolution_notes === 'string' ? req.body.resolution_notes.trim() : '';
+    if (notes.length < 5) { res.status(400).json({ success: false, error: 'Resolution notes are required to close a case' }); return; }
+    const supabase = getSupabase()!;
+    const now = new Date().toISOString();
+    const { data, error } = await supabase.from('cases').update({ status: 'resolved', resolved_at: now, updated_at: now })
+        .eq('id', id).eq('org_id', orgOf(req)).select().maybeSingle();
+    if (error) { res.status(502).json({ success: false, error: dbErrorMessage(error) }); return; }
+    if (!data) { res.status(404).json({ success: false, error: 'Case not found' }); return; }
+    const row = data as CaseRow;
+    const noteRes = await supabase.from('case_notes').insert({ case_id: id, author: actorOf(req), content: `[Decision] Resolution: ${notes}` });
+    await addTimeline(id, actorOf(req), `Case closed. Resolution: ${notes.slice(0, 120)}${notes.length > 120 ? '…' : ''}`);
+    logAudit({
+        user: actorOf(req), action: 'CASE_STATUS_CHANGED', resource: 'case', resource_id: id, ip: req.ip ?? 'unknown',
+        result: 'success', details: `${row.case_number} closed: ${notes.slice(0, 150)}`, severity: 'warning',
+    });
+    res.json({
+        success: true, case: row,
+        message: noteRes.error ? `Closed — but the resolution note could not be saved: ${dbErrorMessage(noteRes.error)}` : `${row.case_number} closed`,
     });
 });
 
