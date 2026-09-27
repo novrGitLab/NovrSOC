@@ -57,6 +57,7 @@ const adminNav: NavGroup[] = [
             { label: 'Vulnerability Mgmt', href: '/admin/secops/vulnerabilities', icon: Bug, roles: [...NOT_EXEC] },
             { label: 'Playbooks', href: '/admin/secops/playbooks', icon: BookOpen, roles: [...NOT_EXEC] },
             { label: 'SOAR Automation', href: '/admin/secops/soar', icon: Zap, roles: [...NOT_EXEC] },
+            { label: 'Security Assessment', href: '/admin/secops/security-assessment', icon: ClipboardCheck, roles: [...MANAGER_PLUS_EXEC] },
             { label: 'Sec Ops Management', href: '/admin/secops/management', icon: Settings, roles: [...MANAGER_ONLY] },
         ],
     },

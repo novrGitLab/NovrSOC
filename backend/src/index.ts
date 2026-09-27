@@ -40,6 +40,7 @@ import soarRouter from './routes/soar';
 import searchRouter from './routes/search';
 import testRouter from './routes/test';
 import communicationsRouter from './routes/communications';
+import { adminRouter as securityAssessmentAdminRouter, clientRouter as securityAssessmentClientRouter } from './routes/securityAssessment';
 import weblogicRouter from './routes/weblogic';
 import assetsRouter from './routes/assets';
 import dashboardRouter from './routes/dashboard';
@@ -332,6 +333,9 @@ app.use('/api/search', searchRouter);
 app.use('/api/test', testRouter);
 // Alert Communication: compose/send + log. Analyst-only.
 app.use('/api/communications', requireAuth, communicationsRouter);
+// Security Assessment: posture from real case data.
+app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
+app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);
 app.use('/api/weblogic', weblogicRouter);
 app.use('/api/assets', assetsRouter);
 // admin-only — no client-portal component calls these, confirmed safe to gate now (see the
