@@ -39,6 +39,7 @@ import casesRouter from './routes/cases';
 import soarRouter from './routes/soar';
 import searchRouter from './routes/search';
 import testRouter from './routes/test';
+import communicationsRouter from './routes/communications';
 import weblogicRouter from './routes/weblogic';
 import assetsRouter from './routes/assets';
 import dashboardRouter from './routes/dashboard';
@@ -329,6 +330,8 @@ app.use('/api/soar', soarRouter);
 // Header global search (requireAuth inside) and operator diagnostics (manager-only inside).
 app.use('/api/search', searchRouter);
 app.use('/api/test', testRouter);
+// Alert Communication: compose/send + log. Analyst-only.
+app.use('/api/communications', requireAuth, communicationsRouter);
 app.use('/api/weblogic', weblogicRouter);
 app.use('/api/assets', assetsRouter);
 // admin-only — no client-portal component calls these, confirmed safe to gate now (see the
