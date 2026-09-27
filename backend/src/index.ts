@@ -40,6 +40,7 @@ import soarRouter from './routes/soar';
 import searchRouter from './routes/search';
 import testRouter from './routes/test';
 import communicationsRouter from './routes/communications';
+import teamRouter from './routes/team';
 import { adminRouter as securityAssessmentAdminRouter, clientRouter as securityAssessmentClientRouter } from './routes/securityAssessment';
 import weblogicRouter from './routes/weblogic';
 import assetsRouter from './routes/assets';
@@ -251,6 +252,8 @@ app.use(express.json());
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 10,
+    // Presence heartbeats (every 2 min per signed-in user) must not use up the login budget.
+    skip: (req) => req.path === '/heartbeat',
     message: { error: 'Too many login attempts — try again in 15 minutes' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -333,6 +336,8 @@ app.use('/api/search', searchRouter);
 app.use('/api/test', testRouter);
 // Alert Communication: compose/send + log. Analyst-only.
 app.use('/api/communications', requireAuth, communicationsRouter);
+// Team presence (Settings → Team, Security Assessment widget).
+app.use('/api/admin/team', requireAuth, teamRouter);
 // Security Assessment: posture from real case data.
 app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
 app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);

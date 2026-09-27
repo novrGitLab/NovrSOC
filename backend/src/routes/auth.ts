@@ -5,6 +5,8 @@ import { getSupabase } from '../services/geoEnrichment';
 
 const router = Router();
 import { APP_BACKEND_URL as BACKEND_URL, isAppBackendConfigured, warnUnconfiguredOnce } from '../lib/legacyBackend';
+import { requireAuth, type AuthRequest } from '../middleware/auth';
+import { recordPresence } from '../services/presence';
 
 // Hand-rolled JWT-shaped token (header.payload.signature, HMAC-SHA256) — dev-only convenience,
 // avoids pulling in a jsonwebtoken dependency just to sign these. IS verified now: requireAuth
@@ -104,6 +106,7 @@ router.post('/signin', async (req, res) => {
             ip: req.ip || (req.headers['x-forwarded-for'] as string) || 'unknown',
             result: 'success',
         });
+        void recordPresence(devEmail, 'login').catch(() => {});
         res.json({ token, user: { email: devEmail, name, company, role } });
         return;
     }
@@ -164,6 +167,16 @@ router.post('/signup', async (req, res) => {
     } catch {
         res.status(502).json({ error: 'Sign-up is not available yet. Please contact sales.' });
     }
+});
+
+// POST /api/auth/heartbeat { visible?, state? } — presence ping from the admin app every 2
+// minutes (services/presence.ts). state: 'offline' is sent on sign-out. Exempt from the login
+// rate limit (index.ts) so heartbeats can never lock a team out of signing in.
+router.post('/heartbeat', requireAuth, async (req: AuthRequest, res) => {
+    const email = req.user?.email;
+    if (!email) { res.status(400).json({ ok: false, error: 'No user on token' }); return; }
+    await recordPresence(email, req.body?.state === 'offline' ? 'logout' : 'heartbeat', req.body?.visible !== false).catch(() => {});
+    res.json({ ok: true });
 });
 
 export default router;

@@ -8,6 +8,10 @@ import { Header } from '@/components/layout/Header';
 import { RightRail } from '@/components/dashboard/RightRail';
 import { HelpAssistant } from '@/components/shared/HelpAssistant';
 import { isAdminAuthenticated, adminSignOut, getAdminUser } from '@/lib/admin-auth';
+import { PresenceHeartbeat, announceSignOut } from '@/components/layout/PresenceHeartbeat';
+
+// Marks the user offline before clearing the session.
+const signOut = () => { announceSignOut(); adminSignOut(); };
 import { cn } from '@/lib/utils';
 
 const RAIL_STORAGE_KEY = 'novrsoc_rail_open';
@@ -43,11 +47,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
     return (
         <div className="flex min-h-screen bg-surface">
-            <AdminSidebar user={user} onLogout={adminSignOut} />
+            <PresenceHeartbeat />
+            <AdminSidebar user={user} onLogout={signOut} />
 
             <div className="ml-[260px] flex flex-1 min-h-screen">
                 <div className={cn('flex-1 flex flex-col min-h-screen transition-all duration-300', railOpen ? 'mr-[280px]' : 'mr-[48px]')}>
-                    <Header initials={initials} onSignOut={adminSignOut} />
+                    <Header initials={initials} onSignOut={signOut} />
                     <main className="flex-1 p-6 overflow-y-auto">{children}</main>
                 </div>
 
