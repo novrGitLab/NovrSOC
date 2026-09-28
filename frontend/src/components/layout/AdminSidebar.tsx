@@ -162,7 +162,7 @@ const adminNav: NavGroup[] = [
         icon: Bot,
         groupLabel: 'AI Analyst',
         items: [
-            { label: 'NovrAI Chat', href: '/admin/novrail', icon: Bot },
+            { label: 'NovrAI', href: '/admin/novrail', icon: Bot },
         ],
     },
     {
