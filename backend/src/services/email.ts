@@ -1,6 +1,6 @@
 // Transactional email — rich HTML templates for alerts, weekly reports, incident resolutions,
-// and client onboarding. Three providers, tried in this order: Resend (HTTPS API) first, then
-// SMTP (e.g. Zoho, smtp.zoho.com:587), then SendGrid.
+// and client onboarding. Four providers, tried in this order: Brevo (HTTPS API, when
+// BREVO_API_KEY is set), Resend (HTTPS API), then SMTP (e.g. Zoho, smtp.zoho.com:587), then SendGrid.
 //
 // Resend goes first because Railway (where this backend actually runs) blocks outbound SMTP on
 // port 587 — every send attempted through the SMTP path there fails, silently falls through to
@@ -63,8 +63,36 @@ function isResendConfigured(): boolean {
     return !!(key && key !== 'REPLACE_WHEN_OBTAINED');
 }
 
+export function isBrevoConfigured(): boolean {
+    const key = process.env.BREVO_API_KEY;
+    return !!(key && key !== 'REPLACE_WHEN_OBTAINED');
+}
+
 export function isEmailEnabled(): boolean {
-    return process.env.EMAIL_ENABLED === 'true' && (isResendConfigured() || isSMTPConfigured() || isSendGridConfigured());
+    return process.env.EMAIL_ENABLED === 'true'
+        && (isBrevoConfigured() || isResendConfigured() || isSMTPConfigured() || isSendGridConfigured());
+}
+
+// Brevo's sender is its own: BREVO_FROM, falling back to soc@cybernovr.com — the address verified
+// as a sender in Brevo. (RESEND_FROM's alerts@ is not verified there, and Brevo rejects it.)
+const BREVO_FROM = (() => {
+    const p = parseFrom(process.env.BREVO_FROM);
+    return process.env.BREVO_FROM?.trim() ? p : { ...p, email: 'soc@cybernovr.com' };
+})();
+
+// Brevo transactional API (HTTPS, so not affected by Railway's port-587 block). Throws with
+// Brevo's own message on rejection — e.g. an unverified sender — and returns its messageId.
+async function sendViaBrevo(params: { to: string | string[]; subject: string; html: string }): Promise<string | null> {
+    const to = (Array.isArray(params.to) ? params.to : [params.to]).map((email) => ({ email }));
+    const r = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: { 'api-key': process.env.BREVO_API_KEY as string, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ sender: { name: BREVO_FROM.name, email: BREVO_FROM.email }, to, subject: params.subject, htmlContent: params.html }),
+        signal: AbortSignal.timeout(10_000),
+    });
+    const body = (await r.json().catch(() => null)) as { messageId?: string; code?: string; message?: string } | null;
+    if (!r.ok) throw new Error(`Brevo answered HTTP ${r.status}${body?.message ? `: ${body.message}` : ''}`);
+    return body?.messageId ?? null;
 }
 
 // Built once and reused, same reasoning as the SMTP transporter below.
@@ -100,6 +128,15 @@ function getSMTPTransporter(): Transporter | null {
 // failure on all three throws, same as an sgMail.send() failure always has — callers
 // (routes/email.ts) already catch and report that.
 async function sendEmail(params: { to: string | string[]; subject: string; html: string }): Promise<void> {
+    if (isBrevoConfigured()) {
+        try {
+            await sendViaBrevo(params);
+            return;
+        } catch (err) {
+            console.error('[email] Brevo send failed, falling back to Resend/SMTP/SendGrid:', err instanceof Error ? err.message : err);
+        }
+    }
+
     const resend = getResendClient();
     if (resend) {
         try {
@@ -134,7 +171,7 @@ async function sendEmail(params: { to: string | string[]; subject: string; html:
     }
 
     if (!isSendGridConfigured()) {
-        throw new Error('No email provider configured or reachable (Resend, SMTP, and SendGrid all unavailable)');
+        throw new Error('No email provider configured or reachable (Brevo, Resend, SMTP, and SendGrid all unavailable)');
     }
     ensureInitialized();
     await sgMail.send({ to: params.to, from: FROM, subject: params.subject, html: params.html });
@@ -171,6 +208,30 @@ export async function resendDomainStatus(domain: string): Promise<{ status: Doma
     } catch (err) {
         return { status: 'unknown', detail: `Could not reach Resend: ${err instanceof Error ? err.message : err}` };
     }
+}
+
+/** Sends one test message through Brevo ONLY (no fallback), returning Brevo's own answer. */
+export async function testBrevoDelivery(to: string): Promise<{ id: string | null; from: string }> {
+    const from = `${BREVO_FROM.name} <${BREVO_FROM.email}>`;
+    if (!isBrevoConfigured()) throw new Error('BREVO_API_KEY is not set on the backend');
+    const sentAt = new Date().toLocaleString('en-GB', { timeZone: 'Africa/Lagos' });
+    const id = await sendViaBrevo({
+        to,
+        subject: 'NovrSOC Email Test — SOAR Pipeline',
+        html: `
+            <div style="font-family:sans-serif;max-width:500px">
+                <div style="background:#520385;padding:20px;border-radius:12px 12px 0 0">
+                    <h2 style="color:white;margin:0">Email test successful</h2>
+                </div>
+                <div style="background:#f8f9fc;padding:20px;border-radius:0 0 12px 12px">
+                    <p>Your NovrSOC email pipeline delivered this message through Brevo.</p>
+                    <p><strong>Sent at:</strong> ${sentAt} WAT</p>
+                    <p><strong>From:</strong> ${escapeHtml(from)}</p>
+                    <p>Case escalation emails will be delivered to this address.</p>
+                </div>
+            </div>`,
+    });
+    return { id, from };
 }
 
 export async function testResendDelivery(to: string): Promise<{ id: string | null; from: string }> {
