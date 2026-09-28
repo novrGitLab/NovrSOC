@@ -6,6 +6,7 @@ import {
     Mail, MessageSquare, ShieldAlert, Activity, ClipboardList, Zap,
     HardDrive, BarChart, CreditCard, Settings, Database, BookOpen, FileText, ScrollText,
     ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor, Router, Laptop,
+    Droplets, Wifi, HeartPulse, GraduationCap, Swords, Truck, Wheat, Factory, Mountain,
 } from 'lucide-react';
 import { Sidebar, type NavGroup } from './Sidebar';
 
@@ -92,14 +93,18 @@ const adminNav: NavGroup[] = [
         items: [
             { label: 'Overview', href: '/admin/cnii', icon: LayoutDashboard },
             { label: 'Power & Energy', href: '/admin/cnii/power', icon: Zap },
-            { label: 'Telecoms & ICT', href: '/admin/cnii/telecoms', icon: Radio },
-            { label: 'Financial Services', href: '/admin/cnii/finance', icon: Landmark },
-            { label: 'Oil & Gas', href: '/admin/cnii/oilandgas', icon: Activity },
-            { label: 'Water & Sanitation', href: '/admin/cnii/water', icon: Database },
-            { label: 'Transportation', href: '/admin/cnii/transport', icon: Router },
-            { label: 'Health', href: '/admin/cnii/health', icon: Monitor },
-            { label: 'Food & Agriculture', href: '/admin/cnii/food', icon: Globe },
-            { label: 'Government & Defence', href: '/admin/cnii/government', icon: Building2 },
+            { label: 'Water', href: '/admin/cnii/water', icon: Droplets },
+            { label: 'ICT & Communications', href: '/admin/cnii/ict', icon: Wifi },
+            { label: 'Banking & Finance', href: '/admin/cnii/finance', icon: Landmark },
+            { label: 'Health', href: '/admin/cnii/health', icon: HeartPulse },
+            { label: 'Public Administration', href: '/admin/cnii/publicadmin', icon: Building },
+            { label: 'Education', href: '/admin/cnii/education', icon: GraduationCap },
+            { label: 'Defence & Security', href: '/admin/cnii/defence', icon: Swords },
+            { label: 'Transport', href: '/admin/cnii/transport', icon: Truck },
+            { label: 'Food & Agriculture', href: '/admin/cnii/food', icon: Wheat },
+            { label: 'Safety & Emergency', href: '/admin/cnii/safety', icon: AlertTriangle },
+            { label: 'Industrial & Mfg', href: '/admin/cnii/industrial', icon: Factory },
+            { label: 'Mines & Steel', href: '/admin/cnii/mines', icon: Mountain },
         ],
     },
     {
