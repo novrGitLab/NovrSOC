@@ -50,10 +50,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             <PresenceHeartbeat />
             <AdminSidebar user={user} onLogout={signOut} />
 
-            <div className="ml-[260px] flex flex-1 min-h-screen">
-                <div className={cn('flex-1 flex flex-col min-h-screen transition-all duration-300', railOpen ? 'mr-[280px]' : 'mr-[48px]')}>
+            <div className="ml-[260px] flex flex-1 min-w-0 min-h-screen">
+                <div className={cn('flex-1 min-w-0 flex flex-col min-h-screen transition-all duration-300', railOpen ? 'mr-[280px]' : 'mr-[48px]')}>
                     <Header initials={initials} onSignOut={signOut} />
-                    <main className="flex-1 p-6 overflow-y-auto">{children}</main>
+                    <main className="flex-1 min-w-0 p-6 overflow-y-auto">{children}</main>
                 </div>
 
                 <div

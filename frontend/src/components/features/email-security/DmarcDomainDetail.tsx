@@ -17,7 +17,7 @@ interface Findings { errors: string[]; warnings: string[]; recommendations: stri
 interface Inspection {
     checked_at: string; mx: { exchange: string; priority: number }[];
     spf: Findings & { exists: boolean; raw: string | null; all: string | null; lookups: number; total_lookups: number | null };
-    dmarc: Findings & { exists: boolean; raw: string | null; policy: string | null; subdomainPolicy: string | null; pct: number; rua: string[]; ruf: string[]; adkim: string; aspf: string };
+    dmarc: Findings & { exists: boolean; raw: string | null; records?: string[]; policy: string | null; subdomainPolicy: string | null; pct: number; rua: string[]; ruf: string[]; adkim: string; aspf: string };
     dkim: { selectors_checked: string[]; found: (Findings & { selector: string; raw: string | null; keyType: string; keyBits: number | null; revoked: boolean })[] };
     statuses: { spf: string; dkim: string; dmarc: string };
     health: { score: number; status: string; parts: { label: string; points: number; max: number }[] };
@@ -100,7 +100,7 @@ export function DmarcDomainDetail({ id }: { id: string }) {
                     <Panel><Empty title="Not inspected yet" body={d.domain.last_error ?? 'Run an inspection to read the published SPF, DKIM and DMARC records.'} /></Panel>
                 ) : (
                     <>
-                        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
+                        <div className="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)] gap-4 [&>*]:min-w-0">
                             <Panel title="Authentication health">
                                 <p className="text-4xl font-black text-foreground">{i.health.score}<span className="text-base text-foreground-muted">/100</span></p>
                                 <div className="mt-1"><StatusBadge s={i.health.status} /></div>
@@ -114,7 +114,7 @@ export function DmarcDomainDetail({ id }: { id: string }) {
                                 </ul>
                                 {i.lookup_errors.length > 0 && <p className="text-[10px] text-red-500 mt-2">DNS errors: {i.lookup_errors.join('; ')}</p>}
                             </Panel>
-                            <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                            <div className="grid grid-cols-1 2xl:grid-cols-3 gap-4 [&>*]:min-w-0">
                                 <Panel title={<span className="flex items-center gap-2">SPF <StatusBadge s={i.statuses.spf} /></span>}>
                                     <Record value={i.spf.raw} />
                                     {i.spf.exists && <p className="text-[10px] text-foreground-muted my-2">DNS lookups: {i.spf.total_lookups ?? i.spf.lookups} of 10 (incl. nested includes) · all: {i.spf.all ? `${i.spf.all}all` : 'none'}</p>}
@@ -139,8 +139,10 @@ export function DmarcDomainDetail({ id }: { id: string }) {
                                     )}
                                 </Panel>
                                 <Panel title={<span className="flex items-center gap-2">DMARC <StatusBadge s={i.statuses.dmarc} /></span>}>
-                                    <Record value={i.dmarc.raw} />
-                                    {i.dmarc.exists && (
+                                    {(i.dmarc.records ?? []).length > 1
+                                        ? <div className="space-y-1">{i.dmarc.records!.map((r) => <Record key={r} value={r} />)}<p className="text-[11px] text-red-500 font-bold">{i.dmarc.records!.length} records published — receivers ignore all of them. Keep exactly one.</p></div>
+                                        : <Record value={i.dmarc.raw} />}
+                                    {i.dmarc.exists && (i.dmarc.records ?? []).length <= 1 && (
                                         <div className="my-2"><KeyValue rows={[
                                             ['Policy', i.dmarc.policy ? `p=${i.dmarc.policy}` : '—'], ['Subdomains', i.dmarc.subdomainPolicy ? `sp=${i.dmarc.subdomainPolicy}` : '—'],
                                             ['Applies to', `${i.dmarc.pct}% of failing mail`], ['Alignment', `DKIM ${i.dmarc.adkim === 's' ? 'strict' : 'relaxed'}, SPF ${i.dmarc.aspf === 's' ? 'strict' : 'relaxed'}`],
@@ -156,7 +158,8 @@ export function DmarcDomainDetail({ id }: { id: string }) {
                             <p className="text-[11px] text-foreground-muted mb-3">The policy tells receiving mail servers what to do with messages that fail DMARC. NovrSOC never changes your DNS — moving to a stricter policy is an administrative action you publish at your DNS provider.</p>
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                                 {(['none', 'quarantine', 'reject'] as const).map((p) => {
-                                    const current = i.dmarc.policy === p;
+                                    // An invalid record set is applied as no policy at all.
+                                    const current = !i.dmarc.errors.length && i.dmarc.policy === p;
                                     return (
                                         <div key={p} className={`rounded-xl border p-3 ${current ? 'border-purple bg-purple/5' : 'border-border'}`}>
                                             <p className="text-xs font-black text-foreground">{d.policies[p].title}{current && <span className="ml-2 text-[9px] font-bold text-purple uppercase">Current</span>}</p>

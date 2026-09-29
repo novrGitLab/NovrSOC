@@ -99,7 +99,7 @@ function DomainsTab({ state, list, reload }: { state: { loading: boolean; error:
                                     <tr key={d.id} className="border-b border-border/60 last:border-0 hover:bg-card-muted/40">
                                         <td className={td}><Link href={`/admin/email/dmarc/${d.id}`} className="font-bold text-foreground hover:text-purple">{d.domain}</Link>{d.last_error && <p className="text-[10px] text-red-500 max-w-[220px] line-clamp-2">{d.last_error}</p>}</td>
                                         <td className={td}><StatusBadge s={d.status} /></td>
-                                        <td className={`${td} font-mono`}>{d.dmarc_policy ? `p=${d.dmarc_policy}` : <span className="text-foreground-muted">not published</span>}</td>
+                                        <td className={`${td} font-mono`}>{d.dmarc_policy ? `p=${d.dmarc_policy}` : d.dmarc_status === 'fail' ? <span className="text-red-500">invalid — none applied</span> : <span className="text-foreground-muted">not published</span>}</td>
                                         <td className={td}><StatusBadge s={d.spf_status} /></td>
                                         <td className={td}><StatusBadge s={d.dkim_status} /></td>
                                         <td className={td}><StatusBadge s={d.dmarc_status} /></td>

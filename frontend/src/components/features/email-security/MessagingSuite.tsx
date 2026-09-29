@@ -101,7 +101,7 @@ function Connections() {
                             {c.connection?.last_error && <div className="mt-2"><ErrorNote message={c.connection.last_error} /></div>}
                             <div className="mt-3">
                                 <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">Permissions requested</p>
-                                <ul className="text-[11px] text-foreground list-disc pl-4 mt-1">{c.permissions.map((x) => <li key={x}>{x}</li>)}</ul>
+                                <ul className="text-[11px] text-foreground list-disc pl-4 mt-1 [overflow-wrap:anywhere]">{c.permissions.map((x) => <li key={x}>{x}</li>)}</ul>
                             </div>
                             {unavailable && <p className="text-[11px] text-amber-600 mt-2">Not available on this NovrSOC deployment yet — the backend needs {c.missing_config.join(', ')}.</p>}
                             <div className="flex flex-wrap gap-2 mt-3">
