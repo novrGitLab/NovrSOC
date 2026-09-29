@@ -3,14 +3,32 @@ import multer from 'multer';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { getDb } from '../services/emailsec/db';
 import { ingestReport } from '../services/emailsec/dmarcService';
-import {
-    sendTestEmail,
-    sendCriticalAlertEmail,
-    sendWeeklyReportEmail,
-    isEmailEnabled,
-} from '../services/email';
+import { z } from 'zod';
+import rateLimit from 'express-rate-limit';
+import { sendWeeklyReportEmail, isEmailEnabled } from '../services/email';
+import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { logAudit } from '../lib/audit';
+
+// Platform notification email + the Mailgun DMARC report inbox.
+//
+// Every route that sends mail requires a staff token (2026-09-29 hardening). Two routes were
+// removed rather than protected, because nothing in the application called them and each let
+// an anonymous caller send mail:
+//   POST /test  — sent a test email to any address. Test sends live at POST /api/test/email
+//                 (managers, CISO address only) and POST /api/alerts/test (managers).
+//   POST /alert — sent a formatted "critical alert" email to any list of addresses. Critical
+//                 alert email is sent by the backend itself (routes/threatManagement.ts calls
+//                 sendCriticalAlertEmail directly), never over HTTP.
 
 const router = Router();
+
+// Bounded per user, not per IP — the caller is always an authenticated staff member.
+export const sendLimiter = rateLimit({
+    windowMs: 10 * 60_000, limit: 10, standardHeaders: 'draft-7', legacyHeaders: false,
+    keyGenerator: (req) => (req as AuthRequest).user?.email ?? 'anonymous',
+    message: { error: 'Too many emails sent — try again in a few minutes.' },
+});
 
 // Mailgun's inbound route POSTs multipart/form-data (fields + the DMARC XML/zip as a file
 // attachment). express.json() (mounted globally in index.ts) can't parse that, so this route
@@ -18,8 +36,8 @@ const router = Router();
 // are small XML/gzip files, not the multi-MB uploads other routes (e.g. brand.ts) handle.
 const dmarcUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 5 } });
 
-// GET /api/email/status
-router.get('/status', (req, res) => {
+// GET /api/email/status — which provider is configured. Staff only: it discloses sender setup.
+router.get('/status', requireAuth, requireRole('super_admin', 'soc_manager', 'analyst', 'executive'), (_req, res) => {
     const hasResend = !!(process.env.RESEND_API_KEY && process.env.RESEND_API_KEY !== 'REPLACE_WHEN_OBTAINED');
     const hasSmtp = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
     const hasSendGrid = !!(process.env.SENDGRID_API_KEY && process.env.SENDGRID_API_KEY !== 'REPLACE_WHEN_OBTAINED');
@@ -35,38 +53,35 @@ router.get('/status', (req, res) => {
     });
 });
 
-// POST /api/email/test
-router.post('/test', async (req, res) => {
-    const { to } = req.body ?? {};
-    if (!to) {
-        res.status(400).json({ error: 'to email required' });
+const count = z.number().int().min(0).max(100_000_000);
+export const weeklyReportSchema = z.object({
+    to: z.array(z.string().trim().email().max(254)).min(1).max(20),
+    orgName: z.string().trim().min(1).max(200),
+    weekStart: z.string().trim().min(1).max(40),
+    weekEnd: z.string().trim().min(1).max(40),
+    totalAlerts: count, criticalCount: count, highCount: count, resolvedCount: count, openIncidents: count,
+    complianceScore: z.number().min(0).max(100),
+    complianceChange: z.number().min(-100).max(100),
+    topThreats: z.array(z.object({ name: z.string().trim().min(1).max(200), count })).max(20),
+    slaUptime: z.number().min(0).max(100),
+    backupStatus: z.string().trim().min(1).max(100),
+}).strict();
+
+// POST /api/email/weekly-report — Reports page (Sec Ops Management → Reports, manager-only).
+router.post('/weekly-report', requireAuth, requireRole('super_admin', 'soc_manager'), sendLimiter, validate(weeklyReportSchema), async (req: AuthRequest, res) => {
+    const body = req.body as z.infer<typeof weeklyReportSchema>;
+    // sendWeeklyReportEmail() returns quietly when email is off — say so instead of "success".
+    if (!isEmailEnabled()) {
+        res.status(503).json({ success: false, error: 'Email sending is not enabled on the backend (EMAIL_ENABLED / provider keys).' });
         return;
     }
     try {
-        await sendTestEmail(to);
-        res.json({ success: true, message: `Test email sent to ${to}` });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// POST /api/email/alert
-router.post('/alert', async (req, res) => {
-    try {
-        await sendCriticalAlertEmail(req.body ?? {});
+        await sendWeeklyReportEmail(body);
+        logAudit({ user: req.user?.email ?? 'unknown', action: 'EMAIL_WEEKLY_REPORT', resource: 'email', ip: req.ip ?? '', result: 'success', details: `to ${body.to.join(', ')}`, severity: 'info' });
         res.json({ success: true });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// POST /api/email/weekly-report
-router.post('/weekly-report', async (req, res) => {
-    try {
-        await sendWeeklyReportEmail(req.body ?? {});
-        res.json({ success: true });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err) {
+        logAudit({ user: req.user?.email ?? 'unknown', action: 'EMAIL_WEEKLY_REPORT', resource: 'email', ip: req.ip ?? '', result: 'failed', details: err instanceof Error ? err.message : 'send failed', severity: 'warning' });
+        res.status(502).json({ success: false, error: err instanceof Error ? err.message : 'Send failed' });
     }
 });
 

@@ -2,7 +2,15 @@ import { Router } from 'express';
 // services/email.ts is the email service (Resend first, then SMTP, then SendGrid) — used here so
 // these alerts go through whichever provider is really configured. Email is the only alert
 // channel.
+import { z } from 'zod';
 import { sendTestEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients } from '../services/email';
+import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { logAudit } from '../lib/audit';
+import { sendLimiter } from './email';
+
+// The two sending routes below need a staff token (2026-09-29 hardening): both were callable
+// anonymously, and /test sent to any address given in the body.
 
 const router = Router();
 
@@ -26,11 +34,13 @@ router.get('/status', (_req, res) => {
 // caller (which only reads `message`) while also returning `results` — string statuses, not
 // booleans, so a caller can distinguish "not configured" from "configured but failed" — for
 // PlatformHealth.tsx's dedicated "Test Alert Communications" button.
-router.post('/test', async (req, res) => {
+// Managers only (Platform Health is manager-only). The recipient is always the configured SOC
+// address — a caller-chosen `email` is no longer honoured, so this can't be used as a relay.
+router.post('/test', requireAuth, requireRole('super_admin', 'soc_manager'), sendLimiter, async (req: AuthRequest, res) => {
     const results: Record<string, string> = {};
 
     if (isEmailEnabled()) {
-        const to = req.body?.email || process.env.ALERT_EMAIL_TO || process.env.CISO_EMAIL || 'soc@cybernovr.com';
+        const to = process.env.ALERT_EMAIL_TO || process.env.CISO_EMAIL || 'soc@cybernovr.com';
         try {
             await sendTestEmail(to);
             results.email = 'sent';
@@ -42,6 +52,7 @@ router.post('/test', async (req, res) => {
     }
 
     const sentCount = Object.values(results).filter((r) => r === 'sent').length;
+    logAudit({ user: req.user?.email ?? 'unknown', action: 'ALERT_TEST_SEND', resource: 'alerts', ip: req.ip ?? '', result: sentCount > 0 ? 'success' : 'failed', details: `email: ${results.email}` });
     res.json({
         success: true,
         results,
@@ -49,21 +60,17 @@ router.post('/test', async (req, res) => {
     });
 });
 
-interface IncidentBody {
-    title?: string;
-    severity?: string;
-    description?: string;
-    affected_host?: string;
-    incident_id?: string;
-}
+export const incidentSchema = z.object({
+    title: z.string().trim().min(1).max(300),
+    severity: z.enum(['critical', 'high', 'medium', 'low', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW']),
+    description: z.string().trim().max(4000).optional(),
+    affected_host: z.string().trim().max(255).optional(),
+    incident_id: z.string().trim().max(64).optional(),
+});
 
-// POST /api/alerts/incident — dispatch a real incident alert
-router.post('/incident', async (req, res) => {
-    const { title, severity, description, affected_host, incident_id }: IncidentBody = req.body ?? {};
-    if (!title || !severity) {
-        res.status(400).json({ error: 'title and severity required' });
-        return;
-    }
+// POST /api/alerts/incident — dispatch a real incident alert to the SOC recipients (analysts and above).
+router.post('/incident', requireAuth, requireRole('super_admin', 'soc_manager', 'analyst'), sendLimiter, validate(incidentSchema), async (req: AuthRequest, res) => {
+    const { title, severity, description, affected_host, incident_id } = req.body as z.infer<typeof incidentSchema>;
 
     const incident = {
         incident_id: incident_id || `INC-${Date.now()}`,
@@ -94,6 +101,7 @@ router.post('/incident', async (req, res) => {
         }
     }
 
+    logAudit({ user: req.user?.email ?? 'unknown', action: 'ALERT_INCIDENT_SEND', resource: 'alerts', ip: req.ip ?? '', result: dispatched.length ? 'success' : 'failed', details: `${incident.severity}: ${incident.title}`, resource_id: incident.incident_id, severity: 'warning' });
     res.json({
         dispatched,
         incident_id: incident.incident_id,
