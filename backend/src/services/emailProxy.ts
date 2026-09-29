@@ -40,57 +40,116 @@ export interface EmailLogEntry {
 
 const VALID_VERDICTS: EmailVerdict[] = ['clean', 'spam', 'phishing', 'malware', 'suspicious'];
 
+
+// ── Storage seam ─────────────────────────────────────────────────────────────────────────
+// The verdict path's database operations, behind one small interface so the whole
+// gateway → email_logs → Messaging Suite path can be exercised in tests (setEmailProxyStore).
+export interface EmailProxyStore {
+    /** org_id of the active gateway domain for this recipient domain, or null if not registered. */
+    orgForDomain(domain: string): Promise<{ org_id: string | null; error?: string }>;
+    upsertLog(row: Record<string, unknown>): Promise<{ error?: string }>;
+    logsSince(orgId: string, since: string, limit: number): Promise<{ rows: Record<string, unknown>[]; error?: string }>;
+}
+
+const supabaseStore: EmailProxyStore = {
+    async orgForDomain(domain) {
+        const supabase = getSupabase();
+        if (!supabase) return { org_id: null, error: 'Database not configured' };
+        const { data, error } = await supabase.from('email_proxy_domains').select('org_id, active').eq('domain', domain).maybeSingle();
+        if (error) return { org_id: null, error: explainDbError(error) };
+        const row = data as { org_id: string; active: boolean | null } | null;
+        return { org_id: row && row.active !== false ? row.org_id : null };
+    },
+    async upsertLog(row) {
+        const supabase = getSupabase();
+        if (!supabase) return { error: 'Database not configured' };
+        // Upsert on message_id so a retried report updates rather than duplicating.
+        const { error } = await supabase.from('email_logs').upsert(row, { onConflict: 'message_id' });
+        return error ? { error: explainDbError(error) } : {};
+    },
+    async logsSince(orgId, since, limit) {
+        const supabase = getSupabase();
+        if (!supabase) return { rows: [], error: 'Database not configured' };
+        const { data, error } = await supabase.from('email_logs').select('*').eq('org_id', orgId).gt('received_at', since).order('received_at', { ascending: true }).limit(limit);
+        return error ? { rows: [], error: explainDbError(error) } : { rows: (data ?? []) as Record<string, unknown>[] };
+    },
+};
+let store: EmailProxyStore = supabaseStore;
+/** Tests only. */
+export function setEmailProxyStore(s: EmailProxyStore | null): void { store = s ?? supabaseStore; }
+export function emailProxyStore(): EmailProxyStore { return store; }
+
+const ADDRESS = /^[^\s@<>]+@([a-z0-9-]+(\.[a-z0-9-]+)+)$/i;
+/** "Name <a@b.com>" or "a@b.com" → "a@b.com", lowercased; null when not an address. */
+export function normalizeAddress(v: unknown): string | null {
+    if (typeof v !== 'string') return null;
+    const inner = /<([^>]+)>\s*$/.exec(v)?.[1] ?? v;
+    const a = inner.trim().toLowerCase();
+    return a.length <= 320 && ADDRESS.test(a) ? a : null;
+}
+const str = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
+const strList = (v: unknown, max: number, each: number) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(0, max).map((x) => x.slice(0, each)) : []);
+const AUTH_RESULTS = ['pass', 'fail', 'none', 'neutral', 'softfail', 'temperror', 'permerror'];
+const authResult = (v: unknown) => { const x = str(v, 20)?.toLowerCase(); return x && AUTH_RESULTS.includes(x) ? x : null; };
+
 export interface StoreResult {
     ok: boolean;
+    status?: number;
     error?: string;
+    org_id?: string;
 }
 
 /**
- * Records one scanned message. Validates before writing — this endpoint is reachable by a mail
- * server rather than the UI, so the payload is treated as untrusted input rather than assumed
- * well-formed.
+ * Records one scanned message. The payload comes from a mail server, so it is untrusted:
+ * every field is validated and normalised, and the TENANT IS NEVER TAKEN FROM THE PAYLOAD —
+ * it is the organisation that registered the recipient's domain with the gateway
+ * (email_proxy_domains). A message for an unregistered domain is refused.
  */
-export async function storeEmailVerdict(entry: EmailLogEntry): Promise<StoreResult> {
-    if (!entry?.message_id || typeof entry.message_id !== 'string') {
-        return { ok: false, error: 'message_id is required' };
+export async function storeEmailVerdict(entry: Record<string, unknown>): Promise<StoreResult> {
+    const messageId = str(entry?.message_id, 998);
+    if (!messageId) return { ok: false, status: 400, error: 'message_id is required' };
+    const from = normalizeAddress(entry.from_address);
+    const to = normalizeAddress(entry.to_address);
+    if (!from || !to) return { ok: false, status: 400, error: 'from_address and to_address are required and must be email addresses' };
+    const verdict = typeof entry.verdict === 'string' ? (entry.verdict.trim().toLowerCase() as EmailVerdict) : null;
+    if (!verdict || !VALID_VERDICTS.includes(verdict)) {
+        return { ok: false, status: 400, error: `verdict must be one of: ${VALID_VERDICTS.join(', ')}` };
     }
-    if (!entry.from_address || !entry.to_address) {
-        return { ok: false, error: 'from_address and to_address are required' };
-    }
-    if (!VALID_VERDICTS.includes(entry.verdict)) {
-        return { ok: false, error: `verdict must be one of: ${VALID_VERDICTS.join(', ')}` };
+    let receivedAt = new Date().toISOString();
+    if (entry.received_at !== undefined && entry.received_at !== null) {
+        const t = Date.parse(String(entry.received_at));
+        if (Number.isNaN(t)) return { ok: false, status: 400, error: 'received_at must be an ISO 8601 timestamp' };
+        // Trust the scanner's clock (a retried report lands late), but never a future date.
+        receivedAt = new Date(Math.min(t, Date.now())).toISOString();
     }
 
-    const supabase = getSupabase();
-    if (!supabase) return { ok: false, error: 'Database not configured' };
+    const recipientDomain = to.split('@')[1];
+    const owner = await store.orgForDomain(recipientDomain);
+    if (owner.error) return { ok: false, status: 500, error: owner.error };
+    if (!owner.org_id) return { ok: false, status: 422, error: `${recipientDomain} is not an active gateway domain` };
 
     const row = {
-        message_id: entry.message_id,
-        org_id: entry.org_id || 'cybernovr',
-        from_address: entry.from_address,
-        to_address: entry.to_address,
-        subject: entry.subject ?? null,
-        verdict: entry.verdict,
-        score: Number(entry.score) || 0,
-        reasons: Array.isArray(entry.reasons) ? entry.reasons : [],
-        // Trusts the scanner's timestamp when present — it knows when the message was received,
-        // which can differ from when this call lands if the reporting call was retried.
-        received_at: entry.received_at ?? new Date().toISOString(),
-        size_bytes: Number(entry.size_bytes) || 0,
+        message_id: messageId,
+        org_id: owner.org_id,
+        from_address: from,
+        to_address: to,
+        subject: str(entry.subject, 998),
+        verdict,
+        score: Number.isFinite(Number(entry.score)) ? Math.round(Number(entry.score)) : 0,
+        reasons: strList(entry.reasons, 50, 500),
+        received_at: receivedAt,
+        size_bytes: Math.max(0, Math.round(Number(entry.size_bytes) || 0)),
         has_attachment: Boolean(entry.has_attachment),
-        attachment_names: Array.isArray(entry.attachment_names) ? entry.attachment_names : [],
-        source_ip: entry.source_ip ?? null,
-        source_country: entry.source_country ?? null,
-        dmarc_result: entry.dmarc_result ?? null,
-        spf_result: entry.spf_result ?? null,
-        dkim_result: entry.dkim_result ?? null,
+        attachment_names: strList(entry.attachment_names, 50, 255),
+        source_ip: str(entry.source_ip, 45),
+        source_country: str(entry.source_country, 2),
+        dmarc_result: authResult(entry.dmarc_result),
+        spf_result: authResult(entry.spf_result),
+        dkim_result: authResult(entry.dkim_result),
     };
-
-    // Upsert on message_id so a retried report updates rather than duplicating — a mail server
-    // that times out waiting for this response will retry the same message.
-    const { error } = await supabase.from('email_logs').upsert(row, { onConflict: 'message_id' });
-    if (error) return { ok: false, error: explainDbError(error) };
-    return { ok: true };
+    const { error } = await store.upsertLog(row);
+    if (error) return { ok: false, status: 500, error };
+    return { ok: true, org_id: owner.org_id };
 }
 
 export interface LogsResult {
@@ -188,6 +247,12 @@ export async function addProxyDomain(params: {
     const supabase = getSupabase();
     if (!supabase) return { ok: false, error: 'Database not configured' };
 
+    // A domain belongs to one organisation: never re-assign another tenant's registration.
+    const { data: existing } = await supabase.from('email_proxy_domains').select('org_id').eq('domain', domain).maybeSingle();
+    if (existing && (existing as { org_id: string }).org_id !== params.org_id) {
+        return { ok: false, error: `${domain} is already registered to another organisation` };
+    }
+
     const { data, error } = await supabase
         .from('email_proxy_domains')
         .upsert({
@@ -216,7 +281,7 @@ function explainDbError(err: unknown): string {
             : String(err);
 
     if (raw.includes('does not exist')) {
-        return `${raw} — create the email_logs and email_proxy_domains tables using the SQL on the Email Monitoring page.`;
+        return `${raw} — the email_logs / email_proxy_domains tables are missing from the database.`;
     }
     return raw;
 }

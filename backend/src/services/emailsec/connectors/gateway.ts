@@ -1,11 +1,12 @@
-// NovrSOC mail gateway connector. The gateway (Postfix + Amavis on the mail host) already
-// reports every scanned message to POST /api/email-proxy/verdict, which stores it in email_logs
+// NovrSOC mail gateway connector. The gateway (Postfix + Amavis on the mail host) reports every
+// scanned message to POST /api/email-proxy/verdict with the shared EMAIL_PROXY_TOKEN; that route
+// stores it in email_logs under the organisation that registered the recipient's domain
 // (services/emailProxy.ts). This connector turns those rows into normalised events.
 //
 // It only ever records what the gateway reported. email_logs holds a verdict, not the action
 // the gateway took, so a phishing verdict is recorded as "flagged" unless the row says the
 // message was rejected or held.
-import { getSupabase } from '../../geoEnrichment';
+import { emailProxyStore } from '../../emailProxy';
 import { ConnectorAuthError, ConnectorSyncError } from './http';
 import { fromGateway, type GatewayLogRow } from '../eventModel';
 import type { Connector, Connection, SyncResult } from './types';
@@ -17,20 +18,16 @@ export const gateway: Connector = {
     missingConfig: () => (process.env.EMAIL_PROXY_TOKEN ? [] : ['EMAIL_PROXY_TOKEN']),
     async verify(conn: Connection) {
         if (!process.env.EMAIL_PROXY_TOKEN) throw new ConnectorAuthError('EMAIL_PROXY_TOKEN is not set, so the mail host cannot report verdicts.');
-        const sb = getSupabase();
-        if (!sb) throw new ConnectorSyncError('Database not configured.');
-        const { data, error } = await sb.from('email_logs').select('received_at').eq('org_id', conn.org_id).order('received_at', { ascending: false }).limit(1);
-        if (error) throw new ConnectorSyncError(`email_logs: ${error.message}`);
-        const last = (data?.[0] as { received_at?: string } | undefined)?.received_at;
-        return { tenant_name: null, detail: last ? `Last verdict received ${last}.` : 'Ready — no verdicts received yet. Point the domain MX at the gateway to start.' };
+        const { rows, error } = await emailProxyStore().logsSince(conn.org_id, new Date(Date.now() - 30 * 86_400_000).toISOString(), 1000);
+        if (error) throw new ConnectorSyncError(`email_logs: ${error}`);
+        const last = rows.map((r) => String(r.received_at ?? '')).sort().pop();
+        return { tenant_name: null, detail: last ? `Last verdict received ${last}.` : 'Ready — no verdicts in the last 30 days. Point the domain MX at the gateway and register the domain.' };
     },
     async sync(conn: Connection): Promise<SyncResult> {
-        const sb = getSupabase();
-        if (!sb) throw new ConnectorSyncError('Database not configured.');
         const since = conn.sync_cursor ?? new Date(Date.now() - 7 * 86_400_000).toISOString();
-        const { data, error } = await sb.from('email_logs').select('*').eq('org_id', conn.org_id).gt('received_at', since).order('received_at', { ascending: true }).limit(500);
-        if (error) throw new ConnectorSyncError(`email_logs: ${error.message}`);
-        const rows = (data ?? []) as GatewayLogRow[];
-        return { events: rows.map(fromGateway), cursor: rows.length ? rows[rows.length - 1].received_at ?? since : since, fetched: rows.length };
+        const { rows, error } = await emailProxyStore().logsSince(conn.org_id, since, 500);
+        if (error) throw new ConnectorSyncError(`email_logs: ${error}`);
+        const logs = rows as unknown as GatewayLogRow[];
+        return { events: logs.map(fromGateway), cursor: logs.length ? logs[logs.length - 1].received_at ?? since : since, fetched: logs.length };
     },
 };

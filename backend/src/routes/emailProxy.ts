@@ -1,13 +1,16 @@
 import { Router } from 'express';
 import { timingSafeEqual } from 'crypto';
-import type { AuthRequest } from '../middleware/auth';
+import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth';
+import { logAudit } from '../lib/audit';
 import {
     storeEmailVerdict, getEmailLogs, getEmailStats, getProxyDomains, addProxyDomain,
 } from '../services/emailProxy';
 
 // Email MX proxy API.
 //
-// POST /verdict is called by the mail host (Postfix + Amavis); the GET routes are called by the
+// POST /verdict is called by the mail host (Postfix + Amavis) with the shared token. Every other
+// route needs a staff login (2026-09-29 hardening — they were public, and email_logs holds the
+// sender, recipient and subject of scanned mail). The GET routes were called by the
 // Email Monitoring page.
 
 const router = Router();
@@ -58,17 +61,15 @@ router.post('/verdict', async (req: AuthRequest, res) => {
 
     const result = await storeEmailVerdict(req.body ?? {});
     if (!result.ok) {
-        // 400 for a malformed payload, 500 for a database problem — the mail host should retry
-        // the latter and not the former.
-        const isValidation = /required|verdict must be/.test(result.error ?? '');
-        res.status(isValidation ? 400 : 500).json({ error: result.error });
+        // 400 malformed / 422 unregistered recipient domain (don't retry); 500 database (retry).
+        res.status(result.status ?? 500).json({ error: result.error });
         return;
     }
     res.json({ success: true });
 });
 
 // GET /api/email-proxy/logs
-router.get('/logs', async (req: AuthRequest, res) => {
+router.get('/logs', requireAuth, requireRole('super_admin', 'soc_manager', 'analyst', 'executive'), async (req: AuthRequest, res) => {
     const orgId = req.user?.org_id ?? 'cybernovr';
     const limit = Number(req.query.limit) || 50;
     const { logs, error } = await getEmailLogs(orgId, limit);
@@ -78,28 +79,29 @@ router.get('/logs', async (req: AuthRequest, res) => {
 });
 
 // GET /api/email-proxy/stats
-router.get('/stats', async (req: AuthRequest, res) => {
+router.get('/stats', requireAuth, requireRole('super_admin', 'soc_manager', 'analyst', 'executive'), async (req: AuthRequest, res) => {
     const orgId = req.user?.org_id ?? 'cybernovr';
     res.json(await getEmailStats(orgId));
 });
 
 // GET /api/email-proxy/domains
-router.get('/domains', async (req: AuthRequest, res) => {
+router.get('/domains', requireAuth, requireRole('super_admin', 'soc_manager', 'analyst', 'executive'), async (req: AuthRequest, res) => {
     const orgId = req.user?.org_id ?? 'cybernovr';
     const { domains, error } = await getProxyDomains(orgId);
     res.json({ domains, total: domains.length, ...(error && { error }) });
 });
 
 // POST /api/email-proxy/domains
-router.post('/domains', async (req: AuthRequest, res) => {
+router.post('/domains', requireAuth, requireRole('super_admin', 'soc_manager'), async (req: AuthRequest, res) => {
     const orgId = req.user?.org_id ?? 'cybernovr';
     const { domain, real_mx, forward_to } = req.body ?? {};
 
     const result = await addProxyDomain({ domain, real_mx, forward_to, org_id: orgId });
     if (!result.ok) {
-        res.status(400).json({ error: result.error });
+        res.status(/another organisation/.test(result.error ?? '') ? 409 : 400).json({ error: result.error });
         return;
     }
+    logAudit({ user: req.user?.email ?? 'unknown', action: 'EMAIL_GATEWAY_DOMAIN_ADD', resource: 'email_gateway', ip: req.ip ?? '', result: 'success', details: `${result.domain?.domain} → ${forward_to}`, severity: 'warning' });
     res.json({ success: true, domain: result.domain });
 });
 
