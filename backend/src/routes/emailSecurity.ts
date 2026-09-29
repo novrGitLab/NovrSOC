@@ -1,428 +1,546 @@
-import { Router } from 'express';
-import { lookupIP, isConfigured as maxmindConfigured } from '../services/maxmind';
-import { checkPhishSources } from '../services/phishCheck';
-
-// Email Security domain — DMARC SaaS, Messaging Suite, Intelli CODE PHISHID.
-// DMARC/Messaging/PHISHID feed and stats endpoints below return demo data (real DMARC-report
-// ingestion via Mailgun inbound routes and Zeek smtp.log parsing don't exist yet — this mirrors
-// the "structured mock data now, real crawlers later" pattern used elsewhere in this backend).
-// The RBL check and phishing classification endpoints are genuinely live.
+// Email Security API — /api/email-security. DMARC SaaS, Intellicode Phish ID, Messaging Suite,
+// shared alerts and URL intelligence.
+//
+// Access: every route needs a NovrSOC staff token except the Microsoft 365 admin-consent
+// callback (Microsoft redirects the customer's admin there; it is authenticated by a signed,
+// expiring state token instead). Reads: any staff role. Analyst actions (status changes,
+// notes, inspections, cases): analyst and above. Configuration (domains, brand, connections,
+// policy plans): managers. Every write is audit-logged. Tenant isolation: org_id always comes
+// from the caller's token, never from the request.
+import { Router, type Response } from 'express';
+import multer from 'multer';
+import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
+import { randomUUID } from 'crypto';
+import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth';
+import { logAudit } from '../lib/audit';
+import { DEFAULT_ORG_ID, isUuid } from '../services/cases';
+import { getDb, f, SchemaMissingError, SCHEMA_FILE, type Db } from '../services/emailsec/db';
+import { normalizeDomain, inspectDomain } from '../services/emailsec/dnsInspect';
+import { POLICY_EXPLANATIONS, buildDmarcRecord, type DmarcPolicy } from '../services/emailsec/authRecords';
+import { runDomainCheck, ingestReport, dmarcAnalytics, type EmailDomain, type SendingSource } from '../services/emailsec/dmarcService';
+import {
+    cleanBrandInput, getBrand, discover, addManualDomain, enrichDomain, setPhishStatus, addPhishNote, PHISH_STATUSES,
+    type PhishingDomain, type PhishStatus,
+} from '../services/emailsec/phishService';
+import { RISK_ORDER, type Risk } from '../services/emailsec/phishRisk';
+import { listConnections, upsertAndVerify, verifyConnection, syncConnection, isProvider, CONNECTORS } from '../services/emailsec/messagingService';
+import { m365ConsentUrl } from '../services/emailsec/connectors/microsoft365';
+import type { Connection } from '../services/emailsec/connectors/types';
+import { ALERT_STATUSES, updateAlert, escalateToCase, indicatorSightings, type EmailAlert, type AlertStatus } from '../services/emailsec/alerts';
+import { analyzeUrl } from '../services/emailsec/urlIntel';
+import { analyzeAttachment } from '../services/emailsec/attachmentIntel';
+import { integrationStatuses, openctiHealth, pushDomainToOpenCti, relatedSocAlerts } from '../services/emailsec/integrations';
 
 const router = Router();
+const MANAGER = requireRole('super_admin', 'soc_manager');
+const ANALYST = requireRole('super_admin', 'soc_manager', 'analyst');
+const STAFF = requireRole('super_admin', 'soc_manager', 'analyst', 'executive');
 
-// ── DMARC SaaS ──────────────────────────────────────────────────────
-
-const MOCK_DMARC_DOMAINS = [
-    {
-        domain: 'cybernovr.com',
-        policy: 'reject',
-        dkim_pass_rate: 98.2,
-        spf_pass_rate: 97.8,
-        total_messages: 1284,
-        compliant: 1258,
-        failed: 26,
-        unauthorized_senders: 3,
-        last_report: '2026-08-11',
-        status: 'protected',
-    },
-    {
-        domain: 'novrsoc.com',
-        policy: 'quarantine',
-        dkim_pass_rate: 91.4,
-        spf_pass_rate: 94.2,
-        total_messages: 347,
-        compliant: 317,
-        failed: 30,
-        unauthorized_senders: 1,
-        last_report: '2026-08-11',
-        status: 'warning',
-    },
-];
-
-const MOCK_UNAUTHORIZED_SENDERS = [
-    {
-        ip: '102.89.45.13',
-        country: 'NG',
-        isp: 'MTN Nigeria',
-        messages_sent: 12,
-        spf: 'fail',
-        dkim: 'fail',
-        disposition: 'reject',
-        first_seen: '2026-08-09',
-        threat_level: 'HIGH',
-        note: 'Phishing attempt — spoofing cybernovr.com from Nigerian MTN IP',
-    },
-    {
-        ip: '185.220.101.47',
-        country: 'DE',
-        isp: 'Hetzner Online GmbH',
-        messages_sent: 8,
-        spf: 'fail',
-        dkim: 'fail',
-        disposition: 'reject',
-        first_seen: '2026-08-10',
-        threat_level: 'HIGH',
-        note: 'Known Tor exit node — likely automated phishing infrastructure',
-    },
-    {
-        ip: '209.85.220.41',
-        country: 'US',
-        isp: 'Google LLC',
-        messages_sent: 1258,
-        spf: 'pass',
-        dkim: 'pass',
-        disposition: 'none',
-        first_seen: '2026-01-01',
-        threat_level: 'AUTHORIZED',
-        note: 'Google Workspace — authorized sending source',
-    },
-];
-
-router.get('/dmarc/domains', (_req, res) => {
-    res.json({ domains: MOCK_DMARC_DOMAINS });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
+// Inspections reach out to DNS / websites / feeds — bounded per user.
+const inspectLimiter = rateLimit({
+    windowMs: 60_000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false,
+    keyGenerator: (req) => (req as AuthRequest).user?.email ?? 'anonymous',
+    message: { error: 'Too many inspection requests — try again in a minute.' },
 });
 
-router.get('/dmarc/senders', async (_req, res) => {
-    const enriched = await Promise.all(
-        MOCK_UNAUTHORIZED_SENDERS.map(async (sender) => {
-            if (maxmindConfigured()) {
-                const geo = await lookupIP(sender.ip);
-                if (geo) {
-                    return {
-                        ...sender,
-                        geo_city: geo.city,
-                        geo_region: geo.region,
-                        geo_country: geo.country_name,
-                        geo_lat: geo.latitude,
-                        geo_lng: geo.longitude,
-                    };
-                }
-            }
-            return sender;
-        })
-    );
-    res.json({ senders: enriched });
-});
+const orgOf = (req: AuthRequest) => req.user?.org_id ?? DEFAULT_ORG_ID;
+const actorOf = (req: AuthRequest) => req.user?.email || 'unknown';
+const str = (v: unknown, max = 500) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
-router.post('/dmarc/domains', (_req, res) => {
-    res.json({ success: true, message: 'Domain added to monitoring' });
-});
-
-// ── Messaging Suite ─────────────────────────────────────────────────
-
-const MOCK_MAIL_GATEWAYS = [
-    {
-        name: 'Google Workspace (cybernovr.com)',
-        type: 'outbound',
-        ip: '209.85.220.41',
-        status: 'healthy',
-        delivery_rate: 99.2,
-        avg_latency_ms: 340,
-        messages_24h: 47,
-        rbl_listed: false,
-        last_checked: '5 min ago',
-    },
-    {
-        name: 'Mailgun (transactional)',
-        type: 'outbound',
-        ip: '198.61.254.107',
-        status: 'healthy',
-        delivery_rate: 98.7,
-        avg_latency_ms: 520,
-        messages_24h: 312,
-        rbl_listed: false,
-        last_checked: '5 min ago',
-    },
-];
-
-const MOCK_SUSPICIOUS_EMAILS = [
-    {
-        id: 'em_001',
-        from: 'support@cybernovr.com.phish-attack.ru',
-        to: 'rayne@cybernovr.com',
-        subject: 'Urgent: Your account has been suspended',
-        relay_ip: '185.220.101.47',
-        relay_country: 'DE',
-        received_at: '2026-08-11 09:23:14',
-        helo_domain: 'mail.cybernovr.com',
-        spf: 'fail',
-        dkim: 'fail',
-        suspicious_reason: 'Domain spoofing + forged HELO + known Tor exit node',
-        severity: 'critical',
-        attachment: null,
-    },
-    {
-        id: 'em_002',
-        from: 'invoice@dangote-group.ng',
-        to: 'finance@cybernovr.com',
-        subject: 'Q3 2026 Invoice #DG-4471',
-        relay_ip: '102.91.42.10',
-        relay_country: 'NG',
-        received_at: '2026-08-11 11:45:02',
-        helo_domain: 'mail.dangote-group.ng',
-        spf: 'pass',
-        dkim: 'pass',
-        suspicious_reason: 'Attachment: invoice_DG4471.exe (disguised executable)',
-        severity: 'high',
-        attachment: 'invoice_DG4471.exe',
-    },
-    {
-        id: 'em_003',
-        from: 'alerts@gtbank.com',
-        to: 'rayne@cybernovr.com',
-        subject: 'Transaction Alert: NGN 250,000',
-        relay_ip: '197.255.231.6',
-        relay_country: 'NG',
-        received_at: '2026-08-11 14:12:33',
-        helo_domain: 'mail.gtbank.com',
-        spf: 'pass',
-        dkim: 'pass',
-        suspicious_reason: null,
-        severity: 'clean',
-        attachment: null,
-    },
-];
-
-router.get('/messaging/gateways', (_req, res) => {
-    res.json({ gateways: MOCK_MAIL_GATEWAYS });
-});
-
-router.get('/messaging/suspicious', (_req, res) => {
-    res.json({ emails: MOCK_SUSPICIOUS_EMAILS });
-});
-
-function reverseIP(ip: string): string {
-    return ip.split('.').reverse().join('.');
+function audit(req: AuthRequest, action: string, details: string, resourceId?: string, severity: 'info' | 'warning' | 'critical' = 'info') {
+    logAudit({ user: actorOf(req), action, resource: 'email_security', ip: req.ip ?? '', result: 'success', details, resource_id: resourceId, severity });
 }
 
-interface CloudflareDnsAnswer {
-    data: string;
-}
-interface CloudflareDnsResponse {
-    Status: number;
-    Answer?: CloudflareDnsAnswer[];
-}
-
-interface RblCheckDef {
-    name: string;
-    query: string;
-}
-interface RblResult extends RblCheckDef {
-    listed: boolean;
-    answer: string | null;
-    error?: boolean;
-}
-
-// POST /api/email/messaging/rbl-check — genuinely live DNS blocklist lookups
-router.post('/messaging/rbl-check', async (req, res) => {
-    const { ip } = req.body ?? {};
-    if (!ip || typeof ip !== 'string') {
-        res.status(400).json({ error: 'ip required' });
-        return;
+type Handler = (db: Db, req: AuthRequest, res: Response) => Promise<unknown>;
+/** Resolves the store and turns "tables not created yet" into a 503 the UI shows as setup. */
+const h = (fn: Handler) => async (req: AuthRequest, res: Response) => {
+    const db = getDb();
+    if (!db) return res.status(503).json({ error: 'Database not configured (SUPABASE_URL / SUPABASE_SERVICE_KEY).', setup_required: true });
+    try {
+        await fn(db, req, res);
+    } catch (err) {
+        if (err instanceof SchemaMissingError) return res.status(503).json({ error: err.message, setup_required: true, schema_file: SCHEMA_FILE });
+        console.error('[email-security]', req.method, req.path, err);
+        if (!res.headersSent) res.status(500).json({ error: err instanceof Error ? err.message : 'Internal error' });
     }
-
-    const reversed = reverseIP(ip);
-    const rbls: RblCheckDef[] = [
-        { name: 'Spamhaus ZEN', query: `${reversed}.zen.spamhaus.org` },
-        { name: 'Barracuda', query: `${reversed}.b.barracudacentral.org` },
-        { name: 'SURBL', query: `${reversed}.multi.surbl.org` },
-        { name: 'SpamCop', query: `${reversed}.bl.spamcop.net` },
-    ];
-
-    const results = await Promise.allSettled<RblResult>(
-        rbls.map(async (rbl) => {
-            try {
-                const dnsRes = await fetch(`https://cloudflare-dns.com/dns-query?name=${rbl.query}&type=A`, {
-                    headers: { Accept: 'application/dns-json' },
-                    signal: AbortSignal.timeout(3000),
-                }).then((r) => r.json() as Promise<CloudflareDnsResponse>);
-                const listed = dnsRes.Status === 0 && Boolean(dnsRes.Answer?.length);
-                return { ...rbl, listed, answer: dnsRes.Answer?.[0]?.data ?? null };
-            } catch {
-                return { ...rbl, listed: false, answer: null, error: true };
-            }
-        })
-    );
-
-    res.json({
-        ip,
-        results: results.map((r, i) => (r.status === 'fulfilled' ? r.value : { ...rbls[i], listed: false, answer: null, error: true })),
-    });
-});
-
-// ── Intelli CODE PHISHID ─────────────────────────────────────────────
-
-const MOCK_EXTENSION_STATS = {
-    endpoints_protected: 2,
-    pages_scanned_24h: 847,
-    threats_blocked: 3,
-    threats_warned: 7,
-    clean_pages: 837,
-    avg_classification_ms: 340,
 };
 
-const MOCK_PHISH_EVENTS = [
-    {
-        id: 'ph_001',
-        url: 'https://cybernovr.com.account-verify.ru/login',
-        domain: 'account-verify.ru',
-        page_title: 'CyberNovr - Sign In',
-        form_action: 'http://45.32.18.9/collect.php',
-        verdict: 'block',
-        risk: 94,
-        reason: 'Page impersonates cybernovr.com login on unauthorized domain. Form submits credentials to known malicious IP 45.32.18.9.',
-        endpoint: 'rayne-laptop',
-        user: 'rayne@cybernovr.com',
-        detected_at: '2026-08-11 10:14:23',
-        action_taken: 'Form blocked, user warned',
-    },
-    {
-        id: 'ph_002',
-        url: 'https://gtb-online-banking.phish.ng/login',
-        domain: 'gtb-online-banking.phish.ng',
-        page_title: 'GTBank Internet Banking',
-        form_action: 'https://gtb-online-banking.phish.ng/submit',
-        verdict: 'block',
-        risk: 88,
-        reason: 'Page mimics GTBank internet banking portal. Domain registered 3 days ago. No official GTBank SSL certificate.',
-        endpoint: 'karl-laptop',
-        user: 'karl@cybernovr.com',
-        detected_at: '2026-08-11 14:33:07',
-        action_taken: 'Form blocked, incident created',
-    },
-    {
-        id: 'ph_003',
-        url: 'https://login.microsoftonline.com',
-        domain: 'login.microsoftonline.com',
-        page_title: 'Microsoft Sign In',
-        form_action: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-        verdict: 'allow',
-        risk: 2,
-        reason: 'Official Microsoft login page. Verified domain, valid certificate.',
-        endpoint: 'rayne-laptop',
-        user: 'rayne@cybernovr.com',
-        detected_at: '2026-08-11 09:02:41',
-        action_taken: 'Allowed',
-    },
-];
+// ── Microsoft 365 admin-consent callback (no staff token — see header) ──────────────────────
 
-router.get('/phishid/stats', (_req, res) => {
-    res.json(MOCK_EXTENSION_STATS);
-});
+const stateSecret = () => process.env.JWT_SECRET || process.env.DEV_TOKEN_SECRET || '';
 
-router.get('/phishid/events', (_req, res) => {
-    res.json({ events: MOCK_PHISH_EVENTS });
-});
-
-interface ClassifyBody {
-    url?: string;
-    domain?: string;
-    page_title?: string;
-    form_action?: string;
-    input_types?: string[];
-}
-
-interface ClassifyResult {
-    risk: number;
-    verdict: 'allow' | 'warn' | 'block';
-    reason: string;
-    classified_by: string;
-}
-
-function heuristicClassify(body: ClassifyBody): ClassifyResult {
-    const { url = '', domain = '', form_action } = body;
-    const suspicious = Boolean(
-        (form_action && domain && !form_action.includes(domain)) ||
-        url.includes('phish') || url.includes('secure-login') || url.includes('verify') || url.includes('account-update')
-    );
-    return {
-        risk: suspicious ? 75 : 5,
-        verdict: suspicious ? 'block' : 'allow',
-        reason: suspicious
-            ? 'Heuristic: form submits to external domain or URL contains suspicious keywords'
-            : 'Heuristic: no obvious phishing indicators detected',
-        classified_by: 'heuristic',
+router.get('/messaging/connections/microsoft365/callback', h(async (db, req, res) => {
+    const back = (result: string, detail: string) => {
+        const base = process.env.FRONTEND_URL?.replace(/\/$/, '');
+        const q = new URLSearchParams({ provider: 'microsoft365', result, detail: detail.slice(0, 300) });
+        if (base) return res.redirect(`${base}/admin/email/messaging?${q}`);
+        return res.type('text/plain').send(`Microsoft 365 connection: ${result}. ${detail} You can close this window.`);
     };
-}
-
-// A PhishTank or OpenPhish hit is a real match against a confirmed phishing feed — real signal,
-// not a guess — so it forces risk to at least 85/block, overriding whatever the base classifier
-// (Claude or the heuristic) said, rather than nudging the score.
-function applyPhishFeedBoost(base: ClassifyResult, hits: string[]): ClassifyResult {
-    if (hits.length === 0) return base;
-    return {
-        risk: Math.max(base.risk, 85),
-        verdict: 'block',
-        reason: `${base.reason} Also flagged by ${hits.join(' and ')} as a known phishing URL.`,
-        classified_by: `${base.classified_by}+${hits.join('+')}`,
-    };
-}
-
-// POST /api/email/phishid/classify — genuinely live (falls back to heuristics if no/failed Claude call)
-router.post('/phishid/classify', async (req, res) => {
-    const body: ClassifyBody = req.body ?? {};
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-
-    // PhishTank/OpenPhish run alongside whichever base classifier runs below — never gates on
-    // them, just boosts the final verdict if either has a real hit. No URL at all (the frontend
-    // can call this with just page metadata) skips straight to a non-hit rather than erroring.
-    const phishFeedCheck = body.url ? checkPhishSources(body.url) : Promise.resolve({ is_phishing: false, hits: [] as string[], details: [] });
-
-    // Anything that isn't a real-looking key (unset, or the repo's own placeholder value) skips
-    // straight to the heuristic — no point spending a request on a key we know will 401.
-    if (!apiKey || apiKey === 'your-key-here' || apiKey === 'REPLACE_WHEN_OBTAINED') {
-        const [base, phish] = await Promise.all([Promise.resolve(heuristicClassify(body)), phishFeedCheck]);
-        res.json(applyPhishFeedBoost(base, phish.hits));
-        return;
-    }
-
+    let state: { org: string; sub: string; p: string };
     try {
-        const [response, phish] = await Promise.all([
-            fetch('https://api.anthropic.com/v1/messages', {
-                method: 'POST',
-                headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-                body: JSON.stringify({
-                    // Was 'claude-sonnet-4-6' — not a real Anthropic model id, so this call always
-                    // 400'd and silently fell through to the heuristic below. See routes/novr-ai.ts
-                    // for the same fix and fuller explanation.
-                    model: 'claude-sonnet-5',
-                    max_tokens: 200,
-                    messages: [{
-                        role: 'user',
-                        content: `You are a phishing detection classifier. Analyze this web page metadata and respond ONLY with valid JSON.
-
-Page URL: ${body.url}
-Domain: ${body.domain}
-Page title: ${body.page_title || 'unknown'}
-Form action URL: ${body.form_action || 'none'}
-Input field types: ${(body.input_types || []).join(', ') || 'none'}
-
-Respond with exactly this JSON structure:
-{"risk": <0-100>, "verdict": "<allow|warn|block>", "reason": "<one sentence explanation>"}
-
-Rules:
-- risk >= 70 = block (clear phishing)
-- risk 40-69 = warn (suspicious)
-- risk < 40 = allow (legitimate)
-- Consider: domain mismatch, suspicious form actions, URL patterns, page title vs domain`,
-                    }],
-                }),
-                signal: AbortSignal.timeout(8000),
-            }),
-            phishFeedCheck,
-        ]);
-
-        if (!response.ok) throw new Error(`Anthropic API ${response.status}`);
-
-        const data = await response.json();
-        const text: string = data.content?.[0]?.text || '{}';
-        const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-        res.json(applyPhishFeedBoost({ ...parsed, classified_by: 'claude-ai' }, phish.hits));
+        state = jwt.verify(String(req.query.state ?? ''), stateSecret()) as typeof state;
+        if (state.p !== 'microsoft365') throw new Error('wrong provider');
     } catch {
-        // Real API unavailable/misconfigured — fall back to the heuristic rather than a dead 50/warn.
-        const [base, phish] = await Promise.all([Promise.resolve(heuristicClassify(body)), phishFeedCheck]);
-        res.json(applyPhishFeedBoost(base, phish.hits));
+        return back('error', 'The consent link expired or was not issued by NovrSOC. Start the connection again.');
     }
+    if (req.query.error) return back('error', `${req.query.error}: ${String(req.query.error_description ?? '')}`);
+    const tenant = String(req.query.tenant ?? '');
+    if (req.query.admin_consent !== 'True' || !/^[0-9a-f-]{36}$/i.test(tenant)) return back('error', 'Microsoft did not confirm admin consent.');
+    const conn = await upsertAndVerify(db, state.org, 'microsoft365', { tenant_id: tenant, scopes: CONNECTORS.microsoft365.permissions }, state.sub);
+    logAudit({ user: state.sub, action: 'EMAILSEC_CONNECT_M365', resource: 'email_security', ip: req.ip ?? '', result: conn.status === 'connected' ? 'success' : 'failed', details: `tenant ${tenant}: ${conn.status}`, severity: 'warning' });
+    return back(conn.status, conn.status === 'connected' ? 'Connected.' : conn.last_error ?? conn.status);
+}));
+
+router.use(requireAuth, STAFF);
+
+// ── Overview + health ──────────────────────────────────────────────────────────────────────
+
+router.get('/overview', h(async (db, req, res) => {
+    const org = orgOf(req);
+    const since30 = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const since7 = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    const MALICIOUS = ['phishing', 'malware', 'bec', 'impersonation', 'malicious_url', 'suspicious_attachment', 'spoofing'];
+    const OPEN = ['new', 'investigating'];
+    const [domains, brand, connections, analytics, suspiciousSources, phishOpen, phishNew, phishHigh, phishOpenRows,
+        malicious, quarantined, malUrls, malAttach, threats, criticalAlerts, recentAlerts] = await Promise.all([
+        db.count('email_domains', [f.eq('org_id', org)]),
+        getBrand(db, org),
+        db.select<Connection>('messaging_connections', { filters: [f.eq('org_id', org)] }),
+        dmarcAnalytics(db, org, null, 30),
+        db.select<{ source_ip: string }>('email_sending_sources', { filters: [f.eq('org_id', org), f.eq('classification', 'suspicious')], select: 'source_ip', limit: 1000 }),
+        db.count('phishing_domains', [f.eq('org_id', org), f.in('status', ['discovered', 'under_investigation', 'suspicious', 'confirmed_phishing'])]),
+        db.count('phishing_domains', [f.eq('org_id', org), f.gte('first_observed', since7)]),
+        db.count('phishing_domains', [f.eq('org_id', org), f.in('risk', ['high', 'critical']), f.in('status', ['discovered', 'under_investigation', 'suspicious', 'confirmed_phishing'])]),
+        // Active threats: open domains that are confirmed phishing or rated high / critical (ids, so the union isn't double-counted).
+        db.select<{ id: string; status: string; risk: string }>('phishing_domains', { filters: [f.eq('org_id', org), f.in('status', ['discovered', 'under_investigation', 'suspicious', 'confirmed_phishing'])], select: 'id, status, risk', limit: 1000 }),
+        db.count('email_events', [f.eq('org_id', org), f.gte('received_at', since30), f.in('detection', MALICIOUS)]),
+        db.count('email_events', [f.eq('org_id', org), f.gte('received_at', since30), f.eq('action', 'quarantine')]),
+        db.count('email_events', [f.eq('org_id', org), f.gte('received_at', since30), f.eq('detection', 'malicious_url')]),
+        db.count('email_events', [f.eq('org_id', org), f.gte('received_at', since30), f.in('detection', ['malware', 'suspicious_attachment'])]),
+        db.count('email_events', [f.eq('org_id', org), f.gte('received_at', since30), f.neq('detection', 'clean')]),
+        db.count('email_alerts', [f.eq('org_id', org), f.eq('severity', 'critical'), f.in('status', OPEN)]),
+        db.select<EmailAlert>('email_alerts', { filters: [f.eq('org_id', org)], order: { col: 'last_seen' }, limit: 10 }),
+    ]);
+    // Spoofing attempts: failing messages in the window from sources classified suspicious.
+    const spoofIps = [...new Set(suspiciousSources.map((s) => s.source_ip))];
+    const spoofRows = spoofIps.length
+        ? await db.select<{ message_count: number }>('dmarc_records', { filters: [f.eq('org_id', org), f.gte('date_begin', since30), f.eq('dmarc_pass', false), f.in('source_ip', spoofIps.slice(0, 500))], select: 'message_count', limit: 1000 })
+        : [];
+    const spoofing = spoofRows.reduce((s, r) => s + (Number(r.message_count) || 0), 0);
+    const phishActive = phishOpenRows.filter((r) => r.status === 'confirmed_phishing' || r.risk === 'high' || r.risk === 'critical').length;
+    const phishLive = phishOpenRows.filter((r) => r.status === 'confirmed_phishing').length;
+    const connected = connections.filter((c) => c.status === 'connected');
+    res.json({
+        setup: { domains: domains > 0, reports: analytics.reports > 0, brand: !!brand, providers: connected.length > 0 },
+        kpis: {
+            protected_domains: domains,
+            dmarc_compliance: analytics.totals.pass_rate,
+            spoofing_attempts: analytics.reports > 0 ? spoofing : null,
+            phishing_domains: brand ? phishOpen : null,
+            active_phishing_threats: brand ? phishActive : null,
+            malicious_emails: connected.length ? malicious : null,
+            quarantined_emails: connected.length ? quarantined : null,
+            critical_alerts: criticalAlerts,
+        },
+        dmarc: { passing: analytics.totals.pass, failing: analytics.totals.fail, unknown_senders: analytics.sources.unknown + analytics.sources.suspicious, sending_sources: analytics.sources.known + analytics.sources.unknown + analytics.sources.suspicious, reports: analytics.reports },
+        phishing: { new_7d: phishNew, high_risk: phishHigh, active_sites: phishLive, suspicious_urls: malUrls },
+        messaging: { threats, quarantined, malicious_urls: malUrls, malicious_attachments: malAttach, providers: connected.map((c) => c.provider) },
+        recent_alerts: recentAlerts.map(({ evidence: _e, timeline: _t, ...a }) => a),
+        generated_at: new Date().toISOString(),
+    });
+}));
+
+router.get('/integrations', async (_req, res) => {
+    res.json({ integrations: integrationStatuses(), opencti: await openctiHealth() });
+});
+
+// ── DMARC: domains ─────────────────────────────────────────────────────────────────────────
+
+router.get('/dmarc/domains', h(async (db, req, res) => {
+    res.json({ domains: await db.select<EmailDomain>('email_domains', { filters: [f.eq('org_id', orgOf(req))], order: { col: 'domain', asc: true } }) });
+}));
+
+router.post('/dmarc/domains', MANAGER, inspectLimiter, h(async (db, req, res) => {
+    const domain = normalizeDomain(str(req.body?.domain, 253));
+    if (!domain) return res.status(400).json({ error: 'Enter a valid domain, e.g. company.com' });
+    const selectors = (Array.isArray(req.body?.dkim_selectors) ? req.body.dkim_selectors : []).map((s: unknown) => str(s, 63)).filter((s: string) => /^[a-z0-9._-]+$/i.test(s)).slice(0, 20);
+    const org = orgOf(req);
+    const [existing] = await db.select<EmailDomain>('email_domains', { filters: [f.eq('org_id', org), f.eq('domain', domain)], limit: 1 });
+    if (existing) return res.status(409).json({ error: `${domain} is already monitored.`, domain: existing });
+    const [row] = await db.insert<EmailDomain>('email_domains', { org_id: org, domain, dkim_selectors: selectors, created_by: actorOf(req), updated_at: new Date().toISOString() });
+    audit(req, 'EMAILSEC_ADD_DOMAIN', domain, row.id);
+    const inspection = await runDomainCheck(db, row);
+    const [fresh] = await db.select<EmailDomain>('email_domains', { filters: [f.eq('id', row.id)], limit: 1 });
+    res.status(201).json({ domain: fresh ?? row, inspection });
+}));
+
+router.get('/dmarc/domains/:id', h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Domain not found' });
+    const org = orgOf(req);
+    const [d] = await db.select<EmailDomain>('email_domains', { filters: [f.eq('org_id', org), f.eq('id', req.params.id)], limit: 1 });
+    if (!d) return res.status(404).json({ error: 'Domain not found' });
+    const [checks, sources, reports] = await Promise.all([
+        db.select<{ result: unknown; created_at: string }>('email_dns_checks', { filters: [f.eq('org_id', org), f.eq('domain_id', d.id)], order: { col: 'created_at' }, limit: 10 }),
+        db.select<SendingSource>('email_sending_sources', { filters: [f.eq('org_id', org), f.eq('domain', d.domain)], order: { col: 'message_count' }, limit: 200 }),
+        db.select('dmarc_reports', { filters: [f.eq('org_id', org), f.eq('domain', d.domain)], order: { col: 'date_begin' }, limit: 20 }),
+    ]);
+    res.json({ domain: d, latest: checks[0]?.result ?? null, history: checks.map((c) => ({ at: c.created_at })), sources, reports, policies: POLICY_EXPLANATIONS });
+}));
+
+router.patch('/dmarc/domains/:id', MANAGER, h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Domain not found' });
+    const selectors = (Array.isArray(req.body?.dkim_selectors) ? req.body.dkim_selectors : []).map((s: unknown) => str(s, 63)).filter((s: string) => /^[a-z0-9._-]+$/i.test(s)).slice(0, 20);
+    const [d] = await db.update<EmailDomain>('email_domains', [f.eq('org_id', orgOf(req)), f.eq('id', req.params.id)], { dkim_selectors: selectors, updated_at: new Date().toISOString() });
+    if (!d) return res.status(404).json({ error: 'Domain not found' });
+    audit(req, 'EMAILSEC_UPDATE_DOMAIN', `${d.domain} DKIM selectors: ${selectors.join(', ') || '(none)'}`, d.id);
+    res.json({ domain: d });
+}));
+
+router.delete('/dmarc/domains/:id', MANAGER, h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Domain not found' });
+    const [d] = await db.select<EmailDomain>('email_domains', { filters: [f.eq('org_id', orgOf(req)), f.eq('id', req.params.id)], limit: 1 });
+    if (!d) return res.status(404).json({ error: 'Domain not found' });
+    await db.remove('email_domains', [f.eq('id', d.id)]);
+    audit(req, 'EMAILSEC_REMOVE_DOMAIN', d.domain, d.id, 'warning');
+    res.json({ success: true });
+}));
+
+router.post('/dmarc/domains/:id/inspect', ANALYST, inspectLimiter, h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Domain not found' });
+    const [d] = await db.select<EmailDomain>('email_domains', { filters: [f.eq('org_id', orgOf(req)), f.eq('id', req.params.id)], limit: 1 });
+    if (!d) return res.status(404).json({ error: 'Domain not found' });
+    const inspection = await runDomainCheck(db, d);
+    if (!inspection) return res.status(502).json({ error: 'DNS inspection failed — see the domain status for the error.' });
+    res.json({ inspection });
+}));
+
+/** Ad-hoc inspection of any domain — nothing stored. */
+router.post('/dmarc/inspect', ANALYST, inspectLimiter, async (req: AuthRequest, res) => {
+    const domain = normalizeDomain(str(req.body?.domain, 253));
+    if (!domain) return res.status(400).json({ error: 'Enter a valid domain' });
+    res.json({ inspection: await inspectDomain(domain) });
+});
+
+/**
+ * Policy change plan. NovrSOC does not (and cannot) edit the customer's DNS: this produces the
+ * exact record an administrator would publish, and audit-logs that it was requested.
+ */
+router.post('/dmarc/domains/:id/policy-plan', MANAGER, h(async (db, req, res) => {
+    const policy = str(req.body?.policy) as DmarcPolicy;
+    if (!['none', 'quarantine', 'reject'].includes(policy)) return res.status(400).json({ error: 'policy must be none, quarantine or reject' });
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Domain not found' });
+    const org = orgOf(req);
+    const [d] = await db.select<EmailDomain>('email_domains', { filters: [f.eq('org_id', org), f.eq('id', req.params.id)], limit: 1 });
+    if (!d) return res.status(404).json({ error: 'Domain not found' });
+    const [check] = await db.select<{ result: { dmarc: Parameters<typeof buildDmarcRecord>[0] } }>('email_dns_checks', { filters: [f.eq('org_id', org), f.eq('domain_id', d.id)], order: { col: 'created_at' }, limit: 1 });
+    const current = check?.result?.dmarc ?? null;
+    const record = buildDmarcRecord(current?.exists ? current : null, policy, process.env.DMARC_RUA_ADDRESS);
+    audit(req, 'EMAILSEC_DMARC_POLICY_PLAN', `${d.domain}: plan to publish p=${policy} (current ${d.dmarc_policy ?? 'none published'})`, d.id, 'warning');
+    res.json({ host: `_dmarc.${d.domain}`, type: 'TXT', value: record, current: current?.raw ?? null, explanation: POLICY_EXPLANATIONS[policy],
+        note: 'Publish this at your DNS provider. NovrSOC does not change DNS; re-run the inspection after publishing to confirm.' });
+}));
+
+// ── DMARC: reports, sources, analytics ─────────────────────────────────────────────────────
+
+router.get('/dmarc/reports', h(async (db, req, res) => {
+    const domain = normalizeDomain(str(req.query.domain));
+    res.json({ reports: await db.select('dmarc_reports', { filters: [f.eq('org_id', orgOf(req)), ...(domain ? [f.eq('domain', domain)] : [])], order: { col: 'date_begin' }, limit: 200 }) });
+}));
+
+router.get('/dmarc/reports/:id', h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Report not found' });
+    const org = orgOf(req);
+    const [report] = await db.select('dmarc_reports', { filters: [f.eq('org_id', org), f.eq('id', req.params.id)], limit: 1 });
+    if (!report) return res.status(404).json({ error: 'Report not found' });
+    res.json({ report, records: await db.select('dmarc_records', { filters: [f.eq('org_id', org), f.eq('report_id', req.params.id)], order: { col: 'message_count' }, limit: 1000 }) });
+}));
+
+router.post('/dmarc/reports/upload', MANAGER, upload.single('report'), h(async (db, req, res) => {
+    const file = (req as AuthRequest & { file?: Express.Multer.File }).file;
+    if (!file) return res.status(400).json({ error: 'Attach the report file (.xml, .xml.gz or .zip) as "report".' });
+    const r = await ingestReport(db, file.buffer, 'upload', orgOf(req));
+    if (!r.ok) return res.status(r.status).json({ error: r.error });
+    audit(req, 'EMAILSEC_DMARC_REPORT_UPLOAD', `${r.domain} report ${r.report_id}: ${r.records} records, ${r.messages} messages${r.duplicate ? ' (duplicate — already stored)' : ''}`);
+    res.status(r.duplicate ? 200 : 201).json(r);
+}));
+
+router.get('/dmarc/sources', h(async (db, req, res) => {
+    const domain = normalizeDomain(str(req.query.domain));
+    const cls = str(req.query.classification);
+    res.json({ sources: await db.select<SendingSource>('email_sending_sources', {
+        filters: [f.eq('org_id', orgOf(req)), ...(domain ? [f.eq('domain', domain)] : []), ...(['known', 'unknown', 'suspicious'].includes(cls) ? [f.eq('classification', cls)] : [])],
+        order: { col: 'message_count' }, limit: 1000,
+    }) });
+}));
+
+router.patch('/dmarc/sources/:id', MANAGER, h(async (db, req, res) => {
+    const cls = str(req.body?.classification);
+    if (!['known', 'unknown', 'suspicious'].includes(cls)) return res.status(400).json({ error: 'classification must be known, unknown or suspicious' });
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Source not found' });
+    const reason = str(req.body?.reason, 500) || `Classified ${cls} by ${actorOf(req)}`;
+    const [s] = await db.update<SendingSource>('email_sending_sources', [f.eq('org_id', orgOf(req)), f.eq('id', req.params.id)], { classification: cls, classification_reason: reason, classified_by: actorOf(req) });
+    if (!s) return res.status(404).json({ error: 'Source not found' });
+    audit(req, 'EMAILSEC_CLASSIFY_SOURCE', `${s.source_ip} for ${s.domain} → ${cls}`, s.id);
+    res.json({ source: s });
+}));
+
+router.get('/dmarc/analytics', h(async (db, req, res) => {
+    const days = Math.min(365, Math.max(1, Number(req.query.days) || 30));
+    res.json(await dmarcAnalytics(db, orgOf(req), normalizeDomain(str(req.query.domain)), days));
+}));
+
+// ── Phish ID ───────────────────────────────────────────────────────────────────────────────
+
+router.get('/phishid/brand', h(async (db, req, res) => { res.json({ brand: await getBrand(db, orgOf(req)) }); }));
+
+router.put('/phishid/brand', MANAGER, h(async (db, req, res) => {
+    const v = cleanBrandInput(req.body ?? {});
+    if (!v.ok) return res.status(400).json({ error: v.error });
+    const now = new Date().toISOString();
+    const [brand] = await db.upsert('brand_profiles', { org_id: orgOf(req), ...v.value, updated_by: actorOf(req), updated_at: now }, ['org_id']);
+    audit(req, 'EMAILSEC_BRAND_SAVE', `${v.value.organization_name}: ${v.value.primary_domains.join(', ')}`);
+    res.json({ brand });
+}));
+
+router.post('/phishid/discover', MANAGER, inspectLimiter, h(async (db, req, res) => {
+    const r = await discover(db, orgOf(req), actorOf(req));
+    if (!r) return res.status(409).json({ error: 'Configure your brand (organisation name and domains) first.' });
+    audit(req, 'EMAILSEC_PHISH_DISCOVERY', `${r.candidates_checked} candidates, ${r.registered} registered, ${r.new_domains.length} new`);
+    res.json(r);
+}));
+
+router.get('/phishid/domains', h(async (db, req, res) => {
+    const status = str(req.query.status);
+    const risk = str(req.query.risk);
+    const q = str(req.query.q, 100).toLowerCase();
+    const rows = await db.select<PhishingDomain>('phishing_domains', {
+        filters: [f.eq('org_id', orgOf(req)), ...(PHISH_STATUSES.includes(status as PhishStatus) ? [f.eq('status', status)] : []), ...(RISK_ORDER.includes(risk as Risk) ? [f.eq('risk', risk)] : []),
+            ...(q ? [f.ilike('domain', `%${q.replace(/[%_]/g, '')}%`)] : [])],
+        order: { col: 'last_observed' }, limit: 1000,
+        select: 'id, domain, brand_domain, techniques, similarity, discovered_via, status, risk, risk_score, resolves, assigned_to, alert_id, first_observed, last_observed, last_enriched',
+    });
+    res.json({ domains: rows });
+}));
+
+router.post('/phishid/domains', ANALYST, h(async (db, req, res) => {
+    const r = await addManualDomain(db, orgOf(req), str(req.body?.domain, 253), actorOf(req));
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    if (r.created) audit(req, 'EMAILSEC_PHISH_ADD', r.row.domain, r.row.id);
+    res.status(r.created ? 201 : 200).json({ domain: r.row, created: r.created });
+}));
+
+router.get('/phishid/domains/:id', h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Domain not found' });
+    const org = orgOf(req);
+    const [row] = await db.select<PhishingDomain>('phishing_domains', { filters: [f.eq('org_id', org), f.eq('id', req.params.id)], limit: 1 });
+    if (!row) return res.status(404).json({ error: 'Domain not found' });
+    const ips = row.intel?.dns.a ?? [];
+    const [timeline, sightings, alert, soc] = await Promise.all([
+        db.select('phishing_observations', { filters: [f.eq('org_id', org), f.eq('phishing_domain_id', row.id)], order: { col: 'created_at' }, limit: 200 }),
+        indicatorSightings(db, org, [row.domain, ...ips]),
+        row.alert_id ? db.select<EmailAlert>('email_alerts', { filters: [f.eq('org_id', org), f.eq('id', row.alert_id)], limit: 1 }).then((a) => a[0] ?? null) : Promise.resolve(null),
+        relatedSocAlerts([row.domain, ...ips]),
+    ]);
+    res.json({ domain: row, timeline, related_indicators: sightings, alert, soc_alerts: soc });
+}));
+
+router.post('/phishid/domains/:id/refresh', ANALYST, inspectLimiter, h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Domain not found' });
+    const [row] = await db.select<PhishingDomain>('phishing_domains', { filters: [f.eq('org_id', orgOf(req)), f.eq('id', req.params.id)], limit: 1 });
+    if (!row) return res.status(404).json({ error: 'Domain not found' });
+    audit(req, 'EMAILSEC_PHISH_REFRESH', row.domain, row.id);
+    res.json({ domain: await enrichDomain(db, row, actorOf(req)) });
+}));
+
+router.patch('/phishid/domains/:id', ANALYST, h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Domain not found' });
+    const status = req.body?.status === undefined ? undefined : str(req.body.status) as PhishStatus;
+    if (status !== undefined && !PHISH_STATUSES.includes(status)) return res.status(400).json({ error: `status must be one of ${PHISH_STATUSES.join(', ')}` });
+    const assigned = req.body?.assigned_to === undefined ? undefined : (str(req.body.assigned_to, 200) || null);
+    const row = await setPhishStatus(db, orgOf(req), req.params.id, actorOf(req), { status, assigned_to: assigned });
+    if (!row) return res.status(404).json({ error: 'Domain not found' });
+    audit(req, 'EMAILSEC_PHISH_STATUS', `${row.domain}: ${status ?? ''}${assigned !== undefined ? ` assigned ${assigned ?? 'none'}` : ''}`, row.id);
+    res.json({ domain: row });
+}));
+
+router.post('/phishid/domains/:id/notes', ANALYST, h(async (db, req, res) => {
+    const body = str(req.body?.body, 4000);
+    if (!body) return res.status(400).json({ error: 'Note is empty' });
+    if (!isUuid(req.params.id) || !(await addPhishNote(db, orgOf(req), req.params.id, actorOf(req), body))) return res.status(404).json({ error: 'Domain not found' });
+    audit(req, 'EMAILSEC_PHISH_NOTE', body.slice(0, 120), req.params.id);
+    res.status(201).json({ success: true });
+}));
+
+router.post('/phishid/domains/:id/opencti', MANAGER, h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Domain not found' });
+    const org = orgOf(req);
+    const [row] = await db.select<PhishingDomain>('phishing_domains', { filters: [f.eq('org_id', org), f.eq('id', req.params.id)], limit: 1 });
+    if (!row) return res.status(404).json({ error: 'Domain not found' });
+    if (row.status !== 'confirmed_phishing') return res.status(409).json({ error: 'Only domains an analyst has marked "Confirmed phishing" are shared to OpenCTI.' });
+    const confidence = Math.min(100, 70 + Math.round(row.risk_score / 4));
+    const r = await pushDomainToOpenCti(row.domain, confidence, `Phishing domain impersonating ${row.brand_domain ?? 'a protected brand'}. ${row.risk_signals.map((s) => s.label).join('; ')}`, ['phishing', 'novrsoc-phishid']);
+    if (!r.ok) return res.status(502).json({ error: r.error });
+    await db.update('phishing_domains', [f.eq('id', row.id)], { opencti_id: r.id, updated_at: new Date().toISOString() });
+    await db.insert('phishing_observations', { org_id: org, phishing_domain_id: row.id, kind: 'opencti', actor: actorOf(req), summary: `Shared to OpenCTI (confidence ${confidence}).`, data: { opencti_id: r.id } });
+    audit(req, 'EMAILSEC_OPENCTI_PUSH', row.domain, row.id);
+    res.json({ success: true, opencti_id: r.id });
+}));
+
+// ── Messaging Suite ────────────────────────────────────────────────────────────────────────
+
+router.get('/messaging/connections', h(async (db, req, res) => { res.json({ connections: await listConnections(db, orgOf(req)) }); }));
+
+router.post('/messaging/connections/microsoft365/start', MANAGER, (req: AuthRequest, res) => {
+    const missing = CONNECTORS.microsoft365.missingConfig();
+    if (missing.length) return res.status(409).json({ error: `Microsoft 365 is not available on this NovrSOC deployment yet: ${missing.join(', ')} not set.`, missing });
+    const state = jwt.sign({ org: orgOf(req), sub: actorOf(req), p: 'microsoft365', n: randomUUID() }, stateSecret(), { expiresIn: '15m' });
+    audit(req, 'EMAILSEC_CONNECT_M365_START', 'admin consent link issued');
+    res.json({ consent_url: m365ConsentUrl(state), permissions: CONNECTORS.microsoft365.permissions, expires_in_minutes: 15 });
+});
+
+router.post('/messaging/connections/google_workspace', MANAGER, h(async (db, req, res) => {
+    const missing = CONNECTORS.google_workspace.missingConfig();
+    if (missing.length) return res.status(409).json({ error: `Google Workspace is not available on this NovrSOC deployment yet: ${missing.join(', ')} not set.`, missing });
+    const admin = str(req.body?.admin_email, 254).toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(admin)) return res.status(400).json({ error: 'Enter the Workspace super-admin address the service account will act as.' });
+    const conn = await upsertAndVerify(db, orgOf(req), 'google_workspace', { admin_email: admin, scopes: CONNECTORS.google_workspace.permissions }, actorOf(req));
+    audit(req, 'EMAILSEC_CONNECT_GOOGLE', `${admin}: ${conn.status}`, conn.id, 'warning');
+    res.status(conn.status === 'connected' ? 200 : 502).json({ connection: conn });
+}));
+
+router.post('/messaging/connections/gateway', MANAGER, h(async (db, req, res) => {
+    const conn = await upsertAndVerify(db, orgOf(req), 'gateway', { scopes: CONNECTORS.gateway.permissions }, actorOf(req));
+    audit(req, 'EMAILSEC_CONNECT_GATEWAY', conn.status, conn.id);
+    res.status(conn.status === 'connected' ? 200 : 502).json({ connection: conn });
+}));
+
+router.post('/messaging/connections/:provider/verify', ANALYST, h(async (db, req, res) => {
+    const provider = String(req.params.provider);
+    if (!isProvider(provider)) return res.status(404).json({ error: 'Unknown provider' });
+    const [conn] = await db.select<Connection>('messaging_connections', { filters: [f.eq('org_id', orgOf(req)), f.eq('provider', provider)], limit: 1 });
+    if (!conn) return res.status(404).json({ error: 'Not connected' });
+    res.json({ connection: await verifyConnection(db, conn) });
+}));
+
+router.post('/messaging/connections/:provider/sync', ANALYST, inspectLimiter, h(async (db, req, res) => {
+    const provider = String(req.params.provider);
+    if (!isProvider(provider)) return res.status(404).json({ error: 'Unknown provider' });
+    const [conn] = await db.select<Connection>('messaging_connections', { filters: [f.eq('org_id', orgOf(req)), f.eq('provider', provider)], limit: 1 });
+    if (!conn) return res.status(404).json({ error: 'Not connected' });
+    const r = await syncConnection(db, conn);
+    audit(req, 'EMAILSEC_SYNC', `${provider}: ${r.ok ? `${r.fetched} fetched, ${r.stored} stored` : r.error}`);
+    res.status(r.ok ? 200 : 502).json(r);
+}));
+
+router.delete('/messaging/connections/:provider', MANAGER, h(async (db, req, res) => {
+    const provider = String(req.params.provider);
+    if (!isProvider(provider)) return res.status(404).json({ error: 'Unknown provider' });
+    await db.remove('messaging_connections', [f.eq('org_id', orgOf(req)), f.eq('provider', provider)]);
+    audit(req, 'EMAILSEC_DISCONNECT', provider, undefined, 'warning');
+    res.json({
+        success: true,
+        note: provider === 'microsoft365' ? 'NovrSOC has stopped syncing. To revoke access completely, remove the NovrSOC enterprise application in Microsoft Entra ID.'
+            : provider === 'google_workspace' ? 'NovrSOC has stopped syncing. To revoke access completely, remove the service account\'s domain-wide delegation in the Google Admin console.'
+            : 'NovrSOC has stopped importing gateway verdicts.',
+    });
+}));
+
+const EVENT_LIST_COLS = 'id, provider, message_id, sender, sender_domain, recipient, subject, received_at, source_ip, spf, dkim, dmarc, detection, categories, severity, action, action_by, alert_id';
+
+router.get('/messaging/events', h(async (db, req, res) => {
+    const view = str(req.query.view);
+    const filters = [f.eq('org_id', orgOf(req))];
+    if (view === 'threats') filters.push(f.neq('detection', 'clean'));
+    if (view === 'quarantine') filters.push(f.eq('action', 'quarantine'));
+    for (const k of ['severity', 'detection', 'provider', 'action'] as const) { const v = str(req.query[k], 40); if (v) filters.push(f.eq(k, v)); }
+    const from = str(req.query.from, 40); const to = str(req.query.to, 40);
+    if (from && !Number.isNaN(Date.parse(from))) filters.push(f.gte('received_at', new Date(from).toISOString()));
+    if (to && !Number.isNaN(Date.parse(to))) filters.push(f.lte('received_at', new Date(to).toISOString()));
+    const q = str(req.query.q, 200).toLowerCase().replace(/[%_]/g, '');
+    if (q) filters.push(q.includes('@') ? f.ilike(q.startsWith('@') ? 'sender_domain' : 'sender', q.startsWith('@') ? `%${q.slice(1)}%` : `%${q}%`) : f.ilike('sender_domain', `%${q}%`));
+    res.json({ events: await db.select('email_events', { filters, order: { col: 'received_at' }, limit: Math.min(1000, Number(req.query.limit) || 200), select: EVENT_LIST_COLS }) });
+}));
+
+router.get('/messaging/events/:id', h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Event not found' });
+    const org = orgOf(req);
+    const [event] = await db.select<{ id: string; alert_id: string | null; source_ip: string | null; sender_domain: string | null; urls: { domain: string | null }[] }>('email_events', { filters: [f.eq('org_id', org), f.eq('id', req.params.id)], limit: 1 });
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+    const values = [event.source_ip, event.sender_domain, ...event.urls.map((u) => u.domain)].filter((v): v is string => !!v);
+    const [alert, sightings] = await Promise.all([
+        event.alert_id ? db.select<EmailAlert>('email_alerts', { filters: [f.eq('org_id', org), f.eq('id', event.alert_id)], limit: 1 }).then((a) => a[0] ?? null) : Promise.resolve(null),
+        indicatorSightings(db, org, values),
+    ]);
+    res.json({ event, alert, related_indicators: sightings });
+}));
+
+router.post('/messaging/events/:id/analyze', ANALYST, inspectLimiter, h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Event not found' });
+    const [event] = await db.select<{ id: string; urls: { url: string }[]; attachments: Parameters<typeof analyzeAttachment>[0][] }>('email_events', { filters: [f.eq('org_id', orgOf(req)), f.eq('id', req.params.id)], limit: 1 });
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+    const analysis = {
+        urls: await Promise.all(event.urls.slice(0, 10).map((u) => analyzeUrl(u.url))),
+        attachments: await Promise.all(event.attachments.slice(0, 5).map((a) => analyzeAttachment(a))),
+        analyzed_at: new Date().toISOString(),
+    };
+    await db.update('email_events', [f.eq('id', event.id)], { analysis });
+    res.json({ analysis });
+}));
+
+// ── Alerts ─────────────────────────────────────────────────────────────────────────────────
+
+router.get('/alerts', h(async (db, req, res) => {
+    const filters = [f.eq('org_id', orgOf(req))];
+    const status = str(req.query.status); const sev = str(req.query.severity); const mod = str(req.query.module);
+    if (status === 'open') filters.push(f.in('status', ['new', 'investigating']));
+    else if (ALERT_STATUSES.includes(status as AlertStatus)) filters.push(f.eq('status', status));
+    if (sev) filters.push(f.eq('severity', sev));
+    if (['dmarc', 'phishid', 'messaging'].includes(mod)) filters.push(f.eq('source_module', mod));
+    const alerts = await db.select<EmailAlert>('email_alerts', { filters, order: { col: 'last_seen' }, limit: 500 });
+    res.json({ alerts: alerts.map(({ evidence: _e, timeline: _t, ...a }) => a) });
+}));
+
+router.get('/alerts/:id', h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Alert not found' });
+    const org = orgOf(req);
+    const [alert] = await db.select<EmailAlert>('email_alerts', { filters: [f.eq('org_id', org), f.eq('id', req.params.id)], limit: 1 });
+    if (!alert) return res.status(404).json({ error: 'Alert not found' });
+    const events = alert.related_events.length
+        ? await db.select('email_events', { filters: [f.eq('org_id', org), f.in('id', alert.related_events.slice(-50))], order: { col: 'received_at' }, select: EVENT_LIST_COLS })
+        : [];
+    const soc = await relatedSocAlerts(alert.indicators.filter((i) => i.type === 'ip' || i.type === 'domain').map((i) => i.value));
+    res.json({ alert, events, soc_alerts: soc });
+}));
+
+router.patch('/alerts/:id', ANALYST, h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Alert not found' });
+    const status = req.body?.status === undefined ? undefined : str(req.body.status) as AlertStatus;
+    if (status !== undefined && !ALERT_STATUSES.includes(status)) return res.status(400).json({ error: `status must be one of ${ALERT_STATUSES.join(', ')}` });
+    const assigned = req.body?.assigned_to === undefined ? undefined : (str(req.body.assigned_to, 200) || null);
+    const note = str(req.body?.note, 4000) || undefined;
+    const a = await updateAlert(db, orgOf(req), req.params.id, actorOf(req), { status, assigned_to: assigned, note });
+    if (!a) return res.status(404).json({ error: 'Alert not found' });
+    audit(req, 'EMAILSEC_ALERT_UPDATE', `${a.title}: ${[status && `status ${status}`, assigned !== undefined && `assigned ${assigned ?? 'none'}`, note && 'note'].filter(Boolean).join(', ')}`, a.id);
+    res.json({ alert: a });
+}));
+
+router.post('/alerts/:id/case', ANALYST, h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Alert not found' });
+    const caseId = str(req.body?.case_id, 64) || undefined;
+    const r = await escalateToCase(db, orgOf(req), req.params.id, actorOf(req), caseId);
+    if (!r.ok) return res.status(r.status).json({ error: r.error });
+    audit(req, caseId ? 'EMAILSEC_ALERT_LINK_CASE' : 'EMAILSEC_ALERT_CASE', `case ${r.case_number}`, req.params.id);
+    res.status(r.created ? 201 : 200).json(r);
+}));
+
+// ── Reusable URL intelligence (also for SOC alerts) ────────────────────────────────────────
+
+router.post('/url/analyze', ANALYST, inspectLimiter, async (req: AuthRequest, res) => {
+    const url = str(req.body?.url, 4000);
+    if (!url) return res.status(400).json({ error: 'url is required' });
+    res.json({ analysis: await analyzeUrl(url, { fetch: req.body?.fetch === true }) });
 });
 
 export default router;

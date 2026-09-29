@@ -1,5 +1,5 @@
-// Free phishing-URL checking for PHISHID (routes/emailSecurity.ts's /phishid/classify), on top
-// of the existing Claude classifier + heuristic fallback there.
+// Free phishing-URL checking (PhishTank + OpenPhish), used by the Email Security module's URL
+// intelligence (services/emailsec/urlIntel.ts) and Phish ID domain intelligence.
 //
 // Verified live before writing this:
 // - PhishTank's checkurl endpoint answers WITHOUT an API key (app_key is optional, exactly as

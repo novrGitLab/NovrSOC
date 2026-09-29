@@ -54,6 +54,7 @@ import { runCTIWatcher } from './jobs/ctiWatcher';
 import { startEscalationJob } from './jobs/incidentEscalation';
 import { startNigerianIntelJob } from './jobs/nigerianIntelJob';
 import { startGlobalIntelJob } from './jobs/globalIntelJob';
+import { startEmailSecurityJob } from './jobs/emailSecurityJob';
 import platformRouter from './routes/platform';
 import organisationsRouter from './routes/organisations';
 import secopsRouter from './routes/secops';
@@ -307,11 +308,11 @@ app.use('/api/threat', threatRouter);
 app.use('/api/cti', ctiRouter);
 app.use('/api/urlscan', urlscanRouter);
 app.use('/api/webscan', webscanRouter);
-app.use('/api/email', emailSecurityRouter);
-// Same '/api/email' prefix as emailSecurityRouter above (DMARC domain monitoring /
-// messaging gateway checks) — this one is outbound send (SendGrid alerts/reports) plus the
-// Mailgun DMARC inbound webhook. Sub-paths don't collide; kept distinct files since the two
-// are different concerns (sending vs. scanning) that happen to share a URL namespace.
+// Email Security module (DMARC SaaS, Phish ID, Messaging Suite) — auth is per-route inside the
+// router because the Microsoft 365 admin-consent callback must be reachable without a token.
+app.use('/api/email-security', emailSecurityRouter);
+// Platform notification email (status, test, alert, weekly report) plus the Mailgun DMARC
+// report inbox, which hands reports to the Email Security module.
 app.use('/api/email', emailRouter);
 app.use('/api/email-proxy', emailProxyRouter);
 app.use('/api/mitre', mitreRouter);
@@ -407,3 +408,5 @@ startEscalationJob();
 startNigerianIntelJob();
 // CIRCL pulse + Wazuh-derived MITRE technique sync — see jobs/globalIntelJob.ts.
 startGlobalIntelJob();
+// DMARC DNS checks, Phish ID discovery/enrichment, mail-provider sync — jobs/emailSecurityJob.ts.
+startEmailSecurityJob();
