@@ -122,3 +122,14 @@ test('sending sources: known / suspicious / unknown with reasons', () => {
     assert.equal(providerForPtr('a1-2.smtp-out.amazonses.com'), 'Amazon SES');
     assert.equal(providerForPtr('host.random.example'), null);
 });
+
+test('Microsoft 365 documented delivery values map to the provider\'s action', () => {
+    const mk = (deliveryAction: string, deliveryLocation: string) => fromMicrosoftAlert({ id: 'x', category: 'Phish', evidence: [{ '@odata.type': '#microsoft.graph.security.analyzedMessageEvidence', networkMessageId: 'n', threats: ['Phish'], deliveryAction, deliveryLocation }] })[0];
+    assert.equal(mk('blocked', 'failed').action, 'block');
+    assert.equal(mk('delivered', 'dropped').action, 'block');
+    assert.equal(mk('delivered', 'quarantine').action, 'quarantine');
+    const junk = mk('junked', 'junkFolder');
+    assert.equal(junk.action, 'flag');
+    assert.match(junk.action_by, /Junk/);
+    assert.equal(mk('delivered', 'inbox').action_by, 'none');
+});

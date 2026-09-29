@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeUrl, structureSignals } from '../urlIntel';
+import { normalizeUrl, structureSignals, analyzeUrl } from '../urlIntel';
 import { isPrivateAddress, validateTarget, BlockedTargetError } from '../safeFetch';
 import { extractEvidence } from '../siteInspect';
 import { classifyFile } from '../attachmentIntel';
@@ -70,4 +70,18 @@ test('attachment classification from metadata only', () => {
     assert.equal(classifyFile('login.html').file_class, 'html');
     assert.equal(classifyFile('notes.pdf').file_class, 'document');
     assert.equal(classifyFile(null).file_class, 'unknown');
+});
+
+test('internal URLs are never sent to external intelligence feeds or fetched', async () => {
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => { calls++; return new Response('{}'); }) as typeof fetch;
+    try {
+        for (const u of ['http://169.254.169.254/latest/meta-data/', 'http://10.1.2.3/admin', 'http://intranet.local/', 'http://[::1]/']) {
+            const a = await analyzeUrl(u, { fetch: true });
+            assert.equal(a.verdict, 'invalid', u);
+            assert.equal(a.fetch, null, u);
+        }
+        assert.equal(calls, 0);
+    } finally { globalThis.fetch = realFetch; }
 });

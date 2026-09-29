@@ -10,7 +10,8 @@ import { checkPhishSources } from '../phishCheck';
 import { vtCheckURL, isConfigured as vtConfigured } from '../virustotal';
 import { lookupDomain } from '../rdap';
 import { registrableDomain } from './similarity';
-import { safeGet, BlockedTargetError, type Hop, type TlsInfo } from './safeFetch';
+import { isIP } from 'net';
+import { safeGet, BlockedTargetError, isPrivateAddress, type Hop, type TlsInfo } from './safeFetch';
 
 export interface NormalizedUrl { url: string; host: string; domain: string; scheme: string; path: string }
 
@@ -71,6 +72,12 @@ export async function analyzeUrl(input: string, opts: { fetch?: boolean } = {}):
     const n = normalizeUrl(input);
     const base: UrlAnalysis = { input, normalized: n, analyzed_at: new Date().toISOString(), verdict: 'invalid', reasons: [], signals: [], sources: [], domain_age_days: null, registrar: null, fetch: null };
     if (!n) return { ...base, reasons: ['Not a valid http(s) URL.'] };
+    // Internal destinations are never sent to third-party feeds (that would leak internal URLs)
+    // and are never fetched.
+    const hostBare = n.host.replace(/^\[|\]$/g, '');
+    if (/^localhost$|\.localhost$|\.internal$|\.local$/i.test(hostBare) || (isIP(hostBare) && isPrivateAddress(hostBare))) {
+        return { ...base, reasons: ['Internal / private address — not analysed and not sent to external intelligence sources.'] };
+    }
     const key = `${n.url}|${opts.fetch ? 1 : 0}`;
     const hit = cache.get(key);
     if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;

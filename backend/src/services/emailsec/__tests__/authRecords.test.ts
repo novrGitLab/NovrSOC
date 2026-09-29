@@ -130,3 +130,12 @@ test('Health score explains itself and maps to a status', () => {
     assert.equal(domainStatusFromScore(none.score), 'critical');
     assert.ok(none.parts.every((p) => p.label && p.max > 0));
 });
+
+test('duplicate DMARC records: invalid, all records listed, and no enforcement credit', () => {
+    const d = parseDmarc(['v=DMARC1; p=quarantine;', 'v=DMARC1; p=none;']);
+    assert.equal(dmarcStatus(d), 'fail');
+    assert.equal(d.records.length, 2);
+    const h = authenticationHealth(parseSpf(['v=spf1 mx ~all']), d, []);
+    assert.equal(h.parts.find((p) => p.label.startsWith('DMARC enforcement'))!.points, 0);
+    assert.equal(h.parts.find((p) => p.label === 'DMARC published and valid')!.points, 0);
+});

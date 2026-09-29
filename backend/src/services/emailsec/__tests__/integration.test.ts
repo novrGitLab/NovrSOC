@@ -358,3 +358,33 @@ test('missing schema is a 503 with setup instructions', async () => {
         assert.match(r.data.schema_file, /2026-09-email-security\.sql/);
     } finally { setDb(db); }
 });
+
+test('Microsoft 365: a tenant already connected to another organisation cannot be claimed by editing the callback', async () => {
+    const [owned] = await db.select<{ tenant_id: string }>('messaging_connections', { filters: [{ col: 'provider', op: 'eq', value: 'microsoft365' }, { col: 'org_id', op: 'eq', value: 'org-a' }], limit: 1 });
+    assert.ok(owned?.tenant_id, 'org-a connected earlier in this file');
+    const start = await api('POST', '/api/email-security/messaging/connections/microsoft365/start', { role: 'soc_manager', org: 'org-evil' });
+    const state = new URL(start.data.consent_url).searchParams.get('state')!;
+    setConnectorFetch(async (input) => String(input).includes('/token') ? Response.json({ access_token: jwt.sign({ roles: ['SecurityAlert.Read.All'] }, 'k'), expires_in: 3600 }) : Response.json({ value: [] }));
+    const r = await api('GET', `/api/email-security/messaging/connections/microsoft365/callback?state=${state}&admin_consent=True&tenant=${owned.tenant_id}`, { redirect: 'manual' });
+    assert.match(r.res.headers.get('location')!, /result=error/);
+    const evil = await db.select('messaging_connections', { filters: [{ col: 'org_id', op: 'eq', value: 'org-evil' }] });
+    assert.equal(evil.length, 0);
+});
+
+test('shared infrastructure does not merge unrelated alerts: docs.google.com links, a provider MTA IP', async () => {
+    const mk = (id: string, from: string, extra: Record<string, unknown> = {}) => ({
+        ...fromGateway({ id, message_id: `<${id}@x>`, org_id: 'org-s', from_address: from, to_address: 'a@example.com', verdict: 'phishing', received_at: new Date().toISOString(), source_ip: '209.85.220.41' }),
+        ...extra,
+    });
+    await ingestEvents(db, 'org-s', [
+        mk('g1', 'billing@alpha-invoices.test', { urls: [{ url: 'https://docs.google.com/forms/d/aaa/viewform', domain: 'docs.google.com' }] }),
+        mk('g2', 'hr@beta-payroll.test', { urls: [{ url: 'https://docs.google.com/forms/d/bbb/viewform', domain: 'docs.google.com' }] }),
+    ]);
+    const alerts = (await api('GET', '/api/email-security/alerts', { role: 'analyst', org: 'org-s' })).data.alerts;
+    assert.deepEqual(alerts.map((a: { entity: string }) => a.entity).sort(), ['alpha-invoices.test', 'beta-payroll.test'], 'two senders → two alerts despite shared Google link domain and MTA IP');
+    // …while the SAME malicious URL does correlate.
+    await ingestEvents(db, 'org-s', [mk('g3', 'other@gamma.test', { urls: [{ url: 'https://docs.google.com/forms/d/aaa/viewform', domain: 'docs.google.com' }] })]);
+    const after = (await api('GET', '/api/email-security/alerts', { role: 'analyst', org: 'org-s' })).data.alerts;
+    assert.equal(after.length, 2);
+    assert.equal(after.find((a: { entity: string }) => a.entity === 'alpha-invoices.test').occurrences, 2);
+});

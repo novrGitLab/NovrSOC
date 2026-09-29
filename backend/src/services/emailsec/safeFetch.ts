@@ -150,6 +150,11 @@ function requestOnce(t: ValidatedTarget): Promise<{ status: number; headers: Rec
             res.on('close', done);
             res.on('error', reject);
         });
+        // `timeout` above is an IDLE timeout; a server trickling one byte every few seconds would
+        // never trip it. This is the hard deadline for the whole request, body included.
+        const deadline = setTimeout(() => req.destroy(new Error(`Timed out after ${TIMEOUT_MS / 1000}s`)), TIMEOUT_MS);
+        deadline.unref();
+        req.on('close', () => clearTimeout(deadline));
         req.on('timeout', () => req.destroy(new Error(`Timed out after ${TIMEOUT_MS / 1000}s`)));
         req.on('error', reject);
         req.end();

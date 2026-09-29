@@ -54,9 +54,10 @@ export const f = {
 // ── Supabase ─────────────────────────────────────────────────────────────────────────────
 
 // PostgREST reports an unknown table as PGRST205 ("Could not find the table") and Postgres as
-// 42P01; an unknown column (older schema) as PGRST204 / 42703.
-function raise(table: string, error: { code?: string; message?: string }): never {
-    if (error.code === 'PGRST205' || error.code === '42P01' || /could not find the table|does not exist/i.test(error.message ?? '')) {
+// 42P01. A HEAD request (count) for an unknown table gets a bare 404 with no body, so the
+// error has neither code nor message — the status is the only signal.
+function raise(table: string, error: { code?: string; message?: string }, status?: number): never {
+    if (error.code === 'PGRST205' || error.code === '42P01' || /could not find the table|does not exist/i.test(error.message ?? '') || (status === 404 && !error.code)) {
         throw new SchemaMissingError(table);
     }
     throw new DbError(`${table}: ${error.message ?? 'database error'}`);
@@ -86,8 +87,8 @@ function supabaseDb(): Db | null {
             return (data ?? []) as T[];
         },
         async count(table, filters = []) {
-            const { count, error } = await applyFilters(sb.from(table).select('id', { count: 'exact', head: true }), filters);
-            if (error) raise(table, error);
+            const { count, error, status } = await applyFilters(sb.from(table).select('id', { count: 'exact', head: true }), filters);
+            if (error) raise(table, error, status);
             return count ?? 0;
         },
         async insert<T>(table: string, rows: Row | Row[]) {

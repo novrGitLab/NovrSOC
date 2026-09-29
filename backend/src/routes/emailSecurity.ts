@@ -88,6 +88,14 @@ router.get('/messaging/connections/microsoft365/callback', h(async (db, req, res
     if (req.query.error) return back('error', `${req.query.error}: ${String(req.query.error_description ?? '')}`);
     const tenant = String(req.query.tenant ?? '');
     if (req.query.admin_consent !== 'True' || !/^[0-9a-f-]{36}$/i.test(tenant)) return back('error', 'Microsoft did not confirm admin consent.');
+    // Microsoft: never trust the callback's tenant value on its own — it can be edited. With a
+    // multi-tenant app, any tenant that consented for ANOTHER customer is readable with the
+    // app's credentials, so a tenant already connected to a different organisation is refused.
+    const claimed = await db.select<Connection>('messaging_connections', { filters: [f.eq('provider', 'microsoft365'), f.eq('tenant_id', tenant)], limit: 5 });
+    if (claimed.some((c) => c.org_id !== state.org)) {
+        logAudit({ user: state.sub, action: 'EMAILSEC_CONNECT_M365', resource: 'email_security', ip: req.ip ?? '', result: 'failed', details: `tenant ${tenant} belongs to another organisation`, severity: 'critical' });
+        return back('error', 'This Microsoft 365 tenant is already connected to a different organisation.');
+    }
     const conn = await upsertAndVerify(db, state.org, 'microsoft365', { tenant_id: tenant, scopes: CONNECTORS.microsoft365.permissions }, state.sub);
     logAudit({ user: state.sub, action: 'EMAILSEC_CONNECT_M365', resource: 'email_security', ip: req.ip ?? '', result: conn.status === 'connected' ? 'success' : 'failed', details: `tenant ${tenant}: ${conn.status}`, severity: 'warning' });
     return back(conn.status, conn.status === 'connected' ? 'Connected.' : conn.last_error ?? conn.status);
@@ -184,7 +192,7 @@ router.get('/dmarc/domains/:id', h(async (db, req, res) => {
     const [checks, sources, reports] = await Promise.all([
         db.select<{ result: unknown; created_at: string }>('email_dns_checks', { filters: [f.eq('org_id', org), f.eq('domain_id', d.id)], order: { col: 'created_at' }, limit: 10 }),
         db.select<SendingSource>('email_sending_sources', { filters: [f.eq('org_id', org), f.eq('domain', d.domain)], order: { col: 'message_count' }, limit: 200 }),
-        db.select('dmarc_reports', { filters: [f.eq('org_id', org), f.eq('domain', d.domain)], order: { col: 'date_begin' }, limit: 20 }),
+        db.select('dmarc_aggregate_reports', { filters: [f.eq('org_id', org), f.eq('domain', d.domain)], order: { col: 'date_begin' }, limit: 20 }),
     ]);
     res.json({ domain: d, latest: checks[0]?.result ?? null, history: checks.map((c) => ({ at: c.created_at })), sources, reports, policies: POLICY_EXPLANATIONS });
 }));
@@ -238,21 +246,22 @@ router.post('/dmarc/domains/:id/policy-plan', MANAGER, h(async (db, req, res) =>
     const current = check?.result?.dmarc ?? null;
     const record = buildDmarcRecord(current?.exists ? current : null, policy, process.env.DMARC_RUA_ADDRESS);
     audit(req, 'EMAILSEC_DMARC_POLICY_PLAN', `${d.domain}: plan to publish p=${policy} (current ${d.dmarc_policy ?? 'none published'})`, d.id, 'warning');
-    res.json({ host: `_dmarc.${d.domain}`, type: 'TXT', value: record, current: current?.raw ?? null, explanation: POLICY_EXPLANATIONS[policy],
-        note: 'Publish this at your DNS provider. NovrSOC does not change DNS; re-run the inspection after publishing to confirm.' });
+    const existing = (current as { records?: string[] } | null)?.records ?? (current?.raw ? [current.raw] : []);
+    res.json({ host: `_dmarc.${d.domain}`, type: 'TXT', value: record, current: existing.join('  |  ') || null, explanation: POLICY_EXPLANATIONS[policy],
+        note: `${existing.length > 1 ? `Delete all ${existing.length} existing DMARC records and publish only this one. ` : existing.length ? 'Replace the existing DMARC record with this one. ' : ''}Publish this at your DNS provider. NovrSOC does not change DNS; re-run the inspection after publishing to confirm.` });
 }));
 
 // ── DMARC: reports, sources, analytics ─────────────────────────────────────────────────────
 
 router.get('/dmarc/reports', h(async (db, req, res) => {
     const domain = normalizeDomain(str(req.query.domain));
-    res.json({ reports: await db.select('dmarc_reports', { filters: [f.eq('org_id', orgOf(req)), ...(domain ? [f.eq('domain', domain)] : [])], order: { col: 'date_begin' }, limit: 200 }) });
+    res.json({ reports: await db.select('dmarc_aggregate_reports', { filters: [f.eq('org_id', orgOf(req)), ...(domain ? [f.eq('domain', domain)] : [])], order: { col: 'date_begin' }, limit: 200 }) });
 }));
 
 router.get('/dmarc/reports/:id', h(async (db, req, res) => {
     if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Report not found' });
     const org = orgOf(req);
-    const [report] = await db.select('dmarc_reports', { filters: [f.eq('org_id', org), f.eq('id', req.params.id)], limit: 1 });
+    const [report] = await db.select('dmarc_aggregate_reports', { filters: [f.eq('org_id', org), f.eq('id', req.params.id)], limit: 1 });
     if (!report) return res.status(404).json({ error: 'Report not found' });
     res.json({ report, records: await db.select('dmarc_records', { filters: [f.eq('org_id', org), f.eq('report_id', req.params.id)], order: { col: 'message_count' }, limit: 1000 }) });
 }));

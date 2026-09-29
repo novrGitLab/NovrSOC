@@ -101,10 +101,10 @@ app.get('/', (_req, res) => {
 // exposure — see the per-route comment below. It is NOT mounted globally, and NOT mounted
 // on most feature routes, for a reason specific to this app's architecture:
 //
-// 22 feature components (ThreatManagement, CtiPlatform, DnsSuite,
+// Shared feature components (ThreatManagement, CtiPlatform, DnsSuite,
 // BrandSuite, DomainSuite, UrlScanSuite, WebsiteScanning, VendorAssessments,
-// WebLogicAppliances, MessagingSuite, PHISHIDProtection, DataLossRecovery, RecoveryCredit,
-// AlertCommunication, DMARCSaaS, MobileAppSuite, SocialSuite, CopyIdSuite, ExecutiveMonitor,
+// WebLogicAppliances, DataLossRecovery, RecoveryCredit,
+// AlertCommunication, MobileAppSuite, SocialSuite, CopyIdSuite, ExecutiveMonitor,
 // ThreatAdvisory, DigitalAssets — cross-checked by diffing every component imported by any
 // /admin page against every component imported by any /client page) are rendered by BOTH the
 // admin app and the client portal, and call the same backend routes either way: /api/wazuh,

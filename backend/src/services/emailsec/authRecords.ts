@@ -112,6 +112,8 @@ export type DmarcPolicy = 'none' | 'quarantine' | 'reject';
 export interface DmarcRecord extends Findings {
     exists: boolean;
     raw: string | null;
+    /** Every DMARC record published — more than one makes DMARC invalid. */
+    records: string[];
     tags: Record<string, string>;
     policy: DmarcPolicy | null;
     subdomainPolicy: DmarcPolicy | null;
@@ -127,7 +129,7 @@ const POLICIES = new Set(['none', 'quarantine', 'reject']);
 export function parseDmarc(txtRecords: string[]): DmarcRecord {
     const recs = txtRecords.filter((t) => /^v\s*=\s*DMARC1\s*(;|$)/i.test(t.trim()));
     const out: DmarcRecord = {
-        exists: recs.length > 0, raw: recs[0] ?? null, tags: {}, policy: null, subdomainPolicy: null,
+        exists: recs.length > 0, raw: recs[0] ?? null, records: recs, tags: {}, policy: null, subdomainPolicy: null,
         pct: 100, rua: [], ruf: [], adkim: 'r', aspf: 'r', ...findings(),
     };
     if (recs.length === 0) {
@@ -287,6 +289,9 @@ export const COMMON_DKIM_SELECTORS = [
     'default', 'google', 'selector1', 'selector2', 'k1', 'k2', 'k3', 's1', 's2', 'mail', 'dkim', 'smtp',
     'mandrill', 'mxvault', 'zoho', 'zmail', 'protonmail', 'protonmail2', 'protonmail3', 'sig1', 'mailjet',
     'sendgrid', 'smtpapi', 'fm1', 'fm2', 'fm3', 'resend', 'mta', 'brevo', 'mailo', 'amazonses', 'everlytickey1',
+    // Brevo publishes brevo1/brevo2 (older accounts: mail / sib); Mailgun mx / krs; Postmark pm;
+    // HubSpot hs1/hs2; Zendesk zendesk1/2; Campaign Monitor cm.
+    'brevo1', 'brevo2', 'sib', 'mx', 'krs', 'pm', 'hs1', 'hs2', 'zendesk1', 'zendesk2', 'cm', 'dkim1',
 ];
 
 // ── Health score ──────────────────────────────────────────────────────────────────────────
@@ -317,7 +322,8 @@ export function authenticationHealth(spf: SpfRecord, dmarc: DmarcRecord, dkim: D
         { label: 'SPF published and valid', max: 25, points: spf.exists && !spf.errors.length ? 25 : spf.exists ? 10 : 0 },
         { label: 'SPF fails unlisted senders (~all / -all)', max: 10, points: spf.all === '-' || spf.all === '~' ? 10 : 0 },
         { label: 'DMARC published and valid', max: 20, points: dmarc.exists && !dmarc.errors.length && dmarc.policy ? 20 : 0 },
-        { label: 'DMARC enforcement (quarantine / reject)', max: 20, points: dmarc.policy === 'reject' ? 20 : dmarc.policy === 'quarantine' ? 12 : 0 },
+        // An invalid record (e.g. two published) is applied by receivers as no policy at all.
+        { label: 'DMARC enforcement (quarantine / reject)', max: 20, points: dmarc.errors.length ? 0 : dmarc.policy === 'reject' ? 20 : dmarc.policy === 'quarantine' ? 12 : 0 },
         { label: 'DMARC aggregate reports (rua)', max: 5, points: dmarc.rua.length ? 5 : 0 },
         // DKIM that simply wasn't found under the probed selectors scores nothing rather than a
         // penalty — it may well be published under a selector we don't know.

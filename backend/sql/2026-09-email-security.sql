@@ -7,6 +7,24 @@
 -- environment plus the tenant id recorded on consent; Google Workspace uses a service-account
 -- key from the environment plus the delegated admin address. Message bodies are never stored.
 
+BEGIN;  -- all or nothing
+
+-- Preflight: CREATE TABLE IF NOT EXISTS silently skips a same-named table with a different
+-- shape. Refuse to continue if any of these names is already taken by something else.
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['email_domains','email_dns_checks','dmarc_aggregate_reports','dmarc_records','email_sending_sources',
+                           'brand_profiles','phishing_domains','phishing_observations','messaging_connections',
+                           'email_events','email_indicators','email_alerts']
+  LOOP
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = t)
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = t AND column_name = 'org_id' AND data_type = 'text') THEN
+      RAISE EXCEPTION 'public.% already exists with a different structure — not modifying it. Rename or remove it first.', t;
+    END IF;
+  END LOOP;
+END $$;
+
 -- ── DMARC SaaS ──────────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS public.email_domains (
@@ -41,7 +59,10 @@ CREATE TABLE IF NOT EXISTS public.email_dns_checks (
 CREATE INDEX IF NOT EXISTS email_dns_checks_domain_idx ON public.email_dns_checks (org_id, domain, created_at DESC);
 
 -- One row per aggregate (RUA) report received.
-CREATE TABLE IF NOT EXISTS public.dmarc_reports (
+-- Named dmarc_aggregate_reports because an unrelated, empty legacy table public.dmarc_reports
+-- (uuid org_id FK to organisations, one row per source IP) already exists in this database and
+-- nothing uses it. This script deliberately leaves that table alone rather than dropping it.
+CREATE TABLE IF NOT EXISTS public.dmarc_aggregate_reports (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id           TEXT NOT NULL,
   domain           TEXT NOT NULL,
@@ -58,13 +79,13 @@ CREATE TABLE IF NOT EXISTS public.dmarc_reports (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (org_id, reporter, report_id)
 );
-CREATE INDEX IF NOT EXISTS dmarc_reports_domain_idx ON public.dmarc_reports (org_id, domain, date_begin DESC);
+CREATE INDEX IF NOT EXISTS dmarc_aggregate_reports_domain_idx ON public.dmarc_aggregate_reports (org_id, domain, date_begin DESC);
 
 -- One row per <record> in a report (source IP × identifiers × results).
 CREATE TABLE IF NOT EXISTS public.dmarc_records (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id         TEXT NOT NULL,
-  report_id      UUID NOT NULL REFERENCES public.dmarc_reports(id) ON DELETE CASCADE,
+  report_id      UUID NOT NULL REFERENCES public.dmarc_aggregate_reports(id) ON DELETE CASCADE,
   domain         TEXT NOT NULL,
   source_ip      TEXT NOT NULL,
   message_count  BIGINT NOT NULL,
@@ -274,7 +295,7 @@ CREATE INDEX IF NOT EXISTS email_alerts_status_idx ON public.email_alerts (org_i
 DO $$
 DECLARE t TEXT;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['email_domains','email_dns_checks','dmarc_reports','dmarc_records','email_sending_sources',
+  FOREACH t IN ARRAY ARRAY['email_domains','email_dns_checks','dmarc_aggregate_reports','dmarc_records','email_sending_sources',
                            'brand_profiles','phishing_domains','phishing_observations','messaging_connections',
                            'email_events','email_indicators','email_alerts']
   LOOP
@@ -284,3 +305,5 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+
+COMMIT;

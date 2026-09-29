@@ -151,11 +151,18 @@ export function fromMicrosoftAlert(alert: GraphAlert): NormalizedEmailEvent[] {
             const hit = M365_CATEGORY[key] ?? M365_CATEGORY[String(t).toLowerCase()];
             if (hit) cats.push(hit);
         }
+        // authenticationDetails is not a documented v1.0 property of analyzedMessageEvidence
+        // (checked 2026-09-29); read only if Microsoft includes it, otherwise SPF/DKIM/DMARC stay null.
         const auth = (m.authenticationDetails as Record<string, string> | undefined) ?? {};
         if (lc(auth.dmarc) === 'fail') cats.push('auth_failure');
+        // Documented values — deliveryAction: delivered | deliveredAsSpam | junked | blocked | replaced;
+        // deliveryLocation: inbox | external | junkFolder | quarantine | failed | dropped | deletedFolder | forwarded.
         const location = lc(m.deliveryLocation) ?? '';
         const delivery = lc(m.deliveryAction) ?? '';
-        const action: Action = location.includes('quarantine') ? 'quarantine' : delivery === 'blocked' ? 'block' : delivery === 'delivered' || delivery === 'deliveredasspam' ? (cats.length ? 'flag' : 'allow') : 'flag';
+        const junked = delivery === 'junked' || delivery === 'deliveredasspam' || location === 'junkfolder';
+        const action: Action = location === 'quarantine' ? 'quarantine'
+            : delivery === 'blocked' || location === 'dropped' || location === 'failed' ? 'block'
+            : cats.length ? 'flag' : 'allow';
         const sender = (m.p1Sender as { emailAddress?: string } | undefined)?.emailAddress ?? (m.p2Sender as { emailAddress?: string } | undefined)?.emailAddress ?? null;
         const recipient = lc(m.recipientEmailAddress);
         return finish({
@@ -173,7 +180,7 @@ export function fromMicrosoftAlert(alert: GraphAlert): NormalizedEmailEvent[] {
             ti_matches: [],
             categories: cats.length ? cats : ['phishing'], // an alert on a message is a detection even if the category is unmapped
             action,
-            action_by: action === 'allow' || action === 'flag' ? 'none' : 'Microsoft 365 (Defender for Office 365)',
+            action_by: action === 'allow' || action === 'flag' ? (junked ? 'Microsoft 365 (delivered to Junk)' : 'none') : 'Microsoft 365 (Defender for Office 365)',
             mailbox: recipient,
             tenant: alert.tenantId ?? null,
         });
@@ -187,9 +194,12 @@ export interface GmailActivity {
     events?: Array<{ name?: string; parameters?: Array<{ name: string; value?: string; boolValue?: boolean; messageValue?: { parameter?: Array<{ name: string; value?: string; boolValue?: boolean; multiValue?: string[]; messageValue?: unknown }> } }> }>;
 }
 
-// Gmail log events nest their fields in a "message_info" message value. The field names used
-// here follow Google's Gmail log event documentation; this normaliser is written to tolerate
-// absent fields because the exact shape varies by event type. Verify against a live tenant.
+// UNVERIFIED FIELD MAPPING. Google documents applicationName=gmail, the "delivery" event and
+// event_info.mail_event_type for the Reports API, but not the nested message fields. The names
+// below (message_info, source, destination, spam_info, connection_info, link_domain) follow
+// Google's Gmail-log schema for the BigQuery export. Every field is optional here, so a
+// mismatch yields events with missing metadata rather than wrong data — confirm against a live
+// Workspace tenant before relying on it.
 export function fromGmailActivity(a: GmailActivity): NormalizedEmailEvent | null {
     const ev = a.events?.[0];
     const info = ev?.parameters?.find((p) => p.name === 'message_info')?.messageValue?.parameter ?? [];

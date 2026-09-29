@@ -36,7 +36,8 @@ export async function runDomainCheck(db: Db, d: EmailDomain): Promise<DomainInsp
     await db.insert('email_dns_checks', { org_id: d.org_id, domain_id: d.id, domain: d.domain, result });
     await db.update('email_domains', [f.eq('id', d.id)], {
         status: result.lookup_errors.length && !result.spf.exists && !result.dmarc.exists ? 'error' : result.health.status,
-        dmarc_policy: result.dmarc.policy, spf_status: result.statuses.spf, dkim_status: result.statuses.dkim, dmarc_status: result.statuses.dmarc,
+        // The policy receivers actually apply: none when the record set is invalid.
+        dmarc_policy: result.dmarc.errors.length ? null : result.dmarc.policy, spf_status: result.statuses.spf, dkim_status: result.statuses.dkim, dmarc_status: result.statuses.dmarc,
         health_score: result.health.score, last_checked: now, last_error: result.lookup_errors.join('; ') || null, updated_at: now,
     });
 
@@ -84,12 +85,12 @@ export async function ingestReport(db: Db, raw: Buffer, via: 'upload' | 'mailgun
     let suspicious = 0;
     for (const owner of owners) {
         // Receivers resend reports; (reporter, report_id) identifies one.
-        const [dupe] = await db.select('dmarc_reports', {
+        const [dupe] = await db.select('dmarc_aggregate_reports', {
             filters: [f.eq('org_id', owner.org_id), f.eq('reporter', report.reporter), f.eq('report_id', report.report_id)], limit: 1,
         });
         if (dupe) continue;
         stored_for++;
-        const [stored] = await db.insert<{ id: string }>('dmarc_reports', {
+        const [stored] = await db.insert<{ id: string }>('dmarc_aggregate_reports', {
             org_id: owner.org_id, domain: report.domain, report_id: report.report_id, reporter: report.reporter, reporter_email: report.reporter_email,
             date_begin: report.date_begin, date_end: report.date_end, policy_published: report.policy_published,
             record_count: report.records.length, message_count: report.message_count, pass_count: report.pass_count, received_via: via,
@@ -222,7 +223,7 @@ export async function dmarcAnalytics(db: Db, orgId: string, domain: string | nul
         db.select<{ message_count: number; dmarc_pass: boolean; spf_aligned: boolean; dkim_aligned: boolean; date_begin: string; source_ip: string }>('dmarc_records', {
             filters: [...scope, f.gte('date_begin', since)], limit: 1000, select: 'message_count, dmarc_pass, spf_aligned, dkim_aligned, date_begin, source_ip',
         }),
-        db.count('dmarc_reports', [...scope, f.gte('date_begin', since)]),
+        db.count('dmarc_aggregate_reports', [...scope, f.gte('date_begin', since)]),
         db.select<{ classification: string }>('email_sending_sources', { filters: scope, limit: 1000, select: 'classification' }),
     ]);
     const totals = { messages: 0, pass: 0, fail: 0, spf_fail: 0, dkim_fail: 0, pass_rate: null as number | null };
