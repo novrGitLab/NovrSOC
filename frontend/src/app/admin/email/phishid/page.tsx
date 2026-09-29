@@ -1,5 +1,5 @@
-import { PHISHIDProtection } from '@/components/features/PHISHIDProtection';
+import { PhishId } from '@/components/features/email-security/PhishId';
 
 export default function Page() {
-    return <PHISHIDProtection />;
+    return <PhishId />;
 }

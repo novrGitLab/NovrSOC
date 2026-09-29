@@ -1,5 +1,5 @@
-import { DMARCSaaS } from '@/components/features/DMARCSaaS';
+import { DmarcSaas } from '@/components/features/email-security/DmarcSaas';
 
 export default function Page() {
-    return <DMARCSaaS />;
+    return <DmarcSaas />;
 }

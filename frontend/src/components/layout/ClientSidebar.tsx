@@ -3,7 +3,7 @@
 import {
     LayoutDashboard, Globe, Users, Shield, UserCheck, Smartphone, Code,
     Crosshair, AlertTriangle, Link as LinkIcon, Monitor, Building, Server, Network, Cpu,
-    Mail, MessageSquare, ShieldAlert, Activity, Siren, Bell,
+    Activity, Siren, Bell,
     HardDrive, BarChart, CreditCard,
 } from 'lucide-react';
 import { Sidebar, type NavGroup } from './Sidebar';
@@ -50,17 +50,6 @@ const clientNav: NavGroup[] = [
             { label: 'Digital Assets', href: '/client/infra/assets', icon: Server },
             { label: 'DNS Suite', href: '/client/infra/dns', icon: Network },
             { label: 'WebLogic Appliances', href: '/client/infra/weblogic', icon: Cpu },
-        ],
-    },
-    {
-        section: 'Email Security',
-        collapsible: true,
-        icon: Mail,
-        groupLabel: 'Email Security',
-        items: [
-            { label: 'DMARC SaaS', href: '/client/email/dmarc', icon: Mail },
-            { label: 'Messaging Suite', href: '/client/email/messaging', icon: MessageSquare },
-            { label: 'Intelli CODE PHISHID', href: '/client/email/phishid', icon: ShieldAlert },
         ],
     },
     {

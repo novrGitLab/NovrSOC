@@ -156,12 +156,13 @@ const adminNav: NavGroup[] = [
         collapsible: true,
         icon: Mail,
         groupLabel: 'Email Security',
+        // Rebuilt 2026-09-29: one module, three capabilities (domain authentication, brand
+        // impersonation, mail traffic) plus the overview that correlates them.
         items: [
-            { label: 'Email Monitoring', href: '/admin/email/monitoring', icon: Mail },
+            { label: 'Overview', href: '/admin/email', icon: LayoutDashboard },
             { label: 'DMARC SaaS', href: '/admin/email/dmarc', icon: Mail },
+            { label: 'Intellicode Phish ID', href: '/admin/email/phishid', icon: ShieldAlert },
             { label: 'Messaging Suite', href: '/admin/email/messaging', icon: MessageSquare },
-            { label: 'PHISHID', href: '/admin/email/phishid', icon: ShieldAlert },
-            { label: 'Email Investigation', href: '/admin/email/investigate', icon: Crosshair },
         ],
     },
     {
