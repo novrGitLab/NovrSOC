@@ -51,6 +51,7 @@ import emailRouter from './routes/email';
 import emailProxyRouter from './routes/emailProxy';
 import mitreRouter from './routes/mitre';
 import orgCTIRouter from './routes/orgCTI';
+import cniiRouter from './routes/cnii';
 import { runCTIWatcher } from './jobs/ctiWatcher';
 import { startEscalationJob } from './jobs/incidentEscalation';
 import { startNigerianIntelJob } from './jobs/nigerianIntelJob';
@@ -351,6 +352,8 @@ app.use('/api/assets', assetsRouter);
 app.use('/api/dashboard', requireAuth, dashboardRouter);
 app.use('/api/handover', requireAuth, handoverRouter);
 app.use('/api/org-cti', orgCTIRouter);
+// CNII Watch — admin-only (no client-portal page uses it). Role checks per route inside.
+app.use('/api/cnii', requireAuth, cniiRouter);
 // super_admin only — platform infra health is explicitly out of scope for soc_manager per that
 // role's spec ("Cannot access platform settings").
 app.use('/api/platform', requireAuth, requireRole('super_admin'), platformRouter);
