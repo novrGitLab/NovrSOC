@@ -88,13 +88,22 @@ router.post('/weekly-report', requireAuth, requireRole('super_admin', 'soc_manag
 // Mailgun signs every webhook: HMAC-SHA256(signing key, timestamp + token) = signature.
 // Without the key configured the inbox refuses everything — an unauthenticated endpoint that
 // writes into DMARC data would let anyone forge "authorised" sending sources.
-function mailgunSignatureValid(body: Record<string, unknown>): boolean {
+// Replay protection: a signed request is only valid inside a 15-minute window, and each Mailgun
+// token is accepted once within it (Mailgun's own guidance is to cache used tokens).
+const REPLAY_WINDOW_S = 15 * 60;
+const usedTokens = new Map<string, number>(); // token -> expiry (ms)
+function mailgunSignatureValid(body: Record<string, unknown>): { ok: boolean; reason?: string } {
     const key = process.env.MAILGUN_WEBHOOK_SIGNING_KEY;
     const { timestamp, token, signature } = body as { timestamp?: string; token?: string; signature?: string };
-    if (!key || !timestamp || !token || !signature) return false;
-    if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 15 * 60) return false; // replay window
+    if (!key || !timestamp || !token || !signature) return { ok: false, reason: 'missing signature fields' };
+    if (!Number.isFinite(Number(timestamp)) || Math.abs(Date.now() / 1000 - Number(timestamp)) > REPLAY_WINDOW_S) return { ok: false, reason: 'timestamp outside the 15-minute window' };
     const expected = createHmac('sha256', key).update(`${timestamp}${token}`).digest('hex');
-    return expected.length === signature.length && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+    if (!(expected.length === signature.length && timingSafeEqual(Buffer.from(expected), Buffer.from(signature)))) return { ok: false, reason: 'bad signature' };
+    const now = Date.now();
+    for (const [t, exp] of usedTokens) if (exp < now) usedTokens.delete(t);
+    if (usedTokens.has(token)) return { ok: false, reason: 'token already used (replay)' };
+    usedTokens.set(token, now + REPLAY_WINDOW_S * 2 * 1000);
+    return { ok: true };
 }
 
 // POST /api/email/dmarc-inbound — Mailgun inbound route for the DMARC report mailbox (rua=).
@@ -103,8 +112,9 @@ router.post('/dmarc-inbound', dmarcUpload.any(), async (req, res) => {
         res.status(503).json({ error: 'DMARC report inbox is not configured (MAILGUN_WEBHOOK_SIGNING_KEY).' });
         return;
     }
-    if (!mailgunSignatureValid(req.body ?? {})) {
-        res.status(401).json({ error: 'Invalid Mailgun signature.' });
+    const sig = mailgunSignatureValid(req.body ?? {});
+    if (!sig.ok) {
+        res.status(401).json({ error: `Invalid Mailgun signature: ${sig.reason}.` });
         return;
     }
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
