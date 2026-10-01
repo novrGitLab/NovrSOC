@@ -13,7 +13,7 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import emailProxyRouter from '../emailProxy';
 import emailSecurityRouter from '../emailSecurity';
-import { setEmailProxyStore } from '../../services/emailProxy';
+import { setEmailProxyStore, upsertEmailLog, EMAIL_LOG_CONFLICT_KEY, LEGACY_EMAIL_LOG_CONFLICT_KEY } from '../../services/emailProxy';
 import { createMemoryDb, setDb } from '../../services/emailsec/db';
 import { syncConnection } from '../../services/emailsec/messagingService';
 import type { Connection } from '../../services/emailsec/connectors/types';
@@ -40,7 +40,7 @@ const harmless = (over: Record<string, unknown> = {}) => ({
 before(() => {
     setEmailProxyStore({
         orgForDomain: async (d) => ({ org_id: domains[d] ?? null }),
-        upsertLog: async (row) => { const i = logs.findIndex((l) => l.message_id === row.message_id); if (i >= 0) logs[i] = row; else logs.push(row); return {}; },
+        upsertLog: async (row) => { const i = logs.findIndex((l) => l.org_id === row.org_id && l.message_id === row.message_id && l.to_address === row.to_address); if (i >= 0) logs[i] = row; else logs.push(row); return {}; },
         logsSince: async (org, since, limit) => ({ rows: logs.filter((l) => l.org_id === org && String(l.received_at) > since).sort((a, b) => String(a.received_at).localeCompare(String(b.received_at))).slice(0, limit) }),
     });
     setDb(db);
@@ -120,4 +120,34 @@ test('end to end: gateway verdict → email_logs → Messaging event → alert, 
     assert.ok(e.alert_id);
     const other = await (await fetch(`${base}/api/email-security/messaging/events`, { headers: { Authorization: `Bearer ${staff('analyst', 'org-b')}` } })).json();
     assert.equal(other.events.length, 0, 'org-b sees none of org-a\'s mail');
+});
+
+test('one message to several recipients is one row per recipient; a retried report updates, never duplicates', async () => {
+    const mid = '<multi-recipient@test>';
+    for (const to of ['a@example.com', 'b@example.com', 'c@example.com']) assert.equal((await verdict(harmless({ message_id: mid, to_address: to, verdict: 'spam' }))).status, 200);
+    assert.equal(logs.filter((l) => l.message_id === mid).length, 3);
+    // Duplicate delivery of the same recipient's verdict (mail host retry) → still 3, latest verdict kept.
+    assert.equal((await verdict(harmless({ message_id: mid, to_address: 'B@Example.com', verdict: 'phishing' }))).status, 200);
+    const rows = logs.filter((l) => l.message_id === mid);
+    assert.equal(rows.length, 3);
+    assert.equal(rows.find((r) => r.to_address === 'b@example.com')!.verdict, 'phishing');
+    // The same Message-ID at another customer is that customer's own row, not an overwrite.
+    assert.equal((await verdict(harmless({ message_id: mid, to_address: 'x@other.example' }))).status, 200);
+    assert.deepEqual([...new Set(logs.filter((l) => l.message_id === mid).map((l) => l.org_id))].sort(), ['org-a', 'org-b']);
+});
+
+test('upsertEmailLog uses (org, message, recipient); falls back to message_id only when the migration has not run', async () => {
+    const calls: string[] = [];
+    const client = (firstError: { code?: string; message?: string } | null) => ({
+        from: () => ({ upsert: async (_r: Record<string, unknown>, o: { onConflict: string }) => { calls.push(o.onConflict); return { error: calls.length === 1 ? firstError : null }; } }),
+    });
+    assert.deepEqual(await upsertEmailLog(client(null), {}), { key: EMAIL_LOG_CONFLICT_KEY });
+    assert.deepEqual(calls, [EMAIL_LOG_CONFLICT_KEY]);
+    calls.length = 0;
+    assert.deepEqual(await upsertEmailLog(client({ code: '42P10', message: 'there is no unique or exclusion constraint matching the ON CONFLICT specification' }), {}), { key: LEGACY_EMAIL_LOG_CONFLICT_KEY });
+    assert.deepEqual(calls, [EMAIL_LOG_CONFLICT_KEY, LEGACY_EMAIL_LOG_CONFLICT_KEY]);
+    calls.length = 0;
+    const other = await upsertEmailLog(client({ code: '23502', message: 'null value in column' }), {});
+    assert.match(other.error!, /null value/);
+    assert.deepEqual(calls, [EMAIL_LOG_CONFLICT_KEY], 'other errors are reported, not retried with a weaker key');
 });

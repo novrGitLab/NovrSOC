@@ -63,9 +63,7 @@ const supabaseStore: EmailProxyStore = {
     async upsertLog(row) {
         const supabase = getSupabase();
         if (!supabase) return { error: 'Database not configured' };
-        // Upsert on message_id so a retried report updates rather than duplicating.
-        const { error } = await supabase.from('email_logs').upsert(row, { onConflict: 'message_id' });
-        return error ? { error: explainDbError(error) } : {};
+        return upsertEmailLog(supabase as unknown as UpsertClient, row);
     },
     async logsSince(orgId, since, limit) {
         const supabase = getSupabase();
@@ -74,6 +72,23 @@ const supabaseStore: EmailProxyStore = {
         return error ? { rows: [], error: explainDbError(error) } : { rows: (data ?? []) as Record<string, unknown>[] };
     },
 };
+// One row per (org, message, recipient): a message to three people is three verdict events, and
+// a retried report for the same recipient updates its row. Before
+// sql/2026-09-email-logs-recipient-unique.sql has run, only message_id is unique; Postgres then
+// answers 42P10 (no matching constraint) and the old key is used, so deploy order doesn't matter.
+export const EMAIL_LOG_CONFLICT_KEY = 'org_id,message_id,to_address';
+export const LEGACY_EMAIL_LOG_CONFLICT_KEY = 'message_id';
+export interface UpsertClient {
+    from(table: string): { upsert(row: Record<string, unknown>, opts: { onConflict: string }): PromiseLike<{ error: { code?: string; message?: string } | null }> };
+}
+export async function upsertEmailLog(client: UpsertClient, row: Record<string, unknown>): Promise<{ error?: string; key: string }> {
+    const first = await client.from('email_logs').upsert(row, { onConflict: EMAIL_LOG_CONFLICT_KEY });
+    if (!first.error) return { key: EMAIL_LOG_CONFLICT_KEY };
+    if (first.error.code !== '42P10') return { error: explainDbError(first.error), key: EMAIL_LOG_CONFLICT_KEY };
+    const legacy = await client.from('email_logs').upsert(row, { onConflict: LEGACY_EMAIL_LOG_CONFLICT_KEY });
+    return legacy.error ? { error: explainDbError(legacy.error), key: LEGACY_EMAIL_LOG_CONFLICT_KEY } : { key: LEGACY_EMAIL_LOG_CONFLICT_KEY };
+}
+
 let store: EmailProxyStore = supabaseStore;
 /** Tests only. */
 export function setEmailProxyStore(s: EmailProxyStore | null): void { store = s ?? supabaseStore; }
