@@ -23,11 +23,11 @@ export interface EventRow {
     source_ip: string | null; spf: string | null; dkim: string | null; dmarc: string | null; detection: string; categories: string[]; severity: string; action: string; action_by: string; alert_id: string | null;
 }
 
-const STATUS_TEXT: Record<string, string> = { connected: 'CONNECTED', not_connected: 'NOT CONNECTED', auth_error: 'AUTHENTICATION ERROR', permission_error: 'PERMISSION ERROR', sync_error: 'SYNC ERROR' };
+const STATUS_TEXT: Record<string, string> = { connected: 'CONNECTED', not_connected: 'NOT CONNECTED', requires_configuration: 'REQUIRES CONFIGURATION', auth_error: 'AUTHENTICATION ERROR', permission_error: 'PERMISSION ERROR', sync_error: 'SYNC ERROR' };
 const PROVIDER: Record<string, string> = { microsoft365: 'Microsoft 365', google_workspace: 'Google Workspace', gateway: 'Mail gateway' };
 const DETECTIONS = ['phishing', 'malware', 'bec', 'impersonation', 'malicious_url', 'suspicious_attachment', 'spoofing', 'auth_failure', 'spam', 'clean'];
 const ONBOARD: Record<string, string> = {
-    microsoft365: 'Connect your Microsoft 365 tenant to begin collecting authorised email-security telemetry (Defender for Office 365 alerts and message metadata).',
+    microsoft365: 'Connect your Microsoft 365 tenant to begin collecting authorised email-security telemetry (Defender for Office 365 alerts and message metadata). A Global Administrator signs in, then approves read-only access for that tenant.',
     google_workspace: 'Connect your Google Workspace domain to collect Gmail security log events — metadata only, no mailbox access.',
     gateway: 'Point your domain’s MX record at the NovrSOC mail gateway and it reports a verdict for every message it scans.',
 };
@@ -72,9 +72,10 @@ function Connections() {
     }
     async function connectM365() {
         setBusy('microsoft365:connect');
-        const r = await send<{ consent_url: string }>('POST', '/messaging/connections/microsoft365/start');
+        const r = await send<{ authorize_url: string }>('POST', '/messaging/connections/microsoft365/start');
         setBusy(null);
-        if (r.ok && r.data?.consent_url) window.location.href = r.data.consent_url;
+        // Sign in first (proves the tenant), then Microsoft asks for admin consent for that tenant.
+        if (r.ok && r.data?.authorize_url) window.location.href = r.data.authorize_url;
         else setFb((x) => ({ ...x, microsoft365: { ok: false, text: r.error ?? 'Could not start the connection' } }));
     }
 
@@ -103,12 +104,12 @@ function Connections() {
                                 <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">Permissions requested</p>
                                 <ul className="text-[11px] text-foreground list-disc pl-4 mt-1 [overflow-wrap:anywhere]">{c.permissions.map((x) => <li key={x}>{x}</li>)}</ul>
                             </div>
-                            {unavailable && <p className="text-[11px] text-amber-600 mt-2">Not available on this NovrSOC deployment yet — the backend needs {c.missing_config.join(', ')}.</p>}
+                            {unavailable && <p className="text-[11px] text-amber-600 mt-2">Requires configuration — the NovrSOC backend needs {c.missing_config.join(', ')} before this can connect.</p>}
                             <div className="flex flex-wrap gap-2 mt-3">
                                 {isManager(role) && !connected && p === 'microsoft365' && <Button variant="primary" disabled={unavailable} busy={busy === 'microsoft365:connect'} onClick={connectM365}><PlugZap size={12} /> Connect Microsoft 365</Button>}
                                 {isManager(role) && !connected && p === 'google_workspace' && (
                                     <form className="flex gap-2 w-full" onSubmit={(e) => { e.preventDefault(); void act(p, 'connect', 'POST', '/messaging/connections/google_workspace', { admin_email: adminEmail }, () => 'Connected and verified.'); }}>
-                                        <input value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} type="email" required placeholder="Workspace super-admin email" aria-label="Workspace admin email" className={`${inputCls} flex-1`} disabled={unavailable} />
+                                        <input value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} type="email" required placeholder="Workspace super-admin email" aria-label="Workspace admin email" className={`${inputCls} flex-1 min-w-0`} disabled={unavailable} />
                                         <Button type="submit" variant="primary" disabled={unavailable} busy={busy === `${p}:connect`}><PlugZap size={12} /> Connect</Button>
                                     </form>
                                 )}

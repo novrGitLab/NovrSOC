@@ -21,16 +21,7 @@ export function m365Missing(): string[] {
     return ['M365_CLIENT_ID', 'M365_CLIENT_SECRET', 'M365_REDIRECT_URI'].filter((k) => !process.env[k]);
 }
 
-/** Admin-consent URL for a customer's Global Administrator to approve the app in their tenant. */
-export function m365ConsentUrl(state: string): string {
-    const p = new URLSearchParams({
-        client_id: process.env.M365_CLIENT_ID ?? '',
-        redirect_uri: process.env.M365_REDIRECT_URI ?? '',
-        scope: 'https://graph.microsoft.com/.default',
-        state,
-    });
-    return `https://login.microsoftonline.com/organizations/v2.0/adminconsent?${p}`;
-}
+// Onboarding (sign-in, verified tenant, then per-tenant admin consent) lives in m365Onboarding.ts.
 
 const tokens = new Map<string, { token: string; exp: number }>();
 async function appToken(tenantId: string): Promise<string> {

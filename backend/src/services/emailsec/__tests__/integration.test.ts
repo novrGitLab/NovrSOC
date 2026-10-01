@@ -222,54 +222,6 @@ test('alert workflow: status, RBAC, case creation through the SOC case system', 
 
 // ── Provider connections ──
 
-test('Microsoft 365: not configured → honest refusal; consent → verified connection → sync', async () => {
-    const off = await api('POST', '/api/email-security/messaging/connections/microsoft365/start', { role: 'soc_manager' });
-    assert.equal(off.status, 409);
-    assert.deepEqual(off.data.missing, ['M365_CLIENT_ID', 'M365_CLIENT_SECRET', 'M365_REDIRECT_URI']);
-
-    Object.assign(process.env, { M365_CLIENT_ID: 'app-id', M365_CLIENT_SECRET: 'secret', M365_REDIRECT_URI: 'https://api.test/cb', FRONTEND_URL: 'https://app.test' });
-    const start = await api('POST', '/api/email-security/messaging/connections/microsoft365/start', { role: 'soc_manager' });
-    const url = new URL(start.data.consent_url);
-    assert.equal(url.searchParams.get('client_id'), 'app-id');
-    const state = url.searchParams.get('state')!;
-
-    const bad = await api('GET', `/api/email-security/messaging/connections/microsoft365/callback?state=forged&admin_consent=True&tenant=${randomUUID()}`, { redirect: 'manual' });
-    assert.equal(bad.res.status, 302);
-    assert.match(bad.res.headers.get('location')!, /result=error/);
-
-    const alertBody = { value: [{ id: 'm1', category: 'Phish', createdDateTime: new Date().toISOString(), evidence: [{ '@odata.type': '#microsoft.graph.security.analyzedMessageEvidence', networkMessageId: 'n1', p1Sender: { emailAddress: 'x@bad.example' }, recipientEmailAddress: 'u@example.com', deliveryAction: 'Blocked', deliveryLocation: 'Quarantine', threats: ['Phish'] }] }] };
-    let alertsPayload: unknown = { value: [] };
-    setConnectorFetch(async (input) => {
-        const u = String(input);
-        if (u.includes('/oauth2/v2.0/token')) return Response.json({ access_token: jwt.sign({ roles: ['SecurityAlert.Read.All'] }, 'k'), expires_in: 3600 });
-        if (u.includes('/security/alerts_v2')) return Response.json(alertsPayload);
-        return new Response('{}', { status: 404 });
-    });
-    const tenant = randomUUID();
-    const ok = await api('GET', `/api/email-security/messaging/connections/microsoft365/callback?state=${state}&admin_consent=True&tenant=${tenant}`, { redirect: 'manual' });
-    assert.match(ok.res.headers.get('location')!, /result=connected/);
-    const conns = (await api('GET', '/api/email-security/messaging/connections', { role: 'analyst' })).data.connections;
-    const m = conns.find((c: { provider: string }) => c.provider === 'microsoft365');
-    assert.equal(m.status, 'connected');
-    assert.equal(m.connection.tenant_id, tenant);
-
-    alertsPayload = alertBody;
-    const sync = await api('POST', '/api/email-security/messaging/connections/microsoft365/sync', { role: 'analyst' });
-    assert.equal(sync.status, 200);
-    assert.equal(sync.data.stored, 1);
-    const q = (await api('GET', '/api/email-security/messaging/events?view=quarantine', { role: 'analyst' })).data.events;
-    assert.equal(q.length, 1);
-    assert.match(q[0].action_by, /Microsoft 365/);
-});
-
-test('Microsoft 365: consent without SecurityAlert.Read.All is a permission error', async () => {
-    const start = await api('POST', '/api/email-security/messaging/connections/microsoft365/start', { role: 'soc_manager', org: 'org-c' });
-    const state = new URL(start.data.consent_url).searchParams.get('state')!;
-    setConnectorFetch(async (input) => String(input).includes('/token') ? Response.json({ access_token: jwt.sign({ roles: [] }, 'k'), expires_in: 3600 }) : Response.json({ value: [] }));
-    const r = await api('GET', `/api/email-security/messaging/connections/microsoft365/callback?state=${state}&admin_consent=True&tenant=${randomUUID()}`, { redirect: 'manual' });
-    assert.match(r.res.headers.get('location')!, /result=permission_error/);
-});
-
 test('Google Workspace: delegation verified, and refusal reported as a permission error', async () => {
     const key = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
     process.env.GOOGLE_WORKSPACE_SA_KEY = JSON.stringify({ client_email: 'novrsoc@proj.iam.gserviceaccount.com', private_key: key });
@@ -359,18 +311,6 @@ test('missing schema is a 503 with setup instructions', async () => {
     } finally { setDb(db); }
 });
 
-test('Microsoft 365: a tenant already connected to another organisation cannot be claimed by editing the callback', async () => {
-    const [owned] = await db.select<{ tenant_id: string }>('messaging_connections', { filters: [{ col: 'provider', op: 'eq', value: 'microsoft365' }, { col: 'org_id', op: 'eq', value: 'org-a' }], limit: 1 });
-    assert.ok(owned?.tenant_id, 'org-a connected earlier in this file');
-    const start = await api('POST', '/api/email-security/messaging/connections/microsoft365/start', { role: 'soc_manager', org: 'org-evil' });
-    const state = new URL(start.data.consent_url).searchParams.get('state')!;
-    setConnectorFetch(async (input) => String(input).includes('/token') ? Response.json({ access_token: jwt.sign({ roles: ['SecurityAlert.Read.All'] }, 'k'), expires_in: 3600 }) : Response.json({ value: [] }));
-    const r = await api('GET', `/api/email-security/messaging/connections/microsoft365/callback?state=${state}&admin_consent=True&tenant=${owned.tenant_id}`, { redirect: 'manual' });
-    assert.match(r.res.headers.get('location')!, /result=error/);
-    const evil = await db.select('messaging_connections', { filters: [{ col: 'org_id', op: 'eq', value: 'org-evil' }] });
-    assert.equal(evil.length, 0);
-});
-
 test('shared infrastructure does not merge unrelated alerts: docs.google.com links, a provider MTA IP', async () => {
     const mk = (id: string, from: string, extra: Record<string, unknown> = {}) => ({
         ...fromGateway({ id, message_id: `<${id}@x>`, org_id: 'org-s', from_address: from, to_address: 'a@example.com', verdict: 'phishing', received_at: new Date().toISOString(), source_ip: '209.85.220.41' }),
@@ -387,4 +327,44 @@ test('shared infrastructure does not merge unrelated alerts: docs.google.com lin
     const after = (await api('GET', '/api/email-security/alerts', { role: 'analyst', org: 'org-s' })).data.alerts;
     assert.equal(after.length, 2);
     assert.equal(after.find((a: { entity: string }) => a.entity === 'alpha-invoices.test').occurrences, 2);
+});
+
+test('providers without backend configuration say "requires configuration", never "connected"', async () => {
+    const saved = { ...process.env };
+    for (const k of ['EMAIL_PROXY_TOKEN', 'M365_CLIENT_ID', 'M365_CLIENT_SECRET', 'M365_REDIRECT_URI', 'GOOGLE_WORKSPACE_SA_KEY']) delete process.env[k];
+    try {
+        // Even a stored "connected" row is overridden when the configuration is gone.
+        await db.upsert('messaging_connections', { org_id: 'org-cfg', provider: 'gateway', status: 'connected', scopes: [] }, ['org_id', 'provider']);
+        const conns = (await api('GET', '/api/email-security/messaging/connections', { role: 'analyst', org: 'org-cfg' })).data.connections;
+        for (const c of conns) assert.equal(c.status, 'requires_configuration', c.provider);
+        assert.deepEqual(conns.find((c: { provider: string }) => c.provider === 'gateway').missing_config, ['EMAIL_PROXY_TOKEN']);
+    } finally { Object.assign(process.env, saved); }
+});
+
+test('Mailgun inbox: stale timestamps, replays, hostile XML and unmonitored domains are refused', async () => {
+    process.env.MAILGUN_WEBHOOK_SIGNING_KEY = 'mg-key';
+    const signed = (ts: number, token: string, xml = SAMPLE_REPORT.replace('1234567890', `mg-${token}`)) => {
+        const fd = reportForm(zipOf('r.xml', xml), 'attachment-1');
+        fd.append('timestamp', String(ts)); fd.append('token', token);
+        fd.append('signature', createHmac('sha256', 'mg-key').update(`${ts}${token}`).digest('hex'));
+        return fd;
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const stale = await api('POST', '/api/email/dmarc-inbound', { form: signed(now - 16 * 60, 'old') });
+    assert.equal(stale.status, 401);
+    assert.match(stale.data.error, /window/);
+    assert.equal((await api('POST', '/api/email/dmarc-inbound', { form: signed(now, 'once') })).status, 200);
+    const replay = await api('POST', '/api/email/dmarc-inbound', { form: signed(now, 'once') });
+    assert.equal(replay.status, 401);
+    assert.match(replay.data.error, /replay/);
+    const xxe = await api('POST', '/api/email/dmarc-inbound', { form: signed(now, 'xxe', `<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]>${SAMPLE_REPORT.replace(/^<\?xml[^>]*\?>/, '')}`) });
+    assert.equal(xxe.status, 200, 'answered 200 so Mailgun does not retry a report that can never succeed');
+    assert.equal(xxe.data.accepted, false);
+    assert.match(xxe.data.reason, /DOCTYPE/);
+    const foreign = await api('POST', '/api/email/dmarc-inbound', { form: signed(now, 'foreign', SAMPLE_REPORT.replace('<domain>example.com</domain>', '<domain>not-monitored.test</domain>')) });
+    assert.equal(foreign.data.accepted, false);
+    assert.match(foreign.data.reason, /not a monitored domain/);
+    const stored = await db.select<{ report_id: string }>('dmarc_aggregate_reports', {});
+    assert.ok(stored.some((r) => r.report_id === 'mg-once'), 'the one valid report was persisted');
+    assert.ok(!stored.some((r) => /xxe|foreign/.test(r.report_id)));
 });

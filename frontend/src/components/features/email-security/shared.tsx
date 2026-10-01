@@ -95,7 +95,7 @@ const STATUS_TONE: Record<string, Tone> = {
     discovered: 'blue', under_investigation: 'amber', suspicious: 'orange', confirmed_phishing: 'red',
     healthy: 'green', warning: 'amber', critical: 'red', error: 'red', pending: 'grey',
     pass: 'green', warn: 'amber', fail: 'red', missing: 'red', not_found: 'grey',
-    connected: 'green', not_connected: 'grey', auth_error: 'red', permission_error: 'red', sync_error: 'amber',
+    connected: 'green', not_connected: 'grey', requires_configuration: 'amber', auth_error: 'red', permission_error: 'red', sync_error: 'amber',
     known: 'green', unknown: 'grey',
 };
 export const StatusBadge = ({ s }: { s: string | null | undefined }) => <Badge tone={STATUS_TONE[s ?? ''] ?? 'grey'}>{label(s ?? 'unknown')}</Badge>;

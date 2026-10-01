@@ -27,9 +27,11 @@ export async function listConnections(db: Db, orgId: string) {
     return (Object.keys(CONNECTORS) as Provider[]).map((p) => {
         const c = CONNECTORS[p];
         const row = rows.find((r) => r.provider === p) ?? null;
+        const missing = c.missingConfig();
         return {
-            provider: p, label: c.label, permissions: c.permissions, missing_config: c.missingConfig(),
-            status: (row?.status ?? 'not_connected') as ConnectionStatus,
+            provider: p, label: c.label, permissions: c.permissions, missing_config: missing,
+            // Missing backend configuration outranks any stored status: nothing can work without it.
+            status: (missing.length ? 'requires_configuration' : row?.status ?? 'not_connected') as ConnectionStatus,
             connection: row,
         };
     });

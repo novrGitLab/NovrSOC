@@ -1,6 +1,6 @@
 import type { NormalizedEmailEvent, Provider } from '../eventModel';
 
-export type ConnectionStatus = 'connected' | 'not_connected' | 'auth_error' | 'permission_error' | 'sync_error';
+export type ConnectionStatus = 'connected' | 'not_connected' | 'requires_configuration' | 'auth_error' | 'permission_error' | 'sync_error';
 
 export interface Connection {
     id: string; org_id: string; provider: Provider; status: ConnectionStatus; tenant_id: string | null; tenant_name: string | null;

@@ -25,7 +25,7 @@ import {
 } from '../services/emailsec/phishService';
 import { RISK_ORDER, type Risk } from '../services/emailsec/phishRisk';
 import { listConnections, upsertAndVerify, verifyConnection, syncConnection, isProvider, CONNECTORS } from '../services/emailsec/messagingService';
-import { m365ConsentUrl } from '../services/emailsec/connectors/microsoft365';
+import { signInUrl, tenantConsentUrl, redeemSignInCode, isTenantId, M365IdentityError } from '../services/emailsec/connectors/m365Onboarding';
 import type { Connection } from '../services/emailsec/connectors/types';
 import { ALERT_STATUSES, updateAlert, escalateToCase, indicatorSightings, type EmailAlert, type AlertStatus } from '../services/emailsec/alerts';
 import { analyzeUrl } from '../services/emailsec/urlIntel';
@@ -71,6 +71,14 @@ const h = (fn: Handler) => async (req: AuthRequest, res: Response) => {
 
 const stateSecret = () => process.env.JWT_SECRET || process.env.DEV_TOKEN_SECRET || '';
 
+// Two steps share this redirect URI, told apart by the signed state (see m365Onboarding.ts):
+//   p = 'm365-signin'  → OpenID Connect sign-in: redeem the code, validate the ID token, take the
+//                        tenant from its tid claim, then send the admin to THAT tenant's consent.
+//   p = 'm365-consent' → admin consent: the query `tenant` must equal the verified tid in the
+//                        signed state; the stored tenant is always the verified one.
+type SignInState = { org: string; sub: string; p: 'm365-signin'; nonce: string };
+type ConsentState = { org: string; sub: string; p: 'm365-consent'; tid: string; oid: string | null };
+
 router.get('/messaging/connections/microsoft365/callback', h(async (db, req, res) => {
     const back = (result: string, detail: string) => {
         const base = process.env.FRONTEND_URL?.replace(/\/$/, '');
@@ -78,23 +86,45 @@ router.get('/messaging/connections/microsoft365/callback', h(async (db, req, res
         if (base) return res.redirect(`${base}/admin/email/messaging?${q}`);
         return res.type('text/plain').send(`Microsoft 365 connection: ${result}. ${detail} You can close this window.`);
     };
-    let state: { org: string; sub: string; p: string };
+    const refuse = (sub: string, detail: string, auditDetail: string) => {
+        logAudit({ user: sub, action: 'EMAILSEC_CONNECT_M365', resource: 'email_security', ip: req.ip ?? '', result: 'failed', details: auditDetail, severity: 'critical' });
+        return back('error', detail);
+    };
+
+    let state: SignInState | ConsentState;
     try {
-        state = jwt.verify(String(req.query.state ?? ''), stateSecret()) as typeof state;
-        if (state.p !== 'microsoft365') throw new Error('wrong provider');
+        state = jwt.verify(String(req.query.state ?? ''), stateSecret()) as SignInState | ConsentState;
+        if (state.p !== 'm365-signin' && state.p !== 'm365-consent') throw new Error('wrong flow');
     } catch {
-        return back('error', 'The consent link expired or was not issued by NovrSOC. Start the connection again.');
+        return back('error', 'The link expired or was not issued by NovrSOC. Start the connection again.');
     }
-    if (req.query.error) return back('error', `${req.query.error}: ${String(req.query.error_description ?? '')}`);
-    const tenant = String(req.query.tenant ?? '');
-    if (req.query.admin_consent !== 'True' || !/^[0-9a-f-]{36}$/i.test(tenant)) return back('error', 'Microsoft did not confirm admin consent.');
-    // Microsoft: never trust the callback's tenant value on its own — it can be edited. With a
-    // multi-tenant app, any tenant that consented for ANOTHER customer is readable with the
-    // app's credentials, so a tenant already connected to a different organisation is refused.
+    if (req.query.error) return back('error', `${String(req.query.error)}: ${String(req.query.error_description ?? '').slice(0, 200)}`);
+
+    if (state.p === 'm365-signin') {
+        const code = String(req.query.code ?? '');
+        if (!code) return back('error', 'Microsoft did not return a sign-in code.');
+        let identity;
+        try {
+            identity = await redeemSignInCode(code, state.nonce);
+        } catch (err) {
+            return refuse(state.sub, err instanceof M365IdentityError ? err.message : 'Microsoft sign-in failed.', `sign-in rejected: ${(err as Error).message}`);
+        }
+        const consentState = jwt.sign({ org: state.org, sub: state.sub, p: 'm365-consent', tid: identity.tid, oid: identity.oid } satisfies ConsentState, stateSecret(), { expiresIn: '15m' });
+        logAudit({ user: state.sub, action: 'EMAILSEC_CONNECT_M365_SIGNIN', resource: 'email_security', ip: req.ip ?? '', result: 'success', details: `verified tenant ${identity.tid} (${identity.username ?? 'unknown user'})` });
+        return res.redirect(tenantConsentUrl(identity.tid, consentState));
+    }
+
+    // Consent step: Microsoft's tenant parameter is only compared, never trusted.
+    const returned = req.query.tenant;
+    if (req.query.admin_consent !== 'True') return back('error', 'Microsoft did not confirm admin consent.');
+    if (!isTenantId(returned)) return refuse(state.sub, 'Microsoft did not return a tenant.', 'consent callback without tenant');
+    if (returned.toLowerCase() !== state.tid.toLowerCase()) {
+        return refuse(state.sub, 'The consent was for a different tenant than the account that signed in. Start the connection again.', `tenant mismatch: signed-in ${state.tid}, callback ${returned}`);
+    }
+    const tenant = state.tid;
     const claimed = await db.select<Connection>('messaging_connections', { filters: [f.eq('provider', 'microsoft365'), f.eq('tenant_id', tenant)], limit: 5 });
     if (claimed.some((c) => c.org_id !== state.org)) {
-        logAudit({ user: state.sub, action: 'EMAILSEC_CONNECT_M365', resource: 'email_security', ip: req.ip ?? '', result: 'failed', details: `tenant ${tenant} belongs to another organisation`, severity: 'critical' });
-        return back('error', 'This Microsoft 365 tenant is already connected to a different organisation.');
+        return refuse(state.sub, 'This Microsoft 365 tenant is already connected to a different organisation.', `tenant ${tenant} belongs to another organisation`);
     }
     const conn = await upsertAndVerify(db, state.org, 'microsoft365', { tenant_id: tenant, scopes: CONNECTORS.microsoft365.permissions }, state.sub);
     logAudit({ user: state.sub, action: 'EMAILSEC_CONNECT_M365', resource: 'email_security', ip: req.ip ?? '', result: conn.status === 'connected' ? 'success' : 'failed', details: `tenant ${tenant}: ${conn.status}`, severity: 'warning' });
@@ -404,9 +434,11 @@ router.get('/messaging/connections', h(async (db, req, res) => { res.json({ conn
 router.post('/messaging/connections/microsoft365/start', MANAGER, (req: AuthRequest, res) => {
     const missing = CONNECTORS.microsoft365.missingConfig();
     if (missing.length) return res.status(409).json({ error: `Microsoft 365 is not available on this NovrSOC deployment yet: ${missing.join(', ')} not set.`, missing });
-    const state = jwt.sign({ org: orgOf(req), sub: actorOf(req), p: 'microsoft365', n: randomUUID() }, stateSecret(), { expiresIn: '15m' });
-    audit(req, 'EMAILSEC_CONNECT_M365_START', 'admin consent link issued');
-    res.json({ consent_url: m365ConsentUrl(state), permissions: CONNECTORS.microsoft365.permissions, expires_in_minutes: 15 });
+    const nonce = randomUUID();
+    const state = jwt.sign({ org: orgOf(req), sub: actorOf(req), p: 'm365-signin', nonce }, stateSecret(), { expiresIn: '15m' });
+    audit(req, 'EMAILSEC_CONNECT_M365_START', 'Microsoft sign-in link issued');
+    // Step 1 is sign-in (to prove the tenant); consent for that tenant follows automatically.
+    res.json({ authorize_url: signInUrl(state, nonce), permissions: CONNECTORS.microsoft365.permissions, expires_in_minutes: 15 });
 });
 
 router.post('/messaging/connections/google_workspace', MANAGER, h(async (db, req, res) => {
