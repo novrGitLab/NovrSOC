@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import './lib/tlsGuard';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -55,6 +56,7 @@ import { startEscalationJob } from './jobs/incidentEscalation';
 import { startNigerianIntelJob } from './jobs/nigerianIntelJob';
 import { startGlobalIntelJob } from './jobs/globalIntelJob';
 import { startEmailSecurityJob } from './jobs/emailSecurityJob';
+import { announceJobPolicy } from './lib/runtimeEnv';
 import platformRouter from './routes/platform';
 import organisationsRouter from './routes/organisations';
 import secopsRouter from './routes/secops';
@@ -399,14 +401,19 @@ startCTIWatcher();
 setInterval(startCTIWatcher, 5 * 60 * 1000).unref();
 
 // (No auto-close job: the SOAR engine closes tier-1 cases as it creates them — infra/soar.)
-// Escalation emails for unresolved HIGH/CRITICAL cases — see jobs/incidentEscalation.ts.
-// No-ops (with a log line) when the case store isn't configured.
-startEscalationJob();
-// Hourly Nigerian threat-intel collection (ngCERT + CIRCL + Feodo Tracker -> Nigeria heatmap +
-// MISP). Each source degrades to zero independently — see nigerianIntelCollector.ts's header
-// for which ones are actually reachable today.
-startNigerianIntelJob();
-// CIRCL pulse + Wazuh-derived MITRE technique sync — see jobs/globalIntelJob.ts.
-startGlobalIntelJob();
-// DMARC DNS checks, Phish ID discovery/enrichment, mail-provider sync — jobs/emailSecurityJob.ts.
-startEmailSecurityJob();
+// The jobs below WRITE (database, MISP, email). They start only in production or against a
+// declared development/test database — see lib/runtimeEnv.ts. The CTI watcher above only reads
+// Wazuh into memory, so it always runs.
+if (announceJobPolicy()) {
+    // Escalation emails for unresolved HIGH/CRITICAL cases — see jobs/incidentEscalation.ts.
+    // No-ops (with a log line) when the case store isn't configured.
+    startEscalationJob();
+    // Hourly Nigerian threat-intel collection (ngCERT + CIRCL + Feodo Tracker -> Nigeria heatmap +
+    // MISP). Each source degrades to zero independently — see nigerianIntelCollector.ts's header
+    // for which ones are actually reachable today.
+    startNigerianIntelJob();
+    // CIRCL pulse + Wazuh-derived MITRE technique sync — see jobs/globalIntelJob.ts.
+    startGlobalIntelJob();
+    // DMARC DNS checks, Phish ID discovery/enrichment, mail-provider sync — jobs/emailSecurityJob.ts.
+    startEmailSecurityJob();
+}

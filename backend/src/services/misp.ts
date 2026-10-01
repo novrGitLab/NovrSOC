@@ -6,8 +6,10 @@
 //     (nginx), and a 301 turns a POST into a GET in both fetch() and curl, so every write would
 //     have silently become a no-op read against the configured http:// URL. normalizeBase()
 //     below upgrades http -> https for this reason; MISP_URL can stay as-is in the environment.
-//   * Its TLS certificate is self-signed, so Node rejects it unless NODE_TLS_REJECT_UNAUTHORIZED=0
-//     is set (it is, in backend/.env — see the warning that prints on boot).
+//   * Its TLS certificate is self-signed. This used to be handled by NODE_TLS_REJECT_UNAUTHORIZED=0,
+//     which turned certificate checks off for EVERY connection the backend makes. Now the MISP
+//     certificate is pinned instead: set MISP_CA_CERT to its PEM (lib/pinnedTls.ts). Without it,
+//     MISP requests use normal verification and fail against a self-signed certificate.
 //   * The configured MISP_API_KEY is REJECTED: every endpoint tried (/servers/getVersion,
 //     /servers/getPyMISPVersion, /events/index, /attributes/restSearch) returns
 //     403 {"name":"Authentication failed. Please make sure you pass the API key of an API
@@ -16,6 +18,8 @@
 //     Everything below therefore degrades to null/[]/no-op rather than throwing, and
 //     getMISPStats() reports `auth_failed` so Platform Health can show WHY it's down instead of
 //     just "unreachable". It starts returning real data the moment a working key is set.
+
+import { parsePin, pinnedFetch } from '../lib/pinnedTls';
 
 function normalizeBase(): string {
     const raw = (process.env.MISP_URL || '').trim().replace(/\/+$/, '');
@@ -75,7 +79,7 @@ export async function checkMISPBrowseRedirect(): Promise<{ ok: boolean; detail: 
     const base = getMISPBrowseBase();
     if (!base) return { ok: false, detail: 'MISP_URL not set' };
     try {
-        const res = await fetch(`${base}/`, { redirect: 'manual', signal: AbortSignal.timeout(6000) });
+        const res = await mispRequest(`${base}/`, { manualRedirect: true, timeoutMs: 6000 });
         const location = res.headers.get('location') ?? '';
         if (/\/\/(localhost|127\.0\.0\.1)/i.test(location)) {
             return {
@@ -87,6 +91,13 @@ export async function checkMISPBrowseRedirect(): Promise<{ ok: boolean; detail: 
     } catch (err) {
         return { ok: false, detail: err instanceof Error ? err.message : 'unreachable' };
     }
+}
+
+// All MISP traffic goes through here: pinned to MISP_CA_CERT when set, normal TLS otherwise.
+function mispRequest(url: string, init: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs: number; manualRedirect?: boolean }): Promise<Response> {
+    const pin = parsePin(process.env.MISP_CA_CERT);
+    if (pin && url.startsWith('https://')) return pinnedFetch(url, init, pin);
+    return fetch(url, { method: init.method, headers: init.headers, body: init.body, redirect: init.manualRedirect ? 'manual' : 'follow', signal: AbortSignal.timeout(init.timeoutMs) });
 }
 
 function mispHeaders(): Record<string, string> {
@@ -102,10 +113,11 @@ function mispHeaders(): Record<string, string> {
 async function mispFetch<T>(path: string, init: RequestInit = {}, timeoutMs = 8000): Promise<T | null> {
     if (!isMISPConfigured()) return null;
     try {
-        const res = await fetch(`${normalizeBase()}${path}`, {
-            ...init,
+        const res = await mispRequest(`${normalizeBase()}${path}`, {
+            method: init.method,
+            body: typeof init.body === 'string' ? init.body : undefined,
             headers: { ...mispHeaders(), ...(init.headers as Record<string, string> | undefined) },
-            signal: AbortSignal.timeout(timeoutMs),
+            timeoutMs,
         });
         if (res.status === 401 || res.status === 403) {
             console.warn(`[MISP] Auth rejected on ${path} — check MISP_API_KEY belongs to an API-enabled user`);
@@ -240,10 +252,7 @@ export async function getMISPStats(): Promise<MISPStats> {
         return { configured: false, reachable: false, auth_ok: false, events: 0, attributes: 0, error: 'MISP_URL/MISP_API_KEY not set' };
     }
     try {
-        const res = await fetch(`${normalizeBase()}/users/statistics`, {
-            headers: mispHeaders(),
-            signal: AbortSignal.timeout(6000),
-        });
+        const res = await mispRequest(`${normalizeBase()}/users/statistics`, { headers: mispHeaders(), timeoutMs: 6000 });
         if (res.status === 401 || res.status === 403) {
             return { configured: true, reachable: true, auth_ok: false, events: 0, attributes: 0, error: 'MISP rejected the API key (403) — key is invalid, expired, or its user is not API-enabled' };
         }
