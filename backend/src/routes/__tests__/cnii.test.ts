@@ -1,6 +1,7 @@
-// CNII Watch routes: auth, role checks, input validation, and the honest not-connected answer
-// every feed gives until its data source is built.
+// CNII Watch routes: auth, role checks, input validation, the not-connected answers when a
+// dependency isn't configured, and a full scan against a local sfwebui-compatible SpiderFoot.
 process.env.JWT_SECRET = 'cnii-test-secret';
+for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'SPIDERFOOT_URL', 'OPENCTI_URL', 'OPENCTI_TOKEN', 'WAZUH_HOST', 'WAZUH_INDEXER_HOST']) delete process.env[k];
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -45,7 +46,7 @@ test('requires a signed-in staff user', async () => {
     assert.equal((await call('GET', '/assets', 'portal_user')).status, 403);
 });
 
-test('read feeds answer not_connected instead of data', async () => {
+test('read feeds answer not_connected when Supabase is not configured', async () => {
     for (const path of ['/assets', '/alerts', '/vulns', '/alerts?sector=finance', '/vulns?ip=196.46.244.1']) {
         const r = await call('GET', path, 'executive');
         assert.equal(r.status, 503, path);
@@ -58,7 +59,7 @@ test('filters are validated', async () => {
     assert.equal((await call('GET', '/assets?ip=999.1.1.1', 'analyst')).status, 400);
 });
 
-test('scan validates the IP and never fakes a result', async () => {
+test('scan validates the IP and says when SpiderFoot is not configured', async () => {
     assert.equal((await call('POST', '/scan', 'analyst', { ip: 'not-an-ip' })).status, 400);
     assert.equal((await call('POST', '/scan', 'analyst', {})).status, 400);
     const r = await call('POST', '/scan', 'analyst', { ip: '2001:db8::1' });
@@ -66,8 +67,36 @@ test('scan validates the IP and never fakes a result', async () => {
     assert.equal(r.data.error, 'not_connected');
 });
 
+test('scan runs SpiderFoot, classifies, and reports OpenCTI being unavailable', async () => {
+    const sf = express();
+    sf.use(express.urlencoded({ extended: false }));
+    sf.post('/startscan', (_req, res) => res.json(['SUCCESS', 'S1']));
+    sf.get('/scanstatus', (_req, res) => res.json(['n', 't', 'c', 's', 'e', 'FINISHED', {}]));
+    sf.get('/scaneventresults', (_req, res) => res.json([
+        ['t', 'portal.inec.gov.ng', '', 'sfp_dnsresolve', 100, 100, 0, 'h', 0, 0, 'INTERNET_NAME'],
+        ['t', '196.46.244.1:443', '', 'sfp_portscan_tcp', 100, 100, 0, 'h', 0, 0, 'TCP_PORT_OPEN'],
+    ]));
+    const sfServer = sf.listen(0);
+    await new Promise((r) => sfServer.once('listening', r));
+    process.env.SPIDERFOOT_URL = `http://127.0.0.1:${(sfServer.address() as AddressInfo).port}`;
+    try {
+        const r = await call('POST', '/scan', 'analyst', { ip: '196.46.244.1' });
+        assert.equal(r.status, 200);
+        assert.equal(r.data.hostname, 'portal.inec.gov.ng');
+        assert.deepEqual(r.data.openPorts, [443]);
+        assert.equal(r.data.suggestedSectorId, 'publicadmin');
+        assert.equal(r.data.suggestedSubfield, 'INEC');
+        assert.deepEqual(r.data.rawSpiderfoot, {}); // raw output stays server-side
+        assert.ok(r.data.warnings.some((w: string) => /OpenCTI/.test(w)));
+    } finally {
+        delete process.env.SPIDERFOOT_URL;
+        sfServer.close();
+    }
+});
+
 test('adding an asset never reports success without storing it', async () => {
     assert.equal((await call('POST', '/assets', 'analyst', { ip: '10.0.0.1', sectorId: 'bogus' })).status, 400);
+    assert.equal((await call('POST', '/assets', 'analyst', { ip: '10.0.0.1', sectorId: 'power', subfield: 'INEC' })).status, 400);
     const r = await call('POST', '/assets', 'analyst', { ip: '10.0.0.1', sectorId: 'power' });
     assert.equal(r.status, 503);
     assert.notEqual(r.data?.success, true);

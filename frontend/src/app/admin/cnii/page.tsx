@@ -37,6 +37,9 @@ export default function CNIIOverviewPage() {
   const [assigning, setAssigning] = useState(false);
   const [assigned, setAssigned] = useState(false);
   const [assignError, setAssignError] = useState('');
+  // The analyst's sector choice, pre-filled from the scan's suggestion.
+  const [chosenSector, setChosenSector] = useState('');
+  const [chosenSubfield, setChosenSubfield] = useState('');
 
   // UI state
   const [expandedVuln, setExpandedVuln] = useState<string | null>(null);
@@ -88,7 +91,10 @@ export default function CNIIOverviewPage() {
       });
       const data = await res.json().catch(() => null);
       if (res.ok && data) {
-        setScanResult(data as ScanResult);
+        const result = data as ScanResult;
+        setScanResult(result);
+        setChosenSector(result.suggestedSectorId);
+        setChosenSubfield(result.suggestedSubfield);
         setTimeout(() => scanRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
       } else if (res.status === 503 && data?.error === 'not_connected') {
         setScanNotice(data.message ?? 'The scanner is not connected yet.');
@@ -104,31 +110,27 @@ export default function CNIIOverviewPage() {
   };
 
   const handleAssign = async () => {
-    if (!scanResult) return;
+    if (!scanResult || !chosenSector) return;
     setAssigning(true);
     setAssignError('');
     try {
+      // The backend stores its own cached copy of this scan (raw data, CVEs, risk score); the
+      // scan fields sent here are only used if that cache has expired.
       const res = await apiFetch(apiUrl('/api/cnii/assets'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ip: scanResult.ip,
+          sectorId: chosenSector,
+          subfield: chosenSubfield || undefined,
           hostname: scanResult.hostname,
           owner: scanResult.owner,
           org: scanResult.org,
           asn: scanResult.asn,
           country: scanResult.country,
-          sectorId: scanResult.suggestedSectorId,
-          subfield: scanResult.suggestedSubfield,
           domains: scanResult.domains,
           subdomains: scanResult.subdomains,
           openPorts: scanResult.openPorts,
-          alertCount: 0,
-          vulnCount: scanResult.vulns.length,
-          lastSeen: new Date().toISOString(),
-          addedAt: new Date().toISOString(),
-          scanStatus: 'done',
-          riskScore: Math.round(scanResult.vulns.reduce((a, v) => a + v.cvss, 0) / Math.max(scanResult.vulns.length, 1) * 10),
         }),
       });
       if (res.ok) {
@@ -227,7 +229,7 @@ export default function CNIIOverviewPage() {
             disabled={scanning || !scanIP.trim()}
             className="px-5 py-2.5 bg-[#2B3BCC] text-white text-sm font-semibold rounded-lg hover:bg-[#2330aa] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
           >
-            {scanning ? <><Loader2 className="w-4 h-4 animate-spin" /> Scanning...</> : 'Scan IP'}
+            {scanning ? <><Loader2 className="w-4 h-4 animate-spin" /> Scanning (up to 3 min)…</> : 'Scan IP'}
           </button>
         </div>
 
@@ -245,13 +247,24 @@ export default function CNIIOverviewPage() {
           <div ref={scanRef} className="mt-5 border border-gray-100 rounded-xl overflow-hidden">
             <div className="bg-gray-50 px-5 py-3 flex items-center justify-between gap-3">
               <div className="font-semibold text-[#1C1F2E] font-mono break-all">{scanResult.ip}</div>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <span className="text-xs text-[#7A8099]">Confidence:</span>
-                <span className={`text-xs font-bold ${scanResult.confidence >= 70 ? 'text-green-600' : 'text-amber-600'}`}>
-                  {scanResult.confidence}%
-                </span>
-              </div>
+              {scanResult.suggestedSectorId && (
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-xs text-[#7A8099]">Classification confidence:</span>
+                  <span className={`text-xs font-bold ${scanResult.confidence >= 70 ? 'text-green-600' : 'text-amber-600'}`}>
+                    {scanResult.confidence}%
+                  </span>
+                </div>
+              )}
             </div>
+            {scanResult.warnings.length > 0 && (
+              <div className="px-5 pt-4 space-y-1">
+                {scanResult.warnings.map(w => (
+                  <div key={w} className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-2">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" /> {w}
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="p-5 grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="space-y-2">
                 {[
@@ -259,7 +272,7 @@ export default function CNIIOverviewPage() {
                   ['Owner',      scanResult.owner ?? '—'],
                   ['Org',        scanResult.org ?? '—'],
                   ['ASN',        scanResult.asn ?? '—'],
-                  ['Country',    scanResult.country],
+                  ['Country',    scanResult.country ?? '—'],
                   ['Open Ports', scanResult.openPorts.join(', ') || '—'],
                   ['Domains',    scanResult.domains.join(', ') || '—'],
                 ].map(([l, v]) => (
@@ -270,28 +283,46 @@ export default function CNIIOverviewPage() {
                 ))}
               </div>
               <div className="space-y-3">
-                {/* Suggested classification */}
-                <div className="bg-[#2B3BCC]/5 border border-[#2B3BCC]/15 rounded-lg p-4">
-                  <div className="text-xs font-semibold text-[#2B3BCC] uppercase tracking-wide mb-2">Suggested Classification</div>
-                  <div className="text-sm font-bold text-[#1C1F2E]">
-                    {SECTOR_BY_ID[scanResult.suggestedSectorId]?.label ?? scanResult.suggestedSectorId}
+                {/* Classification — suggested by the scan, confirmed (or chosen) by the analyst */}
+                <div className="bg-[#2B3BCC]/5 border border-[#2B3BCC]/15 rounded-lg p-4 space-y-2">
+                  <div className="text-xs font-semibold text-[#2B3BCC] uppercase tracking-wide">
+                    {scanResult.suggestedSectorId ? 'Suggested Classification' : 'Unclassified — choose a sector'}
                   </div>
-                  <div className="text-xs text-[#7A8099] mt-1">{scanResult.suggestedSubfield}</div>
+                  <select
+                    value={chosenSector}
+                    onChange={e => { setChosenSector(e.target.value); setChosenSubfield(''); }}
+                    disabled={assigned}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-[#1C1F2E] focus:outline-none focus:border-[#2B3BCC]"
+                  >
+                    <option value="">Choose a CNII sector…</option>
+                    {CNII_SECTORS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                  </select>
+                  {chosenSector && (
+                    <select
+                      value={chosenSubfield}
+                      onChange={e => setChosenSubfield(e.target.value)}
+                      disabled={assigned}
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-[#1C1F2E] focus:outline-none focus:border-[#2B3BCC]"
+                    >
+                      <option value="">Sub-entity (optional)</option>
+                      {SECTOR_BY_ID[chosenSector]?.subfields.map(sf => <option key={sf} value={sf}>{sf}</option>)}
+                    </select>
+                  )}
                 </div>
 
                 {/* Vulns found */}
-                {scanResult.vulns.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-[#7A8099] uppercase tracking-wide mb-2">Vulnerabilities Found</div>
-                    {scanResult.vulns.map(v => (
-                      <div key={v.cve} className="flex items-center justify-between gap-2 text-xs py-1.5 border-b border-gray-100 last:border-0">
-                        <span className="font-mono text-[#CC2B2B]">{v.cve}</span>
-                        <span className="text-[#7A8099] truncate">{v.service}</span>
-                        <span className="font-bold text-[#1C1F2E] whitespace-nowrap">CVSS {v.cvss}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <div>
+                  <div className="text-xs font-semibold text-[#7A8099] uppercase tracking-wide mb-2">Vulnerabilities Found</div>
+                  {scanResult.vulns.length === 0 ? (
+                    <div className="text-xs text-[#7A8099]">No CVEs reported by this scan.</div>
+                  ) : scanResult.vulns.map(v => (
+                    <div key={v.cve} className="flex items-center justify-between gap-2 text-xs py-1.5 border-b border-gray-100 last:border-0">
+                      <span className="font-mono text-[#CC2B2B]">{v.cve}</span>
+                      <span className={`px-2 py-0.5 rounded-full border ${SEV_BADGE[v.severity]}`}>{v.severity.toUpperCase()}</span>
+                      <span className="font-bold text-[#1C1F2E] whitespace-nowrap">{v.cvss !== null ? `CVSS ${v.cvss}` : 'CVSS n/a'}</span>
+                    </div>
+                  ))}
+                </div>
 
                 {/* Threat intel */}
                 {scanResult.threatIntel.length > 0 && (
@@ -310,7 +341,7 @@ export default function CNIIOverviewPage() {
                   <>
                     <button
                       onClick={handleAssign}
-                      disabled={assigning}
+                      disabled={assigning || !chosenSector}
                       className="w-full py-2.5 bg-[#1C1F2E] text-white text-sm font-semibold rounded-lg hover:bg-black disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
                     >
                       {assigning ? <><Loader2 className="w-4 h-4 animate-spin" /> Assigning...</> : 'Add to CNII Monitoring'}
@@ -485,8 +516,8 @@ export default function CNIIOverviewPage() {
                     <td className="px-4 py-3 text-xs text-[#7A8099]">{asset.subfield ?? '—'}</td>
                     <td className="px-4 py-3 text-xs text-[#1C1F2E]">{asset.owner ?? '—'}</td>
                     <td className="px-4 py-3 text-xs text-[#7A8099] max-w-32 truncate">{asset.domains.join(', ') || '—'}</td>
-                    <td className="px-4 py-3 text-xs font-bold text-[#CC2B2B]">{asset.alertCount}</td>
-                    <td className="px-4 py-3 text-xs font-bold text-amber-600">{asset.vulnCount}</td>
+                    <td className="px-4 py-3 text-xs font-bold text-[#CC2B2B]">{alertsOn ? alerts.filter(a => a.ip === asset.ip).length : '—'}</td>
+                    <td className="px-4 py-3 text-xs font-bold text-amber-600">{vulnsOn ? vulns.filter(v => v.ip === asset.ip).length : '—'}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <div className="w-16 bg-gray-100 rounded-full h-1.5">

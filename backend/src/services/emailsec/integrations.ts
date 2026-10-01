@@ -7,6 +7,7 @@
 // Nothing here reports success it didn't get: an unconfigured integration says so, a failed
 // call returns its error.
 import { search } from '../../lib/wazuh-indexer';
+import { openctiConfigured, openctiQuery } from '../../lib/opencti';
 import { emailsecConfig } from './config';
 import { isConfigured as vtConfigured } from '../virustotal';
 import { sandbox } from './attachmentIntel';
@@ -14,20 +15,9 @@ import { m365Missing } from './connectors/microsoft365';
 import { serviceAccount } from './connectors/googleWorkspace';
 
 // ── OpenCTI ────────────────────────────────────────────────────────────────────────────────
+// Query helper lives in lib/opencti.ts (shared with CNII Watch).
 
-export const openctiConfigured = () => !!(process.env.OPENCTI_URL && process.env.OPENCTI_TOKEN);
-
-async function openctiQuery<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    const r = await fetch(`${process.env.OPENCTI_URL!.replace(/\/$/, '')}/graphql`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${process.env.OPENCTI_TOKEN}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, variables }),
-        signal: AbortSignal.timeout(15_000),
-    });
-    const d = (await r.json().catch(() => null)) as { data?: T; errors?: { message: string }[] } | null;
-    if (!r.ok || !d || d.errors?.length) throw new Error(d?.errors?.[0]?.message ?? `OpenCTI answered HTTP ${r.status}`);
-    return d.data as T;
-}
+export { openctiConfigured };
 
 export async function openctiHealth(): Promise<{ ok: boolean; detail: string }> {
     if (!openctiConfigured()) return { ok: false, detail: 'Not configured (OPENCTI_URL, OPENCTI_TOKEN)' };

@@ -1,5 +1,5 @@
-// Shapes returned by the backend's /api/cnii routes (backend/src/routes/cnii.ts) once their
-// data sources are connected, plus the client helpers every CNII page uses to call them.
+// Shapes returned by the backend's /api/cnii routes (backend/src/routes/cnii.ts), plus the
+// client helpers every CNII page uses to call them.
 import { apiUrl, apiFetch } from './api';
 
 export interface CniiAsset {
@@ -45,6 +45,7 @@ export interface CniiVuln {
   complianceImpact: string[];
   status: 'open' | 'in_progress' | 'patched';
   discoveredAt: string;
+  source?: 'spiderfoot' | 'wazuh';
 }
 
 export interface ScanResult {
@@ -53,15 +54,16 @@ export interface ScanResult {
   owner?: string;
   org?: string;
   asn?: string;
-  country: string;
+  country?: string;
   domains: string[];
   subdomains: string[];
   openPorts: number[];
-  vulns: { cve: string; cvss: number; service: string }[];
+  vulns: { cve: string; cvss: number | null; severity: 'critical' | 'high' | 'medium' | 'low'; service?: string }[];
   threatIntel: { source: string; description: string; severity: string }[];
-  suggestedSectorId: string;
+  suggestedSectorId: string; // '' when no sector matched — the analyst must choose
   suggestedSubfield: string;
   confidence: number; // 0-100
+  warnings: string[]; // e.g. OpenCTI unavailable — the result is partial
   rawSpiderfoot: Record<string, unknown>;
   rawOpencti: Record<string, unknown>;
 }
