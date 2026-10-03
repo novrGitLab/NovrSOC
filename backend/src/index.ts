@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import './lib/tlsGuard';
+import './lib/envGuard';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';

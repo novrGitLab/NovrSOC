@@ -87,3 +87,21 @@ export function announceJobPolicy(): boolean {
     }
     return p.allowed;
 }
+
+/**
+ * May this process start at all with this database? Outside production the database must be
+ * explicitly declared a development/test database (and not be on the production list): an
+ * undeclared or production database is refused, because API requests — not just jobs — would
+ * read and write it. No database configured at all is allowed (the app runs without one).
+ */
+export function databaseStartupCheck(env: NodeJS.ProcessEnv = process.env): { ok: boolean; app: AppEnv; db: DbEnv | 'none'; reason: string } {
+    const app = appEnvironment(env);
+    if (!env.SUPABASE_URL) return { ok: true, app: app.env, db: 'none', reason: 'no database configured' };
+    const db = databaseEnvironment(env);
+    if (app.env === 'production') return { ok: true, app: app.env, db: db.env, reason: `production (${app.reason})` };
+    if (db.env === 'development' || db.env === 'test') return { ok: true, app: app.env, db: db.env, reason: `${app.env} app on a declared ${db.env} database` };
+    return {
+        ok: false, app: app.env, db: db.env,
+        reason: `${app.env} app (${app.reason}) pointed at a ${db.env === 'undeclared' ? 'database not declared as development/test' : `${db.env} database`} (${db.reason})`,
+    };
+}
