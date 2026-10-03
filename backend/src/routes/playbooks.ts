@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { requireAuth, requireRole } from '../middleware/auth';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase } from '../services/geoEnrichment';
 import { addTasks, addTimeline, isUuid } from '../services/cases';
 import { isExecutableStep } from '../services/responseActions';
@@ -11,12 +12,32 @@ import { isExecutableStep } from '../services/responseActions';
 // here), estimated_time, created_at, updated_at, created_by. No steps_count/avg_duration/tags/
 // use_count/last_used/is_default columns, despite those being reasonable guesses.
 //
-// Not gated with requireAuth at the router level: GET is also read by the client portal's
-// Playbooks view, whose portal_token requireAuth can't verify. /run writes to a case, and cases
-// are analyst-only (routes/cases.ts), so it is gated individually; the mutating CRUD routes are
-// gated to super_admin/soc_manager, since only Security Ops Management reaches them.
+// Access (2026-10-03 hardening): every route needs a NovrSOC staff token. GET used to be public
+// and took ?org_id= from the query string, so anyone could list any organisation's playbooks
+// and trigger default-playbook seeding for it; PUT/DELETE/run matched on id alone, so one
+// organisation could change or run another's. Now the organisation always comes from the token,
+// every query is scoped to it, and only super_admin (platform staff, the existing cross-tenant
+// role) may address another organisation with ?org_id= — reading another organisation never
+// seeds defaults for it. (No client-portal page reads playbooks any more.)
 
 const router = Router();
+const STAFF = requireRole('super_admin', 'soc_manager', 'analyst', 'executive');
+
+let clientOverride: SupabaseClient | null = null;
+/** Tests only. */
+export function setPlaybooksClient(c: SupabaseClient | null): void { clientOverride = c; }
+const getDb = () => clientOverride ?? getSupabase();
+
+const isPlatformAdmin = (req: AuthRequest) => req.user?.role === 'super_admin';
+
+/** The organisation this request may act on, or a 403 reason. */
+function orgScope(req: AuthRequest): { orgId: string; crossOrg: boolean } | { error: string } {
+    const own = req.user?.org_id || DEFAULT_ORG_ID;
+    const requested = typeof req.query.org_id === 'string' ? req.query.org_id.trim() : '';
+    if (!requested || requested === own) return { orgId: own, crossOrg: false };
+    if (isPlatformAdmin(req)) return { orgId: requested, crossOrg: true };
+    return { error: 'You can only access your own organisation\'s playbooks.' };
+}
 
 interface PlaybookStep {
     order: number;
@@ -141,9 +162,14 @@ const DEFAULT_PLAYBOOKS: Omit<PlaybookRow, 'id' | 'org_id' | 'created_at' | 'upd
 // 'name,org_id'}) — confirmed live that (name, org_id) has no unique/exclusion constraint on
 // this table (a real upsert 42P10s the same way org_setup's org_id did), so a real upsert isn't
 // available here either.
-router.get('/', async (req: AuthRequest, res) => {
-    const orgId = (req.query.org_id as string) || req.user?.org_id || DEFAULT_ORG_ID;
-    const supabase = getSupabase();
+router.get('/', requireAuth, STAFF, async (req: AuthRequest, res) => {
+    const scope = orgScope(req);
+    if ('error' in scope) {
+        res.status(403).json({ error: scope.error });
+        return;
+    }
+    const { orgId, crossOrg } = scope;
+    const supabase = getDb();
     if (!supabase) {
         res.status(503).json({ error: 'Supabase not configured' });
         return;
@@ -154,6 +180,11 @@ router.get('/', async (req: AuthRequest, res) => {
         if (error) throw error;
 
         if (!existing || existing.length === 0) {
+            // Defaults are only ever seeded for the caller's own organisation.
+            if (crossOrg) {
+                res.json({ playbooks: [] });
+                return;
+            }
             const seeded = DEFAULT_PLAYBOOKS.map((pb) => ({ ...pb, org_id: orgId }));
             const { data: inserted, error: insertError } = await supabase.from('playbooks').insert(seeded).select();
             if (insertError) throw insertError;
@@ -170,8 +201,8 @@ router.get('/', async (req: AuthRequest, res) => {
 
 // GET /api/playbooks/steps — the automated step catalog (playbook_steps), so the Playbooks page
 // can name each playbook's step_ids. Registered before /:id-style routes.
-router.get('/steps', async (_req, res) => {
-    const supabase = getSupabase();
+router.get('/steps', requireAuth, STAFF, async (_req, res) => {
+    const supabase = getDb();
     if (!supabase) { res.status(503).json({ error: 'Supabase not configured' }); return; }
     const { data, error } = await supabase.from('playbook_steps').select('step_id, name, description, category');
     if (error) { res.status(502).json({ error: error.message }); return; }
@@ -184,13 +215,13 @@ router.post('/', requireAuth, requireRole('super_admin', 'soc_manager'), async (
         res.status(400).json({ error: 'name and severity are required' });
         return;
     }
-    const supabase = getSupabase();
+    const supabase = getDb();
     if (!supabase) {
         res.status(503).json({ error: 'Supabase not configured' });
         return;
     }
 
-    const orgId = req.user?.org_id || DEFAULT_ORG_ID;
+    const orgId = req.user?.org_id || DEFAULT_ORG_ID; // always the caller's own organisation
     const { data, error } = await supabase
         .from('playbooks')
         .insert({
@@ -210,7 +241,7 @@ router.post('/', requireAuth, requireRole('super_admin', 'soc_manager'), async (
 
 router.put('/:id', requireAuth, requireRole('super_admin', 'soc_manager'), async (req: AuthRequest, res) => {
     const { name, icon, severity, description, steps, estimated_time } = req.body as Partial<PlaybookRow>;
-    const supabase = getSupabase();
+    const supabase = getDb();
     if (!supabase) {
         res.status(503).json({ error: 'Supabase not configured' });
         return;
@@ -224,25 +255,38 @@ router.put('/:id', requireAuth, requireRole('super_admin', 'soc_manager'), async
     if (steps !== undefined) patch.steps = steps; // full replace — add/remove/reorder all just send the whole new array
     if (estimated_time !== undefined) patch.estimated_time = estimated_time;
 
-    const { data, error } = await supabase.from('playbooks').update(patch).eq('id', req.params.id).select().single();
+    let q = supabase.from('playbooks').update(patch).eq('id', req.params.id);
+    if (!isPlatformAdmin(req)) q = q.eq('org_id', req.user?.org_id || DEFAULT_ORG_ID);
+    const { data, error } = await q.select();
     if (error) {
         console.error('[playbooks] PUT failed:', error.message);
         res.status(502).json({ error: 'Failed to update playbook' });
         return;
     }
-    res.json({ success: true, playbook: data });
+    // Not found and "belongs to another organisation" look the same on purpose.
+    if (!data || data.length === 0) {
+        res.status(404).json({ error: 'Playbook not found' });
+        return;
+    }
+    res.json({ success: true, playbook: data[0] });
 });
 
 router.delete('/:id', requireAuth, requireRole('super_admin', 'soc_manager'), async (req: AuthRequest, res) => {
-    const supabase = getSupabase();
+    const supabase = getDb();
     if (!supabase) {
         res.status(503).json({ error: 'Supabase not configured' });
         return;
     }
-    const { error } = await supabase.from('playbooks').delete().eq('id', req.params.id);
+    let q = supabase.from('playbooks').delete().eq('id', req.params.id);
+    if (!isPlatformAdmin(req)) q = q.eq('org_id', req.user?.org_id || DEFAULT_ORG_ID);
+    const { data, error } = await q.select('id');
     if (error) {
         console.error('[playbooks] DELETE failed:', error.message);
         res.status(502).json({ error: 'Failed to delete playbook' });
+        return;
+    }
+    if (!data || data.length === 0) {
+        res.status(404).json({ error: 'Playbook not found' });
         return;
     }
     res.json({ success: true });
@@ -251,22 +295,33 @@ router.delete('/:id', requireAuth, requireRole('super_admin', 'soc_manager'), as
 // POST /api/playbooks/:id/run { case_id } — attaches a playbook to a case: one case_tasks row per
 // step, so the steps appear as Response Tasks in the case slide-over and can be ticked off
 // there. Also records the playbook on the case and in its timeline.
-router.post('/:id/run', requireAuth, async (req: AuthRequest, res) => {
+router.post('/:id/run', requireAuth, requireRole('super_admin', 'soc_manager', 'analyst'), async (req: AuthRequest, res) => {
     const { case_id, incident_id } = req.body as { case_id?: string; incident_id?: string };
     const caseId = case_id ?? incident_id; // incident_id still accepted from old callers
     if (!caseId || !isUuid(caseId)) {
         res.status(400).json({ error: 'case_id required' });
         return;
     }
-    const supabase = getSupabase();
+    const supabase = getDb();
     if (!supabase) {
         res.status(503).json({ error: 'Supabase not configured' });
         return;
     }
 
-    const { data: playbook, error } = await supabase.from('playbooks').select('*').eq('id', req.params.id).single();
+    // Both the playbook and the case must belong to the caller's organisation.
+    const ownOrg = req.user?.org_id || DEFAULT_ORG_ID;
+    let pq = supabase.from('playbooks').select('*').eq('id', req.params.id);
+    if (!isPlatformAdmin(req)) pq = pq.eq('org_id', ownOrg);
+    const { data: playbook, error } = await pq.maybeSingle();
     if (error || !playbook) {
         res.status(404).json({ error: 'Playbook not found' });
+        return;
+    }
+    let cq = supabase.from('cases').select('id, org_id').eq('id', caseId);
+    if (!isPlatformAdmin(req)) cq = cq.eq('org_id', ownOrg);
+    const { data: caseRow } = await cq.maybeSingle();
+    if (!caseRow) {
+        res.status(404).json({ error: 'Case not found' });
         return;
     }
 
