@@ -121,6 +121,11 @@ test('assessCnii rates likelihood from independent signals', () => {
     assert.equal(assessCnii(true, { openPorts: [443, 8443] }).likelihood, 'likely');
     assert.equal(assessCnii(true, { maliciousFlags: ['x: y'] }).likelihood, 'likely');
     assert.ok(CNII_OPERATOR_ASNS.AS29465);
+    // Only verified Nigerian operators belong here; foreign ASNs must stay out.
+    assert.deepEqual(Object.keys(CNII_OPERATOR_ASNS).sort(), ['AS29465', 'AS36873', 'AS36923', 'AS37076', 'AS37148']);
+    for (const foreign of ['AS20858', 'AS37705', 'AS29614', 'AS328274', 'AS37558', 'AS30999', 'AS328088']) {
+        assert.equal(CNII_OPERATOR_ASNS[foreign], undefined, foreign);
+    }
 });
 
 // ── scanIP against a local sfwebui-compatible server ──────────────────────────────────────

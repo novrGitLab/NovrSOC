@@ -107,7 +107,8 @@ export async function scanIP(
 ): Promise<SpiderFootResult> {
     if (!spiderfootConfigured()) throw new SpiderFootError('not_configured', 'SPIDERFOOT_URL is not set.');
     const pollMs = opts.pollMs ?? 4_000;
-    const timeoutMs = opts.timeoutMs ?? 180_000;
+    // 10 min: port-scan and web-spider modules can run well past the old 3-min cap.
+    const timeoutMs = opts.timeoutMs ?? 600_000;
 
     // 1. Start the scan.
     const started = await sfFetch('/startscan', {

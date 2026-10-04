@@ -123,18 +123,19 @@ export function classifySector(owner = '', org = '', asn = '', hostname = ''): C
 // critical infrastructure. Not every MTN IP is CNII. This second layer weighs independent
 // signals so an analyst sees how strong the case is before monitoring the asset.
 
-// Nigerian critical-infrastructure operators by ASN. Infrastructure inventory (from the ops
-// team), not a measurement — extend as more operators are confirmed.
+// Nigerian critical-infrastructure operators by ASN. Each entry was checked against RIPE Stat
+// (as-overview holder) on 2026-10-04 and only kept if it actually resolves to a Nigerian
+// operator — add new ones the same way. Candidates that did NOT resolve to Nigeria and were
+// deliberately excluded: AS20858 (EgyNet, Egypt), AS37705 (TOPNET, Tunisia), AS29614 (Ghana
+// Telecom), AS328274 (Banco Int. de Moçambique), AS37558 (Libyan Int. Telecom), AS328088
+// (NetOne, Zimbabwe), AS30999 (EMTEL, Mauritius). AS36922 is Nigerian but is United Bank for
+// Africa, not ipNX; the real MainOne is AS37282. Verify holder before adding any of these.
 export const CNII_OPERATOR_ASNS: Record<string, string> = {
     AS29465: 'MTN Nigeria',
     AS36873: 'Airtel Nigeria',
     AS37148: 'Globacom (Glo)',
     AS37076: '9mobile / EMTS',
-    AS20858: 'NITEL',
-    AS37705: 'Galaxy Backbone',
-    AS30999: 'Nigerian Communications Commission (NCC)',
-    AS328088: 'Central Bank of Nigeria (CBN)',
-    AS328226: 'NNPC',
+    AS36923: 'Swift Networks',
 };
 
 const HOSTNAME_SIGNALS = ['core', 'gw', 'gateway', 'router', 'pe', 'border', 'exchange', 'ixp', 'noc', 'backbone', 'infra', 'critical'];
