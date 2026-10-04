@@ -21,7 +21,7 @@ import { search } from '../lib/wazuh-indexer';
 import { wazuhGet } from '../lib/wazuh';
 import { scanIP, spiderfootConfigured, SpiderFootError, type SpiderFootVuln } from '../lib/spiderfoot';
 import { lookupIP, openctiConfigured } from '../lib/opencti';
-import { classifySector } from '../lib/cnii-classify';
+import { classifySector, assessCnii, type CniiLikelihood } from '../lib/cnii-classify';
 import { SECTOR_BY_ID } from '../lib/cnii-sectors';
 
 const router = Router();
@@ -127,62 +127,109 @@ const cachedScan = (ip: string) => {
 };
 
 interface ScanResult {
-    ip: string; hostname?: string; owner?: string; org?: string; asn?: string; country?: string;
+    ip: string; hostname?: string; owner?: string; org?: string; asn?: string; country?: string; city?: string; region?: string;
     domains: string[]; subdomains: string[]; openPorts: number[];
     vulns: SpiderFootVuln[];
     threatIntel: { source: string; description: string; severity: string }[];
+    affiliateIPs?: string[]; maliciousFlags?: string[]; linkedURLs?: string[]; emails?: string[]; phones?: string[]; sslCerts?: string[]; banners?: string[];
     suggestedSectorId: string; suggestedSubfield: string; confidence: number;
+    cniiLikelihood: CniiLikelihood; cniiSignals: string[];
     warnings: string[];
     rawSpiderfoot: unknown; rawOpencti: unknown;
 }
 
-// SpiderFoot scans are heavy (and sfp_portscan_tcp actively scans the target); cap how many run at once.
+// SpiderFoot scans are heavy (sfp_portscan_tcp actively connects to the target), so a bulk
+// request does NOT fire every scan at once — at most MAX_CONCURRENT_SCANS run together, across
+// all callers. The slot is released as each scan finishes.
 const MAX_CONCURRENT_SCANS = 3;
+const MAX_BULK_IPS = 10;
 let runningScans = 0;
-
-router.post('/scan', canWrite, async (req: AuthRequest, res) => {
-    const ip = typeof req.body?.ip === 'string' ? req.body.ip.trim() : '';
-    if (!isIP(ip)) return res.status(400).json({ error: 'Invalid IP address' });
-    if (!spiderfootConfigured()) return notConnected(res, 'scan', 'SpiderFoot is not configured (SPIDERFOOT_URL).');
-    if (runningScans >= MAX_CONCURRENT_SCANS) return res.status(429).json({ error: `${MAX_CONCURRENT_SCANS} scans are already running — try again shortly.` });
-
+const waiters: (() => void)[] = [];
+async function acquireScanSlot(): Promise<() => void> {
+    if (runningScans >= MAX_CONCURRENT_SCANS) await new Promise<void>((r) => waiters.push(r));
     runningScans++;
+    return () => { runningScans--; waiters.shift()?.(); };
+}
+
+// One IP: SpiderFoot scan + OpenCTI lookup in parallel, classified and rated. Throws only when
+// the SpiderFoot scan itself failed (OpenCTI failure is a warning, not a failure).
+async function runScan(ip: string): Promise<ScanResult> {
+    const release = await acquireScanSlot();
     try {
         const [sf, octi] = await Promise.allSettled([
             scanIP(ip),
             openctiConfigured() ? lookupIP(ip) : Promise.reject(new Error('OpenCTI is not configured (OPENCTI_URL, OPENCTI_TOKEN).')),
         ]);
+        if (sf.status === 'rejected') throw sf.reason;
 
-        if (sf.status === 'rejected') {
-            const e = sf.reason as Error;
-            const status = e instanceof SpiderFootError && e.kind === 'timeout' ? 504 : 502;
-            return res.status(status).json({ error: e.message });
-        }
-
-        const warnings: string[] = [];
+        const s = sf.value;
+        const warnings = [...s.warnings];
         if (octi.status === 'rejected') {
             console.error('[cnii] OpenCTI lookup failed:', (octi.reason as Error).message);
             warnings.push(`OpenCTI lookup failed: ${(octi.reason as Error).message}`);
         }
 
-        const s = sf.value;
         const cls = classifySector(s.owner, s.org, s.asn, [s.hostname, ...s.domains].filter(Boolean).join(' '));
         if (!cls.sectorId) warnings.push('No CNII sector matched the owner, organisation, ASN or hostname — choose one before adding.');
+        const cnii = assessCnii(!!cls.sectorId, { asn: s.asn, hostname: s.hostname, org: s.org, owner: s.owner, openPorts: s.openPorts, maliciousFlags: s.maliciousFlags });
 
         const result: ScanResult = {
-            ip, hostname: s.hostname, owner: s.owner, org: s.org, asn: s.asn, country: s.country,
+            ip, hostname: s.hostname, owner: s.owner, org: s.org, asn: s.asn, country: s.country, city: s.city, region: s.region,
             domains: s.domains, subdomains: s.subdomains, openPorts: s.openPorts, vulns: s.vulns,
             threatIntel: [...s.threatIntel, ...(octi.status === 'fulfilled' ? octi.value.threatIntel : [])],
+            affiliateIPs: s.affiliateIPs, maliciousFlags: s.maliciousFlags, linkedURLs: s.linkedURLs,
+            emails: s.emails, phones: s.phones, sslCerts: s.sslCerts, banners: s.banners,
             suggestedSectorId: cls.sectorId, suggestedSubfield: cls.subfield, confidence: cls.confidence,
+            cniiLikelihood: cnii.likelihood, cniiSignals: cnii.signals,
             warnings,
             rawSpiderfoot: s.raw, rawOpencti: octi.status === 'fulfilled' ? octi.value.raw : null,
         };
         cacheScan(result);
-        // The raw payloads stay server-side; the browser gets the parsed result.
-        res.json({ ...result, rawSpiderfoot: {}, rawOpencti: {} });
+        return result;
     } finally {
-        runningScans--;
+        release();
     }
+}
+
+const scanFailStatus = (e: unknown) => (e instanceof SpiderFootError && e.kind === 'timeout' ? 504 : 502);
+// Raw payloads stay server-side (POST /assets reads them from the cache); the browser gets the parsed result.
+const forClient = (r: ScanResult) => ({ ...r, rawSpiderfoot: {}, rawOpencti: {} });
+
+// Accepts { ip: "1.2.3.4" }, { ips: ["…", …] }, or { ip: "a, b, c" }. A single string ip stays
+// backward-compatible (one object back); any multi-IP form returns an array.
+router.post('/scan', canWrite, async (req: AuthRequest, res) => {
+    const body = req.body ?? {};
+    const raw: unknown[] = Array.isArray(body.ips) ? body.ips
+        : typeof body.ips === 'string' ? body.ips.split(',')
+        : typeof body.ip === 'string' ? body.ip.split(',')
+        : [];
+    const ips = [...new Set(raw.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean))];
+    const bulk = Array.isArray(body.ips) || ips.length > 1;
+
+    if (ips.length === 0) return res.status(400).json({ error: 'Provide an IP address (ip) or a list of IP addresses (ips).' });
+    if (ips.length > MAX_BULK_IPS) return res.status(400).json({ error: `At most ${MAX_BULK_IPS} IP addresses per request (got ${ips.length}).` });
+    const invalid = ips.filter((ip) => !isIP(ip));
+    if (invalid.length) return res.status(400).json({ error: `Invalid IP address${invalid.length > 1 ? 'es' : ''}: ${invalid.join(', ')}` });
+    if (!spiderfootConfigured()) return notConnected(res, 'scan', 'SpiderFoot is not configured (SPIDERFOOT_URL).');
+
+    if (!bulk) {
+        try {
+            res.json(forClient(await runScan(ips[0])));
+        } catch (e) {
+            res.status(scanFailStatus(e)).json({ error: (e as Error).message });
+        }
+        return;
+    }
+
+    // Bulk: one failed IP doesn't sink the batch — each entry reports ok or its error.
+    const settled = await Promise.all(ips.map(async (ip) => {
+        try {
+            return { ip, ok: true as const, result: forClient(await runScan(ip)) };
+        } catch (e) {
+            return { ip, ok: false as const, error: (e as Error).message };
+        }
+    }));
+    res.json({ results: settled });
 });
 
 // ── Assets: add / update ─────────────────────────────────────────────────────────────────

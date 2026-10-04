@@ -55,18 +55,31 @@ export interface ScanResult {
   org?: string;
   asn?: string;
   country?: string;
+  city?: string;
+  region?: string;
   domains: string[];
   subdomains: string[];
   openPorts: number[];
   vulns: { cve: string; cvss: number | null; severity: 'critical' | 'high' | 'medium' | 'low'; service?: string }[];
   threatIntel: { source: string; description: string; severity: string }[];
+  affiliateIPs?: string[];
+  maliciousFlags?: string[];
+  linkedURLs?: string[];
+  emails?: string[];
+  phones?: string[];
+  sslCerts?: string[];
+  banners?: string[];
   suggestedSectorId: string; // '' when no sector matched — the analyst must choose
   suggestedSubfield: string;
   confidence: number; // 0-100
+  cniiLikelihood: CniiLikelihood;
+  cniiSignals: string[]; // human-readable reasons behind the likelihood rating
   warnings: string[]; // e.g. OpenCTI unavailable — the result is partial
   rawSpiderfoot: Record<string, unknown>;
   rawOpencti: Record<string, unknown>;
 }
+
+export type CniiLikelihood = 'confirmed' | 'likely' | 'possible' | 'unlikely';
 
 // A feed is either connected (with its rows) or not, with the backend's reason. Pages show
 // "not connected" for the latter rather than an empty list that reads as "nothing found".

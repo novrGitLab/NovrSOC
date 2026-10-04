@@ -41,6 +41,14 @@ async function fetchRipeStat<T = Record<string, unknown>>(path: string, resource
     }
 }
 
+/** Just the registered holder name for an ASN (one call), or null if RIPE Stat has none. */
+export async function asHolder(asnInput: string): Promise<string | null> {
+    const resource = normalizeResource(asnInput);
+    if (!/^AS\d+$/.test(resource)) return null;
+    const overview = await fetchRipeStat<{ holder?: string }>('as-overview', resource);
+    return overview?.holder?.trim() || null;
+}
+
 export async function lookupASN(asnInput: string): Promise<ASNInfo> {
     const resource = normalizeResource(asnInput);
     if (!/^AS\d+$/.test(resource)) {

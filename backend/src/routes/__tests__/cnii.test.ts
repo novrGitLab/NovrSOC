@@ -88,6 +88,40 @@ test('scan runs SpiderFoot, classifies, and reports OpenCTI being unavailable', 
         assert.equal(r.data.suggestedSubfield, 'INEC');
         assert.deepEqual(r.data.rawSpiderfoot, {}); // raw output stays server-side
         assert.ok(r.data.warnings.some((w: string) => /OpenCTI/.test(w)));
+        assert.ok(['confirmed', 'likely', 'possible', 'unlikely'].includes(r.data.cniiLikelihood));
+    } finally {
+        delete process.env.SPIDERFOOT_URL;
+        sfServer.close();
+    }
+});
+
+test('scan accepts a batch of IPs and reports each one', async () => {
+    const sf = express();
+    sf.use(express.urlencoded({ extended: false }));
+    sf.post('/startscan', (req, res) => res.json(['SUCCESS', `S-${req.body.scantarget}`]));
+    // One target fails to start; the others finish — the batch must still return per-IP.
+    sf.get('/scanstatus', (req, res) => res.json(['n', 't', 'c', 's', 'e', 'FINISHED', {}, req.query.id]));
+    sf.get('/scaneventresults', (_req, res) => res.json([
+        ['t', '196.46.244.1:443', '', 'sfp_portscan_tcp', 100, 100, 0, 'h', 0, 0, 'TCP_PORT_OPEN'],
+    ]));
+    const sfServer = sf.listen(0);
+    await new Promise((r) => sfServer.once('listening', r));
+    process.env.SPIDERFOOT_URL = `http://127.0.0.1:${(sfServer.address() as AddressInfo).port}`;
+    try {
+        const r = await call('POST', '/scan', 'analyst', { ips: ['196.46.244.1', '41.203.64.1'] });
+        assert.equal(r.status, 200);
+        assert.equal(r.data.results.length, 2);
+        assert.ok(r.data.results.every((x: { ok: boolean }) => x.ok === true));
+        assert.deepEqual(r.data.results.map((x: { ip: string }) => x.ip), ['196.46.244.1', '41.203.64.1']);
+
+        // Comma-separated single field also works and stays within the cap.
+        const comma = await call('POST', '/scan', 'analyst', { ip: '196.46.244.1, 41.203.64.1' });
+        assert.equal(comma.data.results.length, 2);
+
+        // Over the cap and invalid members are rejected before any scan runs.
+        const eleven = Array.from({ length: 11 }, (_, i) => `1.1.1.${i}`);
+        assert.equal((await call('POST', '/scan', 'analyst', { ips: eleven })).status, 400);
+        assert.equal((await call('POST', '/scan', 'analyst', { ips: ['1.1.1.1', 'nope'] })).status, 400);
     } finally {
         delete process.env.SPIDERFOOT_URL;
         sfServer.close();

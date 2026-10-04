@@ -20,6 +20,8 @@
 //   VULNERABILITY_CVE_<SEVERITY>  "CVE-…\n<SFURL>…</SFURL>\nScore: 7.5\nDescription: …"
 //   RAW_RIR_DATA / NETBLOCK_WHOIS registry records — where the organisation name actually lives
 
+import { asHolder } from '../services/ripeStat';
+
 export const SPIDERFOOT_MODULES = [
     'sfp_dnsresolve',   // reverse DNS → INTERNET_NAME, DOMAIN_NAME
     'sfp_ripe',         // NETBLOCK_OWNER, BGP_AS_MEMBER, RAW_RIR_DATA (RIPEstat; covers AfriNIC space)
@@ -52,11 +54,22 @@ export interface SpiderFootResult {
     org?: string;
     asn?: string;
     country?: string;
+    city?: string;
+    region?: string;
     domains: string[];
     subdomains: string[];
     openPorts: number[];
     vulns: SpiderFootVuln[];
     threatIntel: SpiderFootIntel[];
+    // Extra OSINT surfaced by the scan; each is omitted when SpiderFoot reported nothing for it.
+    affiliateIPs?: string[];
+    maliciousFlags?: string[]; // "<source>: <detail>" for each malicious / blocklist hit
+    linkedURLs?: string[];     // capped at 20
+    emails?: string[];
+    phones?: string[];
+    sslCerts?: string[];
+    banners?: string[];
+    warnings: string[];
     raw: unknown[];
 }
 
@@ -88,7 +101,10 @@ export async function pingSpiderFoot(): Promise<string> {
 
 const TERMINAL = new Set(['FINISHED', 'ABORTED', 'ERROR-FAILED']);
 
-export async function scanIP(ip: string, opts: { pollMs?: number; timeoutMs?: number } = {}): Promise<SpiderFootResult> {
+export async function scanIP(
+    ip: string,
+    opts: { pollMs?: number; timeoutMs?: number; holderOf?: (asn: string) => Promise<string | null> } = {},
+): Promise<SpiderFootResult> {
     if (!spiderfootConfigured()) throw new SpiderFootError('not_configured', 'SPIDERFOOT_URL is not set.');
     const pollMs = opts.pollMs ?? 4_000;
     const timeoutMs = opts.timeoutMs ?? 180_000;
@@ -122,7 +138,43 @@ export async function scanIP(ip: string, opts: { pollMs?: number; timeoutMs?: nu
 
     // 3. Fetch and parse the results.
     const rows = await sfFetch(`/scaneventresults?id=${encodeURIComponent(scanId)}&eventType=ALL`);
-    return { scanId, status, ...parseSpiderFootResults(Array.isArray(rows) ? rows : []) };
+    const parsed = parseSpiderFootResults(Array.isArray(rows) ? rows : []);
+    const warnings: string[] = [];
+
+    // 4. Organisation name. On a typical scan SpiderFoot reports the AS number (sfp_ripe's
+    //    BGP_AS_MEMBER) but no registry record to name it — sfp_ipinfo's GEOINFO is only
+    //    "City, Region, CC". So when the parser found no organisation, name the AS from its
+    //    registered holder (RIPE Stat, which covers AFRINIC and RIPE space).
+    if (!parsed.org && parsed.asn) {
+        const holder = await (opts.holderOf ?? asHolder)(parsed.asn).catch(() => null);
+        const name = holder ? cleanAsHolder(holder) : undefined;
+        if (name) {
+            parsed.org = name;
+            parsed.owner ??= name;
+        } else {
+            warnings.push(`No organisation name found for ${parsed.asn} (RIPE Stat lookup returned nothing).`);
+        }
+    }
+    return { scanId, status, ...parsed, warnings };
+}
+
+/**
+ * RIPE Stat holder strings carry the AS handle before the organisation:
+ *   "VCG-AS MTN NIGERIA Communication limited"          → "MTN NIGERIA Communication limited"
+ *   "SWIFT NETWORKS LIMITED - SWIFT NETWORKS LIMITED"   → "SWIFT NETWORKS LIMITED"
+ *   "AS29465 MTN NIGERIA Communication limited"         → "MTN NIGERIA Communication limited"
+ */
+export function cleanAsHolder(holder: string): string {
+    let s = holder.trim().replace(/^AS\d+\s+/i, '');
+    const dash = s.indexOf(' - ');
+    if (dash > 0) {
+        s = s.slice(dash + 3).trim() || s.slice(0, dash).trim();
+    } else {
+        // Leading handle: one upper-case token with a hyphen or digit (e.g. VCG-AS, MTNNS-AS2).
+        const m = s.match(/^([A-Z0-9]+(?:-[A-Z0-9]+)+|[A-Z]+\d+[A-Z0-9]*)\s+(.+)$/);
+        if (m) s = m[2].trim();
+    }
+    return s;
 }
 
 // ── Parsing ───────────────────────────────────────────────────────────────────────────────
@@ -173,18 +225,20 @@ function asDescription(texts: string[]): string | undefined {
 
 const CVE_SEVERITY: Record<string, SpiderFootVuln['severity']> = { CRITICAL: 'critical', HIGH: 'high', MEDIUM: 'medium', LOW: 'low' };
 
-export function parseSpiderFootResults(rows: unknown[]): Omit<SpiderFootResult, 'scanId' | 'status'> {
+export function parseSpiderFootResults(rows: unknown[]): Omit<SpiderFootResult, 'scanId' | 'status' | 'warnings'> {
     const events = toEvents(rows);
     const of = (type: string) => events.filter((e) => e.type === type);
     const first = (type: string) => of(type)[0]?.data;
 
     const hostname = first('INTERNET_NAME');
     const registry = [...of('RAW_RIR_DATA'), ...of('NETBLOCK_WHOIS')].map((e) => e.data);
-    const owner = registryName(registry);
-    const org = asDescription(registry) ?? owner;
     const asnRaw = first('BGP_AS_MEMBER')?.match(/\d+/)?.[0];
-    const geo = first('GEOINFO');
-    const country = geo ? geo.split(',').map((s) => s.trim()).filter(Boolean).pop() : undefined;
+
+    // GEOINFO is usually "City, Region, CC" plain text; some sfp_ipinfo builds emit JSON with
+    // its own org field. Handle both, and never invent a field the event didn't carry.
+    const geo = parseGeo(first('GEOINFO'));
+    const owner = registryName(registry) ?? first('PROVIDER');
+    const org = asDescription(registry) ?? geo.org ?? owner;
 
     const openPorts = uniq(of('TCP_PORT_OPEN')
         .map((e) => Number.parseInt(e.data.slice(e.data.lastIndexOf(':') + 1), 10))
@@ -203,22 +257,63 @@ export function parseSpiderFootResults(rows: unknown[]): Omit<SpiderFootResult, 
         });
     }
 
+    const malicious = [
+        ...of('MALICIOUS_IPADDR').map((e) => `${e.module}: ${e.data}`),
+        ...of('BLACKLISTED_IPADDR').map((e) => `${e.module} (blocklist): ${e.data}`),
+    ];
     const threatIntel: SpiderFootIntel[] = [
         ...of('MALICIOUS_IPADDR').map((e) => ({ source: `SpiderFoot (${e.module})`, description: `Reported malicious: ${e.data}`, severity: 'high' })),
         ...of('BLACKLISTED_IPADDR').map((e) => ({ source: `SpiderFoot (${e.module})`, description: `On a blocklist: ${e.data}`, severity: 'medium' })),
     ];
+
+    // SpiderFoot's subdomain event is INTERNET_NAME (SUBDOMAIN isn't an event type); keep both
+    // names in case a custom module emits SUBDOMAIN, and drop the primary hostname.
+    const subdomains = uniq([...of('INTERNET_NAME'), ...of('SUBDOMAIN')].map((e) => e.data)).filter((h) => h !== hostname);
+    const linkedURLs = uniq([...of('LINKED_URL_INTERNAL'), ...of('LINKED_URL_EXTERNAL')].map((e) => e.data)).slice(0, 20);
+
+    // Only attach an array when the scan actually produced values for it.
+    const list = (xs: string[]) => (xs.length ? uniq(xs) : undefined);
 
     return {
         hostname,
         owner,
         org,
         asn: asnRaw ? `AS${asnRaw}` : undefined,
-        country,
+        country: geo.country,
+        city: geo.city,
+        region: geo.region,
         domains: uniq(of('DOMAIN_NAME').map((e) => e.data)),
-        subdomains: uniq(of('INTERNET_NAME').map((e) => e.data)).filter((h) => h !== hostname),
+        subdomains,
         openPorts,
         vulns: [...vulnByCve.values()],
         threatIntel,
+        affiliateIPs: list(of('AFFILIATE_IPADDR').map((e) => e.data)),
+        maliciousFlags: list(malicious),
+        linkedURLs: linkedURLs.length ? linkedURLs : undefined,
+        emails: list(of('EMAILADDR').map((e) => e.data)),
+        phones: list(of('PHONE_NUMBER').map((e) => e.data)),
+        sslCerts: list(of('SSL_CERTIFICATE_ISSUED').map((e) => e.data)),
+        banners: list(of('WEBSERVER_BANNER').map((e) => e.data)),
         raw: rows,
     };
+}
+
+interface Geo { org?: string; country?: string; city?: string; region?: string }
+
+// GEOINFO as JSON {"city","region","country","org":"AS29465 …"} or plain "City, Region, CC".
+function parseGeo(data: string | undefined): Geo {
+    if (!data) return {};
+    const t = data.trim();
+    if (t.startsWith('{')) {
+        try {
+            const j = JSON.parse(t) as Record<string, unknown>;
+            const s = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+            const orgRaw = s(j.org) ?? s(j.organization);
+            return { org: orgRaw?.replace(/^AS\d+\s+/i, ''), country: s(j.country), city: s(j.city), region: s(j.region) };
+        } catch {
+            // fall through to the plain-text form
+        }
+    }
+    const parts = t.split(',').map((p) => p.trim()).filter(Boolean);
+    return { city: parts[0], region: parts.length > 2 ? parts[1] : undefined, country: parts.length > 1 ? parts[parts.length - 1] : undefined };
 }

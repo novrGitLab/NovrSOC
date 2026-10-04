@@ -23,6 +23,14 @@ function NotConnected({ what, reason }: { what: string; reason: string }) {
 
 const rows = <T,>(f: Feed<T> | null): T[] => (f?.connected ? f.rows : []);
 
+// CNII likelihood badge: green for confirmed/likely, amber for possible, grey for unlikely.
+const LIKELIHOOD: Record<string, { label: string; badge: string }> = {
+  confirmed: { label: 'Confirmed', badge: 'bg-green-50 text-green-700 border-green-200' },
+  likely:    { label: 'Likely',    badge: 'bg-green-50 text-green-700 border-green-200' },
+  possible:  { label: 'Possible',  badge: 'bg-amber-50 text-amber-700 border-amber-200' },
+  unlikely:  { label: 'Unlikely',  badge: 'bg-gray-100 text-[#7A8099] border-gray-200' },
+};
+
 export default function CNIIOverviewPage() {
   const [assetsFeed, setAssetsFeed] = useState<Feed<CniiAsset> | null>(null);
   const [alertsFeed, setAlertsFeed] = useState<Feed<CniiAlert> | null>(null);
@@ -285,8 +293,16 @@ export default function CNIIOverviewPage() {
               <div className="space-y-3">
                 {/* Classification — suggested by the scan, confirmed (or chosen) by the analyst */}
                 <div className="bg-[#2B3BCC]/5 border border-[#2B3BCC]/15 rounded-lg p-4 space-y-2">
-                  <div className="text-xs font-semibold text-[#2B3BCC] uppercase tracking-wide">
-                    {scanResult.suggestedSectorId ? 'Suggested Classification' : 'Unclassified — choose a sector'}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold text-[#2B3BCC] uppercase tracking-wide">
+                      {scanResult.suggestedSectorId ? 'Suggested Classification' : 'Unclassified — choose a sector'}
+                    </div>
+                    <span
+                      className={`text-xs font-bold px-2 py-0.5 rounded-full border ${LIKELIHOOD[scanResult.cniiLikelihood].badge}`}
+                      title={scanResult.cniiSignals.length ? `Signals:\n• ${scanResult.cniiSignals.join('\n• ')}` : 'No CNII signals detected on this asset.'}
+                    >
+                      CNII: {LIKELIHOOD[scanResult.cniiLikelihood].label}
+                    </span>
                   </div>
                   <select
                     value={chosenSector}
@@ -339,6 +355,12 @@ export default function CNIIOverviewPage() {
                 {/* Assign button */}
                 {!assigned ? (
                   <>
+                    {(scanResult.cniiLikelihood === 'unlikely' || scanResult.cniiLikelihood === 'possible') && (
+                      <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                        This asset has low CNII confidence. Confirm it is critical infrastructure before adding.
+                      </div>
+                    )}
                     <button
                       onClick={handleAssign}
                       disabled={assigning || !chosenSector}

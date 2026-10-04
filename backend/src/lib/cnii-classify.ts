@@ -117,3 +117,90 @@ export function classifySector(owner = '', org = '', asn = '', hostname = ''): C
     if (!best) return UNCLASSIFIED;
     return { sectorId: best.sectorId, subfield: best.subfield, confidence: Math.min(40 + 15 * (best.fieldsMatched - 1), 95) };
 }
+
+// ── CNII likelihood ─────────────────────────────────────────────────────────────────────────
+// A matched sector means "this looks like it belongs to sector X" — not that the host is
+// critical infrastructure. Not every MTN IP is CNII. This second layer weighs independent
+// signals so an analyst sees how strong the case is before monitoring the asset.
+
+// Nigerian critical-infrastructure operators by ASN. Infrastructure inventory (from the ops
+// team), not a measurement — extend as more operators are confirmed.
+export const CNII_OPERATOR_ASNS: Record<string, string> = {
+    AS29465: 'MTN Nigeria',
+    AS36873: 'Airtel Nigeria',
+    AS37148: 'Globacom (Glo)',
+    AS37076: '9mobile / EMTS',
+    AS20858: 'NITEL',
+    AS37705: 'Galaxy Backbone',
+    AS30999: 'Nigerian Communications Commission (NCC)',
+    AS328088: 'Central Bank of Nigeria (CBN)',
+    AS328226: 'NNPC',
+};
+
+const HOSTNAME_SIGNALS = ['core', 'gw', 'gateway', 'router', 'pe', 'border', 'exchange', 'ixp', 'noc', 'backbone', 'infra', 'critical'];
+const ORG_SIGNALS = ['backbone', 'exchange', 'gateway', 'core network', 'internet exchange'];
+// Ports that point at network core or industrial control systems.
+const PORT_SIGNALS: Record<number, string> = {
+    179: 'BGP (179)',
+    102: 'SCADA / IEC 61850 (102)',
+    502: 'Modbus (502)',
+    20000: 'DNP3 SCADA (20000)',
+};
+
+export type CniiLikelihood = 'confirmed' | 'likely' | 'possible' | 'unlikely';
+
+export interface CniiSignals {
+    asn?: string;
+    hostname?: string;
+    org?: string;
+    owner?: string;
+    openPorts?: number[];
+    maliciousFlags?: string[];
+}
+
+export interface CniiAssessment { likelihood: CniiLikelihood; signals: string[] }
+
+const normAsn = (asn: string) => {
+    const n = asn.match(/\d+/)?.[0];
+    return n ? `AS${n}` : '';
+};
+
+/**
+ * Rate how likely a scanned asset is CNII, given the matched sector and the scan's signals.
+ *   confirmed — ASN is a known CNII operator AND a sector matched
+ *   likely    — sector matched AND ≥1 independent signal (operator ASN, hostname, port, org, threat)
+ *   possible  — sector matched, no other signal
+ *   unlikely  — no sector matched
+ * (The prompt's fourth rule overlapped "possible"; a matched sector is always at least
+ * "possible", so "unlikely" is reserved for no sector match.)
+ */
+export function assessCnii(sectorMatched: boolean, s: CniiSignals): CniiAssessment {
+    const signals: string[] = [];
+
+    const asn = s.asn ? normAsn(s.asn) : '';
+    const operator = asn && CNII_OPERATOR_ASNS[asn];
+    if (operator) signals.push(`ASN ${asn} is a known CNII operator (${operator})`);
+
+    const hostLabels = (s.hostname ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    for (const kw of HOSTNAME_SIGNALS) {
+        if (hostLabels.includes(kw)) signals.push(`Hostname contains "${kw}"`);
+    }
+
+    const ports = s.openPorts ?? [];
+    for (const p of ports) {
+        if (PORT_SIGNALS[p]) signals.push(`Open port ${PORT_SIGNALS[p]}`);
+    }
+    if (ports.includes(443) && ports.includes(8443)) signals.push('Open ports 443 + 8443 (management plane)');
+
+    const orgText = `${s.org ?? ''} ${s.owner ?? ''}`.toLowerCase();
+    for (const kw of ORG_SIGNALS) {
+        if (orgText.includes(kw)) signals.push(`Org/owner mentions "${kw}"`);
+    }
+
+    if (s.maliciousFlags?.length) signals.push(`${s.maliciousFlags.length} threat-intel flag(s) on this IP`);
+
+    if (!sectorMatched) return { likelihood: 'unlikely', signals };
+    if (operator) return { likelihood: 'confirmed', signals };
+    if (signals.length) return { likelihood: 'likely', signals };
+    return { likelihood: 'possible', signals };
+}
