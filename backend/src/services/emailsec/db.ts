@@ -14,7 +14,7 @@
 import { randomUUID } from 'crypto';
 import { getSupabase } from '../geoEnrichment';
 
-export type Op = 'eq' | 'neq' | 'in' | 'gte' | 'lte' | 'ilike' | 'is';
+export type Op = 'eq' | 'neq' | 'in' | 'gte' | 'lte' | 'ilike' | 'is' | 'any_ilike';
 export interface Filter { col: string; op: Op; value: unknown }
 export interface Query { filters?: Filter[]; order?: { col: string; asc?: boolean }; limit?: number; select?: string }
 
@@ -49,6 +49,8 @@ export const f = {
     lte: (col: string, value: unknown): Filter => ({ col, op: 'lte', value }),
     ilike: (col: string, value: string): Filter => ({ col, op: 'ilike', value }),
     isNull: (col: string): Filter => ({ col, op: 'is', value: null }),
+    /** col1 ILIKE p OR col2 ILIKE p … — `cols` are code constants; the pattern must be pre-sanitised. */
+    anyIlike: (cols: string[], pattern: string): Filter => ({ col: cols.join(','), op: 'any_ilike', value: pattern }),
 };
 
 // ── Supabase ─────────────────────────────────────────────────────────────────────────────
@@ -66,7 +68,11 @@ function raise(table: string, error: { code?: string; message?: string }, status
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function applyFilters(q: any, filters: Filter[] = []): any {
     for (const x of filters) {
-        if (x.op === 'in') q = q.in(x.col, x.value as unknown[]);
+        if (x.op === 'any_ilike') {
+            // PostgREST or=(…): quote the pattern so it can't break out of its position.
+            const v = `"${String(x.value).replace(/["\\]/g, '')}"`;
+            q = q.or(x.col.split(',').map((c) => `${c}.ilike.${v}`).join(','));
+        } else if (x.op === 'in') q = q.in(x.col, x.value as unknown[]);
         else if (x.op === 'is') q = q.is(x.col, x.value);
         else q = q[x.op](x.col, x.value);
     }
@@ -124,6 +130,7 @@ function matches(row: Row, x: Filter): boolean {
         case 'gte': return typeof v === 'number' ? v >= Number(x.value) : String(v ?? '') >= String(x.value);
         case 'lte': return typeof v === 'number' ? v <= Number(x.value) : String(v ?? '') <= String(x.value);
         case 'is': return v === null || v === undefined;
+        case 'any_ilike': return x.col.split(',').some((c) => matches(row, { col: c, op: 'ilike', value: x.value }));
         case 'ilike': {
             const re = new RegExp(`^${String(x.value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*')}$`, 'i');
             return re.test(String(v ?? ''));

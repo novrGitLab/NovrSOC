@@ -49,6 +49,8 @@ export interface DomainInspection {
     statuses: { spf: CheckStatus; dkim: CheckStatus; dmarc: CheckStatus };
     health: { score: number; parts: HealthPart[]; status: 'healthy' | 'warning' | 'critical' };
     lookup_errors: string[];
+    /** Ownership verification (verification.ts), added by runDomainCheck for a tenant's domain. */
+    verification?: { state: string; checked_at: string; detail: string; found: string[] };
 }
 
 const DOMAIN_RE = /^(?=.{1,253}$)(?!-)([a-z0-9-]{1,63}(?<!-)\.)+[a-z]{2,63}$/i;

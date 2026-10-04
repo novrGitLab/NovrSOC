@@ -2,11 +2,13 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Radar, Plus, RefreshCw, Fingerprint } from 'lucide-react';
+import { Radar, Plus, RefreshCw, Fingerprint, ShieldPlus } from 'lucide-react';
 import {
     useEmailApi, send, useRole, isManager, isAnalyst, PageHeader, Panel, Tabs, Gate, Empty, SevBadge, StatusBadge, Badge, Button, Feedback,
     inputCls, selectCls, wat, label, th, td,
 } from './shared';
+
+export const investigateHref = (domain: string) => `/admin/email/phishid/investigate/${encodeURIComponent(domain)}`;
 
 // Intellicode Phish ID — is someone pretending to be your organisation on the internet?
 // Brand configuration drives look-alike discovery (typosquats, homoglyphs, keyword domains,
@@ -20,6 +22,15 @@ export interface Brand {
 interface DomainRow {
     id: string; domain: string; brand_domain: string | null; techniques: string[]; similarity: number | null; discovered_via: string; status: string; risk: string;
     risk_score: number; resolves: boolean | null; assigned_to: string | null; alert_id: string | null; first_observed: string; last_observed: string; last_enriched: string | null;
+    risk_signals?: { id: string; label: string; points: number }[];
+}
+const OPEN = (d: DomainRow) => !['false_positive', 'resolved'].includes(d.status);
+const WEBSITE_SIGNALS = new Set(['login_form', 'login_language', 'brand_on_page', 'external_form', 'credential_harvest', 'redirect']);
+/** Why it was flagged, in a few words: the strongest evidence first, else how it imitates the brand. */
+function reason(d: DomainRow): string {
+    const sig = [...(d.risk_signals ?? [])].sort((a, b) => b.points - a.points).map((x) => x.label);
+    if (sig.length) return sig.slice(0, 2).join(' + ');
+    return d.techniques.length ? `Look-alike (${d.techniques.map(label).join(', ').toLowerCase()})` : 'Reported for investigation';
 }
 
 const STATUSES = ['discovered', 'under_investigation', 'suspicious', 'confirmed_phishing', 'false_positive', 'resolved'];
@@ -35,12 +46,16 @@ export function PhishId() {
     const tab: Tab = tabChoice ?? (brand.data && !hasBrand ? 'brand' : 'discoveries');
     return (
         <div className="space-y-4">
-            <PageHeader title="Intellicode Phish ID" subtitle="Is someone pretending to be your organisation on the internet? Look-alike domains, phishing sites and impersonation infrastructure." />
-            <Tabs<Tab> value={tab} onChange={setTab} tabs={[{ id: 'discoveries', label: 'Discoveries' }, { id: 'brand', label: 'Brand configuration' }]} />
+            <PageHeader
+                title="Intellicode Phish ID"
+                subtitle="Detect domains and infrastructure attempting to impersonate your organisation."
+                actions={<Button variant="primary" onClick={() => setTab('brand')}><ShieldPlus size={12} /> {hasBrand ? 'Edit protected brand' : 'Protect a brand'}</Button>}
+            />
+            <Tabs<Tab> value={tab} onChange={setTab} tabs={[{ id: 'discoveries', label: 'Threats' }, { id: 'brand', label: 'Protected brand' }]} />
             <Gate state={brand}>
                 {tab === 'discoveries'
                     ? (hasBrand ? <Discoveries brand={brand.data!.brand!} /> : (
-                        <Panel><Empty icon={<Fingerprint size={18} />} title="No brand configured" body="Add your organisation's domains and brand assets to begin monitoring for impersonation." action={<Button variant="primary" onClick={() => setTab('brand')}>Configure brand</Button>} /></Panel>
+                        <Panel><Empty icon={<Fingerprint size={18} />} title="No brand protected yet" body="Add your organisation's name, domains and brand keywords. Phish ID then searches daily for look-alike domains and impersonating websites." action={<Button variant="primary" onClick={() => setTab('brand')}>Protect a brand</Button>} /></Panel>
                     ))
                     : <BrandForm brand={brand.data?.brand ?? null} onSaved={() => { setNonce((x) => x + 1); setTab('discoveries'); }} />}
             </Gate>
@@ -79,15 +94,45 @@ function Discoveries({ brand }: { brand: Brand }) {
         if (r.ok) { setManual(''); setNonce((x) => x + 1); }
     }
 
+    const all = useEmailApi<{ domains: DomainRow[] }>('/phishid/domains', nonce);
+    const findings = all.data?.domains ?? [];
+    const summary = [
+        { label: 'Look-alike domains', value: findings.filter(OPEN).length, note: 'Open findings' },
+        { label: 'Suspicious websites', value: findings.filter((d) => OPEN(d) && (d.risk_signals ?? []).some((x) => WEBSITE_SIGNALS.has(x.id))).length, note: 'Login forms, brand use or off-site forms' },
+        { label: 'Phishing infrastructure', value: findings.filter((d) => d.status === 'confirmed_phishing').length, note: 'Confirmed by an analyst' },
+        { label: 'High-risk findings', value: findings.filter((d) => OPEN(d) && (d.risk === 'high' || d.risk === 'critical')).length, note: 'High or critical risk' },
+    ];
     return (
         <div className="space-y-4">
-            <Panel title="Monitoring" action={<span className="text-[10px] text-foreground-muted">Last discovery run: {wat(brand.last_discovery)} · runs daily</span>}>
+            <section className="bg-card border border-border rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-foreground-muted">Protected brand</p>
+                    <p className="text-sm font-black text-foreground mt-0.5">{brand.organization_name}</p>
+                    <p className="text-xs text-foreground-muted wrap-anywhere">{[...brand.primary_domains, ...brand.additional_domains].join(' · ')}{brand.keywords.length ? <> · keywords: {brand.keywords.join(', ')}</> : null}</p>
+                </div>
+                <div className="text-xs md:text-right shrink-0">
+                    <StatusBadge s="monitoring" />
+                    <p className="text-[10px] text-foreground-muted mt-1">Last discovery: {brand.last_discovery ? wat(brand.last_discovery) : 'pending (runs within the hour, then daily)'}</p>
+                </div>
+            </section>
+            <Gate state={all}>
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    {summary.map((m) => (
+                        <div key={m.label} className="bg-card border border-border rounded-xl p-4 min-w-0">
+                            <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">{m.label}</p>
+                            <p className="text-2xl font-black text-foreground mt-1">{m.value}</p>
+                            <p className="text-[10px] text-foreground-muted">{m.note}</p>
+                        </div>
+                    ))}
+                </div>
+            </Gate>
+            <Panel title="Discovery" action={<span className="text-[10px] text-foreground-muted hidden sm:inline">Typosquats, homoglyphs, keyword domains and Certificate Transparency</span>}>
                 <div className="flex flex-wrap items-center gap-3 justify-between">
-                    <p className="text-xs text-foreground-muted">Watching <span className="font-bold text-foreground">{[...brand.primary_domains, ...brand.additional_domains].join(', ')}</span>{brand.keywords.length ? <> and keywords <span className="font-bold text-foreground">{brand.keywords.join(', ')}</span></> : null}.</p>
+                    <p className="text-xs text-foreground-muted">Found something suspicious yourself? Add it for investigation.</p>
                     <div className="flex flex-wrap gap-2">
                         {isAnalyst(role) && (
-                            <form onSubmit={addManual} className="flex gap-2">
-                                <input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="Report a suspicious domain" aria-label="Suspicious domain" className={`${inputCls} w-52`} required />
+                            <form onSubmit={addManual} className="flex gap-2 min-w-0">
+                                <input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="Report a suspicious domain" aria-label="Suspicious domain" className={`${inputCls} w-52 min-w-0`} required />
                                 <Button type="submit" busy={busy === 'manual'}><Plus size={12} /> Add</Button>
                             </form>
                         )}
@@ -112,26 +157,23 @@ function Discoveries({ brand }: { brand: Brand }) {
             <Panel>
                 <Gate state={state}>
                     {rows.length === 0 ? (
-                        <Empty title={state.data?.domains.length ? 'Nothing matches these filters' : 'No look-alike domains found yet'}
+                        <Empty title={state.data?.domains.length ? 'Nothing matches these filters' : 'No phishing threats detected'}
                             body={state.data?.domains.length ? undefined : brand.last_discovery ? 'The last discovery run found no registered look-alikes. Discovery repeats daily.' : 'The first discovery run starts within the hour after the brand is saved, or a manager can run it now.'} />
                     ) : (
                         <div className="overflow-x-auto -m-4">
-                            <table className="w-full text-xs min-w-[900px]">
-                                <thead><tr className="border-b border-border">{['Domain', 'Resembles', 'Technique', 'Risk', 'Status', 'Found via', 'First observed', 'Last checked'].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
+                            <table className="w-full text-xs min-w-[760px]">
+                                <thead><tr className="border-b border-border">{['Domain', 'Risk', 'Detection reason', 'First seen', 'Status'].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
                                 <tbody>
                                     {rows.map((d) => (
-                                        <tr key={d.id} className="border-b border-border/60 last:border-0 hover:bg-card-muted/40">
-                                            <td className={td}>
-                                                <Link href={`/admin/email/phishid/${d.id}`} className="font-mono font-bold text-foreground hover:text-purple break-all">{d.domain}</Link>
-                                                {d.resolves === false && <p className="text-[10px] text-foreground-muted">Not resolving</p>}
+                                        <tr key={d.id} className="border-b border-border/60 last:border-0 hover:bg-card-muted/40 align-top">
+                                            <td className={`${td} max-w-[260px]`}>
+                                                <Link href={investigateHref(d.domain)} className="font-mono font-bold text-foreground hover:text-purple wrap-anywhere">{d.domain}</Link>
+                                                <p className="text-[10px] text-foreground-muted">{d.brand_domain ? `Resembles ${d.brand_domain}` : 'Reported'}{d.resolves === false ? ' · not resolving' : ''} · {VIA[d.discovered_via] ?? d.discovered_via}</p>
                                             </td>
-                                            <td className={`${td} text-foreground-muted`}>{d.brand_domain ?? '—'}{d.similarity !== null && <span className="block text-[10px]">{Math.round(d.similarity * 100)}% similar</span>}</td>
-                                            <td className={td}><div className="flex flex-wrap gap-1">{d.techniques.map((t) => <Badge key={t} tone="grey">{label(t)}</Badge>)}</div></td>
                                             <td className={td}>{d.last_enriched ? <SevBadge s={d.risk} /> : <span className="text-[10px] text-foreground-muted">Not assessed yet</span>}</td>
-                                            <td className={td}><StatusBadge s={d.status} />{d.assigned_to && <p className="text-[10px] text-foreground-muted mt-0.5">{d.assigned_to}</p>}</td>
-                                            <td className={`${td} text-foreground-muted`}>{VIA[d.discovered_via] ?? d.discovered_via}</td>
+                                            <td className={`${td} text-foreground max-w-[320px]`}>{reason(d)}<div className="flex flex-wrap gap-1 mt-1">{d.techniques.slice(0, 3).map((t) => <Badge key={t} tone="grey">{label(t)}</Badge>)}</div></td>
                                             <td className={`${td} text-foreground-muted whitespace-nowrap`}>{wat(d.first_observed)}</td>
-                                            <td className={`${td} text-foreground-muted whitespace-nowrap`}>{wat(d.last_enriched)}</td>
+                                            <td className={td}><StatusBadge s={d.status} />{d.assigned_to && <p className="text-[10px] text-foreground-muted mt-0.5 wrap-anywhere">{d.assigned_to}</p>}</td>
                                         </tr>
                                     ))}
                                 </tbody>

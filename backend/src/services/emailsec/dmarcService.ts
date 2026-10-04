@@ -6,6 +6,7 @@
 import type { Db } from './db';
 import { f } from './db';
 import { inspectDomain, dnsClient, type DomainInspection } from './dnsInspect';
+import { checkVerification } from './verification';
 import { unpackReport, parseDmarcReport, type DmarcReport } from './dmarcReport';
 import { correlateOrRaise, recordIndicators } from './alerts';
 import { emailsecConfig } from './config';
@@ -28,6 +29,7 @@ export async function runDomainCheck(db: Db, d: EmailDomain): Promise<DomainInsp
     let result: DomainInspection;
     try {
         result = await inspectDomain(d.domain, d.dkim_selectors ?? []);
+        result.verification = await checkVerification(d.org_id, d.domain);
     } catch (err) {
         await db.update('email_domains', [f.eq('id', d.id)], { status: 'error', last_error: (err as Error).message, last_checked: now, updated_at: now });
         return null;

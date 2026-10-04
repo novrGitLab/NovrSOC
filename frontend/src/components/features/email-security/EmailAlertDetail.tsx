@@ -22,7 +22,7 @@ interface Detail { alert: Alert; events: EventRow[]; soc_alerts: { available: bo
 
 const MODULE: Record<string, string> = { dmarc: 'DMARC', phishid: 'Phish ID', messaging: 'Messaging' };
 const STATUSES = ['new', 'investigating', 'resolved', 'false_positive', 'suppressed'];
-const refHref = (r?: { kind: string; id: string }) => r?.kind === 'email_event' ? `/admin/email/messaging/${r.id}` : r?.kind === 'phishing_domain' ? `/admin/email/phishid/${r.id}` : null;
+const refHref = (r?: { kind: string; id: string }) => r?.kind === 'email_event' ? `/admin/email/messaging/${r.id}` : r?.kind === 'phishing_domain' ? `/admin/email/phishid/investigate/${r.id}` : null;
 
 export function EmailAlertDetail({ id }: { id: string }) {
     const role = useRole();

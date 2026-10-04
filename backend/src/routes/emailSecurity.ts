@@ -17,6 +17,7 @@ import { logAudit } from '../lib/audit';
 import { DEFAULT_ORG_ID, isUuid } from '../services/cases';
 import { getDb, f, SchemaMissingError, SCHEMA_FILE, type Db } from '../services/emailsec/db';
 import { normalizeDomain, inspectDomain } from '../services/emailsec/dnsInspect';
+import { verificationRecord } from '../services/emailsec/verification';
 import { POLICY_EXPLANATIONS, buildDmarcRecord, type DmarcPolicy } from '../services/emailsec/authRecords';
 import { runDomainCheck, ingestReport, dmarcAnalytics, type EmailDomain, type SendingSource } from '../services/emailsec/dmarcService';
 import {
@@ -197,7 +198,25 @@ router.get('/integrations', async (_req, res) => {
 // ── DMARC: domains ─────────────────────────────────────────────────────────────────────────
 
 router.get('/dmarc/domains', h(async (db, req, res) => {
-    res.json({ domains: await db.select<EmailDomain>('email_domains', { filters: [f.eq('org_id', orgOf(req))], order: { col: 'domain', asc: true } }) });
+    const org = orgOf(req);
+    const [domains, checks, reports] = await Promise.all([
+        db.select<EmailDomain>('email_domains', { filters: [f.eq('org_id', org)], order: { col: 'domain', asc: true } }),
+        db.select<{ domain_id: string; created_at: string; verification?: unknown; result?: { verification?: unknown } }>('email_dns_checks', {
+            filters: [f.eq('org_id', org)], order: { col: 'created_at' }, limit: 1000, select: 'domain_id, created_at, verification:result->verification',
+        }),
+        db.select<{ domain: string; created_at: string }>('dmarc_aggregate_reports', { filters: [f.eq('org_id', org)], order: { col: 'created_at' }, limit: 1000, select: 'domain, created_at' }),
+    ]);
+    // Newest first, so the first match per domain is its latest check / report.
+    res.json({
+        domains: domains.map((d) => {
+            const check = checks.find((c) => c.domain_id === d.id);
+            return {
+                ...d,
+                verification: check ? (check.verification ?? check.result?.verification ?? null) : null,
+                last_report_at: reports.find((r) => r.domain === d.domain)?.created_at ?? null,
+            };
+        }),
+    });
 }));
 
 router.post('/dmarc/domains', MANAGER, inspectLimiter, h(async (db, req, res) => {
@@ -211,7 +230,7 @@ router.post('/dmarc/domains', MANAGER, inspectLimiter, h(async (db, req, res) =>
     audit(req, 'EMAILSEC_ADD_DOMAIN', domain, row.id);
     const inspection = await runDomainCheck(db, row);
     const [fresh] = await db.select<EmailDomain>('email_domains', { filters: [f.eq('id', row.id)], limit: 1 });
-    res.status(201).json({ domain: fresh ?? row, inspection });
+    res.status(201).json({ domain: fresh ?? row, inspection, verification_record: verificationRecord(org, domain) });
 }));
 
 router.get('/dmarc/domains/:id', h(async (db, req, res) => {
@@ -224,7 +243,7 @@ router.get('/dmarc/domains/:id', h(async (db, req, res) => {
         db.select<SendingSource>('email_sending_sources', { filters: [f.eq('org_id', org), f.eq('domain', d.domain)], order: { col: 'message_count' }, limit: 200 }),
         db.select('dmarc_aggregate_reports', { filters: [f.eq('org_id', org), f.eq('domain', d.domain)], order: { col: 'date_begin' }, limit: 20 }),
     ]);
-    res.json({ domain: d, latest: checks[0]?.result ?? null, history: checks.map((c) => ({ at: c.created_at })), sources, reports, policies: POLICY_EXPLANATIONS });
+    res.json({ domain: d, latest: checks[0]?.result ?? null, history: checks.map((c) => ({ at: c.created_at })), sources, reports, policies: POLICY_EXPLANATIONS, verification_record: verificationRecord(org, d.domain) });
 }));
 
 router.patch('/dmarc/domains/:id', MANAGER, h(async (db, req, res) => {
@@ -252,6 +271,17 @@ router.post('/dmarc/domains/:id/inspect', ANALYST, inspectLimiter, h(async (db, 
     const inspection = await runDomainCheck(db, d);
     if (!inspection) return res.status(502).json({ error: 'DNS inspection failed — see the domain status for the error.' });
     res.json({ inspection });
+}));
+
+/** Ownership check: looks up the _novrsoc-verification TXT record (with a full inspection). */
+router.post('/dmarc/domains/:id/verify', ANALYST, inspectLimiter, h(async (db, req, res) => {
+    if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Domain not found' });
+    const [d] = await db.select<EmailDomain>('email_domains', { filters: [f.eq('org_id', orgOf(req)), f.eq('id', req.params.id)], limit: 1 });
+    if (!d) return res.status(404).json({ error: 'Domain not found' });
+    const inspection = await runDomainCheck(db, d);
+    if (!inspection) return res.status(502).json({ error: 'DNS inspection failed — see the domain status for the error.' });
+    audit(req, 'EMAILSEC_VERIFY_DOMAIN', `${d.domain}: ${inspection.verification?.state}`, d.id);
+    res.json({ verification: inspection.verification, verification_record: verificationRecord(d.org_id, d.domain), inspection });
 }));
 
 /** Ad-hoc inspection of any domain — nothing stored. */
@@ -358,7 +388,7 @@ router.get('/phishid/domains', h(async (db, req, res) => {
         filters: [f.eq('org_id', orgOf(req)), ...(PHISH_STATUSES.includes(status as PhishStatus) ? [f.eq('status', status)] : []), ...(RISK_ORDER.includes(risk as Risk) ? [f.eq('risk', risk)] : []),
             ...(q ? [f.ilike('domain', `%${q.replace(/[%_]/g, '')}%`)] : [])],
         order: { col: 'last_observed' }, limit: 1000,
-        select: 'id, domain, brand_domain, techniques, similarity, discovered_via, status, risk, risk_score, resolves, assigned_to, alert_id, first_observed, last_observed, last_enriched',
+        select: 'id, domain, brand_domain, techniques, similarity, discovered_via, status, risk, risk_score, risk_signals, resolves, assigned_to, alert_id, first_observed, last_observed, last_enriched',
     });
     res.json({ domains: rows });
 }));
@@ -499,8 +529,15 @@ router.get('/messaging/events', h(async (db, req, res) => {
     const from = str(req.query.from, 40); const to = str(req.query.to, 40);
     if (from && !Number.isNaN(Date.parse(from))) filters.push(f.gte('received_at', new Date(from).toISOString()));
     if (to && !Number.isNaN(Date.parse(to))) filters.push(f.lte('received_at', new Date(to).toISOString()));
-    const q = str(req.query.q, 200).toLowerCase().replace(/[%_]/g, '');
-    if (q) filters.push(q.includes('@') ? f.ilike(q.startsWith('@') ? 'sender_domain' : 'sender', q.startsWith('@') ? `%${q.slice(1)}%` : `%${q}%`) : f.ilike('sender_domain', `%${q}%`));
+    // risk: threat (high/critical detections) | suspicious (lower-severity detections) | clean
+    const risk = str(req.query.risk, 20);
+    if (risk === 'threat') { filters.push(f.neq('detection', 'clean')); filters.push(f.in('severity', ['high', 'critical'])); }
+    if (risk === 'suspicious') { filters.push(f.neq('detection', 'clean')); filters.push(f.in('severity', ['informational', 'low', 'medium'])); }
+    if (risk === 'clean') filters.push(f.eq('detection', 'clean'));
+    // Search sender, recipient, subject and message id. Only a conservative character set is kept,
+    // so the value can never alter the filter expression.
+    const q = str(req.query.q, 200).toLowerCase().replace(/[^a-z0-9@._+\-<> ]/g, '').trim();
+    if (q) filters.push(f.anyIlike(['sender', 'recipient', 'subject', 'message_id'], `%${q}%`));
     res.json({ events: await db.select('email_events', { filters, order: { col: 'received_at' }, limit: Math.min(1000, Number(req.query.limit) || 200), select: EVENT_LIST_COLS }) });
 }));
 

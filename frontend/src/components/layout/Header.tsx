@@ -99,10 +99,11 @@ export function Header({ initials, onSignOut }: HeaderProps) {
     return (
         <header className="h-14 bg-white border-b border-grey-100 flex items-center gap-4 px-6 sticky top-0 z-30 w-full">
             {/* Left */}
-            <div className="flex items-center gap-2 min-w-fit">
-                <Logo size="sm" />
+            <div className="flex items-center gap-2 min-w-0">
+                <span className="shrink-0"><Logo size="sm" /></span>
                 <span className="text-grey-300">/</span>
-                <span className="text-sm text-grey-500">{pageTitle}</span>
+                {/* Long path segments (e.g. a domain name) must not push the header controls off-screen. */}
+                <span className="text-sm text-grey-500 truncate max-w-[16rem]" title={pageTitle}>{pageTitle}</span>
             </div>
 
             {/* Center — search. Admin only: /api/search reads cases, which portal tokens can't

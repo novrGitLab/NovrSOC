@@ -1,12 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { RefreshCw, Trash2, Copy } from 'lucide-react';
+import { RefreshCw, Trash2, Copy, BadgeCheck } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import {
-    useEmailApi, send, useRole, isManager, isAnalyst, PageHeader, Panel, Gate, Empty, StatusBadge, Button, Feedback, KeyValue,
+    useEmailApi, send, useRole, isManager, isAnalyst, PageHeader, Panel, Gate, Empty, StatusBadge, Button, Feedback, KeyValue, DnsRecordCard,
     inputCls, wat, day, n, th, td,
 } from './shared';
+import { useEmailSecurity } from './context';
 import { SourcesTable, type EmailDomain, type SendingSource, type DmarcReportRow } from './DmarcSaas';
 
 // One protected domain: the latest DNS inspection with every finding explained, the three
@@ -22,8 +23,10 @@ interface Inspection {
     statuses: { spf: string; dkim: string; dmarc: string };
     health: { score: number; status: string; parts: { label: string; points: number; max: number }[] };
     lookup_errors: string[];
+    verification?: { state: string; checked_at: string; detail: string };
 }
 interface Detail {
+    verification_record: { type: string; host: string; name: string; value: string } | null;
     domain: EmailDomain; latest: Inspection | null; history: { at: string }[]; sources: SendingSource[]; reports: DmarcReportRow[];
     policies: Record<'none' | 'quarantine' | 'reject', { title: string; effect: string; when: string }>;
 }
@@ -43,7 +46,28 @@ const Record = ({ value }: { value: string | null }) => value
     ? <code className="block text-[11px] font-mono bg-card-muted border border-border rounded-lg p-2 break-all text-foreground">{value}</code>
     : <p className="text-[11px] text-red-500 font-bold">Not published</p>;
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Route: /admin/email/dmarc/[domain] — a domain name, or an id from older links. */
+export function DmarcDomainRoute({ param }: { param: string }) {
+    const { domains, loading, notSetUp } = useEmailSecurity();
+    const value = decodeURIComponent(param).toLowerCase();
+    if (UUID.test(value)) return <DmarcDomainDetail id={value} />;
+    if (loading) return <div className="h-40 bg-card-muted rounded-xl animate-pulse" aria-busy="true" />;
+    const match = domains.find((d) => d.domain.toLowerCase() === value);
+    if (!match) {
+        return (
+            <div className="space-y-4">
+                <PageHeader back={{ href: '/admin/email/dmarc', label: 'DMARC SaaS' }} title={value} />
+                <Panel><Empty title={notSetUp ? 'Email Security is not set up yet' : 'This domain is not monitored'} body={notSetUp ?? `${value} is not one of your organisation's domains. Add it in Setup to start monitoring it.`} /></Panel>
+            </div>
+        );
+    }
+    return <DmarcDomainDetail id={match.id} />;
+}
+
 export function DmarcDomainDetail({ id }: { id: string }) {
+    const { reload } = useEmailSecurity();
     const role = useRole();
     const router = useRouter();
     const [nonce, setNonce] = useState(0);
@@ -62,8 +86,13 @@ export function DmarcDomainDetail({ id }: { id: string }) {
     }
     const inspect = () => act('inspect', async () => {
         const r = await send('POST', `/dmarc/domains/${id}/inspect`);
-        if (r.ok) setNonce((x) => x + 1);
+        if (r.ok) { setNonce((x) => x + 1); reload(); }
         return { ok: r.ok, text: r.ok ? 'Inspection complete.' : r.error ?? 'Failed' };
+    });
+    const verify = () => act('verify', async () => {
+        const r = await send<{ verification: { state: string; detail: string } }>('POST', `/dmarc/domains/${id}/verify`);
+        if (r.ok) { setNonce((x) => x + 1); reload(); }
+        return { ok: r.ok && r.data?.verification.state === 'verified', text: r.ok ? r.data?.verification.detail ?? '' : r.error ?? 'Failed' };
     });
     const planFor = (policy: string) => act(`plan-${policy}`, async () => {
         const r = await send<{ host: string; value: string; current: string | null; note: string }>('POST', `/dmarc/domains/${id}/policy-plan`, { policy });
@@ -96,6 +125,19 @@ export function DmarcDomainDetail({ id }: { id: string }) {
             />
             <Feedback result={fb} />
             <Gate state={state} rows={8}>
+                {d && (
+                    <Panel title={<span className="flex items-center gap-1.5"><BadgeCheck size={13} /> Domain ownership</span>} action={<StatusBadge s={i?.verification?.state === 'verified' ? 'verified' : i?.verification?.state ?? 'not_verified'} />} className="mb-4">
+                        {i?.verification?.state === 'verified' ? (
+                            <p className="text-xs text-foreground">Ownership verified — last checked {wat(i.verification.checked_at)}. Keep the record published; verification is re-checked with every inspection.</p>
+                        ) : d.verification_record ? (
+                            <div className="space-y-3">
+                                <p className="text-xs text-foreground-muted">Prove your organisation controls {d.domain.domain} by publishing this TXT record at your DNS provider. NovrSOC never changes DNS. {i?.verification ? <span className="block mt-1 text-foreground">{i.verification.detail}</span> : null}</p>
+                                <DnsRecordCard type={d.verification_record.type} host={d.verification_record.name} value={d.verification_record.value} note="Some DNS providers want only the host part (_novrsoc-verification) in the name field." />
+                                {isAnalyst(role) && <Button variant="primary" onClick={verify} busy={busy === 'verify'}>Verify now</Button>}
+                            </div>
+                        ) : <p className="text-xs text-foreground-muted">Domain verification is not configured on this NovrSOC deployment.</p>}
+                    </Panel>
+                )}
                 {d && (!i ? (
                     <Panel><Empty title="Not inspected yet" body={d.domain.last_error ?? 'Run an inspection to read the published SPF, DKIM and DMARC records.'} /></Panel>
                 ) : (

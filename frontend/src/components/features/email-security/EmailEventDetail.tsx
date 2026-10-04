@@ -120,7 +120,25 @@ export function EmailEventDetail({ id }: { id: string }) {
                             <p className="text-[10px] text-foreground-muted mt-2">Attachments are judged from metadata and hash reputation only — files are never opened or executed on NovrSOC servers.</p>
                         </Panel>
 
-                        <Panel title="Seen elsewhere">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            <Panel title="Sender & domain intelligence">
+                                <KeyValue rows={[
+                                    ['Sender domain', e.sender ? e.sender.split('@')[1] ?? '—' : '—'],
+                                    ['Source IP', <span key="ip" className="font-mono">{e.source_ip ?? '—'}</span>],
+                                    ['Authentication', [e.spf && `SPF ${e.spf}`, e.dkim && `DKIM ${e.dkim}`, e.dmarc && `DMARC ${e.dmarc}`].filter(Boolean).join(' · ') || 'Not reported by the provider'],
+                                    ['Sender reputation', 'No sender-reputation service is connected — judge by authentication results and the indicators below.'],
+                                ]} />
+                            </Panel>
+                            <Panel title="Response actions">
+                                <p className="text-xs text-foreground-muted">
+                                    {PROVIDER[e.provider] ?? e.provider} is connected read-only, so NovrSOC cannot quarantine, release or delete this message.
+                                    {e.action_by !== 'none' ? ` The provider already ${e.action === 'quarantine' ? 'quarantined' : e.action === 'block' ? 'blocked' : 'handled'} it.` : " Take action in the provider's own console if needed."}
+                                </p>
+                                {e.alert_id && <Link href={`/admin/email/alerts/${e.alert_id}`} className="inline-block mt-2 text-xs font-bold text-purple hover:underline">Open the alert to escalate to a case →</Link>}
+                            </Panel>
+                        </div>
+
+                        <Panel title="Indicators & relationships">
                             {state.data.related_indicators.length === 0 ? <p className="text-xs text-foreground-muted">None of this message&apos;s indicators appear in other modules.</p> : (
                                 <ul className="text-[11px] space-y-1">
                                     {state.data.related_indicators.map((s) => <li key={`${s.type}|${s.value}`}><span className="font-mono">{s.value}</span> <span className="text-foreground-muted">({s.type}) — {s.refs.length} sighting{s.refs.length === 1 ? '' : 's'}, last {wat(s.last_seen)}</span></li>)}

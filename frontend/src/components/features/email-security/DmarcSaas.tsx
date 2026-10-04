@@ -4,19 +4,18 @@ import { Fragment, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useTheme } from 'next-themes';
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { Plus, Upload, RefreshCw, ShieldCheck, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, Upload, ShieldCheck, ChevronDown, ChevronRight, ShieldAlert } from 'lucide-react';
 import {
-    useEmailApi, send, useRole, isManager, PageHeader, Panel, Kpi, Tabs, Gate, Empty, StatusBadge, Badge, Button, Feedback,
-    inputCls, selectCls, wat, day, n, th, td,
+    useEmailApi, send, useRole, isManager, PageHeader, Panel, Kpi, Tabs, Gate, Empty, StatusBadge, Badge, Button, Feedback, SetupNotice,
+    inputCls, selectCls, wat, day, n, th, td, label,
 } from './shared';
+import { useEmailSecurity, domainReadiness, type DomainRow } from './context';
 
 // DMARC SaaS — who is sending mail as your domains, and are they authorised?
-// Domains (with live SPF / DKIM / DMARC inspection), sending sources and aggregate reports.
+// Domains (verification + live SPF / DKIM / DMARC), analytics, sending sources with spoofing
+// detection, and aggregate reports. Domain data comes from the Email Security shell.
 
-export interface EmailDomain {
-    id: string; domain: string; status: string; dmarc_policy: string | null; spf_status: string | null; dkim_status: string | null; dmarc_status: string | null;
-    health_score: number | null; sending_sources: number; last_checked: string | null; last_error: string | null; dkim_selectors: string[];
-}
+export type EmailDomain = DomainRow;
 export interface SendingSource {
     id: string; domain: string; source_ip: string; provider: string | null; ptr: string | null; classification: string; classification_reason: string | null; classified_by: string;
     message_count: number; spf_pass: number; dkim_pass: number; dmarc_pass: number; first_seen: string; last_seen: string;
@@ -27,38 +26,50 @@ interface Analytics {
     sources: { known: number; unknown: number; suspicious: number }; series: { day: string; pass: number; fail: number }[]; top_failing: { source_ip: string; messages: number }[];
 }
 
-type Tab = 'domains' | 'sources' | 'reports' | 'analytics';
+type Tab = 'domains' | 'analytics' | 'sources' | 'reports';
 const pct = (a: number, b: number) => (b ? `${Math.round((a / b) * 100)}%` : '—');
+const READINESS: Record<string, string> = { ready: 'protected', attention: 'warning', incomplete: 'pending' };
 
 export function DmarcSaas() {
+    const { domains, loading, error, notSetUp, reload } = useEmailSecurity();
     const [tab, setTab] = useState<Tab>('domains');
     const [nonce, setNonce] = useState(0);
-    const domains = useEmailApi<{ domains: EmailDomain[] }>('/dmarc/domains', nonce);
-    const reload = () => setNonce((x) => x + 1);
-    const list = domains.data?.domains ?? [];
+    const refresh = () => { setNonce((x) => x + 1); reload(); };
+    const suspicious = useEmailApi<{ sources: SendingSource[] }>('/dmarc/sources?classification=suspicious', nonce);
+    const suspiciousCount = suspicious.data?.sources.length;
 
     return (
         <div className="space-y-4">
             <PageHeader
                 title="DMARC SaaS"
-                subtitle="Who is sending email as your domains, and are they authorised? SPF, DKIM and DMARC posture, aggregate reports and sending sources."
-                actions={<Button onClick={reload}><RefreshCw size={12} /> Refresh</Button>}
+                subtitle="Monitor domain authentication, identify unauthorised senders and detect spoofing."
+                actions={<Link href="/admin/email/setup" className="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-lg px-3 py-1.5 border bg-purple text-white border-purple hover:opacity-90"><Plus size={12} /> Add domain</Link>}
             />
-            <Tabs<Tab> value={tab} onChange={setTab} tabs={[
-                { id: 'domains', label: 'Domains', count: domains.data ? list.length : null },
-                { id: 'sources', label: 'Sending Sources' },
-                { id: 'reports', label: 'Reports' },
-                { id: 'analytics', label: 'Analytics' },
-            ]} />
-            {tab === 'domains' && <DomainsTab state={domains} list={list} reload={reload} />}
-            {tab === 'sources' && <SourcesTab domains={list} nonce={nonce} reload={reload} />}
-            {tab === 'reports' && <ReportsTab domains={list} nonce={nonce} reload={reload} />}
-            {tab === 'analytics' && <AnalyticsTab domains={list} />}
+            {notSetUp ? <SetupNotice message={notSetUp} /> : (
+                <>
+                    <Tabs<Tab> value={tab} onChange={setTab} tabs={[
+                        { id: 'domains', label: 'Domains', count: loading ? null : domains.length },
+                        { id: 'analytics', label: 'Analytics' },
+                        { id: 'sources', label: 'Sending sources', count: suspiciousCount ? suspiciousCount : null },
+                        { id: 'reports', label: 'Reports' },
+                    ]} />
+                    {tab === 'domains' && <DomainsTab state={{ loading, error, setup: null }} list={domains} reload={refresh} />}
+                    {tab === 'analytics' && <AnalyticsTab domains={domains} />}
+                    {tab === 'sources' && <SourcesTab domains={domains} nonce={nonce} reload={refresh} />}
+                    {tab === 'reports' && <ReportsTab domains={domains} nonce={nonce} reload={refresh} />}
+                </>
+            )}
         </div>
     );
 }
 
 // ── Domains ──
+
+function AuthMark({ s }: { s: string | null }) {
+    if (!s) return <span className="text-foreground-muted">—</span>;
+    const [sym, cls] = s === 'pass' ? ['✓', 'text-green'] : s === 'warn' ? ['⚠', 'text-amber-600'] : s === 'not_found' ? ['○', 'text-foreground-muted'] : ['✕', 'text-red-500'];
+    return <span className={`font-bold ${cls}`} title={label(s)}>{sym}<span className="sr-only"> {label(s)}</span></span>;
+}
 
 function DomainsTab({ state, list, reload }: { state: { loading: boolean; error: string | null; setup: string | null }; list: EmailDomain[]; reload: () => void }) {
     const role = useRole();
@@ -71,14 +82,14 @@ function DomainsTab({ state, list, reload }: { state: { loading: boolean; error:
         setBusy(true); setFb(null);
         const r = await send<{ domain: EmailDomain }>('POST', '/dmarc/domains', { domain });
         setBusy(false);
-        setFb({ ok: r.ok, text: r.ok ? `${r.data?.domain.domain} added and inspected.` : r.error ?? 'Failed' });
+        setFb({ ok: r.ok, text: r.ok ? `${r.data?.domain.domain} added and inspected. Next: verify ownership in Setup.` : r.error ?? 'Failed' });
         if (r.ok) { setDomain(''); reload(); }
     }
 
     const form = isManager(role) && (
         <form onSubmit={add} className="flex flex-wrap items-center gap-2">
-            <input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="company.com" aria-label="Domain to protect" className={`${inputCls} w-56`} required />
-            <Button type="submit" variant="primary" busy={busy}><Plus size={12} /> Add domain</Button>
+            <input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="company.com" aria-label="Domain to protect" className={`${inputCls} w-48 min-w-0`} required />
+            <Button type="submit" busy={busy}><Plus size={12} /> Quick add</Button>
             <Feedback result={fb} />
         </form>
     );
@@ -87,27 +98,29 @@ function DomainsTab({ state, list, reload }: { state: { loading: boolean; error:
         <Panel title="Protected domains" action={list.length > 0 ? form : undefined}>
             <Gate state={state}>
                 {list.length === 0 ? (
-                    <Empty icon={<ShieldCheck size={18} />} title="No domains connected"
-                        body="Add your first protected domain to begin monitoring SPF, DKIM and DMARC. NovrSOC inspects the published records immediately and re-checks them every few hours."
-                        action={form || <p className="text-[11px] text-foreground-muted">A SOC manager can add domains.</p>} />
+                    <Empty icon={<ShieldCheck size={18} />} title="No domains configured yet"
+                        body="Add your first domain to begin monitoring SPF, DKIM and DMARC. Setup walks you through adding it, proving you own it, and checking its authentication."
+                        action={<Link href="/admin/email/setup" className="text-xs font-bold text-purple hover:underline">Add domain in Setup →</Link>} />
                 ) : (
                     <div className="overflow-x-auto -m-4">
                         <table className="w-full text-xs min-w-[860px]">
-                            <thead><tr className="border-b border-border">{['Domain', 'Status', 'DMARC policy', 'SPF', 'DKIM', 'DMARC', 'Health', 'Sources', 'Last checked'].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
+                            <thead><tr className="border-b border-border">{['Domain', 'Verification', 'SPF', 'DKIM', 'DMARC', 'Policy', 'Last report', 'Status'].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
                             <tbody>
-                                {list.map((d) => (
-                                    <tr key={d.id} className="border-b border-border/60 last:border-0 hover:bg-card-muted/40">
-                                        <td className={td}><Link href={`/admin/email/dmarc/${d.id}`} className="font-bold text-foreground hover:text-purple">{d.domain}</Link>{d.last_error && <p className="text-[10px] text-red-500 max-w-[220px] line-clamp-2">{d.last_error}</p>}</td>
-                                        <td className={td}><StatusBadge s={d.status} /></td>
-                                        <td className={`${td} font-mono`}>{d.dmarc_policy ? `p=${d.dmarc_policy}` : d.dmarc_status === 'fail' ? <span className="text-red-500">invalid — none applied</span> : <span className="text-foreground-muted">not published</span>}</td>
-                                        <td className={td}><StatusBadge s={d.spf_status} /></td>
-                                        <td className={td}><StatusBadge s={d.dkim_status} /></td>
-                                        <td className={td}><StatusBadge s={d.dmarc_status} /></td>
-                                        <td className={`${td} font-black`}>{d.health_score ?? '—'}{d.health_score !== null && <span className="text-foreground-muted font-normal">/100</span>}</td>
-                                        <td className={td}>{n(d.sending_sources)}</td>
-                                        <td className={`${td} text-foreground-muted whitespace-nowrap`}>{wat(d.last_checked)}</td>
-                                    </tr>
-                                ))}
+                                {list.map((d) => {
+                                    const r = domainReadiness(d);
+                                    return (
+                                        <tr key={d.id} className="border-b border-border/60 last:border-0 hover:bg-card-muted/40">
+                                            <td className={td}><Link href={`/admin/email/dmarc/${encodeURIComponent(d.domain)}`} className="font-bold text-foreground hover:text-purple wrap-anywhere">{d.domain}</Link>{d.last_error && <p className="text-[10px] text-red-500 max-w-[240px] line-clamp-2">{d.last_error}</p>}</td>
+                                            <td className={td}><StatusBadge s={d.verification?.state === 'verified' ? 'verified' : d.verification?.state ?? 'not_verified'} /></td>
+                                            <td className={td}><AuthMark s={d.spf_status} /></td>
+                                            <td className={td}><AuthMark s={d.dkim_status} /></td>
+                                            <td className={td}><AuthMark s={d.dmarc_status} /></td>
+                                            <td className={`${td} font-mono`}>{d.dmarc_policy ? `p=${d.dmarc_policy}` : d.dmarc_status === 'fail' ? <span className="text-red-500">invalid</span> : <span className="text-foreground-muted font-sans">No policy</span>}</td>
+                                            <td className={`${td} text-foreground-muted whitespace-nowrap`}>{d.last_report_at ? wat(d.last_report_at) : 'No reports yet'}</td>
+                                            <td className={td}><StatusBadge s={READINESS[r.state]} /><p className="text-[10px] text-foreground-muted mt-0.5">{r.reason}</p></td>
+                                        </tr>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>
@@ -171,11 +184,28 @@ function SourcesTab({ domains, nonce, reload }: { domains: EmailDomain[]; nonce:
     const qs = new URLSearchParams({ ...(domain ? { domain } : {}), ...(cls ? { classification: cls } : {}) }).toString();
     const state = useEmailApi<{ sources: SendingSource[] }>(`/dmarc/sources${qs ? `?${qs}` : ''}`, nonce);
     const sources = (state.data?.sources ?? []).filter((s) => !q || s.source_ip.includes(q) || (s.provider ?? '').toLowerCase().includes(q.toLowerCase()) || (s.ptr ?? '').includes(q.toLowerCase()));
+    const flagged = (state.data?.sources ?? []).filter((s) => s.classification === 'suspicious');
     return (
+        <div className="space-y-4">
+        {cls !== 'known' && flagged.length > 0 && (
+            <Panel title={<span className="flex items-center gap-1.5 text-red-500"><ShieldAlert size={13} /> Unauthorised &amp; suspicious sources ({flagged.length})</span>}>
+                <ul className="divide-y divide-border -my-2">
+                    {flagged.map((s) => (
+                        <li key={s.id} className="py-2.5 text-xs grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-2">
+                            <div className="min-w-0">
+                                <p className="font-bold text-foreground"><span className="font-mono">{s.source_ip}</span> sending as {s.domain}</p>
+                                <p className="text-foreground-muted">{s.classification_reason}</p>
+                            </div>
+                            <div className="text-[11px] text-foreground-muted md:text-right whitespace-nowrap">{n(s.message_count)} messages · DMARC pass {pct(s.dmarc_pass, s.message_count)}<br />{day(s.first_seen)} – {day(s.last_seen)}</div>
+                        </li>
+                    ))}
+                </ul>
+            </Panel>
+        )}
         <Panel title="Sending sources" action={
             <div className="flex flex-wrap gap-2">
-                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search IP or provider" aria-label="Search sources" className={`${inputCls} w-44`} />
-                <select value={domain} onChange={(e) => setDomain(e.target.value)} aria-label="Domain" className={selectCls}><option value="">All domains</option>{domains.map((d) => <option key={d.id} value={d.domain}>{d.domain}</option>)}</select>
+                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search IP or provider" aria-label="Search sources" className={`${inputCls} w-44 max-w-full`} />
+                <select value={domain} onChange={(e) => setDomain(e.target.value)} aria-label="Domain" className={`${selectCls} max-w-full`}><option value="">All domains</option>{domains.map((d) => <option key={d.id} value={d.domain}>{d.domain}</option>)}</select>
                 <select value={cls} onChange={(e) => setCls(e.target.value)} aria-label="Classification" className={selectCls}><option value="">All statuses</option><option value="known">Known</option><option value="unknown">Unknown</option><option value="suspicious">Suspicious</option></select>
             </div>
         }>
@@ -188,6 +218,7 @@ function SourcesTab({ domains, nonce, reload }: { domains: EmailDomain[]; nonce:
                     : <SourcesTable sources={sources} canEdit={isManager(role)} onChanged={reload} />}
             </Gate>
         </Panel>
+        </div>
     );
 }
 
@@ -240,7 +271,7 @@ function ReportsTab({ domains, nonce, reload }: { domains: EmailDomain[]; nonce:
             </Panel>
             <Panel title="Received reports" action={<select value={domain} onChange={(e) => setDomain(e.target.value)} aria-label="Domain" className={selectCls}><option value="">All domains</option>{domains.map((d) => <option key={d.id} value={d.domain}>{d.domain}</option>)}</select>}>
                 <Gate state={state}>
-                    {reports.length === 0 ? <Empty title="No DMARC reports yet" body="Receivers such as Google and Microsoft send aggregate reports daily once your DMARC record has an rua= address." /> : (
+                    {reports.length === 0 ? <Empty title="No DMARC reports received yet" body="Receivers such as Google and Microsoft send aggregate reports daily once your DMARC record has an rua= address." /> : (
                         <div className="overflow-x-auto -m-4">
                             <table className="w-full text-xs min-w-[820px]">
                                 <thead><tr className="border-b border-border">{['', 'Reporter', 'Domain', 'Period', 'Records', 'Messages', 'DMARC pass', 'Received via'].map((h, i) => <th key={i} className={th}>{h}</th>)}</tr></thead>
@@ -322,7 +353,7 @@ function AnalyticsTab({ domains }: { domains: EmailDomain[] }) {
             </div>
             <Gate state={state} rows={5}>
                 {a && (a.reports === 0 ? (
-                    <Panel><Empty title="No DMARC reports in this period" body="Analytics are computed from aggregate reports. None have been received for this range yet." /></Panel>
+                    <Panel><Empty title="No DMARC reports received yet" body="Analytics are computed from aggregate reports. None have been received for this range yet." /></Panel>
                 ) : (
                     <>
                         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -333,6 +364,9 @@ function AnalyticsTab({ domains }: { domains: EmailDomain[] }) {
                             <Kpi label="Unknown / suspicious sources" value={a.sources.unknown + a.sources.suspicious} tone={a.sources.suspicious ? 'danger' : undefined} />
                         </div>
                         <Panel title="Messages per day by DMARC result" action={<button onClick={() => setShowTable((v) => !v)} className="text-[10px] font-bold text-purple hover:underline">{showTable ? 'Hide' : 'Show'} data table</button>}>
+                            {series.length < 2 ? (
+                                <p className="text-xs text-foreground-muted py-6 text-center">Reports cover {series.length === 1 ? 'one day' : 'no days'} so far — a daily trend appears once there are at least two days of reports. Totals above are complete.</p>
+                            ) : (
                             <div className="h-64" role="img" aria-label={`Messages per day: ${n(a.totals.pass)} passed and ${n(a.totals.fail)} failed DMARC over ${a.days} days`}>
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: 0 }} barCategoryGap="20%">
@@ -346,6 +380,7 @@ function AnalyticsTab({ domains }: { domains: EmailDomain[] }) {
                                     </BarChart>
                                 </ResponsiveContainer>
                             </div>
+                            )}
                             {showTable && (
                                 <table className="w-full text-[11px] mt-3">
                                     <thead><tr>{['Day', 'Passed', 'Failed', 'Pass rate'].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
@@ -353,6 +388,7 @@ function AnalyticsTab({ domains }: { domains: EmailDomain[] }) {
                                 </table>
                             )}
                         </Panel>
+                        <ProvidersBreakdown domain={domain} />
                         <Panel title="Top failing sources">
                             {a.top_failing.length === 0 ? <p className="text-xs text-foreground-muted">No failing messages in this period.</p> : (
                                 <table className="w-full text-xs">
@@ -365,5 +401,33 @@ function AnalyticsTab({ domains }: { domains: EmailDomain[] }) {
                 ))}
             </Gate>
         </div>
+    );
+}
+
+// Who sends as these domains, by provider (from reverse DNS of each sending source). Country is
+// not shown: sending sources are not geolocated yet.
+function ProvidersBreakdown({ domain }: { domain: string }) {
+    const state = useEmailApi<{ sources: SendingSource[] }>(`/dmarc/sources${domain ? `?domain=${encodeURIComponent(domain)}` : ''}`);
+    const rows = useMemo(() => {
+        const m = new Map<string, { messages: number; pass: number; sources: number }>();
+        for (const s of state.data?.sources ?? []) {
+            const k = s.provider ?? 'Unrecognised';
+            const r = m.get(k) ?? { messages: 0, pass: 0, sources: 0 };
+            r.messages += Number(s.message_count) || 0; r.pass += Number(s.dmarc_pass) || 0; r.sources += 1;
+            m.set(k, r);
+        }
+        return [...m.entries()].sort((a, b) => b[1].messages - a[1].messages);
+    }, [state.data]);
+    return (
+        <Panel title="Sending providers">
+            <Gate state={state}>
+                {rows.length === 0 ? <p className="text-xs text-foreground-muted">No sending sources yet.</p> : (
+                    <table className="w-full text-xs">
+                        <thead><tr>{['Provider', 'Sources', 'Messages', 'DMARC pass'].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
+                        <tbody>{rows.map(([k, r]) => <tr key={k} className="border-t border-border/60"><td className={`${td} font-bold`}>{k}</td><td className={td}>{n(r.sources)}</td><td className={td}>{n(r.messages)}</td><td className={td}>{pct(r.pass, r.messages)}</td></tr>)}</tbody>
+                    </table>
+                )}
+            </Gate>
+        </Panel>
     );
 }

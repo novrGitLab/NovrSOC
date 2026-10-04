@@ -40,6 +40,26 @@ interface Detail {
 const STATUSES = ['discovered', 'under_investigation', 'suspicious', 'confirmed_phishing', 'false_positive', 'resolved'];
 const REF_LABEL: Record<string, string> = { alert: 'Alert', email_event: 'Email', phishing_domain: 'Phish ID', sending_source: 'DMARC source' };
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Route: /admin/email/phishid/investigate/[domain] — a domain name, or an id from older links. */
+export function PhishInvestigationRoute({ param }: { param: string }) {
+    const value = decodeURIComponent(param).toLowerCase();
+    const lookup = useEmailApi<{ domains: { id: string; domain: string }[] }>(UUID.test(value) ? null : `/phishid/domains?q=${encodeURIComponent(value)}`);
+    if (UUID.test(value)) return <PhishInvestigation id={value} />;
+    if (lookup.loading) return <div className="h-40 bg-card-muted rounded-xl animate-pulse" aria-busy="true" />;
+    const match = lookup.data?.domains.find((d) => d.domain.toLowerCase() === value);
+    if (!match) {
+        return (
+            <div className="space-y-4">
+                <PageHeader back={{ href: '/admin/email/phishid', label: 'Phish ID' }} title={value} />
+                <Gate state={lookup}><Panel><Empty title="Not a tracked domain" body={`${value} is not among your Phish ID findings. Add it from the Phish ID page to investigate it.`} /></Panel></Gate>
+            </div>
+        );
+    }
+    return <PhishInvestigation id={match.id} />;
+}
+
 export function PhishInvestigation({ id }: { id: string }) {
     const role = useRole();
     const [nonce, setNonce] = useState(0);
@@ -98,39 +118,35 @@ export function PhishInvestigation({ id }: { id: string }) {
                                             {STATUSES.map((s) => <option key={s} value={s}>{label(s)}</option>)}
                                         </select>
                                         <div className="flex gap-2">
-                                            <input value={assignee ?? d.assigned_to ?? ''} onChange={(e) => setAssignee(e.target.value)} placeholder="Assign to (email)" aria-label="Assignee" className={`${inputCls} flex-1`} />
+                                            <input value={assignee ?? d.assigned_to ?? ''} onChange={(e) => setAssignee(e.target.value)} placeholder="Assign to (email)" aria-label="Assignee" className={`${inputCls} flex-1 min-w-0`} />
                                             <Button onClick={() => void run('assign', 'PATCH', `/phishid/domains/${id}`, { assigned_to: assignee ?? '' }, 'Assignment saved.').then((ok) => ok && setAssignee(null))} busy={busy === 'assign'}>Assign</Button>
                                         </div>
                                     </div>
                                 )}
                             </Panel>
-                            <Panel title="Why this rating" className="lg:col-span-2">
+                            <Panel title="Why it was flagged" className="lg:col-span-2">
                                 {!d.last_enriched ? <p className="text-xs text-foreground-muted">This domain has not been assessed yet. Assessment runs in the background, or re-assess it now.</p>
                                     : d.risk_signals.length === 0 ? <p className="text-xs text-foreground-muted">No risk signals were found. The domain resembles your brand but shows no phishing behaviour or intelligence matches.</p> : (
-                                        <table className="w-full text-xs">
-                                            <thead><tr><th className={th}>Signal</th><th className={th}>Evidence</th><th className={`${th} text-right`}>Points</th></tr></thead>
-                                            <tbody>
-                                                {d.risk_signals.map((s, k) => (
-                                                    <tr key={k} className="border-t border-border/60">
-                                                        <td className={`${td} font-bold text-foreground whitespace-nowrap`}>{s.label}</td>
-                                                        <td className={`${td} text-foreground-muted`}>{s.detail}</td>
-                                                        <td className={`${td} text-right font-black`}>+{s.points}</td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
+                                        <ul className="space-y-2">
+                                            {d.risk_signals.map((s, k) => (
+                                                <li key={k} className="flex gap-2 text-xs">
+                                                    <span aria-hidden className="text-red-500 font-bold shrink-0">✓</span>
+                                                    <span className="min-w-0 flex-1"><span className="font-bold text-foreground">{s.label}</span>{s.detail && <span className="block text-foreground-muted wrap-anywhere">{s.detail}</span>}</span>
+                                                    <span className="text-[10px] font-black text-foreground-muted shrink-0">+{s.points}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
                                     )}
                                 <p className="text-[10px] text-foreground-muted mt-3">Resemblance alone never rates above low. Risk rises only with evidence of phishing behaviour — a login form, your brand on the page, data sent to another site, a fresh registration — or a threat-intelligence listing, which is always at least high.</p>
                             </Panel>
                         </div>
 
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                            <Panel title="Domain intelligence">
+                            <Panel title="WHOIS / RDAP">
                                 {!i ? <p className="text-xs text-foreground-muted">Not collected yet.</p> : (
                                     <KeyValue rows={[
                                         ['Registrar', i.registrar ?? 'Not published (RDAP)'], ['Registered', i.created ? `${day(i.created)}${i.age_days !== null ? ` (${i.age_days} days ago)` : ''}` : '—'],
                                         ['Expires', day(i.expires)], ['Nameservers', i.nameservers.join(', ') || '—'],
-                                        ['Threat intelligence', i.ti.length ? i.ti.map((t) => `${t.source}: ${t.detail}`).join('; ') : 'No listings'],
                                         ['Collected', wat(i.collected_at)],
                                     ]} />
                                 )}
@@ -150,7 +166,7 @@ export function PhishInvestigation({ id }: { id: string }) {
                             </Panel>
                         </div>
 
-                        <Panel title="Website evidence" action={w && <span className="text-[10px] text-foreground-muted">Inspected {wat(w.inspected_at)} · one GET, nothing submitted</span>}>
+                        <Panel title="Website & URLs" action={w && <span className="text-[10px] text-foreground-muted">Inspected {wat(w.inspected_at)} · one GET, nothing submitted</span>}>
                             {!w ? <p className="text-xs text-foreground-muted">{d.resolves === false ? 'The domain does not resolve, so there is no website to inspect.' : 'Not inspected yet.'}</p>
                                 : !w.reachable ? <p className="text-xs text-foreground-muted">{w.blocked ? 'Inspection refused by the safety policy: ' : 'Unreachable: '}{w.error}</p> : (
                                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -175,6 +191,11 @@ export function PhishInvestigation({ id }: { id: string }) {
                         </Panel>
 
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            <Panel title="Threat intelligence">
+                                {!i ? <p className="text-xs text-foreground-muted">Not collected yet.</p> : i.ti.length === 0 ? <p className="text-xs text-foreground-muted">No listings in OpenPhish, PhishTank or ThreatFox. That is not proof the domain is safe.</p> : (
+                                    <ul className="text-xs space-y-1">{i.ti.map((t, k) => <li key={k}><span className="font-bold text-red-500">{t.source}</span> <span className="text-foreground wrap-anywhere">{t.detail}</span></li>)}</ul>
+                                )}
+                            </Panel>
                             <Panel title="Certificates (Certificate Transparency)">
                                 {!i?.certificates.length ? <p className="text-xs text-foreground-muted">No certificates found in CT logs.</p> : (
                                     <table className="w-full text-[11px]">
@@ -183,7 +204,7 @@ export function PhishInvestigation({ id }: { id: string }) {
                                     </table>
                                 )}
                             </Panel>
-                            <Panel title="Related indicators & SOC alerts">
+                            <Panel title="Relationships">
                                 {state.data.related_indicators.length === 0 ? <p className="text-xs text-foreground-muted">Not seen anywhere else yet.</p> : (
                                     <ul className="text-[11px] space-y-1.5">
                                         {state.data.related_indicators.map((s) => (

@@ -59,6 +59,10 @@ const noop = () => () => {};
 export function useRole(): string {
     return useSyncExternalStore(noop, () => getAdminUser().role, () => '');
 }
+/** The signed-in organisation's display name (from the session token; display only). */
+export function useOrgName(): string {
+    return useSyncExternalStore(noop, () => getAdminUser().company, () => '');
+}
 export const isManager = (role: string) => role === 'super_admin' || role === 'soc_manager';
 export const isAnalyst = (role: string) => isManager(role) || role === 'analyst';
 
@@ -84,21 +88,70 @@ const TONES = {
 export type Tone = keyof typeof TONES;
 
 export function Badge({ tone, children, title }: { tone: Tone; children: ReactNode; title?: string }) {
-    return <span title={title} className={`inline-block text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide whitespace-nowrap ${TONES[tone]}`}>{children}</span>;
+    return <span title={title} className={`inline-block text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide max-w-full leading-tight ${TONES[tone]}`}>{children}</span>;
 }
 
 const SEV_TONE: Record<string, Tone> = { critical: 'red', high: 'orange', medium: 'amber', low: 'blue', informational: 'grey' };
 export const SevBadge = ({ s }: { s: string }) => <Badge tone={SEV_TONE[s] ?? 'grey'}>{s === 'informational' ? 'info' : s}</Badge>;
 
-const STATUS_TONE: Record<string, Tone> = {
-    new: 'red', investigating: 'amber', resolved: 'green', false_positive: 'grey', suppressed: 'grey',
-    discovered: 'blue', under_investigation: 'amber', suspicious: 'orange', confirmed_phishing: 'red',
-    healthy: 'green', warning: 'amber', critical: 'red', error: 'red', pending: 'grey',
-    pass: 'green', warn: 'amber', fail: 'red', missing: 'red', not_found: 'grey',
-    connected: 'green', not_connected: 'grey', requires_configuration: 'amber', auth_error: 'red', permission_error: 'red', sync_error: 'amber',
-    known: 'green', unknown: 'grey',
+// One status vocabulary for all of Email Security. Every badge carries an icon shape AND text,
+// so status never depends on colour alone (✓ good · ⚠ attention · ✕ error · ○ not set up · ● live).
+type Kind = 'good' | 'warn' | 'bad' | 'idle' | 'live' | 'info';
+const KIND_TONE: Record<Kind, Tone> = { good: 'green', warn: 'amber', bad: 'red', idle: 'grey', live: 'blue', info: 'purple' };
+const KIND_ICON: Record<Kind, string> = { good: '✓', warn: '⚠', bad: '✕', idle: '○', live: '●', info: '●' };
+const STATUS: Record<string, [Kind, string]> = {
+    // platform / connection states
+    connected: ['good', 'Connected'], active: ['good', 'Active'], protected: ['good', 'Protected'], monitoring: ['live', 'Monitoring'],
+    requires_configuration: ['warn', 'Requires configuration'], pending: ['idle', 'Pending'], warning: ['warn', 'Warning'], error: ['bad', 'Error'],
+    disconnected: ['idle', 'Disconnected'], not_connected: ['idle', 'Not connected'], not_configured: ['idle', 'Not configured'],
+    auth_error: ['bad', 'Authentication error'], permission_error: ['bad', 'Permission error'], sync_error: ['warn', 'Sync error'],
+    // domain verification
+    verified: ['good', 'Verified'], not_verified: ['idle', 'Not verified'], incorrect_value: ['bad', 'Incorrect value'], dns_error: ['bad', 'DNS error'],
+    unavailable: ['idle', 'Unavailable'], checking: ['live', 'Checking…'],
+    // authentication checks
+    healthy: ['good', 'Healthy'], critical: ['bad', 'Critical'], pass: ['good', 'Pass'], warn: ['warn', 'Needs attention'],
+    fail: ['bad', 'Fail'], missing: ['bad', 'Missing'], not_found: ['idle', 'Not found'],
+    // sources, alerts, phishing
+    known: ['good', 'Known'], unknown: ['idle', 'Unknown'], suspicious: ['warn', 'Suspicious'],
+    new: ['bad', 'New'], investigating: ['warn', 'Investigating'], resolved: ['good', 'Resolved'], false_positive: ['idle', 'False positive'], suppressed: ['idle', 'Suppressed'],
+    discovered: ['info', 'Discovered'], under_investigation: ['warn', 'Under investigation'], confirmed_phishing: ['bad', 'Confirmed phishing'],
 };
-export const StatusBadge = ({ s }: { s: string | null | undefined }) => <Badge tone={STATUS_TONE[s ?? ''] ?? 'grey'}>{label(s ?? 'unknown')}</Badge>;
+export function statusMeta(s: string | null | undefined): { kind: Kind; text: string; tone: Tone; icon: string } {
+    const [kind, text] = STATUS[s ?? ''] ?? (['idle', label(s ?? 'unknown')] as [Kind, string]);
+    return { kind, text, tone: KIND_TONE[kind], icon: KIND_ICON[kind] };
+}
+export function StatusBadge({ s, title }: { s: string | null | undefined; title?: string }) {
+    const m = statusMeta(s);
+    return <Badge tone={m.tone} title={title}><span aria-hidden className="mr-1">{m.icon}</span>{m.text}</Badge>;
+}
+
+// ── DNS records ────────────────────────────────────────────────────────────────────────────
+
+export function CopyButton({ value, label: l = 'Copy' }: { value: string; label?: string }) {
+    const [copied, setCopied] = useState(false);
+    return (
+        <button type="button" onClick={() => { void navigator.clipboard?.writeText(value).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); }}
+            className="shrink-0 text-[10px] font-bold border border-border rounded-md px-2 py-1 hover:bg-card-muted" aria-label={`${l}: ${value}`}>
+            {copied ? 'Copied' : l}
+        </button>
+    );
+}
+
+/** A DNS record the administrator publishes themselves. NovrSOC never edits DNS. */
+export function DnsRecordCard({ type, host, value, note }: { type: string; host: string; value: string; note?: ReactNode }) {
+    return (
+        <div className="border border-border rounded-xl divide-y divide-border text-xs">
+            {([['Type', type], ['Name / host', host], ['Value', value]] as const).map(([k, v]) => (
+                <div key={k} className="flex items-start gap-3 px-3 py-2">
+                    <span className="w-24 shrink-0 text-[10px] font-bold uppercase tracking-wider text-foreground-muted pt-1">{k}</span>
+                    <code className="flex-1 min-w-0 font-mono text-foreground wrap-anywhere pt-0.5">{v}</code>
+                    {k !== 'Type' && <CopyButton value={v} />}
+                </div>
+            ))}
+            {note && <p className="px-3 py-2 text-[11px] text-foreground-muted">{note}</p>}
+        </div>
+    );
+}
 
 // ── Layout ─────────────────────────────────────────────────────────────────────────────────
 
@@ -119,9 +172,9 @@ export function Panel({ title, action, children, className = '' }: { title?: Rea
     return (
         <section className={`bg-card border border-border rounded-xl ${className}`}>
             {(title || action) && (
-                <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
+                <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-3 border-b border-border">
                     <h2 className="text-xs font-black text-foreground uppercase tracking-wider">{title}</h2>
-                    {action}
+                    {action && <div className="min-w-0 max-w-full">{action}</div>}
                 </div>
             )}
             <div className="p-4">{children}</div>
@@ -150,7 +203,7 @@ export function Kpi({ label: l, value, hint, tone, suffix = '' }: { label: strin
 
 export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: { id: T; label: string; count?: number | null }[]; value: T; onChange: (t: T) => void }) {
     return (
-        <div role="tablist" className="flex gap-1 border-b border-border overflow-x-auto">
+        <div role="tablist" className="flex gap-1 border-b border-border overflow-x-auto overflow-y-hidden">
             {tabs.map((t) => (
                 <button key={t.id} role="tab" aria-selected={value === t.id} onClick={() => onChange(t.id)}
                     className={`px-3 py-2 text-xs font-bold whitespace-nowrap border-b-2 -mb-px transition-colors ${value === t.id ? 'border-purple text-purple' : 'border-transparent text-foreground-muted hover:text-foreground'}`}>
@@ -232,7 +285,7 @@ export function Feedback({ result }: { result: { ok: boolean; text: string } | n
 
 export function KeyValue({ rows }: { rows: [string, ReactNode][] }) {
     return (
-        <dl className="grid grid-cols-[minmax(110px,max-content)_1fr] gap-x-4 gap-y-1.5 text-xs">
+        <dl className="grid grid-cols-[minmax(90px,max-content)_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-xs">
             {rows.map(([k, v]) => (
                 <div key={k} className="contents">
                     <dt className="text-foreground-muted">{k}</dt>
