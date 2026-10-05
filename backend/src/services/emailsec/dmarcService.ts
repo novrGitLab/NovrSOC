@@ -68,20 +68,51 @@ export async function runDomainCheck(db: Db, d: EmailDomain): Promise<DomainInsp
 // ── Report ingestion ───────────────────────────────────────────────────────────────────────
 
 export type IngestResult =
-    | { ok: true; duplicate: boolean; report_id: string; domain: string; org_ids: string[]; records: number; messages: number; suspicious_sources: number }
-    | { ok: false; status: number; error: string };
+    | { ok: true; duplicate: boolean; report_id: string; domain: string; org_ids: string[]; records: number; messages: number; suspicious_sources: number;
+        /** Upload: whether the uploading organisation has verified this domain. */
+        domain_verified: boolean;
+        /** Mailgun: organisations that registered the domain but have not verified it — not delivered. */
+        unverified_org_ids: string[] }
+    | { ok: false; status: number; error: string; code?: 'parse_error' | 'unknown_domain' | 'domain_not_verified'; domain?: string; unverified_org_ids?: string[] };
+
+/** Whether this organisation's most recent DNS check proved ownership (TXT _novrsoc-verification). */
+export async function isDomainVerified(db: Db, d: Pick<EmailDomain, 'id' | 'org_id'>): Promise<boolean> {
+    const [latest] = await db.select<{ result: { verification?: { state?: string } } | null }>('email_dns_checks', {
+        filters: [f.eq('org_id', d.org_id), f.eq('domain_id', d.id)], order: { col: 'created_at' }, limit: 1,
+    });
+    return latest?.result?.verification?.state === 'verified';
+}
 
 /**
- * Store one aggregate report. `orgId` restricts it to that tenant (uploads); null means "every
- * tenant monitoring this domain" (Mailgun inbound, where the report names only the domain).
+ * Store one aggregate report.
+ *
+ * Upload (`orgId` set): stored for that tenant only. The uploader already holds the report, so
+ * nothing is disclosed; an unverified domain is still accepted and the result says
+ * `domain_verified: false` (ownership is shown separately and never inferred from reports).
+ *
+ * Mailgun inbound (`orgId` null): the report names only the domain, so it is delivered ONLY to
+ * organisations that have VERIFIED that domain. Registering someone else's domain must not be a
+ * way to receive their sending infrastructure. Unverified registrations are refused with a reason
+ * (`domain_not_verified`) the caller audits; receivers resend daily, so reports flow as soon as the
+ * domain is verified.
  */
 export async function ingestReport(db: Db, raw: Buffer, via: 'upload' | 'mailgun', orgId: string | null): Promise<IngestResult> {
     let report: DmarcReport;
-    try { report = parseDmarcReport(unpackReport(raw)); } catch (err) { return { ok: false, status: 400, error: (err as Error).message }; }
+    try { report = parseDmarcReport(unpackReport(raw)); } catch (err) { return { ok: false, status: 400, error: (err as Error).message, code: 'parse_error' }; }
 
-    const owners = await db.select<EmailDomain>('email_domains', { filters: [f.eq('domain', report.domain), ...(orgId ? [f.eq('org_id', orgId)] : [])] });
+    const registered = await db.select<EmailDomain>('email_domains', { filters: [f.eq('domain', report.domain), ...(orgId ? [f.eq('org_id', orgId)] : [])] });
+    if (!registered.length) {
+        return { ok: false, status: 422, code: 'unknown_domain', domain: report.domain, error: `${report.domain} is not a monitored domain${orgId ? ' in this organisation' : ''}. Add it under DMARC SaaS first.` };
+    }
+    const verified = new Map<string, boolean>();
+    for (const d of registered) verified.set(d.id, await isDomainVerified(db, d));
+    const unverified_org_ids = registered.filter((d) => !verified.get(d.id)).map((d) => d.org_id);
+    const owners = orgId ? registered : registered.filter((d) => verified.get(d.id));
     if (!owners.length) {
-        return { ok: false, status: 422, error: `${report.domain} is not a monitored domain${orgId ? ' in this organisation' : ''}. Add it under DMARC SaaS first.` };
+        return {
+            ok: false, status: 403, code: 'domain_not_verified', domain: report.domain, unverified_org_ids,
+            error: `${report.domain} is registered but its ownership has not been verified (TXT _novrsoc-verification). Reports are delivered once the domain is verified in Email Security → Setup.`,
+        };
     }
     let stored_for = 0;
     let suspicious = 0;
@@ -107,6 +138,7 @@ export async function ingestReport(db: Db, raw: Buffer, via: 'upload' | 'mailgun
     return {
         ok: true, duplicate: stored_for === 0, report_id: report.report_id, domain: report.domain,
         org_ids: owners.map((o) => o.org_id), records: report.records.length, messages: report.message_count, suspicious_sources: suspicious,
+        domain_verified: owners.every((o) => verified.get(o.id)), unverified_org_ids: orgId ? [] : unverified_org_ids,
     };
 }
 

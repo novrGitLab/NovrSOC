@@ -2,7 +2,7 @@
 // DNS resolver, stubbed provider APIs and a stub case system — no network, no Supabase.
 process.env.JWT_SECRET = 'integration-test-secret';
 process.env.EMAILSEC_JOBS_DISABLED = 'true';
-for (const k of ['M365_CLIENT_ID', 'M365_CLIENT_SECRET', 'M365_REDIRECT_URI', 'GOOGLE_WORKSPACE_SA_KEY', 'EMAIL_PROXY_TOKEN', 'OPENCTI_URL', 'OPENCTI_TOKEN', 'MAILGUN_WEBHOOK_SIGNING_KEY', 'WAZUH_INDEXER_HOST', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY']) delete process.env[k];
+for (const k of ['M365_CLIENT_ID', 'M365_CLIENT_SECRET', 'M365_REDIRECT_URI', 'GOOGLE_WORKSPACE_SA_KEY', 'EMAIL_PROXY_TOKEN', 'OPENCTI_URL', 'OPENCTI_TOKEN', 'MAILGUN_WEBHOOK_SIGNING_KEY', 'WAZUH_INDEXER_HOST', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'EMAILSEC_VERIFICATION_SECRET', 'NOVRSOC_ENV', 'RAILWAY_ENVIRONMENT_NAME', 'RAILWAY_ENVIRONMENT', 'RAILWAY_PROJECT_ID']) delete process.env[k];
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,6 +22,7 @@ import { fromGateway } from '../eventModel';
 import { pushDomainToOpenCti } from '../integrations';
 import type { UrlAnalysis } from '../urlIntel';
 import { SAMPLE_REPORT, zipOf } from './fixtures';
+import { verificationRecord } from '../verification';
 
 const db = createMemoryDb();
 const dkimKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
@@ -30,6 +31,8 @@ const TXT: Record<string, string[]> = {
     '_spf.google.com': ['v=spf1 ip4:209.85.128.0/17 ~all'],
     '_dmarc.example.com': ['v=DMARC1; p=none; rua=mailto:reports@example.com'],
     'google._domainkey.example.com': [`v=DKIM1; k=rsa; p=${dkimKey}`],
+    // org-a has proved it owns example.com, so Mailgun-delivered reports reach it.
+    '_novrsoc-verification.example.com': [verificationRecord('org-a', 'example.com')!.value],
 };
 const cases = new Map<string, { id: string; case_number: string }>();
 let base = '';

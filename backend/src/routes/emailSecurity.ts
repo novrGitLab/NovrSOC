@@ -331,7 +331,7 @@ router.post('/dmarc/reports/upload', MANAGER, upload.single('report'), h(async (
     if (!file) return res.status(400).json({ error: 'Attach the report file (.xml, .xml.gz or .zip) as "report".' });
     const r = await ingestReport(db, file.buffer, 'upload', orgOf(req));
     if (!r.ok) return res.status(r.status).json({ error: r.error });
-    audit(req, 'EMAILSEC_DMARC_REPORT_UPLOAD', `${r.domain} report ${r.report_id}: ${r.records} records, ${r.messages} messages${r.duplicate ? ' (duplicate — already stored)' : ''}`);
+    audit(req, 'EMAILSEC_DMARC_REPORT_UPLOAD', `${r.domain} report ${r.report_id}: ${r.records} records, ${r.messages} messages${r.duplicate ? ' (duplicate — already stored)' : ''}${r.domain_verified ? '' : ' — domain ownership NOT verified'}`, undefined, r.domain_verified ? 'info' : 'warning');
     res.status(r.duplicate ? 200 : 201).json(r);
 }));
 

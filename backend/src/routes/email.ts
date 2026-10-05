@@ -130,6 +130,15 @@ router.post('/dmarc-inbound', dmarcUpload.any(), async (req, res) => {
     try {
         const r = await ingestReport(db, attachment.buffer, 'mailgun', null);
         if (!r.ok) console.warn(`[dmarc-inbound] rejected ${attachment.originalname}: ${r.error}`);
+        // Auditable: a report withheld from organisations that registered but have not verified
+        // the domain (no report content is logged — only the domain and the organisations).
+        const withheld = r.ok ? r.unverified_org_ids : r.code === 'domain_not_verified' ? r.unverified_org_ids ?? [] : [];
+        if (withheld.length) {
+            logAudit({
+                user: 'mailgun-inbound', action: 'EMAILSEC_DMARC_REPORT_WITHHELD', resource: 'email_security', ip: req.ip ?? '', result: 'failed', severity: 'warning',
+                details: `DMARC report for ${r.ok ? r.domain : r.domain ?? 'unknown domain'} not delivered to ${withheld.join(', ')}: domain ownership not verified${r.ok ? ` (delivered to verified owner${r.org_ids.length === 1 ? '' : 's'} ${r.org_ids.join(', ')})` : ''}`,
+            });
+        }
         res.status(200).json(r.ok ? { accepted: true, duplicate: r.duplicate, domain: r.domain, records: r.records } : { accepted: false, reason: r.error });
     } catch (err) {
         console.error('[dmarc-inbound] failed:', err instanceof Error ? err.message : err);

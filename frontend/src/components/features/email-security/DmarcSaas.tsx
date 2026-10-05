@@ -37,13 +37,14 @@ export function DmarcSaas() {
     const refresh = () => { setNonce((x) => x + 1); reload(); };
     const suspicious = useEmailApi<{ sources: SendingSource[] }>('/dmarc/sources?classification=suspicious', nonce);
     const suspiciousCount = suspicious.data?.sources.length;
+    const role = useRole();
 
     return (
         <div className="space-y-4">
             <PageHeader
                 title="DMARC SaaS"
                 subtitle="Monitor domain authentication, identify unauthorised senders and detect spoofing."
-                actions={<Link href="/admin/email/setup" className="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-lg px-3 py-1.5 border bg-purple text-white border-purple hover:opacity-90"><Plus size={12} /> Add domain</Link>}
+                actions={isManager(role) && <Link href="/admin/email/setup" className="inline-flex items-center gap-1.5 text-[11px] font-bold rounded-lg px-3 py-1.5 border bg-purple text-white border-purple hover:opacity-90"><Plus size={12} /> Add domain</Link>}
             />
             {notSetUp ? <SetupNotice message={notSetUp} /> : (
                 <>

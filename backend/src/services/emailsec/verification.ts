@@ -8,12 +8,40 @@
 // "verified" always reflects the most recent real lookup. NovrSOC never edits DNS.
 import { createHmac } from 'crypto';
 import { dnsClient } from './dnsInspect';
+import { appEnvironment } from '../../lib/runtimeEnv';
 
 export type VerificationState = 'verified' | 'not_found' | 'incorrect_value' | 'dns_error' | 'unavailable';
 export interface VerificationRecord { type: 'TXT'; host: string; name: string; value: string }
 export interface VerificationResult { state: VerificationState; checked_at: string; detail: string; found: string[] }
 
-const secret = () => process.env.EMAILSEC_VERIFICATION_SECRET || process.env.JWT_SECRET || '';
+// The verification secret. Production and staging (deployed environments) require a DEDICATED
+// EMAILSEC_VERIFICATION_SECRET: at least 32 characters and not equal to JWT_SECRET, so leaking or
+// rotating one secret never affects the other. Without it verification is unavailable — it fails
+// closed (no domain can become verified) and the backend says so at startup; it does not crash the
+// rest of the platform. Development and test may fall back to JWT_SECRET.
+export const MIN_VERIFICATION_SECRET_LENGTH = 32;
+export function verificationSecretPolicy(env: NodeJS.ProcessEnv = process.env): { secret: string | null; source: 'dedicated' | 'jwt_fallback' | 'none'; reason: string } {
+    const app = appEnvironment(env).env;
+    const dedicated = (env.EMAILSEC_VERIFICATION_SECRET ?? '').trim();
+    const deployed = app === 'production' || app === 'staging';
+    if (dedicated) {
+        if (deployed && dedicated.length < MIN_VERIFICATION_SECRET_LENGTH) return { secret: null, source: 'none', reason: `EMAILSEC_VERIFICATION_SECRET is shorter than ${MIN_VERIFICATION_SECRET_LENGTH} characters` };
+        if (deployed && dedicated === (env.JWT_SECRET ?? '').trim()) return { secret: null, source: 'none', reason: 'EMAILSEC_VERIFICATION_SECRET must not be the same value as JWT_SECRET' };
+        return { secret: dedicated, source: 'dedicated', reason: 'EMAILSEC_VERIFICATION_SECRET is set' };
+    }
+    if (deployed) return { secret: null, source: 'none', reason: `EMAILSEC_VERIFICATION_SECRET is required in ${app} (no JWT_SECRET fallback)` };
+    const jwt = (env.JWT_SECRET ?? '').trim();
+    return jwt ? { secret: jwt, source: 'jwt_fallback', reason: `${app}: using JWT_SECRET because EMAILSEC_VERIFICATION_SECRET is not set` } : { secret: null, source: 'none', reason: 'no verification secret configured' };
+}
+const secret = () => verificationSecretPolicy().secret ?? '';
+
+/** Startup line: never prints the secret, only whether a usable one is configured. */
+export function announceVerificationSecret(): void {
+    const p = verificationSecretPolicy();
+    if (p.source === 'dedicated') return;
+    if (p.source === 'jwt_fallback') { console.log(`[emailsec] Domain verification: ${p.reason}.`); return; }
+    console.warn(`[emailsec] WARNING: domain verification is UNAVAILABLE — ${p.reason}. No domain can be verified, so Mailgun DMARC reports are not delivered until it is set.`);
+}
 
 /** The record this organisation must publish for this domain, or null if no secret is configured. */
 export function verificationRecord(orgId: string, domain: string): VerificationRecord | null {

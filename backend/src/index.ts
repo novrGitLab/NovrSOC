@@ -59,6 +59,7 @@ import { startNigerianIntelJob } from './jobs/nigerianIntelJob';
 import { startGlobalIntelJob } from './jobs/globalIntelJob';
 import { startEmailSecurityJob } from './jobs/emailSecurityJob';
 import { announceJobPolicy } from './lib/runtimeEnv';
+import { announceVerificationSecret } from './services/emailsec/verification';
 import platformRouter from './routes/platform';
 import organisationsRouter from './routes/organisations';
 import secopsRouter from './routes/secops';
@@ -408,6 +409,7 @@ setInterval(startCTIWatcher, 5 * 60 * 1000).unref();
 // The jobs below WRITE (database, MISP, email). They start only in production or against a
 // declared development/test database — see lib/runtimeEnv.ts. The CTI watcher above only reads
 // Wazuh into memory, so it always runs.
+announceVerificationSecret();
 if (announceJobPolicy()) {
     // Escalation emails for unresolved HIGH/CRITICAL cases — see jobs/incidentEscalation.ts.
     // No-ops (with a log line) when the case store isn't configured.

@@ -131,7 +131,7 @@ export function DmarcDomainDetail({ id }: { id: string }) {
                             <p className="text-xs text-foreground">Ownership verified — last checked {wat(i.verification.checked_at)}. Keep the record published; verification is re-checked with every inspection.</p>
                         ) : d.verification_record ? (
                             <div className="space-y-3">
-                                <p className="text-xs text-foreground-muted">Prove your organisation controls {d.domain.domain} by publishing this TXT record at your DNS provider. NovrSOC never changes DNS. {i?.verification ? <span className="block mt-1 text-foreground">{i.verification.detail}</span> : null}</p>
+                                <p className="text-xs text-foreground-muted">Prove your organisation controls {d.domain.domain} by publishing this TXT record at your DNS provider. NovrSOC never changes DNS. Reports from NovrSOC&apos;s DMARC inbox are delivered only after verification. {i?.verification ? <span className="block mt-1 text-foreground">{i.verification.detail}</span> : null}</p>
                                 <DnsRecordCard type={d.verification_record.type} host={d.verification_record.name} value={d.verification_record.value} note="Some DNS providers want only the host part (_novrsoc-verification) in the name field." />
                                 {isAnalyst(role) && <Button variant="primary" onClick={verify} busy={busy === 'verify'}>Verify now</Button>}
                             </div>

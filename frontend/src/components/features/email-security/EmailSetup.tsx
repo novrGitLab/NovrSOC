@@ -192,7 +192,7 @@ export function EmailSetup() {
                                         <p className="text-xs text-foreground">✓ {selected.domain} is verified — last checked {wat(i?.verification?.checked_at ?? selected.verification?.checked_at)}. Keep the record published; it is re-checked with every inspection.</p>
                                     ) : detail.data?.verification_record ? (
                                         <div className="space-y-3">
-                                            <p className="text-xs text-foreground-muted">Add this TXT record at your DNS provider to prove your organisation controls <span className="font-bold text-foreground">{selected.domain}</span>. DNS changes can take a few minutes to a few hours to appear.</p>
+                                            <p className="text-xs text-foreground-muted">Add this TXT record at your DNS provider to prove your organisation controls <span className="font-bold text-foreground">{selected.domain}</span>. DNS changes can take a few minutes to a few hours to appear. DMARC reports sent to NovrSOC&apos;s inbox are delivered to your organisation only once the domain is verified.</p>
                                             <DnsRecordCard type={detail.data.verification_record.type} host={detail.data.verification_record.name} value={detail.data.verification_record.value} note="If your DNS provider adds the domain automatically, enter only _novrsoc-verification as the name." />
                                             <div className="flex items-center gap-3 flex-wrap">
                                                 {isAnalyst(role) && <Button variant="primary" onClick={verify} busy={busy === 'verify'}>Verify</Button>}

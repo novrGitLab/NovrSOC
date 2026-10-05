@@ -91,7 +91,8 @@ export function EmailSecurityShell({ children }: { children: ReactNode }) {
     const org = useOrgName();
     const path = usePathname();
     const onSetup = path?.startsWith('/admin/email/setup');
-    const status = ctx.notSetUp ? 'not_configured' : setup.status;
+    // A failed load says so — it never shows "not configured" or 0/5 for a state it couldn't read.
+    const status = ctx.notSetUp ? 'not_configured' : ctx.error ? 'unavailable' : setup.status;
 
     return (
         <EmailSecurityContext.Provider value={ctx}>
@@ -102,7 +103,7 @@ export function EmailSecurityShell({ children }: { children: ReactNode }) {
                         {org && <><span className="text-foreground-muted" aria-hidden>/</span><span className="font-bold text-foreground truncate">{org}</span></>}
                         {!ctx.loading && <StatusBadge s={status} title="Overall Email Security status" />}
                     </div>
-                    {!ctx.loading && !ctx.notSetUp && status !== 'active' && (
+                    {!ctx.loading && !ctx.notSetUp && !ctx.error && status !== 'active' && (
                         <div className="flex items-center gap-3 text-xs">
                             <div className="flex items-center gap-2" aria-label={`Setup ${setup.percent}% complete`}>
                                 <div className="w-28 h-1.5 rounded-full bg-card-muted overflow-hidden"><div className="h-full bg-purple" style={{ width: `${setup.percent}%` }} /></div>

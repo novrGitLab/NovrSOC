@@ -44,18 +44,20 @@ export function PhishId() {
     const hasBrand = !!brand.data?.brand;
     const [tabChoice, setTab] = useState<Tab | null>(null);
     const tab: Tab = tabChoice ?? (brand.data && !hasBrand ? 'brand' : 'discoveries');
+    const manager = isManager(useRole());
     return (
         <div className="space-y-4">
             <PageHeader
                 title="Intellicode Phish ID"
                 subtitle="Detect domains and infrastructure attempting to impersonate your organisation."
-                actions={<Button variant="primary" onClick={() => setTab('brand')}><ShieldPlus size={12} /> {hasBrand ? 'Edit protected brand' : 'Protect a brand'}</Button>}
+                actions={manager ? <Button variant="primary" onClick={() => setTab('brand')}><ShieldPlus size={12} /> {hasBrand ? 'Edit protected brand' : 'Protect a brand'}</Button>
+                    : hasBrand ? <Button onClick={() => setTab('brand')}>View protected brand</Button> : undefined}
             />
             <Tabs<Tab> value={tab} onChange={setTab} tabs={[{ id: 'discoveries', label: 'Threats' }, { id: 'brand', label: 'Protected brand' }]} />
             <Gate state={brand}>
                 {tab === 'discoveries'
                     ? (hasBrand ? <Discoveries brand={brand.data!.brand!} /> : (
-                        <Panel><Empty icon={<Fingerprint size={18} />} title="No brand protected yet" body="Add your organisation's name, domains and brand keywords. Phish ID then searches daily for look-alike domains and impersonating websites." action={<Button variant="primary" onClick={() => setTab('brand')}>Protect a brand</Button>} /></Panel>
+                        <Panel><Empty icon={<Fingerprint size={18} />} title="No brand protected yet" body="Add your organisation's name, domains and brand keywords. Phish ID then searches daily for look-alike domains and impersonating websites." action={manager ? <Button variant="primary" onClick={() => setTab('brand')}>Protect a brand</Button> : <span className="text-xs text-foreground-muted">A SOC manager can set this up.</span>} /></Panel>
                     ))
                     : <BrandForm brand={brand.data?.brand ?? null} onSaved={() => { setNonce((x) => x + 1); setTab('discoveries'); }} />}
             </Gate>
