@@ -53,14 +53,6 @@ const SUGGESTED_PROMPTS = [
     },
 ];
 
-const CONTEXT_STATS = [
-    { label: 'Active Alerts', value: 14, color: 'text-amber-500', badge: 'bg-amber-500/10 border-amber-500/30' },
-    { label: 'Open Incidents', value: 8, color: 'text-red-500', badge: 'bg-red-500/10 border-red-500/30' },
-    { label: 'Critical Severity', value: 3, color: 'text-red-500', badge: 'bg-red-500/10 border-red-500/30' },
-    { label: 'Posture Score', value: '72/100', color: 'text-blue', badge: 'bg-blue/10 border-blue/30' },
-    { label: 'Primary Tactic', value: 'Initial Access', color: 'text-purple', badge: 'bg-purple/10 border-purple/30' },
-];
-
 function FormattedResponse({ text }: { text: string }) {
     const lines = text.split('\n');
     return (
@@ -266,17 +258,6 @@ export function NovrAI() {
                             <h3 className="text-xs font-bold text-foreground">SOC Context</h3>
                             <p className="text-[10px] text-foreground-muted">Live Telemetry Ingestion</p>
                         </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        {CONTEXT_STATS.map((s) => (
-                            <div key={s.label} className="flex justify-between items-center text-xs p-1.5 rounded-lg hover:bg-card-muted/40 transition-colors">
-                                <span className="text-[11px] text-foreground-muted">{s.label}</span>
-                                <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${s.badge} ${s.color}`}>
-                                    {s.value}
-                                </span>
-                            </div>
-                        ))}
                     </div>
 
                     <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-[10px] text-foreground-muted">
