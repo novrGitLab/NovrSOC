@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "security:audit": "npm audit --audit-level=high",
-    "security:check": "npm audit --audit-level=moderate --json | node -e \"const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); if(d.metadata.vulnerabilities.high>0||d.metadata.vulnerabilities.critical>0) process.exit(1)\""
+    "security:check": "npm audit --audit-level=moderate --json | node -e \"const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); if(d.metadata.vulnerabilities.high>0||d.metadata.vulnerabilities.critical>0) process.exit(1)\"",
+    "check:nav": "node scripts/check-nav-routes.mjs"
   },
   "dependencies": {
     "@react-oauth/google": "^0.13.5",
