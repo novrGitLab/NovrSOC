@@ -26,22 +26,19 @@ on 2026-09-02, not assumed from code alone — see each item for how it was chec
    (`169.58.242.174`) on Railway — confirmed live via `GET /api/wazuh/status`
    returning real agent data (3 registered, 2 active). No action needed here.
 
-3. **TheHive is reachable but its configured credentials don't authenticate.**
-   `THEHIVE_URL` (169.58.242.194:9000) responds; a direct `listCase` query using
-   the `THEHIVE_USER`/`THEHIVE_PASSWORD` currently in `.env` returns
-   `401 AuthenticationError`. `getCases()`/`createCase()` (added this pass) are
-   wired but will fail until the credentials are corrected — `incidentResponse.ts`
-   falls back to the existing Wazuh-derived queue when that happens, so this
-   degrades gracefully rather than breaking incident viewing.
+3. **TheHive — removed.** *(Updated 2026-10-07.)* TheHive is no longer used. Cases live
+   in Supabase (`backend/sql/2026-09-cases-soar.sql`), created by the SOAR engine
+   (`infra/soar/soar.py`) and by analysts. The TheHive client code, `getCases()`/
+   `createCase()` against TheHive and `incidentResponse.ts` were removed, and the
+   `THEHIVE_*` variables were dropped from `backend/.env.example`. The original note
+   (credentials returning `401 AuthenticationError`) no longer applies. Whether the
+   manager's `ossec.conf` still has a `custom-thehive` integration block is not
+   verified from this repo — see `infra/soar/README.md`.
 
-4. **Shuffle's webhook accepts requests, but the payload shape may not match its
-   workflow.** The configured `SHUFFLE_WEBHOOK_URL` responds `200`, but echoes a
-   template referencing `$exec.body.rule.description` — i.e. it looks built to
-   receive a raw Wazuh alert body, not the `{novrsoc_incident_id, title, severity,
-   ...}` shape `notifyShuffleOfIncident()` sends on incident creation. The workflow's
-   actual logic wasn't inspectable from here — verify directly in Shuffle's UI
-   whether an incident-creation POST actually produces a TheHive case before
-   relying on this.
+4. **Shuffle — removed.** *(Updated 2026-10-07.)* Shuffle is no longer used:
+   `notifyShuffleOfIncident()` was removed and `SHUFFLE_WEBHOOK_URL` was dropped from
+   `backend/.env.example`. Response automation is the SOAR engine (`infra/soar/soar.py`)
+   plus the backend's own response actions (`backend/src/services/responseActions.ts`).
 
 5. **15 backend routes are not behind `requireAuth`**, by design for now: `wazuh`,
    `incidents`, `threats`, `threat`, `brand`, `dns`, `urlscan`, `webscan`,
@@ -51,6 +48,9 @@ on 2026-09-02, not assumed from code alone — see each item for how it was chec
    cannot verify (separate signing secret, held by the external portal backend).
    Gating these needs dual-token verification built first — see `index.ts`'s
    block comment for the full reasoning.
+   *(Updated 2026-10-07: `incidents` (alias of `/api/cases`), `vendor-assessments`,
+   `sla`, `weblogic` and `advisories` have since been removed, so this list is out of
+   date; the remaining routes are still open as described.)*
 
 6. Multitenancy is partial: `compliance` and `customers` now derive `org_id` from
    the authenticated token rather than trusting a client-supplied value; `wazuh`,
