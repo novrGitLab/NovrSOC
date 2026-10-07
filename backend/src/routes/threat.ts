@@ -6,7 +6,6 @@ import { getCVEById, getRecentCVEs, getCVSSScore, getCVEDescription } from '../s
 import { isInKEV, getKEVCatalog } from '../services/cisa';
 import { circlGetPulses } from '../services/circl';
 import { analyzeSSL } from '../services/sslLabs';
-import { getSupabase } from '../services/geoEnrichment';
 
 const router = Router();
 
@@ -121,31 +120,6 @@ router.get('/advisory/kev', async (_req, res) => {
         });
     } catch {
         res.status(500).json({ error: 'KEV fetch failed' });
-    }
-});
-
-// GET /api/threat/advisory/assets
-// Returns vulnerability matches grouped by host from Supabase. Nothing populates
-// host_packages/vulnerability_matches yet (see novrsoc_supabase_schema.sql) — this returns an
-// empty list until a Wazuh syscollector sync exists, which is expected, not an error.
-router.get('/advisory/assets', async (_req, res) => {
-    try {
-        const supabase = getSupabase();
-        if (!supabase) {
-            res.json({ assets: [] });
-            return;
-        }
-
-        const { data, error } = await supabase
-            .from('vulnerability_matches')
-            .select('*, host_packages ( agent_id, agent_name, package_name, version, os )')
-            .order('priority_score', { ascending: false })
-            .limit(100);
-
-        if (error) throw error;
-        res.json({ assets: data || [] });
-    } catch {
-        res.status(500).json({ error: 'Asset vuln fetch failed' });
     }
 });
 

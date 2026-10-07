@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { AlertTriangle, Shield, RefreshCw, ExternalLink, Server, Clock } from 'lucide-react';
+import { AlertTriangle, Shield, RefreshCw, ExternalLink, Clock } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 
 interface CVESummary {
@@ -24,16 +24,6 @@ interface KEVEntry {
     requiredAction: string;
     dueDate: string;
     knownRansomwareCampaignUse: string;
-}
-
-interface AssetVulnerability {
-    id: number;
-    cve_id: string;
-    cvss_score: number | null;
-    severity: string | null;
-    priority_score: number;
-    detected_at: string;
-    host_packages: { agent_id: string; agent_name: string | null; package_name: string; version: string | null; os: string | null } | null;
 }
 
 const SEVERITY_CONFIG: Record<string, { color: string; bg: string; border: string }> = {
@@ -64,7 +54,6 @@ const SECTORS = ['All', ...Object.keys(SECTOR_KEYWORDS)];
 const TABS = [
     { id: 'recent', label: 'Recent CVEs' },
     { id: 'kev', label: 'Known Exploited Vulnerabilities' },
-    { id: 'assets', label: 'Asset Vulnerabilities' },
 ] as const;
 type Tab = (typeof TABS)[number]['id'];
 
@@ -79,8 +68,6 @@ export function ThreatAdvisory() {
     const [activeTab, setActiveTab] = useState<Tab>('recent');
     const [recentCVEs, setRecentCVEs] = useState<CVESummary[]>([]);
     const [kevEntries, setKevEntries] = useState<KEVEntry[]>([]);
-    const [assets, setAssets] = useState<AssetVulnerability[]>([]);
-    const [assetsLoaded, setAssetsLoaded] = useState(false);
     const [loading, setLoading] = useState(false);
     const [severityFilter, setSeverityFilter] = useState<string>('ALL');
     const [kevInfo, setKevInfo] = useState<{ count: number; released: string } | null>(null);
@@ -118,19 +105,9 @@ export function ThreatAdvisory() {
             .finally(() => setLoading(false));
     };
 
-    const loadAssets = () => {
-        setLoading(true);
-        apiFetch(apiUrl('/api/threat/advisory/assets'), { cache: 'no-store' })
-            .then((r) => r.json())
-            .then((data) => setAssets(Array.isArray(data?.assets) ? data.assets : []))
-            .catch(() => setAssets([]))
-            .finally(() => { setLoading(false); setAssetsLoaded(true); });
-    };
-
     useEffect(() => {
         if (activeTab === 'recent') loadRecent();
         if (activeTab === 'kev') loadKEV();
-        if (activeTab === 'assets' && !assetsLoaded) loadAssets();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab, severityFilter, days]);
 
@@ -149,7 +126,7 @@ export function ThreatAdvisory() {
                     <p className="text-xs text-foreground-muted">Threat Intelligence · CVE vulnerabilities prioritised by CVSS score and CISA Known Exploited status</p>
                 </div>
                 <button
-                    onClick={() => (activeTab === 'recent' ? loadRecent() : activeTab === 'kev' ? loadKEV() : loadAssets())}
+                    onClick={() => (activeTab === 'recent' ? loadRecent() : loadKEV())}
                     className="flex items-center gap-2 border border-blue text-blue text-xs font-bold px-4 py-2 rounded-lg hover:bg-blue/10 transition-colors flex-shrink-0"
                 >
                     <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
@@ -406,52 +383,6 @@ export function ThreatAdvisory() {
                 </div>
             )}
 
-            {/* ── ASSET VULNERABILITIES ── */}
-            {activeTab === 'assets' && (
-                loading ? (
-                    <div className="flex items-center justify-center py-20">
-                        <RefreshCw size={24} className="animate-spin text-blue" />
-                    </div>
-                ) : assets.length === 0 ? (
-                    <div className="bg-card border border-border rounded-xl p-10 text-center">
-                        <Server size={40} className="text-border mx-auto mb-3" />
-                        <div className="font-heading font-semibold text-foreground mb-1">Asset Vulnerability Mapping</div>
-                        <div className="text-sm text-foreground-muted max-w-sm mx-auto">
-                            Connect Wazuh agents to automatically map CVEs to your installed software.
-                            Once configured, vulnerable packages appear here ranked by exploitability and asset criticality.
-                        </div>
-                    </div>
-                ) : (
-                    <div className="bg-card border border-border rounded-xl overflow-hidden overflow-x-auto">
-                        <table className="w-full text-xs">
-                            <thead>
-                                <tr className="border-b border-border">
-                                    {['CVE', 'Host', 'Package', 'Version', 'OS', 'CVSS', 'Detected'].map((h) => (
-                                        <th key={h} className="text-left px-4 py-2.5 text-[10px] font-bold text-foreground-muted uppercase tracking-wider">{h}</th>
-                                    ))}
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {assets.map((a) => (
-                                    <tr key={a.id} className="border-b border-border hover:bg-card-muted transition-colors">
-                                        <td className="px-4 py-2.5">
-                                            <a href={`https://nvd.nist.gov/vuln/detail/${a.cve_id}`} target="_blank" rel="noopener noreferrer" className="font-mono text-blue hover:text-purple font-bold">{a.cve_id}</a>
-                                        </td>
-                                        <td className="px-4 py-2.5 text-foreground">{a.host_packages?.agent_name ?? a.host_packages?.agent_id ?? '—'}</td>
-                                        <td className="px-4 py-2.5 text-foreground-muted">{a.host_packages?.package_name ?? '—'}</td>
-                                        <td className="px-4 py-2.5 text-foreground-muted font-mono">{a.host_packages?.version ?? '—'}</td>
-                                        <td className="px-4 py-2.5 text-foreground-muted">{a.host_packages?.os ?? '—'}</td>
-                                        <td className="px-4 py-2.5">
-                                            {a.cvss_score !== null ? <span className={`font-bold ${cvssColor(a.cvss_score)}`}>{a.cvss_score.toFixed(1)}</span> : <span className="text-foreground-muted">—</span>}
-                                        </td>
-                                        <td className="px-4 py-2.5 text-foreground-muted whitespace-nowrap">{new Date(a.detected_at).toLocaleDateString()}</td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                )
-            )}
         </div>
     );
 }
