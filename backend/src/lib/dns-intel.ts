@@ -1,7 +1,6 @@
 const DOH_URL = 'https://cloudflare-dns.com/dns-query';
 const CRTSH_URL = 'https://crt.sh/';
 const RDAP_URL = 'https://rdap.org/domain';
-import { CTIP_URL } from './legacyBackend';
 
 export const DNS_RECORD_TYPES = ['A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME', 'SOA'] as const;
 export type DnsRecordType = typeof DNS_RECORD_TYPES[number];
@@ -232,23 +231,6 @@ export async function fetchWhois(domain: string): Promise<WhoisInfo> {
         return { registrar, registered, expires, days_until_expiry };
     } catch {
         return { registrar: null, registered: null, expires: null, days_until_expiry: null };
-    }
-}
-
-export interface CtipMatch {
-    confidence?: number;
-    source?: string;
-    threat_type?: string | null;
-}
-
-export async function checkCtipIoc(value: string): Promise<{ found: boolean; matches: CtipMatch[] }> {
-    try {
-        const res = await fetchWithTimeout(`${CTIP_URL}/api/ctip/iocs/${encodeURIComponent(value)}`, { cache: 'no-store' }, 8000);
-        if (!res.ok) return { found: false, matches: [] };
-        const data = await res.json();
-        return { found: Boolean(data?.found), matches: Array.isArray(data?.matches) ? data.matches : [] };
-    } catch {
-        return { found: false, matches: [] };
     }
 }
 

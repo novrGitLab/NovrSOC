@@ -23,13 +23,6 @@ interface RealIncident {
     timestamp: string | null;
 }
 
-interface Advisory {
-    id: number;
-    title: string;
-    severity: string;
-    published_at: string;
-}
-
 interface ExternalEntry {
     ip: string;
     count: number;
@@ -49,7 +42,8 @@ interface InternalEntry {
 interface NetworkData {
     external: { inbound: ExternalEntry[]; outbound: ExternalEntry[] };
     internal: { inbound: InternalEntry[]; outbound: InternalEntry[] };
-    summary: { total_external_inbound: number; total_external_outbound: number; total_internal: number; malicious_detected: number };
+    // malicious_detected is null: no IP reputation lookup runs (not checked, not zero).
+    summary: { total_external_inbound: number; total_external_outbound: number; total_internal: number; malicious_detected: number | null };
 }
 
 const sevBadge: Record<string, string> = {
@@ -133,7 +127,6 @@ export const PortalDashboard = () => {
     const [agents, setAgents] = useState<{ active: number; total: number } | null>(null);
     const [kpis, setKpis] = useState<IncidentKpis | null>(null);
     const [incidents, setIncidents] = useState<RealIncident[]>([]);
-    const [advisories, setAdvisories] = useState<Advisory[]>([]);
     const [threatsBlocked, setThreatsBlocked] = useState<number | null>(null);
     const [network, setNetwork] = useState<NetworkData | null>(null);
     const [loading, setLoading] = useState(true);
@@ -145,9 +138,8 @@ export const PortalDashboard = () => {
             apiFetch(apiUrl(`/api/wazuh/agents${groupParam}`), { cache: 'no-store' }).then(r => r.json()),
             apiFetch(apiUrl(`/api/wazuh/incidents${groupParam}`), { cache: 'no-store' }).then(r => r.json()),
             apiFetch(apiUrl(`/api/wazuh/threats-blocked${groupParam}`), { cache: 'no-store' }).then(r => r.json()),
-            apiFetch(apiUrl(`/api/advisories${portal.orgIndustry ? `?industry=${encodeURIComponent(portal.orgIndustry)}` : ''}`), { cache: 'no-store' }).then(r => r.json()),
             apiFetch(apiUrl(`/api/wazuh/network-connections${groupParam}`), { cache: 'no-store' }).then(r => r.json()),
-        ]).then(([agentsRes, incidentsRes, threatsRes, advisoriesRes, networkRes]) => {
+        ]).then(([agentsRes, incidentsRes, threatsRes, networkRes]) => {
             if (agentsRes.status === 'fulfilled') {
                 const conn = agentsRes.value?.data?.connection;
                 if (conn) setAgents({ active: conn.active, total: conn.total });
@@ -158,9 +150,6 @@ export const PortalDashboard = () => {
             }
             if (threatsRes.status === 'fulfilled' && typeof threatsRes.value?.threats_blocked === 'number') {
                 setThreatsBlocked(threatsRes.value.threats_blocked);
-            }
-            if (advisoriesRes.status === 'fulfilled' && Array.isArray(advisoriesRes.value?.advisories)) {
-                setAdvisories(advisoriesRes.value.advisories.slice(0, 3));
             }
             if (networkRes.status === 'fulfilled' && networkRes.value?.external) {
                 setNetwork(networkRes.value);
@@ -323,8 +312,8 @@ export const PortalDashboard = () => {
                                 ))}
                                 <div className="flex items-center justify-between text-[11px] pt-2 border-t border-border">
                                     <span className="text-foreground-muted">Known Malicious IPs</span>
-                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${network.summary.malicious_detected > 0 ? 'bg-red-500/10 text-red-500 border border-red-500/30' : 'bg-card-muted text-foreground-muted border border-border'}`}>
-                                        {network.summary.malicious_detected}
+                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${(network.summary.malicious_detected ?? 0) > 0 ? 'bg-red-500/10 text-red-500 border border-red-500/30' : 'bg-card-muted text-foreground-muted border border-border'}`}>
+                                        {network.summary.malicious_detected ?? 'Not checked'}
                                     </span>
                                 </div>
                             </div>
@@ -369,25 +358,10 @@ export const PortalDashboard = () => {
 
             <div className="bg-card border border-border rounded-xl overflow-hidden">
                 <div className="h-[3px] bg-blue from-blue via-blue to-red-500" />
-                <div className="p-4 flex items-center justify-between">
+                <div className="p-4">
                     <p className="text-xs font-black text-foreground">Recent Advisories</p>
-                    <Link href="/threat-intelligence/advisory" className="text-[10px] font-bold text-blue hover:underline">View All →</Link>
                 </div>
-                {loading ? (
-                    <div className="p-6 space-y-2">{Array.from({ length: 2 }).map((_, i) => <div key={i} className="h-6 bg-card-muted rounded animate-pulse" />)}</div>
-                ) : advisories.length === 0 ? (
-                    <p className="text-xs text-foreground-muted text-center py-8">No advisories published yet.</p>
-                ) : (
-                    <div className="p-4 pt-0 space-y-2">
-                        {advisories.map(a => (
-                            <div key={a.id} className="flex items-center gap-2 py-2 border-b border-border last:border-0">
-                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border flex-shrink-0 ${sevBadge[a.severity] ?? sevBadge.Medium}`}>{a.severity}</span>
-                                <p className="text-xs font-semibold text-foreground truncate flex-1">{a.title}</p>
-                                <span className="text-[10px] text-foreground-muted flex-shrink-0">{timeAgo(a.published_at)}</span>
-                            </div>
-                        ))}
-                    </div>
-                )}
+                <p className="text-xs text-foreground-muted text-center pb-8 px-4">Advisories are not connected — no advisory source is available yet.</p>
             </div>
         </div>
     );

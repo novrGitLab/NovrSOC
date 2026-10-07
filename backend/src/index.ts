@@ -9,16 +9,9 @@ import { botProtection, requireAuth, requireRole } from './middleware/auth';
 
 import authRouter from './routes/auth';
 import portalRouter from './routes/portal';
-import accountRouter from './routes/account';
 import customersRouter from './routes/customers';
-import advisoriesRouter from './routes/advisories';
 import complianceRouter from './routes/compliance';
-import vendorAssessmentsRouter from './routes/vendor-assessments';
-import scanRouter from './routes/scan';
 import dnsRouter from './routes/dns';
-import domainsRouter from './routes/domains';
-import ctipRouter from './routes/ctip';
-import threatIntelRouter from './routes/threat-intel';
 import wazuhRouter from './routes/wazuh';
 import geoRouter from './routes/geo';
 import brandRouter from './routes/brand';
@@ -110,8 +103,8 @@ app.get('/', (_req, res) => {
 // /admin page against every component imported by any /client page) are rendered by BOTH the
 // admin app and the client portal, and call the same backend routes either way: /api/wazuh,
 // /api/threats, /api/threat, /api/brand, /api/dns, /api/urlscan,
-// /api/webscan, /api/vendor-assessments, /api/org-cti, /api/recovery,
-// /api/alerts, /api/advisories.
+// /api/webscan, /api/org-cti, /api/recovery,
+// /api/alerts.
 //
 // Client-portal users only ever hold a `portal_token` (see frontend/src/lib/portal-auth.ts),
 // minted by the separate external backend at APP_API_BASE_URL with a secret this backend
@@ -282,23 +275,16 @@ app.use('/api/public', publicRouter);
 
 app.use('/api/auth', authRouter);
 app.use('/api/portal', portalRouter);
-app.use('/api/account', accountRouter);
 // admin-only — no client-portal component calls these, confirmed safe to gate now (see the
 // block comment above for how that was checked and why most other routes aren't gated yet).
 // soc_manager gets access alongside super_admin here (and on /api/compliance below) — per the
 // soc_manager role's spec: "Access compliance data for their org," but analysts and below do
 // not get customer/compliance-admin access.
 app.use('/api/customers', requireAuth, requireRole('super_admin', 'soc_manager'), customersRouter);
-app.use('/api/advisories', advisoriesRouter);
 app.use('/api/compliance', requireAuth, requireRole('super_admin', 'soc_manager'), complianceRouter);
-app.use('/api/vendor-assessments', vendorAssessmentsRouter);
-app.use('/api/scan', scanRouter);
 app.use('/api/dns', dnsRouter);
-app.use('/api/domains', domainsRouter);
 // admin-only — no client-portal component calls this, confirmed safe to gate now.
 app.use('/api/novr-ai', requireAuth, novrAiRouter);
-app.use('/api/ctip', ctipRouter);
-app.use('/api/threat-intel', threatIntelRouter);
 app.use('/api/wazuh', wazuhRouter);
 app.use('/api/geo', geoRouter);
 app.use('/api/brand/domains', domainSuiteRouter);

@@ -8,7 +8,6 @@ import { getComplianceImpact } from '../services/complianceMapping';
 import { isDemoMode, DEMO_AGENTS } from '../lib/demoMode';
 
 const router = Router();
-import { CTIP_URL, isCTIPConfigured, warnUnconfiguredOnce } from '../lib/legacyBackend';
 
 // NOTE — multi-tenancy: this is the pre-client baseline, all Wazuh data is Cybernovr-internal.
 // One Wazuh manager currently serves one org, so nothing here filters by org. When multiple
@@ -259,21 +258,6 @@ router.get('/network-connections', async (req, res) => {
     interface AggBucket { key: string; doc_count: number }
     interface RawHit { _source: { data?: { srcip?: string; dstip?: string; dstport?: string; srcport?: string } } }
     interface SearchResponse { hits?: { hits?: RawHit[] }; aggregations?: { top_ips?: { buckets?: AggBucket[] } } }
-    interface CtipMatch { confidence?: number; country?: string | null }
-
-    const lookupIoc = async (ip: string): Promise<{ verdict: 'Malicious' | 'Suspicious' | 'Unknown'; country: string | null }> => {
-        try {
-            const r = await fetch(`${CTIP_URL}/api/ctip/iocs/${encodeURIComponent(ip)}`, { cache: 'no-store', signal: AbortSignal.timeout(5000) });
-            const data = await r.json();
-            const match: CtipMatch | undefined = Array.isArray(data?.matches) ? data.matches[0] : undefined;
-            if (!data?.found || !match) return { verdict: 'Unknown', country: null };
-            const verdict = (match.confidence ?? 0) >= 80 ? 'Malicious' : 'Suspicious';
-            return { verdict, country: match.country ?? null };
-        } catch {
-            return { verdict: 'Unknown', country: null };
-        }
-    };
-
     const networkLabel = (ip: string): string => {
         if (ip.startsWith('10.')) return '10.x Corporate';
         if (ip.startsWith('192.168.')) {
@@ -332,56 +316,33 @@ router.get('/network-connections', async (req, res) => {
             return hit?._source.data?.[portField] ?? '—';
         };
 
-        const allIps = Array.from(
-            new Set([
-                ...extSrcBuckets.map((b) => b.key),
-                ...extDstBuckets.map((b) => b.key),
-                ...intSrcBuckets.map((b) => b.key),
-                ...intDstBuckets.map((b) => b.key),
-            ])
-        );
-        const lookups = await Promise.allSettled(allIps.map((ip) => lookupIoc(ip)));
-        const verdictByIp = new Map<string, { verdict: 'Malicious' | 'Suspicious' | 'Unknown'; country: string | null }>();
-        allIps.forEach((ip, i) => {
-            const r = lookups[i];
-            verdictByIp.set(ip, r.status === 'fulfilled' ? r.value : { verdict: 'Unknown', country: null });
-        });
-
         const externalInbound = extSrcBuckets.map((b) => ({
             ip: b.key, count: b.doc_count,
-            verdict: verdictByIp.get(b.key)?.verdict ?? 'Unknown',
-            country: verdictByIp.get(b.key)?.country ?? '—',
+            verdict: 'Unknown' as const,
+            country: '—',
             port: portForIp(b.key, 'srcip', 'dstport'),
         }));
         const externalOutbound = extDstBuckets.map((b) => ({
             ip: b.key, count: b.doc_count,
-            verdict: verdictByIp.get(b.key)?.verdict ?? 'Unknown',
-            country: verdictByIp.get(b.key)?.country ?? '—',
+            verdict: 'Unknown' as const,
+            country: '—',
             port: portForIp(b.key, 'dstip', 'srcport'),
         }));
 
-        // Private IPs are internal by definition; only override the "Internal" badge if CTIP
-        // somehow flags the address (rare, but a compromised internal host could still show up).
+        // No reputation lookup runs here (the CTIP service it used was removed), so external IPs
+        // are 'Unknown' and malicious_detected is null — not checked, rather than a false zero.
         const internalInbound = intSrcBuckets.map((b) => ({
             ip: b.key, count: b.doc_count,
-            verdict: verdictByIp.get(b.key)?.verdict === 'Malicious' || verdictByIp.get(b.key)?.verdict === 'Suspicious'
-                ? verdictByIp.get(b.key)!.verdict
-                : ('Internal' as const),
+            verdict: 'Internal' as const,
             network: networkLabel(b.key),
             port: portForIp(b.key, 'srcip', 'dstport'),
         }));
         const internalOutbound = intDstBuckets.map((b) => ({
             ip: b.key, count: b.doc_count,
-            verdict: verdictByIp.get(b.key)?.verdict === 'Malicious' || verdictByIp.get(b.key)?.verdict === 'Suspicious'
-                ? verdictByIp.get(b.key)!.verdict
-                : ('Internal' as const),
+            verdict: 'Internal' as const,
             network: networkLabel(b.key),
             port: portForIp(b.key, 'dstip', 'srcport'),
         }));
-
-        const maliciousDetected = [...externalInbound, ...externalOutbound, ...internalInbound, ...internalOutbound].filter(
-            (c) => c.verdict === 'Malicious'
-        ).length;
 
         res.json({
             external: { inbound: externalInbound, outbound: externalOutbound },
@@ -390,7 +351,7 @@ router.get('/network-connections', async (req, res) => {
                 total_external_inbound: externalInbound.reduce((s, c) => s + c.count, 0),
                 total_external_outbound: externalOutbound.reduce((s, c) => s + c.count, 0),
                 total_internal: internalInbound.reduce((s, c) => s + c.count, 0) + internalOutbound.reduce((s, c) => s + c.count, 0),
-                malicious_detected: maliciousDetected,
+                malicious_detected: null,
             },
         });
     } catch {

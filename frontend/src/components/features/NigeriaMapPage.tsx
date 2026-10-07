@@ -1,25 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { Globe } from 'lucide-react';
-import { apiUrl, apiFetch } from '@/lib/api';
-import { NigeriaThreatMap, type FeedAdvisory } from '@/components/geo/NigeriaThreatMap';
+import { NigeriaThreatMap } from '@/components/geo/NigeriaThreatMap';
 
 // Full-page home for the Nigeria threat map — same NigeriaThreatMap widget the dashboard
 // embeds at `lg:col-span-5` (a fixed-width grid column), just unconstrained here so it gets
-// the room its own fullscreen/time-range/stat-card UI was actually designed for. The dashboard
+// the room its own fullscreen/stat-card UI was actually designed for. The dashboard
 // keeps its smaller, grid-constrained copy of the same widget; this page isn't a replacement
 // for that one, just a dedicated place to look at it full-size.
 export function NigeriaMapPage() {
-    const [advisories, setAdvisories] = useState<FeedAdvisory[] | null>(null);
-
-    useEffect(() => {
-        apiFetch(apiUrl('/api/advisories'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then((r) => r.json())
-            .then((data) => setAdvisories(Array.isArray(data?.advisories) ? data.advisories : []))
-            .catch(() => setAdvisories([]));
-    }, []);
-
     return (
         <div className="space-y-4">
             <div className="flex items-center gap-2.5">
@@ -32,7 +21,7 @@ export function NigeriaMapPage() {
                 </div>
             </div>
 
-            <NigeriaThreatMap advisories={advisories} />
+            <NigeriaThreatMap />
         </div>
     );
 }

@@ -10,7 +10,7 @@ import { KpiCard, type KpiCardProps } from '../shared/KpiCard';
 import { ChartWrapper } from '../shared/ChartWrapper';
 import { getPortalContext } from '@/lib/portal-context';
 import { GlobalThreatMap } from '../geo/GlobalThreatMap';
-import { NigeriaThreatMap, type FeedAdvisory } from '../geo/NigeriaThreatMap';
+import { NigeriaThreatMap } from '../geo/NigeriaThreatMap';
 import { apiUrl, apiFetch } from '@/lib/api';
 
 const Card = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
@@ -567,14 +567,6 @@ export const GeneralDashboard = () => {
             .finally(() => setFeedLoading(false));
     }, []);
 
-    const [nigeriaAdvisories, setNigeriaAdvisories] = useState<FeedAdvisory[] | null>(null);
-    useEffect(() => {
-        apiFetch(apiUrl('/api/advisories'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => r.json())
-            .then(data => setNigeriaAdvisories(Array.isArray(data?.advisories) ? data.advisories : []))
-            .catch(() => setNigeriaAdvisories([]));
-    }, []);
-
     const [clients, setClients] = useState<OnboardedClient[] | null>(null);
     const [clientsLoading, setClientsLoading] = useState(true);
     useEffect(() => {
@@ -648,7 +640,7 @@ export const GeneralDashboard = () => {
 
             {/* Row 2: Nigeria map (60%) + Case queue (40%) */}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
-                <div className="lg:col-span-5"><NigeriaThreatMap advisories={nigeriaAdvisories} /></div>
+                <div className="lg:col-span-5"><NigeriaThreatMap /></div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">

@@ -2,20 +2,6 @@ import { Router } from 'express';
 import { DNS_RECORD_TYPES, DnsRecordType, normalizeDomain, resolveRecords, fetchCertificates } from '../lib/dns-intel';
 
 const router = Router();
-import { APP_BACKEND_URL as BACKEND_URL, isAppBackendConfigured, warnUnconfiguredOnce } from '../lib/legacyBackend';
-
-function saveScanHistory(domain: string, resultJson: unknown, orgId: number | null) {
-    fetch(`${BACKEND_URL}/api/scan-history`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            value: domain, type: 'dns', verdict: null, confidence: null,
-            scanned_by: orgId ? 'Portal User' : 'Admin User', result_json: resultJson, org_id: orgId,
-        }),
-        signal: AbortSignal.timeout(5000),
-    }).catch(() => {});
-}
-
 // POST /api/dns/lookup
 router.post('/lookup', async (req, res) => {
     try {
@@ -50,9 +36,6 @@ router.post('/lookup', async (req, res) => {
             certificates,
             summary: { total_records, total_certs: certificates.length, expired_certs, expiring_soon },
         };
-
-        const orgId: number | null = typeof body?.orgId === 'number' ? body.orgId : null;
-        saveScanHistory(domain, result, orgId);
 
         res.json(result);
     } catch {

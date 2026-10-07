@@ -1,5 +1,12 @@
-import { MetricItem } from '@/data/mockData';
 import type { LucideIcon } from 'lucide-react';
+
+// Moved here from the deleted data/mockData.ts (2026-10 cleanup).
+export interface MetricItem {
+    value: string;
+    trend: string;
+    type: 'blue' | 'purple' | 'orange' | 'red' | 'green';
+    label: string;
+}
 
 const borderAccent: Record<string, string> = {
     blue:   'border-l-blue',

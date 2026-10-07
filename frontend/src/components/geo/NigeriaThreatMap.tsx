@@ -20,13 +20,6 @@ const SectionHeader = ({ title }: { title: string }) => (
     </div>
 );
 
-export interface FeedAdvisory {
-    id: number;
-    title: string;
-    severity: string;
-    published_at: string;
-}
-
 interface NigeriaThreatsSummary {
     total_threats: number;
     threat_score: number;
@@ -67,8 +60,7 @@ const THREAT_LEVEL_COLOR: Record<string, string> = {
     CLEAR: 'text-emerald-500',
 };
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] | null }) => {
+export const NigeriaThreatMap = () => {
     const [colorMode, setColorMode] = useState<'threat' | 'region'>('threat');
     const [data, setData] = useState<NigeriaThreatsResponse | null>(null);
     const [isLoading, setIsLoading] = useState(true);
