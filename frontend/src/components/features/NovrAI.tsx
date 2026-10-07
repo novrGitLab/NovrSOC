@@ -10,7 +10,6 @@ import {
     Copy, 
     Check, 
     AlertTriangle, 
-    Shield, 
     Terminal, 
     RotateCcw,
     Zap,
@@ -247,31 +246,8 @@ export function NovrAI() {
     return (
         <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-140px)] max-w-7xl mx-auto">
             
-            {/* Left Context & Telemetry Panel */}
+            {/* Left panel */}
             <div className="w-full lg:w-64 flex-shrink-0 flex flex-col gap-3">
-                <div className="bg-card border border-border rounded-xl p-4 shadow-xs">
-                    <div className="flex items-center gap-2.5 mb-3 border-b border-border pb-3">
-                        <div className="w-7 h-7 rounded-lg bg-orange/10 flex items-center justify-center text-orange">
-                            <Shield className="w-4 h-4" />
-                        </div>
-                        <div>
-                            <h3 className="text-xs font-bold text-foreground">SOC Context</h3>
-                            <p className="text-[10px] text-foreground-muted">Live Telemetry Ingestion</p>
-                        </div>
-                    </div>
-
-                    <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-[10px] text-foreground-muted">
-                        <span className="flex items-center gap-1.5">
-                            <span className="relative flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                            </span>
-                            Claude Engine Active
-                        </span>
-                        <span className="font-mono text-[9px]">v2.4-CTI</span>
-                    </div>
-                </div>
-
                 {/* Quick Capability Tags */}
                 <div className="bg-card border border-border rounded-xl p-3.5 shadow-xs hidden lg:block">
                     <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-2 flex items-center gap-1.5">
