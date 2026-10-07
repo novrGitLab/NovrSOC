@@ -679,7 +679,7 @@ export async function sendEscalationEmail(params: {
       <td style="background:#CC2B2B;padding:16px 32px;">
         <p style="color:white;font-size:11px;font-weight:700;text-transform:uppercase;
                   letter-spacing:1px;margin:0;">
-          🚨 Incident Escalation
+          🚨 Case Escalation
         </p>
       </td>
     </tr>
@@ -688,11 +688,11 @@ export async function sendEscalationEmail(params: {
         <h1 style="color:#1C1F2E;font-size:20px;font-weight:900;margin:0 0 4px;">${title}</h1>
         <p style="color:#7A8099;font-size:13px;margin:0 0 24px;">
           ${manual
-            ? 'An analyst has escalated this incident for immediate attention.'
-            : 'This incident has not been resolved within the expected SLA window.'}
+            ? 'An analyst has escalated this case for immediate attention.'
+            : 'This case has not been resolved within the expected SLA window.'}
         </p>
         <table style="width:100%;border-collapse:collapse;">
-          <tr><td style="padding:8px 0;color:#7A8099;font-size:12px;">INCIDENT</td>
+          <tr><td style="padding:8px 0;color:#7A8099;font-size:12px;">CASE</td>
               <td style="padding:8px 0;font-weight:bold;color:#1C1F2E;font-size:13px;">${escapeHtml(params.incident_number)}</td></tr>
           <tr><td style="padding:8px 0;color:#7A8099;font-size:12px;">SEVERITY</td>
               <td style="padding:8px 0;color:#CC2B2B;font-weight:bold;font-size:13px;">${escapeHtml(params.severity.toUpperCase())}</td></tr>
@@ -714,8 +714,8 @@ export async function sendEscalationEmail(params: {
 
     await sendEmail({
         to: params.to,
-        subject: `🚨 [ESCALATION] ${params.severity.toUpperCase()} Incident Unresolved: ${params.title}`,
-        html: baseTemplate(`Incident Escalation: ${title}`, `${params.incident_number} has not been resolved within SLA`, body),
+        subject: `🚨 [ESCALATION] ${params.severity.toUpperCase()} Case Unresolved: ${params.title}`,
+        html: baseTemplate(`Case Escalation: ${title}`, `${params.incident_number} has not been resolved within SLA`, body),
     });
 }
 
