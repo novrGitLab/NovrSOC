@@ -3,7 +3,7 @@ import { getSupabase } from '../services/geoEnrichment';
 import { requireRole, type AuthRequest } from '../middleware/auth';
 
 // Org onboarding wizard — POST /api/organisations/:id/setup persists the 4-step form
-// (frontend/src/components/features/OrgSetupWizard.tsx). Backed by Supabase's `org_setup`
+// (written by frontend/src/components/features/OnboardingWizard.tsx). Backed by Supabase's `org_setup`
 // table when configured, falling back to the original in-memory store (gone on restart) when
 // it isn't or a call to it fails — matches this codebase's established pattern for optional
 // Supabase-backed persistence (see services/geoEnrichment.ts's getSupabase()).

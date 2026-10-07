@@ -8,7 +8,7 @@ import { apiUrl, apiFetch } from '@/lib/api';
 
 // 5-step new-client onboarding wizard — POST /api/organisations creates the org (Step 1's
 // fields), then reuses the EXISTING org_setup endpoint (POST /api/organisations/:id/setup,
-// already live behind OrgSetupWizard.tsx) for compliance frameworks + contacts + Wazuh group,
+// shared with the since-removed OrgSetupWizard.tsx) for compliance frameworks + contacts + Wazuh group,
 // and POST /api/organisations/:id/users for each Step 4 team member. Nothing here duplicates
 // those two already-working endpoints.
 
@@ -187,7 +187,7 @@ export function OnboardingWizard() {
     return (
         <div className="max-w-2xl mx-auto space-y-5">
             <Link href="/admin/customers" className="flex items-center gap-1.5 text-xs font-bold text-blue hover:text-purple transition-colors">
-                <ArrowLeft size={14} /> Back to Customers
+                <ArrowLeft size={14} /> Back to Clients
             </Link>
 
             <div>

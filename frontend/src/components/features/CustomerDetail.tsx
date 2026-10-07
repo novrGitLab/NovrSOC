@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Building2, Siren, Server, ClipboardCheck, Users, Settings, Plus, Wrench, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Building2, Siren, Server, ClipboardCheck, Users, Settings, Plus, ExternalLink } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 
 interface Org {
@@ -61,7 +61,7 @@ export function CustomerDetail({ orgId }: { orgId: string }) {
             <div className="text-center py-16">
                 <Building2 size={28} className="text-border mx-auto mb-3" />
                 <p className="text-sm text-foreground-muted mb-4">Organisation not found.</p>
-                <Link href="/admin/customers" className="text-xs font-bold text-blue hover:underline">← Back to Customers</Link>
+                <Link href="/admin/customers" className="text-xs font-bold text-blue hover:underline">← Back to Clients</Link>
             </div>
         );
     }
@@ -91,9 +91,6 @@ export function CustomerDetail({ orgId }: { orgId: string }) {
                     >
                         <ExternalLink size={13} /> Client Portal View
                     </a>
-                    <Link href={`/admin/settings/organisations/${org.id}/setup`} className="flex items-center gap-1.5 text-xs font-bold text-white bg-purple hover:bg-purple-hover rounded-lg px-3 py-2 transition-colors">
-                        <Wrench size={13} /> Setup Wizard
-                    </Link>
                 </div>
             </div>
 

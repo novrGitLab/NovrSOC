@@ -1,4 +1,4 @@
-// Content for the sensor setup guides (/admin/infra/opnsense-setup, sysmon-setup, osquery-setup).
+// Content for the sensor setup guides (OPNsense, Sysmon, osquery). Their /admin/infra/*-setup pages were removed in the 2026-10 cleanup; SetupGuide.tsx and this file are kept for reuse.
 //
 // `{{MANAGER}}` in code is replaced with the Wazuh manager address from GET /api/wazuh/enrollment.
 // Agent packages are pinned to the manager's version (4.14.7, read from the manager API on

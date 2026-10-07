@@ -2,10 +2,10 @@
 
 import {
     LayoutDashboard, FileBarChart, Globe, Users, Shield, UserCheck, Smartphone, Code,
-    Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network,
+    Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server,
     Mail, MessageSquare, ShieldAlert, Activity, ClipboardList, Zap,
-    HardDrive, BarChart, CreditCard, Settings, Database, BookOpen, FileText, ScrollText,
-    ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor, Router, Laptop,
+    HardDrive, BarChart, CreditCard, Settings, BookOpen, FileText, ScrollText,
+    ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor,
     Droplets, Wifi, HeartPulse, GraduationCap, Swords, Truck, Wheat, Factory, Mountain,
 } from 'lucide-react';
 import { Sidebar, type NavGroup } from './Sidebar';
@@ -15,7 +15,7 @@ import { Sidebar, type NavGroup } from './Sidebar';
 // /admin/dashboard/executive, Audit Log and Platform Health are under /admin/settings).
 //
 // `roles` restrictions below (added for the customer-onboarding + multitenancy pass) follow
-// that spec's role matrix section-by-section: THREAT INTELLIGENCE, NETWORK,
+// that spec's role matrix section-by-section: THREAT INTELLIGENCE,
 // INFRASTRUCTURE, and SECURITY OPERATIONS are hidden from `executive`; COMPLIANCE and DATA
 // CONTINUITY are hidden from `analyst`; the individually-listed Sec Ops items (Sec Ops
 // Management, SOAR Automation) are additionally hidden from `analyst`. OVERVIEW's Dashboard,
@@ -71,14 +71,8 @@ const adminNav: NavGroup[] = [
         // One section for Nigerian and global intelligence (previously two). executive: ❌.
         items: [
             { label: 'Nigeria Threat Map', href: '/admin/threat/nigeria', icon: Map, roles: [...NOT_EXEC] },
-            { label: 'Cyber Advisory', href: '/admin/threat/cyber-advisory', icon: Globe, roles: [...NOT_EXEC] },
-            { label: 'CBN Advisories', href: '/admin/threat/cbn', icon: Landmark, roles: [...NOT_EXEC] },
-            { label: 'NCC Advisories', href: '/admin/threat/ncc', icon: Radio, roles: [...NOT_EXEC] },
-            { label: 'Nigeria Deep Dive', href: '/admin/threat/nigeria-deep-dive', icon: Map, roles: [...NOT_EXEC] },
             { label: 'IOC Lookup', href: '/admin/threat/cti', icon: Crosshair, roles: [...NOT_EXEC] },
-            // Live IOC Feed is the indicator stream; Threat Feeds is where sources are configured.
             { label: 'Live IOC Feed', href: '/admin/threat/live-ioc', icon: Radio, roles: [...NOT_EXEC] },
-            { label: 'Threat Feeds', href: '/admin/threat/feeds', icon: Database, roles: [...NOT_EXEC] },
             { label: 'Threat Advisory', href: '/admin/threat/advisory', icon: AlertTriangle, roles: [...NOT_EXEC] },
             { label: 'Threat Actors', href: '/admin/threat/actors', icon: Users, roles: [...NOT_EXEC] },
             { label: 'URL & Web Scanner', href: '/admin/threat/urlscan', icon: LinkIcon, roles: [...NOT_EXEC] },
@@ -114,8 +108,7 @@ const adminNav: NavGroup[] = [
         groupLabel: 'Brand Protection',
         items: [
             // Domain Intelligence (one query across domain, DNS and lookalike checks) is the
-            // canonical domain page at /admin/brand/domain. /admin/infra/dns stays as the
-            // standalone DNS tool.
+            // canonical domain page at /admin/brand/domain.
             { label: 'Domain Intelligence', href: '/admin/brand/domain', icon: Globe },
             { label: 'Social Suite', href: '/admin/brand/social', icon: Users },
             { label: 'Brand Suite', href: '/admin/brand/brand', icon: Shield },
@@ -123,20 +116,6 @@ const adminNav: NavGroup[] = [
             { label: 'Mobile App Suite', href: '/admin/brand/mobile', icon: Smartphone },
             { label: 'Intelli CODE', href: '/admin/brand/copyid', icon: Code },
             { label: 'Dark Web Monitor', href: '/admin/brand/darkweb', icon: Eye },
-        ],
-    },
-    {
-        section: 'Network',
-        collapsible: true,
-        icon: Network,
-        groupLabel: 'Network',
-        // Network visibility and the sensor setup guides that feed it. executive: ❌.
-        items: [
-            { label: 'Network Topology', href: '/admin/infra/topology', icon: Network, roles: [...NOT_EXEC] },
-            { label: 'Shadow IT', href: '/admin/infra/shadow', icon: Eye, roles: [...NOT_EXEC] },
-            { label: 'OPNsense Setup', href: '/admin/infra/opnsense-setup', icon: Router, roles: [...NOT_EXEC] },
-            { label: 'Windows (Sysmon)', href: '/admin/infra/sysmon-setup', icon: Monitor, roles: [...NOT_EXEC] },
-            { label: 'Mac (osquery)', href: '/admin/infra/osquery-setup', icon: Laptop, roles: [...NOT_EXEC] },
         ],
     },
     {
@@ -204,12 +183,12 @@ const adminNav: NavGroup[] = [
         ],
     },
     {
-        section: 'Customers',
+        section: 'Clients',
         collapsible: true,
         icon: Building2,
-        groupLabel: 'Customers',
+        groupLabel: 'Clients',
         items: [
-            { label: 'All Customers', href: '/admin/customers', icon: Building2, adminOnly: true },
+            { label: 'All Clients', href: '/admin/customers', icon: Building2, adminOnly: true },
         ],
     },
     {
@@ -219,7 +198,6 @@ const adminNav: NavGroup[] = [
         groupLabel: 'Settings',
         items: [
             { label: 'Team', href: '/admin/settings/team', icon: Users, adminOnly: true },
-            { label: 'Organisations', href: '/admin/settings/organisations', icon: Building2, adminOnly: true },
             { label: 'Billing', href: '/admin/settings/billing', icon: CreditCard, adminOnly: true },
             { label: 'Analytics', href: '/admin/settings/analytics', icon: BarChart, adminOnly: true },
             { label: 'Audit Log', href: '/admin/settings/audit', icon: ScrollText, adminOnly: true },

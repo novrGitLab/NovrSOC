@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Building2, Plus, Eye, Wrench } from 'lucide-react';
+import { Building2, Plus, Eye } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 
 // GET /api/customers — now backed by the `organisations` Supabase table (routes/customers.ts)
@@ -44,7 +44,7 @@ export function AllCustomers() {
         <div className="space-y-4">
             <div className="flex items-start justify-between">
                 <div>
-                    <h1 className="text-lg font-black text-foreground">All Customers</h1>
+                    <h1 className="text-lg font-black text-foreground">All Clients</h1>
                     <p className="text-xs text-foreground-muted">Every onboarded client organisation. Super admin only.</p>
                 </div>
                 <Link href="/admin/onboarding/new" className="flex items-center gap-2 bg-orange hover:bg-orange-hover text-white text-xs font-black px-4 py-2.5 rounded-lg transition-colors flex-shrink-0">
@@ -54,7 +54,7 @@ export function AllCustomers() {
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {[
-                    { label: 'Total Customers', value: customers?.length ?? 0 },
+                    { label: 'Total Clients', value: customers?.length ?? 0 },
                     { label: 'Active', value: customers?.filter((c) => c.status === 'active').length ?? 0 },
                     { label: 'Enterprise Plan', value: customers?.filter((c) => c.plan === 'enterprise').length ?? 0 },
                     { label: 'Open Cases', value: customers?.reduce((s, c) => s + c.activeIncidents, 0) ?? 0 },
@@ -105,9 +105,6 @@ export function AllCustomers() {
                                             <div className="flex items-center gap-1.5">
                                                 <Link href={`/admin/customers/${c.id}`} className="flex items-center gap-1 text-[10px] font-bold text-foreground border border-border rounded-lg px-2 py-1 hover:bg-card-muted transition-colors">
                                                     <Eye size={11} /> View
-                                                </Link>
-                                                <Link href={`/admin/settings/organisations/${c.id}/setup`} className="flex items-center gap-1 text-[10px] font-bold text-purple border border-purple/30 bg-purple/5 rounded-lg px-2 py-1 hover:bg-purple/10 transition-colors">
-                                                    <Wrench size={11} /> Setup
                                                 </Link>
                                             </div>
                                         </td>

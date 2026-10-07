@@ -126,7 +126,7 @@ export function GlobalThreatMap() {
                     if (String(d.id ?? '').padStart(3, '0') !== NIGERIA_NUMERIC) return;
                     // router.push, not window.location — a full reload would drop the admin
                     // shell and re-run every dashboard fetch on the way back.
-                    router.push('/admin/threat/nigeria-deep-dive');
+                    router.push('/admin/threat/nigeria');
                 })
                 .on('mousemove', function (event: MouseEvent, d) {
                     const code = String(d.id ?? '').padStart(3, '0');

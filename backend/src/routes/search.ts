@@ -78,7 +78,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
     }
     if (advR.status === 'fulfilled' && advR.value?.data) {
         for (const a of advR.value.data) {
-            results.push({ type: 'advisory', title: a.title, subtitle: a.source, badge: a.severity, url: '/admin/threat/cyber-advisory' });
+            results.push({ type: 'advisory', title: a.title, subtitle: a.source, badge: a.severity, url: '/admin/threat/nigeria' });
         }
     }
     if (iocR.status === 'fulfilled' && iocR.value?.data) {

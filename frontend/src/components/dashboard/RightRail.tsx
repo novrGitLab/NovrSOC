@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { FileText, Zap, Settings, User, Bell, Key, Users, CreditCard, Building2, ChevronRight, X } from 'lucide-react';
+import { FileText, Zap, Settings, User, Bell, Users, CreditCard, ChevronRight, X } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { getAdminUser } from '@/lib/admin-auth';
 import { getPortalUser } from '@/lib/portal-auth';
@@ -70,24 +70,21 @@ function AccountOverviewCard({ portal }: { portal: 'admin' | 'client' }) {
                     </div>
                 ))}
             </div>
-            <a href={portal === 'admin' ? '/admin/settings' : '/client/settings'} className="block mt-4 text-xs text-purple hover:underline transition-colors">
-                View Full Account →
-            </a>
+            {/* Admin has no account page since the general settings page was removed (2026-10 cleanup). */}
+            {portal === 'client' && (
+                <a href="/client/settings" className="block mt-4 text-xs text-purple hover:underline transition-colors">
+                    View Full Account →
+                </a>
+            )}
         </div>
     );
 }
 
 function SettingsCard({ portal, base }: { portal: 'admin' | 'client'; base: string }) {
-    // Profile/Notifications/API Keys still deep-link into the single unified /settings page
-    // (hash fragment kept as a marker for a future per-section anchor) — those sub-pages
-    // don't exist yet. Organisations, Team Members, and Billing DO now have real dedicated
-    // pages (admin/settings/{organisations,team,billing}), so those three link straight there
-    // instead of a hash on the general settings page.
+    // Admin: only pages that exist. The general /admin/settings page (Profile, Notifications,
+    // API Keys anchors) and Settings > Organisations were removed in the 2026-10 cleanup.
+    // Client: Profile/Notifications deep-link into /client/settings (a placeholder page).
     const adminItems = [
-        { label: 'Profile & Account', href: `${base}/settings#profile`, icon: User },
-        { label: 'Notifications', href: `${base}/settings#notifications`, icon: Bell },
-        { label: 'API Keys', href: `${base}/settings#api`, icon: Key },
-        { label: 'Organisations', href: `${base}/settings/organisations`, icon: Building2 },
         { label: 'Team Members', href: `${base}/settings/team`, icon: Users },
         { label: 'Billing', href: `${base}/settings/billing`, icon: CreditCard },
     ];

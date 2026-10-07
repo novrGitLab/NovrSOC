@@ -1,5 +1,5 @@
 // How the platform recognises the OPNsense firewall among Wazuh agents: installed with the
-// os-wazuh-agent plugin (see /admin/infra/opnsense-setup), it enrols as an ordinary agent. It is
+// os-wazuh-agent plugin (see the OPNsense guide in lib/setupGuides.ts), it enrols as an ordinary agent. It is
 // matched by name, or by its VPN address. Shared by Network Topology and the setup guide so both
 // agree on whether the firewall is connected.
 
