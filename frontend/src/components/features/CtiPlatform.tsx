@@ -636,7 +636,7 @@ export function CtiPlatform() {
                                 {/* Actions */}
                                 <div className="px-5 py-3 bg-card/60 flex flex-wrap gap-3 border-t border-border">
                                     <button className="text-xs text-blue hover:text-purple font-medium transition-colors">+ Add to Blocklist</button>
-                                    <button className="text-xs text-blue hover:text-purple font-medium transition-colors">Create Incident</button>
+                                    <button className="text-xs text-blue hover:text-purple font-medium transition-colors">Create Case</button>
                                     <button className="text-xs text-blue hover:text-purple font-medium transition-colors">Export IOC</button>
                                     <a
                                         href="https://www.circl.lu/doc/misp/feed-osint/"

@@ -96,7 +96,7 @@ export async function sendIncidentAlert(incident: IncidentEmailData, recipientEm
         <tr><td style="padding: 8px 0; color: #7A8099; font-size: 13px;">Detected At</td><td style="font-size: 13px; color: #1C1F2E;">${incident.detected_at}</td></tr>
       </table>
       <div style="margin-top: 32px;">
-        <a href="https://app.novrsoc.com/admin/secops/incidents" style="background: #CC2B2B; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 14px;">
+        <a href="https://app.novrsoc.com/admin/secops/cases" style="background: #CC2B2B; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 14px;">
           View in NovrSOC →
         </a>
       </div>

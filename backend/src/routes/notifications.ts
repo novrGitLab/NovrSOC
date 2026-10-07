@@ -7,7 +7,7 @@ import { sendAlertCommunicationEmail, socNotificationRecipients } from '../servi
 // Not gated with requireAuth — Header.tsx (which polls this) is shared by both the admin app
 // and the client portal, and client-portal users carry a portal_token this backend's
 // requireAuth can't verify (see index.ts's block comment on the same constraint for
-// /api/incidents, /api/wazuh, etc.). Same open-by-necessity category as those routes.
+// /api/wazuh, etc.). Same open-by-necessity category as those routes.
 
 const router = Router();
 

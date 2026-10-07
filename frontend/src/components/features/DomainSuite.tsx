@@ -698,7 +698,7 @@ export function DomainSuite() {
                                             {activeTab === 'alerts' && (
                                                 <div className="bg-card rounded-xl border border-border overflow-hidden">
                                                     {view.alert_history.length === 0 ? (
-                                                        <p className="text-xs text-foreground-muted p-5 text-center">Zero security incidents or configuration changes logged.</p>
+                                                        <p className="text-xs text-foreground-muted p-5 text-center">No security events or configuration changes logged.</p>
                                                     ) : (
                                                         <div className="divide-y divide-border p-3 space-y-2">
                                                             {view.alert_history.map((a, i) => (

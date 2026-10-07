@@ -262,7 +262,7 @@ export function WebsiteScanning() {
                                 {/* Actions */}
                                 <div className="flex flex-wrap gap-3 mt-4 pt-4 border-t border-border">
                                     <button className="text-xs font-bold px-3 py-1.5 border border-border text-foreground-muted rounded-lg hover:bg-card-muted transition-colors">Export Report</button>
-                                    <button className="text-xs font-bold px-3 py-1.5 bg-orange hover:bg-orange-hover text-white rounded-lg transition-colors">Create Incidents for Findings</button>
+                                    <button className="text-xs font-bold px-3 py-1.5 bg-orange hover:bg-orange-hover text-white rounded-lg transition-colors">Create Cases for Findings</button>
                                     <button onClick={startScan} className="text-xs font-bold px-3 py-1.5 border border-blue text-blue rounded-lg hover:bg-blue/10 transition-colors ml-auto">Rescan</button>
                                 </div>
                             </div>

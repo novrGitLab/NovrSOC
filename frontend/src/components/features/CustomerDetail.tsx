@@ -32,7 +32,7 @@ interface PlatformUser { id: string; email: string; name: string | null; role: s
 
 const TABS = [
     { id: 'overview', label: 'Overview', icon: Building2 },
-    { id: 'incidents', label: 'Incidents', icon: Siren },
+    { id: 'incidents', label: 'Alerts', icon: Siren },
     { id: 'agents', label: 'Agents', icon: Server },
     { id: 'compliance', label: 'Compliance', icon: ClipboardCheck },
     { id: 'team', label: 'Team', icon: Users },
@@ -145,7 +145,7 @@ function IncidentsTab({ org }: { org: Org }) {
             .then((r) => r.json()).then(setData).catch(() => setData({ incidents: [], kpis: { total: 0, critical: 0, high: 0, medium: 0, low: 0 } }));
     }, [org.wazuh_group]);
 
-    if (!org.wazuh_group) return <p className="text-xs text-foreground-muted">No Wazuh group set for this org yet — set one in Settings to see live incidents.</p>;
+    if (!org.wazuh_group) return <p className="text-xs text-foreground-muted">No Wazuh group set for this org yet — set one in Settings to see live alerts.</p>;
     if (!data) return <div className="h-24 bg-card-muted rounded-xl animate-pulse" />;
 
     return (
@@ -159,7 +159,7 @@ function IncidentsTab({ org }: { org: Org }) {
                 ))}
             </div>
             {data.incidents.length === 0 ? (
-                <p className="text-xs text-foreground-muted py-6 text-center">No incidents in the last 7 days for this group.</p>
+                <p className="text-xs text-foreground-muted py-6 text-center">No alerts in the last 7 days for this group.</p>
             ) : (
                 <div className="bg-card border border-border rounded-xl divide-y divide-border">
                     {data.incidents.slice(0, 15).map((inc) => (

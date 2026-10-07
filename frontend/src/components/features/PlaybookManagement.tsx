@@ -239,7 +239,7 @@ export function PlaybookManagement() {
             <div className="flex items-center justify-between">
                 <div>
                     <h2 className="text-sm font-black text-foreground">Playbook Management</h2>
-                    <p className="text-xs text-foreground-muted">Create, edit, and delete the response playbooks analysts can attach to incidents.</p>
+                    <p className="text-xs text-foreground-muted">Create, edit, and delete the response playbooks analysts can attach to cases.</p>
                 </div>
                 <button onClick={startCreate} className="flex items-center gap-1.5 bg-orange hover:bg-orange-hover text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-colors">
                     <Plus size={14} /> New Playbook

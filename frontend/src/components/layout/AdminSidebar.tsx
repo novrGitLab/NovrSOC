@@ -43,8 +43,8 @@ const adminNav: NavGroup[] = [
         collapsible: true,
         icon: Activity,
         groupLabel: 'Security Operations',
-        // Incidents were renamed Cases (Supabase case management); /admin/secops/incidents
-        // redirects to /admin/secops/cases. Threat Hunting, Shift Handover and Reports are tabs
+        // Cases are Supabase case management (the old /admin/secops/incidents redirect is gone).
+        // Threat Hunting, Shift Handover and Reports are tabs
         // inside Sec Ops Management rather than nav entries.
         //
         // Whole section is executive: ❌ (NOT_EXEC). Sec Ops Management is CISO-only

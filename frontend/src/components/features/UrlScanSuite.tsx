@@ -296,7 +296,7 @@ export function UrlScanSuite() {
 
                                 {/* Actions */}
                                 <div className="px-5 py-3 bg-card/60 flex flex-wrap gap-3 border-t border-border">
-                                    <button className="text-xs text-blue hover:text-purple font-medium transition-colors">Create Incident</button>
+                                    <button className="text-xs text-blue hover:text-purple font-medium transition-colors">Create Case</button>
                                     <button className="text-xs text-blue hover:text-purple font-medium transition-colors">Add to Blocklist</button>
                                     <a
                                         href={`https://urlhaus.abuse.ch/browse/?search=${encodeURIComponent(result.url)}`}

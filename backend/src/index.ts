@@ -329,12 +329,9 @@ app.use('/api/threats', threatManagementRouter);
 // STIX export — gated: a bundle is the org's whole accumulated IOC set in one file.
 app.use('/api/intelligence', requireAuth, intelligenceRouter);
 // Cases (Supabase). Analyst-only: case records carry source IPs, host names
-// and CISO escalations for the whole SOC. /api/incidents is kept as an alias for old callers,
-// and is gated the same way — an open alias would make gating /api/cases pointless. This
-// removes /api/incidents from the open, portal-shared list above; the client portal's case
-// page shows a sign-in notice instead (see routes/cases.ts).
+// and CISO escalations for the whole SOC. The client portal's case page shows a sign-in notice
+// instead (see routes/cases.ts).
 app.use('/api/cases', requireAuth, casesRouter);
-app.use('/api/incidents', requireAuth, casesRouter);
 // SOAR reporting (requireAuth per route) + the engine's token-authenticated /enrich.
 app.use('/api/soar', soarRouter);
 // Header global search (requireAuth inside) and operator diagnostics (manager-only inside).

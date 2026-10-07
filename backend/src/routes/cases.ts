@@ -11,11 +11,9 @@ import { executeStep, isExecutableStep, EXECUTABLE_STEPS } from '../services/res
 
 // Cases API — Supabase-backed.
 //
-// Mounted at /api/cases, and at /api/incidents as an alias so any old caller keeps working.
-// Both mounts are behind requireAuth (index.ts). /api/incidents used to be open because the
-// client portal rendered the same workbench with a portal_token requireAuth can't verify; case
-// records now carry source IPs, host names and CISO escalations for the whole SOC, so they are
-// analyst-only and the portal page shows a sign-in notice instead.
+// Mounted at /api/cases behind requireAuth (index.ts). Case records carry source IPs, host names
+// and CISO escalations for the whole SOC, so they are analyst-only and the portal page shows a
+// sign-in notice instead.
 
 const router = Router();
 

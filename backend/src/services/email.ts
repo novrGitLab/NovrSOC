@@ -476,11 +476,11 @@ export async function sendCriticalAlertEmail(params: {
             </td>
             ${params.incidentId ? `
             <td style="padding-left:12px;">
-              <a href="https://socnovr.vercel.app/admin/secops/incidents"
+              <a href="https://socnovr.vercel.app/admin/secops/cases"
                  style="color:#520385;font-size:13px;font-weight:700;
                         text-decoration:none;padding:12px 24px;display:inline-block;
                         border:1px solid #520385;border-radius:8px;">
-                View Incident
+                View Case
               </a>
             </td>` : ''}
           </tr>
@@ -716,11 +716,11 @@ export async function sendIncidentResolvedEmail(params: {
           ✓ ${escapeHtml(a)}
         </p>`).join('')}
         <br/>
-        <a href="https://socnovr.vercel.app/admin/secops/incidents"
+        <a href="https://socnovr.vercel.app/admin/secops/cases"
            style="background:#520385;color:white;font-size:13px;font-weight:700;
                   text-decoration:none;padding:12px 24px;border-radius:8px;
                   display:inline-block;margin-top:8px;">
-          View Full Incident Report →
+          View Full Case Report →
         </a>
       </td>
     </tr>
@@ -869,7 +869,7 @@ export async function sendEscalationEmail(params: {
           ${byRow}
           ${noteRow}
         </table>
-        <a href="https://novr-soc.vercel.app/admin/secops/incidents"
+        <a href="https://novr-soc.vercel.app/admin/secops/cases"
            style="display:inline-block;background:#520385;color:white;padding:12px 24px;
                   border-radius:8px;text-decoration:none;font-weight:bold;margin-top:24px;font-size:13px;">
           View in NovrSOC →

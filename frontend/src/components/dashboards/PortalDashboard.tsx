@@ -175,7 +175,7 @@ export const PortalDashboard = () => {
 
     const kpiCards = [
         { label: 'Protected Endpoints', value: loading ? '...' : String(agents?.total ?? 0), color: 'text-blue', sub: undefined as string | undefined },
-        { label: 'Active Incidents (24h)', value: loading ? '...' : String(kpis?.total ?? 0), color: 'text-amber', sub: undefined as string | undefined },
+        { label: 'Alerts (7d)', value: loading ? '...' : String(kpis?.total ?? 0), color: 'text-amber', sub: undefined as string | undefined },
         { label: 'High Severity', value: loading ? '...' : String(kpis?.high ?? 0), color: 'text-red-500', sub: undefined as string | undefined },
         {
             label: 'Threats Blocked',
@@ -335,18 +335,18 @@ export const PortalDashboard = () => {
             <div className="bg-card border border-border rounded-xl overflow-hidden">
                 <div className="h-[3px] bg-blue from-blue via-blue to-red-500" />
                 <div className="p-4 flex items-center justify-between">
-                    <p className="text-xs font-black text-foreground">Recent Incidents</p>
-                    <Link href="/security-operations/incidents" className="text-[10px] font-bold text-blue hover:underline">View All →</Link>
+                    <p className="text-xs font-black text-foreground">Recent Alerts</p>
+                    <Link href="/client/secops/threats" className="text-[10px] font-bold text-blue hover:underline">View All →</Link>
                 </div>
                 {loading ? (
                     <div className="p-6 space-y-2">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-6 bg-card-muted rounded animate-pulse" />)}</div>
                 ) : incidents.length === 0 ? (
-                    <p className="text-xs text-foreground-muted text-center py-8">No incidents detected</p>
+                    <p className="text-xs text-foreground-muted text-center py-8">No alerts detected</p>
                 ) : (
                     <div className="overflow-x-auto">
                         <table className="w-full text-xs">
                             <thead><tr className="border-b border-border">
-                                {['Severity', 'Incident Name', 'Asset', 'Status', 'Detected'].map(h => (
+                                {['Severity', 'Alert', 'Asset', 'Status', 'Detected'].map(h => (
                                     <th key={h} className="text-left px-4 py-2 text-[10px] font-bold text-foreground-muted uppercase tracking-wider">{h}</th>
                                 ))}
                             </tr></thead>

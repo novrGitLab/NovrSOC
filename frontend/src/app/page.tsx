@@ -24,7 +24,7 @@ const FEATURES = [
         icon: '⚡', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
         title: 'SOAR Automation',
         desc: 'Detection → case created automatically → analyst notified in seconds → low-severity cases auto-close after 30 minutes with no analyst time spent.',
-        items: ['Zero-touch incident creation', 'Automated CISO escalation', 'Playbook-guided response'],
+        items: ['Zero-touch case creation', 'Automated CISO escalation', 'Playbook-guided response'],
     },
     {
         icon: '🇳🇬', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
@@ -54,7 +54,7 @@ const FEATURES = [
         icon: '🤖', tag: 'AI', tagColor: 'bg-purple-100 text-purple-700',
         title: 'NovrAI Security Analyst',
         desc: 'An AI security analyst on call 24/7, built on frontier language models and grounded in your live platform data rather than generic advice.',
-        items: ['Incident triage guidance', 'MITRE technique mapping', 'Compliance Q&A (NDPA/CBN)'],
+        items: ['Case triage guidance', 'MITRE technique mapping', 'Compliance Q&A (NDPA/CBN)'],
     },
     {
         icon: '✅', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',

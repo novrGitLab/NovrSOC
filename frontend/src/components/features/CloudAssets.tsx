@@ -239,7 +239,7 @@ export function CloudAssets() {
                     {[
                         { step: '01', text: 'Connect the cloud account with a read-only role.' },
                         { step: '02', text: 'NovrSOC ingests the provider’s audit log (CloudTrail, Activity Log, Cloud Audit Logs).' },
-                        { step: '03', text: 'Findings surface in Alerts and Incidents alongside endpoint detections.' },
+                        { step: '03', text: 'Findings surface in Alerts and Cases alongside endpoint detections.' },
                         { step: '04', text: 'Cloud resources appear in Digital Assets next to your agents.' },
                     ].map((s) => (
                         <div key={s.step} className="bg-card-muted/40 border border-border rounded-xl p-3">

@@ -473,7 +473,7 @@ const OnboardedClientsWidget = ({ clients, loading }: { clients: OnboardedClient
                         <table className="w-full text-xs">
                             <thead>
                                 <tr className="bg-card-muted border-b border-border">
-                                    {['Client Name', 'Industry', 'Endpoints', 'Incidents (24h)', 'Status'].map(h => (
+                                    {['Client Name', 'Industry', 'Endpoints', 'Alerts (7d)', 'Status'].map(h => (
                                         <th key={h} className="text-left py-2 px-3 text-[10px] font-bold text-foreground-muted uppercase tracking-wider">{h}</th>
                                     ))}
                                 </tr>
@@ -723,7 +723,7 @@ export const GeneralDashboard = () => {
 
             <OnboardedClientsWidget clients={clients} loading={clientsLoading} />
 
-            <ChartWrapper title="Security Posture & Incident Activity Trends">
+            <ChartWrapper title="Security Posture & Alert Activity Trends">
                 <div className="flex items-center gap-2 mb-3">
                     {([['24h', 'Last 24 Hours'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days']] as const).map(([val, label]) => (
                         <button key={val} onClick={() => { setTrendLoading(true); setTrendRange(val); }}

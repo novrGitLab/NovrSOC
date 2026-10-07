@@ -57,7 +57,7 @@ export function AllCustomers() {
                     { label: 'Total Customers', value: customers?.length ?? 0 },
                     { label: 'Active', value: customers?.filter((c) => c.status === 'active').length ?? 0 },
                     { label: 'Enterprise Plan', value: customers?.filter((c) => c.plan === 'enterprise').length ?? 0 },
-                    { label: 'Active Incidents', value: customers?.reduce((s, c) => s + c.activeIncidents, 0) ?? 0 },
+                    { label: 'Open Cases', value: customers?.reduce((s, c) => s + c.activeIncidents, 0) ?? 0 },
                 ].map((s) => (
                     <div key={s.label} className="bg-card border border-border rounded-xl p-4">
                         <div className="text-2xl font-black text-foreground">{loading ? '—' : s.value}</div>
