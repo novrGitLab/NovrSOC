@@ -5,6 +5,8 @@ import { sendBroadcastEmail } from '../services/email';
 import { blockAddress, isolateEndpoint, type LoggedResult } from '../services/responseActions';
 import { logAudit } from '../lib/audit';
 import { getSupabase } from '../services/geoEnrichment';
+import { enrichIOC, configuredSources, type IOCType } from '../services/iocEnrichment';
+import { isPrivateAddress } from '../services/emailsec/safeFetch';
 
 const router = Router();
 
@@ -32,13 +34,17 @@ router.post('/broadcast', async (req: AuthRequest, res) => {
     }
 });
 
-// POST /api/secops/hunting/escalate — Threat Hunting's "Add to Threats" action. Two writes:
-// the IOC goes into the shared threat-intel cache (ioc_enrichments, the same table
-// routes/cti.ts's manual lookup already caches into — confirmed live against the real table:
-// its actual columns are ioc_value/ioc_type/risk_score/tags/org_id/source/first_seen/last_seen,
-// no separate "verdict" column, so the analyst classification rides on the tags
-// instead), and a case is opened for analyst follow-up. source_id is the IOC, so hunting the
-// same IP twice returns the existing case rather than opening a second one.
+// POST /api/secops/hunting/escalate — Threat Hunting's "Add to Threats" action. Two steps:
+//   1. The IOC is enriched with the same pipeline as IOC Lookup (services/iocEnrichment.ts) and the
+//      real result is cached in ioc_enrichments (same table routes/cti.ts writes). When no
+//      enrichment source is configured for the IOC type, the IP is private, or enrichment fails,
+//      nothing is written:
+//      an unscored row would read as "clean" (risk_score is NOT NULL DEFAULT 0). The response
+//      says why in `ioc_note`.
+//   2. A case is opened for analyst follow-up. source_id is the IOC, so hunting the same IP twice
+//      returns the existing case rather than opening a second one.
+const HUNT_IOC_TYPES: IOCType[] = ['ip', 'domain', 'hash', 'url'];
+
 router.post('/hunting/escalate', async (req: AuthRequest, res) => {
     const { ioc_value, ioc_type, finding, source_alert_id } = req.body as {
         ioc_value?: string; ioc_type?: string; finding?: string; source_alert_id?: string;
@@ -49,23 +55,47 @@ router.post('/hunting/escalate', async (req: AuthRequest, res) => {
     }
 
     let iocSaved = false;
+    let iocNote: string | null = null;
+    let enrichment: { verdict: string; risk_score: number; sources: string[] } | null = null;
     const supabase = getSupabase();
-    if (supabase) {
-        const { error } = await supabase.from('ioc_enrichments').upsert(
-            {
-                ioc_value,
-                ioc_type,
-                // No risk_score: the analyst's finding isn't a computed score. (It was a hardcoded 85.)
-                // Omitted, an existing enriched score is kept; a new row gets the column default.
-                tags: ['threat-hunt', 'analyst-confirmed'],
-                org_id: req.user?.org_id ?? null,
-                source: 'threat_hunt',
-                last_seen: new Date().toISOString(),
-            },
-            { onConflict: 'ioc_value' },
-        );
-        iocSaved = !error;
-        if (error) console.error('[secops/hunting/escalate] ioc_enrichments upsert failed:', error.message);
+    const type = HUNT_IOC_TYPES.includes(ioc_type as IOCType) ? (ioc_type as IOCType) : null;
+    const sources = type ? configuredSources(type) : [];
+
+    if (!type) {
+        iocNote = `IOC type "${ioc_type}" cannot be enriched — not added to the IOC cache.`;
+    } else if (type === 'ip' && isPrivateAddress(ioc_value)) {
+        // Internal addresses are never sent to external intelligence services (same rule as
+        // IOC Lookup and the case enrich_iocs task).
+        iocNote = 'Private/internal IP — not sent to external threat-intelligence sources and not added to the IOC cache.';
+    } else if (sources.length === 0) {
+        iocNote = 'IOC enrichment is unavailable (no threat-intelligence keys configured for this IOC type) — not added to the IOC cache.';
+    } else if (!supabase) {
+        iocNote = 'Database not configured — the IOC was not cached.';
+    } else {
+        try {
+            const result = await enrichIOC(ioc_value, type);
+            enrichment = { verdict: result.verdict, risk_score: result.risk_score, sources };
+            const { error } = await supabase.from('ioc_enrichments').upsert(
+                {
+                    ioc_value,
+                    ioc_type: type,
+                    risk_score: result.risk_score,
+                    tags: [...new Set([...result.tags, 'threat-hunt', 'analyst-confirmed'])],
+                    org_id: req.user?.org_id ?? null,
+                    source: 'threat_hunt',
+                    last_seen: new Date().toISOString(),
+                },
+                { onConflict: 'ioc_value' },
+            );
+            iocSaved = !error;
+            if (error) {
+                console.error('[secops/hunting/escalate] ioc_enrichments upsert failed:', error.message);
+                iocNote = 'Enriched, but the IOC could not be cached.';
+            }
+        } catch (err) {
+            console.error('[secops/hunting/escalate] enrichment failed:', err instanceof Error ? err.message : err);
+            iocNote = 'IOC enrichment failed — not added to the IOC cache.';
+        }
     }
 
     const result = await createCase({
@@ -80,11 +110,11 @@ router.post('/hunting/escalate', async (req: AuthRequest, res) => {
     }, req.user?.email || 'analyst');
 
     if (!result.ok) {
-        res.status(result.status).json({ error: result.error, ioc_saved: iocSaved });
+        res.status(result.status).json({ error: result.error, ioc_saved: iocSaved, ioc_note: iocNote, enrichment });
         return;
     }
 
-    res.json({ success: true, case_id: result.case.id, case_number: result.case.case_number, created: result.created, ioc_saved: iocSaved });
+    res.json({ success: true, case_id: result.case.id, case_number: result.case.case_number, created: result.created, ioc_saved: iocSaved, ioc_note: iocNote, enrichment });
 });
 
 // Playbook step execution (Playbooks page → automated steps). These run the same real actions

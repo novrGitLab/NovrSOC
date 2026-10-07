@@ -4,10 +4,10 @@
 import { checkIP, type AbuseIPDBResult } from './abuseipdb';
 import { urlhausLookupURL, urlhausLookupHost, type URLHausResult, type URLHausHostResult } from './urlhaus';
 import { threatfoxSearchIOC, type ThreatFoxIOC } from './threatfox';
-import { vtCheckIP, vtCheckDomain, vtCheckHash, vtCheckURL, vtToRiskScore, type VTResult } from './virustotal';
-import { checkGreyNoise, type GreyNoiseResult } from './greynoise';
-import { checkLeakIX, type LeakIXResult } from './leakix';
-import { searchMISP, mispEventUrl } from './misp';
+import { vtCheckIP, vtCheckDomain, vtCheckHash, vtCheckURL, vtToRiskScore, isConfigured as vtConfigured, type VTResult } from './virustotal';
+import { checkGreyNoise, isGreyNoiseConfigured, type GreyNoiseResult } from './greynoise';
+import { checkLeakIX, isConfigured as leakixConfigured, type LeakIXResult } from './leakix';
+import { searchMISP, mispEventUrl, isMISPConfigured } from './misp';
 
 // OTX and Censys were removed from this pipeline (2026-09-09). OTX's pulse contribution is now
 // covered by ThreatFox (which has a working key here) plus the keyless CIRCL OSINT feed for the
@@ -54,6 +54,22 @@ function urlhausSummary(result: URLHausResult | URLHausHostResult | null): { sta
     const first = result.urls?.[0];
     if (!first) return null;
     return { status: first.url_status, threat: first.threat, tags: first.tags ?? [] };
+}
+
+// The keyed sources that can answer for this IOC type, mirroring enrichIOC's own per-type routing
+// below. Empty means enrichment is unavailable: enrichIOC would still return a result, but every
+// source would be blank and the score a meaningless 0.
+export function configuredSources(type: IOCType): string[] {
+    const has = (name: string) => (process.env[name] ?? '').trim().length > 0;
+    const out: string[] = [];
+    if (type === 'ip' && has('ABUSEIPDB_API_KEY')) out.push('abuseipdb');
+    if ((type === 'url' || type === 'domain') && has('URLHAUS_API_KEY')) out.push('urlhaus');
+    if (has('THREATFOX_API_KEY')) out.push('threatfox');
+    if (vtConfigured()) out.push('virustotal');
+    if (type === 'ip' && isGreyNoiseConfigured()) out.push('greynoise');
+    if (type === 'ip' && leakixConfigured()) out.push('leakix');
+    if (isMISPConfigured()) out.push('misp');
+    return out;
 }
 
 export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedIOC> {

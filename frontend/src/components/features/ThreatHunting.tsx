@@ -65,7 +65,11 @@ export function ThreatHunting() {
             });
             const data = await res.json();
             if (!res.ok || !data?.success) throw new Error(data?.error || `HTTP ${res.status}`);
-            setEscalateResult({ ok: true, message: data.created === false ? `Added to threat intel — this IOC already has case ${data.case_number}.` : `Added to threat intel and case ${data.case_number} created.` });
+            // The IOC is only cached when real enrichment ran; otherwise the backend says why.
+            const intel = data.ioc_saved
+                ? `Added to threat intel (verdict ${data.enrichment?.verdict ?? 'unknown'}, score ${data.enrichment?.risk_score ?? '—'})`
+                : `Not added to threat intel: ${data.ioc_note ?? 'enrichment unavailable'}`;
+            setEscalateResult({ ok: true, message: data.created === false ? `${intel} — this IOC already has case ${data.case_number}.` : `${intel}. Case ${data.case_number} created.` });
         } catch (err) {
             setEscalateResult({ ok: false, message: err instanceof Error ? err.message : 'Failed to escalate' });
         } finally {
