@@ -35,15 +35,18 @@ router.post('/broadcast', async (req: AuthRequest, res) => {
 });
 
 // POST /api/secops/hunting/escalate — Threat Hunting's "Add to Threats" action. Two steps:
-//   1. The IOC is enriched with the same pipeline as IOC Lookup (services/iocEnrichment.ts) and the
-//      real result is cached in ioc_enrichments (same table routes/cti.ts writes). When no
-//      enrichment source is configured for the IOC type, the IP is private, or enrichment fails,
-//      nothing is written:
-//      an unscored row would read as "clean" (risk_score is NOT NULL DEFAULT 0). The response
-//      says why in `ioc_note`.
-//   2. A case is opened for analyst follow-up. source_id is the IOC, so hunting the same IP twice
-//      returns the existing case rather than opening a second one.
+//   1. A case is opened for analyst follow-up. source_id is the IOC, so hunting the same IP twice
+//      returns the existing case rather than opening a second one. If the case cannot be opened,
+//      the request fails and no enrichment is attempted.
+//   2. The IOC is then enriched with the same pipeline as IOC Lookup (services/iocEnrichment.ts),
+//      each source capped at HUNT_ENRICH_TIMEOUT_MS, and the real result is cached in
+//      ioc_enrichments (same table routes/cti.ts writes). Enrichment never fails the request:
+//      the case already exists. When no source is configured for the IOC type, the IP is
+//      private, every source timed out, or enrichment fails, nothing is written: an unscored row
+//      would read as "clean" (risk_score is NOT NULL DEFAULT 0). The response says why in
+//      `ioc_note`.
 const HUNT_IOC_TYPES: IOCType[] = ['ip', 'domain', 'hash', 'url'];
+const HUNT_ENRICH_TIMEOUT_MS = 5000;
 
 router.post('/hunting/escalate', async (req: AuthRequest, res) => {
     const { ioc_value, ioc_type, finding, source_alert_id } = req.body as {
@@ -54,9 +57,28 @@ router.post('/hunting/escalate', async (req: AuthRequest, res) => {
         return;
     }
 
+    const result = await createCase({
+        title: `Threat Hunt Finding: ${ioc_value}`,
+        description: `${finding}${source_alert_id ? `\n\nSource alert: ${source_alert_id}` : ''}`,
+        severity: 'high',
+        source: 'threat_hunt',
+        source_id: `${ioc_type}:${ioc_value}`,
+        source_ip: ioc_type === 'ip' ? ioc_value : null,
+        org_id: req.user?.org_id,
+        tags: ['threat-hunt', 'manual'],
+    }, req.user?.email || 'analyst');
+
+    if (!result.ok) {
+        res.status(result.status).json({
+            error: result.error, ioc_saved: false,
+            ioc_note: 'IOC enrichment not attempted — the case could not be opened.', enrichment: null,
+        });
+        return;
+    }
+
     let iocSaved = false;
     let iocNote: string | null = null;
-    let enrichment: { verdict: string; risk_score: number; sources: string[] } | null = null;
+    let enrichment: { verdict: string; risk_score: number; sources: string[]; timed_out: string[] } | null = null;
     const supabase = getSupabase();
     const type = HUNT_IOC_TYPES.includes(ioc_type as IOCType) ? (ioc_type as IOCType) : null;
     const sources = type ? configuredSources(type) : [];
@@ -73,45 +95,37 @@ router.post('/hunting/escalate', async (req: AuthRequest, res) => {
         iocNote = 'Database not configured — the IOC was not cached.';
     } else {
         try {
-            const result = await enrichIOC(ioc_value, type);
-            enrichment = { verdict: result.verdict, risk_score: result.risk_score, sources };
-            const { error } = await supabase.from('ioc_enrichments').upsert(
-                {
-                    ioc_value,
-                    ioc_type: type,
-                    risk_score: result.risk_score,
-                    tags: [...new Set([...result.tags, 'threat-hunt', 'analyst-confirmed'])],
-                    org_id: req.user?.org_id ?? null,
-                    source: 'threat_hunt',
-                    last_seen: new Date().toISOString(),
-                },
-                { onConflict: 'ioc_value' },
-            );
-            iocSaved = !error;
-            if (error) {
-                console.error('[secops/hunting/escalate] ioc_enrichments upsert failed:', error.message);
-                iocNote = 'Enriched, but the IOC could not be cached.';
+            const enriched = await enrichIOC(ioc_value, type, { timeoutMs: HUNT_ENRICH_TIMEOUT_MS });
+            const timedOut = enriched.timed_out ?? [];
+            const answered = sources.filter((s) => !timedOut.includes(s));
+            if (answered.length === 0) {
+                iocNote = `IOC enrichment timed out (${HUNT_ENRICH_TIMEOUT_MS / 1000}s per source) — not added to the IOC cache.`;
+            } else {
+                enrichment = { verdict: enriched.verdict, risk_score: enriched.risk_score, sources: answered, timed_out: timedOut };
+                const { error } = await supabase.from('ioc_enrichments').upsert(
+                    {
+                        ioc_value,
+                        ioc_type: type,
+                        risk_score: enriched.risk_score,
+                        tags: [...new Set([...enriched.tags, 'threat-hunt', 'analyst-confirmed'])],
+                        org_id: req.user?.org_id ?? null,
+                        source: 'threat_hunt',
+                        last_seen: new Date().toISOString(),
+                    },
+                    { onConflict: 'ioc_value' },
+                );
+                iocSaved = !error;
+                if (error) {
+                    console.error('[secops/hunting/escalate] ioc_enrichments upsert failed:', error.message);
+                    iocNote = 'Enriched, but the IOC could not be cached.';
+                } else if (timedOut.length > 0) {
+                    iocNote = `Enriched without ${timedOut.join(', ')} (timed out after ${HUNT_ENRICH_TIMEOUT_MS / 1000}s).`;
+                }
             }
         } catch (err) {
             console.error('[secops/hunting/escalate] enrichment failed:', err instanceof Error ? err.message : err);
             iocNote = 'IOC enrichment failed — not added to the IOC cache.';
         }
-    }
-
-    const result = await createCase({
-        title: `Threat Hunt Finding: ${ioc_value}`,
-        description: `${finding}${source_alert_id ? `\n\nSource alert: ${source_alert_id}` : ''}`,
-        severity: 'high',
-        source: 'threat_hunt',
-        source_id: `${ioc_type}:${ioc_value}`,
-        source_ip: ioc_type === 'ip' ? ioc_value : null,
-        org_id: req.user?.org_id,
-        tags: ['threat-hunt', 'manual'],
-    }, req.user?.email || 'analyst');
-
-    if (!result.ok) {
-        res.status(result.status).json({ error: result.error, ioc_saved: iocSaved, ioc_note: iocNote, enrichment });
-        return;
     }
 
     res.json({ success: true, case_id: result.case.id, case_number: result.case.case_number, created: result.created, ioc_saved: iocSaved, ioc_note: iocNote, enrichment });

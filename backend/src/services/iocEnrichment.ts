@@ -42,6 +42,13 @@ export interface EnrichedIOC {
     };
     tags: string[];
     enriched_at: string;
+    /** Sources that hit EnrichOptions.timeoutMs and were treated as no answer. Only set when a timeout was given. */
+    timed_out?: string[];
+}
+
+export interface EnrichOptions {
+    /** Hard per-source timeout in ms. A source that exceeds it counts as no answer (its request is not awaited further). */
+    timeoutMs?: number;
 }
 
 function urlhausSummary(result: URLHausResult | URLHausHostResult | null): { status: string; threat: string; tags: string[] } | null {
@@ -72,7 +79,25 @@ export function configuredSources(type: IOCType): string[] {
     return out;
 }
 
-export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedIOC> {
+export async function enrichIOC(value: string, type: IOCType, options: EnrichOptions = {}): Promise<EnrichedIOC> {
+    const timedOut: string[] = [];
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const limit = <T,>(name: string, p: Promise<T>): Promise<T> => {
+        if (!options.timeoutMs) return p;
+        let settled = false;
+        const tracked = p.finally(() => { settled = true; });
+        return Promise.race([
+            tracked,
+            new Promise<T>((_, reject) => {
+                timers.push(setTimeout(() => {
+                    if (settled) return;
+                    timedOut.push(name);
+                    reject(new Error(`${name} timed out after ${options.timeoutMs}ms`));
+                }, options.timeoutMs));
+            }),
+        ]);
+    };
+
     const abuseLookup: Promise<AbuseIPDBResult | null> = type === 'ip' ? checkIP(value) : Promise.resolve(null);
 
     const urlhausLookup: Promise<URLHausResult | URLHausHostResult | null> =
@@ -100,8 +125,10 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
     const mispLookup = searchMISP(value);
 
     const [abuseResult, urlhausResult, threatfoxResult, vtResult, greynoiseResult, leakixResult, mispResult] = await Promise.allSettled([
-        abuseLookup, urlhausLookup, threatfoxLookup, vtLookup, greynoiseLookup, leakixLookup, mispLookup,
+        limit('abuseipdb', abuseLookup), limit('urlhaus', urlhausLookup), limit('threatfox', threatfoxLookup), limit('virustotal', vtLookup),
+        limit('greynoise', greynoiseLookup), limit('leakix', leakixLookup), limit('misp', mispLookup),
     ]);
+    for (const t of timers) clearTimeout(t);
 
     const abuse = abuseResult.status === 'fulfilled' ? abuseResult.value : null;
     const urlhaus = urlhausSummary(urlhausResult.status === 'fulfilled' ? urlhausResult.value : null);
@@ -209,5 +236,6 @@ export async function enrichIOC(value: string, type: IOCType): Promise<EnrichedI
         },
         tags: [...tags],
         enriched_at: new Date().toISOString(),
+        ...(options.timeoutMs ? { timed_out: timedOut } : {}),
     };
 }
