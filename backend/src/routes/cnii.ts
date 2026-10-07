@@ -5,10 +5,11 @@
 //   POST /assets            { ip, sectorId, subfield? } → upsert into cnii_assets, using the
 //                           server's cached scan for that IP (raw data, CVEs) when there is one.
 //   GET  /assets            cnii_assets rows (?sector=, ?ip=)
-//   GET  /alerts            Wazuh alerts (indexer) whose agent.ip / data.srcip / data.dstip is a
-//                           monitored asset (?sector=, ?ip=)
-//   GET  /vulns             CVEs stored from each asset's last scan, plus Wazuh vulnerability
-//                           state for any monitored IP that is also a Wazuh agent (?sector=, ?ip=)
+//   GET  /alerts            not available: always 503 not_connected (?sector=, ?ip= still validated).
+//                           CNII Watch no longer reads Wazuh endpoint alerts (2026-10 cleanup) and no
+//                           other alert source is connected.
+//   GET  /vulns             CVEs stored from each asset's last SpiderFoot scan (?sector=, ?ip=).
+//                           Wazuh vulnerability state is no longer merged in.
 //
 // Response shapes: frontend/src/lib/cnii-types.ts. When a dependency is missing or down the route
 // says so (503 not_connected / 502) — it never substitutes sample data or reports a save that
@@ -17,8 +18,6 @@ import { Router, Response } from 'express';
 import { isIP } from 'net';
 import { AuthRequest, requireRole } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
-import { search } from '../lib/wazuh-indexer';
-import { wazuhGet } from '../lib/wazuh';
 import { scanIP, spiderfootConfigured, SpiderFootError, type SpiderFootVuln } from '../lib/spiderfoot';
 import { lookupIP, openctiConfigured } from '../lib/opencti';
 import { classifySector, assessCnii, type CniiLikelihood } from '../lib/cnii-classify';
@@ -288,81 +287,21 @@ router.post('/assets', canWrite, async (req: AuthRequest, res) => {
 });
 
 // ── Alerts ────────────────────────────────────────────────────────────────────────────────
-
-const severityFromLevel = (level: number) => (level >= 12 ? 'critical' : level >= 7 ? 'high' : level >= 4 ? 'medium' : 'low');
-
-interface AlertHit {
-    _id: string;
-    _source: { timestamp?: string; rule?: { description?: string; level?: number }; agent?: { ip?: string }; data?: { srcip?: string; dstip?: string } };
-}
+//
+// No CNII alert source is connected. This used to match Wazuh endpoint alerts against monitored
+// IPs; Wazuh was decoupled from CNII Watch, so the feed now says it is not available.
 
 router.get('/alerts', canRead, async (req: AuthRequest, res) => {
-    const filter = readFilter(req, res);
-    if (!filter) return;
-    try {
-        const assets = await loadAssets(filter);
-        if (!assets.length) return res.json([]);
-        if (!process.env.WAZUH_INDEXER_HOST) return notConnected(res, 'alerts', 'The Wazuh indexer is not configured (WAZUH_INDEXER_HOST).');
-
-        const sectorOf = new Map(assets.map((a) => [a.ip, a.sector_id]));
-        const ips = [...sectorOf.keys()];
-        let result: { hits?: { hits?: AlertHit[] } } | null;
-        try {
-            result = await search('wazuh-alerts-4.x-*', {
-                size: 200,
-                sort: [{ timestamp: 'desc' }],
-                _source: ['timestamp', 'rule.description', 'rule.level', 'agent.ip', 'data.srcip', 'data.dstip'],
-                query: {
-                    bool: {
-                        filter: [{ range: { timestamp: { gte: 'now-7d' } } }],
-                        should: [{ terms: { 'agent.ip': ips } }, { terms: { 'data.srcip': ips } }, { terms: { 'data.dstip': ips } }],
-                        minimum_should_match: 1,
-                    },
-                },
-            });
-        } catch (err) {
-            return res.status(502).json({ error: `Wazuh indexer query failed: ${(err as Error).message}` });
-        }
-
-        const alerts = (result?.hits?.hits ?? []).flatMap((h) => {
-            const s = h._source;
-            const ip = [s.agent?.ip, s.data?.srcip, s.data?.dstip].find((x): x is string => !!x && sectorOf.has(x));
-            if (!ip) return [];
-            return [{
-                id: h._id, ip, sectorId: sectorOf.get(ip)!, title: s.rule?.description ?? 'Wazuh alert',
-                severity: severityFromLevel(s.rule?.level ?? 0), timestamp: s.timestamp ?? '', source: 'wazuh' as const,
-            }];
-        });
-        res.json(alerts);
-    } catch (err) {
-        sendFeedError(res, err);
-    }
+    if (!readFilter(req, res)) return;
+    return notConnected(res, 'alerts', 'CNII alerts are not available — no alert source is connected to CNII Watch.');
 });
 
 // ── Vulnerabilities ──────────────────────────────────────────────────────────────────────
 
-const vulnSeverity = (s: string | undefined): CniiVulnOut['severity'] => {
-    const x = (s ?? '').toLowerCase();
-    return x === 'critical' || x === 'high' || x === 'medium' || x === 'low' ? x : 'low';
-};
-
 interface CniiVulnOut {
     id: string; ip: string; sectorId: string; cve: string; title: string; cvss: number;
     severity: 'critical' | 'high' | 'medium' | 'low'; affectedService?: string; complianceImpact: string[];
-    status: 'open'; discoveredAt: string; source: 'spiderfoot' | 'wazuh';
-}
-
-interface VulnHit {
-    _id: string;
-    _source: { agent?: { id?: string }; package?: { name?: string; version?: string }; vulnerability?: { id?: string; description?: string; severity?: string; score?: { base?: number }; detected_at?: string } };
-}
-
-// Monitored IPs that are also Wazuh agents → their agent ids. Wazuh's vulnerability state
-// index identifies hosts by agent, not by IP.
-async function agentIdsFor(ips: Set<string>): Promise<Map<string, string>> {
-    const r = await wazuhGet('/agents?select=ip&limit=10000');
-    const items = (r.json as { data?: { affected_items?: { id: string; ip?: string }[] } } | null)?.data?.affected_items ?? [];
-    return new Map(items.filter((a) => a.ip && ips.has(a.ip)).map((a) => [a.id, a.ip!]));
+    status: 'open'; discoveredAt: string; source: 'spiderfoot';
 }
 
 router.get('/vulns', canRead, async (req: AuthRequest, res) => {
@@ -374,43 +313,13 @@ router.get('/vulns', canRead, async (req: AuthRequest, res) => {
         const byIp = new Map(assets.map((a) => [a.ip, a]));
         const complianceFor = (ip: string) => SECTOR_BY_ID[byIp.get(ip)!.sector_id]?.compliance ?? [];
 
-        // 1. CVEs stored from each asset's last scan.
+        // CVEs stored from each asset's last scan.
         const vulns: CniiVulnOut[] = assets.flatMap((a) => (a.vulns ?? []).map((v): CniiVulnOut => ({
             id: `${a.ip}:${v.cve}`, ip: a.ip, sectorId: a.sector_id, cve: v.cve, title: v.cve,
             cvss: v.cvss ?? 0, severity: v.severity, affectedService: v.service,
             complianceImpact: complianceFor(a.ip), status: 'open', discoveredAt: a.last_seen, source: 'spiderfoot',
         })));
 
-        // 2. Wazuh vulnerability state for monitored IPs that run a Wazuh agent. If Wazuh is
-        //    unavailable the scan CVEs are still returned, and the response says what's missing.
-        if (process.env.WAZUH_HOST && process.env.WAZUH_INDEXER_HOST) {
-            try {
-                const agents = await agentIdsFor(new Set(byIp.keys()));
-                if (agents.size) {
-                    const r = await search<{ hits?: { hits?: VulnHit[] } }>('wazuh-states-vulnerabilities-*', {
-                        size: 500,
-                        sort: [{ 'vulnerability.score.base': { order: 'desc' } }],
-                        query: { terms: { 'agent.id': [...agents.keys()] } },
-                    });
-                    for (const h of r?.hits?.hits ?? []) {
-                        const ip = agents.get(h._source.agent?.id ?? '');
-                        const v = h._source.vulnerability;
-                        if (!ip || !v?.id) continue;
-                        const pkg = [h._source.package?.name, h._source.package?.version].filter(Boolean).join(' ');
-                        vulns.push({
-                            id: h._id, ip, sectorId: byIp.get(ip)!.sector_id, cve: v.id, title: v.description?.slice(0, 200) || v.id,
-                            cvss: v.score?.base ?? 0, severity: vulnSeverity(v.severity), affectedService: pkg || undefined,
-                            complianceImpact: complianceFor(ip), status: 'open', discoveredAt: v.detected_at ?? '', source: 'wazuh',
-                        });
-                    }
-                }
-            } catch (err) {
-                console.error('[cnii] Wazuh vulnerability lookup failed:', (err as Error).message);
-                res.setHeader('X-CNII-Partial', 'wazuh-unavailable');
-            }
-        } else {
-            res.setHeader('X-CNII-Partial', 'wazuh-not-configured');
-        }
         res.json(vulns);
     } catch (err) {
         sendFeedError(res, err);

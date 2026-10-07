@@ -30,7 +30,7 @@ export interface CniiAlert {
   title: string;
   severity: 'critical' | 'high' | 'medium' | 'low';
   timestamp: string;
-  source: 'wazuh' | 'spiderfoot' | 'opencti';
+  source: 'spiderfoot' | 'opencti';
 }
 
 export interface CniiVuln {
@@ -45,7 +45,7 @@ export interface CniiVuln {
   complianceImpact: string[];
   status: 'open' | 'in_progress' | 'patched';
   discoveredAt: string;
-  source?: 'spiderfoot' | 'wazuh';
+  source?: 'spiderfoot';
 }
 
 export interface ScanResult {

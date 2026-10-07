@@ -33,48 +33,31 @@ interface NigeriaThreatsSummary {
     critical_states: number;
     states_affected: number;
     top_state: string | null;
-    today_attacks: number;
-    malware: number;
-    phishing: number;
-    botnets: number;
-    ransomware: number;
-    ddos: number;
-    credential_theft: number;
+    // null: not available from collector data (it has no per-type totals or time window).
+    today_attacks: number | null;
+    malware: number | null;
+    phishing: number | null;
+    botnets: number | null;
+    ransomware: number | null;
+    ddos: number | null;
+    credential_theft: number | null;
     highest_attack_states: { name: string; count: number; state: string; threat_type: string }[];
     threat_level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'CLEAR';
     error?: string;
-}
-
-interface EnrichmentCoverage {
-    unattributed_ips: number;
-    ips_enriched: number;
-    nigerian_confirmed: number;
-    threats_added_by_enrichment: number;
 }
 
 interface NigeriaThreatsResponse {
     states: NigeriaStateData[];
     summary: NigeriaThreatsSummary;
     source: string;
-    // True when Wazuh attributed no alerts to any Nigerian state and the backend fell back to
-    // the illustrative baseline in nigeria_state_threats. The map is badged in that case — a
-    // populated map must never be mistaken for live telemetry.
+    // True when demo rows from an earlier deploy (the seeder has been removed) are still in
+    // nigeria_state_threats. The map is badged so they can't be mistaken for collected data.
     demo_data?: boolean;
     // Which intelligence feeds can currently contribute, derived server-side from what's
     // actually configured — so a quiet map can be explained rather than just looking broken.
     sources_active?: Array<{ name: string; active: boolean; detail: string }>;
-    /** Set by /api/dashboard/nigeria-threats when Wazuh was unreachable and the states shown
-     *  came only from the independent collector. */
-    collector_only?: boolean;
-    enrichment_coverage?: EnrichmentCoverage;
     generated_at: string;
 }
-
-const TIME_RANGES: { value: '1h' | '24h' | '7d'; label: string }[] = [
-    { value: '1h', label: 'Last 1hr' },
-    { value: '24h', label: 'Last 24hr' },
-    { value: '7d', label: 'Last 7 days' },
-];
 
 const THREAT_LEVEL_COLOR: Record<string, string> = {
     CRITICAL: 'text-red-500',
@@ -86,7 +69,6 @@ const THREAT_LEVEL_COLOR: Record<string, string> = {
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] | null }) => {
-    const [timeRange, setTimeRange] = useState<'1h' | '24h' | '7d'>('24h');
     const [colorMode, setColorMode] = useState<'threat' | 'region'>('threat');
     const [data, setData] = useState<NigeriaThreatsResponse | null>(null);
     const [isLoading, setIsLoading] = useState(true);
@@ -98,7 +80,7 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
     const loadData = () => {
         setIsLoading(true);
         setFetchError(null);
-        apiFetch(apiUrl(`/api/dashboard/nigeria-threats?range=${timeRange}`), { cache: 'no-store' })
+        apiFetch(apiUrl('/api/dashboard/nigeria-threats'), { cache: 'no-store' })
             .then(async (r) => {
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 return r.json();
@@ -115,7 +97,7 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
 
     useEffect(() => {
         loadData();
-    }, [timeRange]);
+    }, []);
 
     // Runs the Nigerian collector on demand (GreyNoise + Feodo + CIRCL, plus FOFA when keyed),
     // then reloads. The run makes external calls per IP and takes tens of seconds, so the button
@@ -165,15 +147,15 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
 
     const STAT_CARDS: { title: string; value: number | string; color: string }[] = [
         { title: 'Threat Score', value: summary?.threat_score ?? 0, color: 'text-red-500' },
-        { title: "Today's Attacks", value: summary?.today_attacks ?? 0, color: 'text-red-500' },
+        { title: "Today's Attacks", value: summary?.today_attacks ?? '—', color: 'text-red-500' },
         { title: 'Critical States', value: summary?.critical_states ?? 0, color: 'text-purple' },
         { title: 'States Affected', value: summary ? `${summary.states_affected}/37` : '0/37', color: 'text-purple' },
         { title: 'Most Targeted', value: summary?.top_state ?? 'None', color: 'text-foreground' },
-        { title: 'Malware', value: summary?.malware ?? 0, color: 'text-blue-500' },
-        { title: 'Botnets', value: summary?.botnets ?? 0, color: 'text-blue-500' },
-        { title: 'Phishing', value: summary?.phishing ?? 0, color: 'text-amber-500' },
-        { title: 'Ransomware', value: summary?.ransomware ?? 0, color: 'text-red-500' },
-        { title: 'DDoS', value: summary?.ddos ?? 0, color: 'text-blue-500' },
+        { title: 'Malware', value: summary?.malware ?? '—', color: 'text-blue-500' },
+        { title: 'Botnets', value: summary?.botnets ?? '—', color: 'text-blue-500' },
+        { title: 'Phishing', value: summary?.phishing ?? '—', color: 'text-amber-500' },
+        { title: 'Ransomware', value: summary?.ransomware ?? '—', color: 'text-red-500' },
+        { title: 'DDoS', value: summary?.ddos ?? '—', color: 'text-blue-500' },
     ];
 
     const highestAttackStates = summary?.highest_attack_states ?? [];
@@ -188,7 +170,7 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
                             <SectionHeader title="Nigeria National Threat Landscape" />
                             {data?.demo_data && (
                                 <span
-                                    title="Wazuh reported no geolocated Nigerian activity in this window, so an illustrative baseline is shown instead of an empty map."
+                                    title="Rows written by a since-removed demo seeder are still in the database. They are cleared automatically when the collector writes real counts."
                                     className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200 uppercase"
                                 >
                                     Demonstration data
@@ -198,9 +180,7 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
                         <p className="text-sm text-muted-foreground">
                             {data?.demo_data
                                 ? 'Illustrative baseline — not live telemetry. Replaced automatically once real intelligence is collected.'
-                                : data?.source === 'collector'
-                                    ? 'Collected threat intelligence — GreyNoise, Feodo Tracker and CIRCL, geolocated to state by IPregistry.'
-                                    : 'Real-time cyber activity across Nigerian states'}
+                                : 'Collected threat intelligence — GreyNoise, Feodo Tracker and CIRCL, geolocated to state by IPregistry.'}
                             {fetchError && <span className="text-red-500"> · Connection error: {fetchError}</span>}
                             {data?.summary.error && <span className="text-amber-500"> · {data.summary.error}</span>}
                         </p>
@@ -235,15 +215,10 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
                             </div>
                         )}
 
-                        {/* Says where this map's numbers come from. The state counts are built
-                            from the sources above — which observe Nigerian networks generally —
-                            and Wazuh alerts are added on top where this estate saw something.
-                            Neither is a subset of the other, and the map still renders if the
-                            Wazuh indexer is down. */}
+                        {/* Says where this map's numbers come from. */}
                         <p className="text-[10px] text-muted-foreground mt-2 max-w-2xl leading-relaxed">
-                            Nigerian threat data is collected independently of endpoint monitoring.
-                            Wazuh alerts are added on top when this deployment detects an attack
-                            {data?.collector_only ? ' — the Wazuh indexer is currently unreachable, so only independently collected data is shown' : ''}.
+                            Nigerian threat data is collected independently of endpoint monitoring and describes
+                            Nigerian networks generally. Counts are cumulative; Wazuh alerts are not included.
                         </p>
                     </div>
                     <div className="text-right flex items-center gap-4">
@@ -280,17 +255,6 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
                                         </button>
                                     ))}
                                 </div>
-                                {TIME_RANGES.map((r) => (
-                                    <button
-                                        key={r.value}
-                                        onClick={() => setTimeRange(r.value)}
-                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                                            timeRange === r.value ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground border border-border hover:text-foreground'
-                                        }`}
-                                    >
-                                        {r.label}
-                                    </button>
-                                ))}
                                 <button
                                     onClick={toggleFullscreen}
                                     className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
@@ -344,7 +308,6 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
                 <div className="flex items-center gap-2 mt-6 mb-3 px-1 flex-wrap">
                     <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">Data sources:</span>
                     {[
-                        { name: 'Wazuh', active: !!data && !data.summary.error, color: 'bg-purple' },
                         { name: 'IPregistry', active: !!data, color: 'bg-blue-500' },
                         { name: 'RIPE Stat', active: !!data, color: 'bg-blue-500' },
                         { name: 'AFRINIC', active: !!data, color: 'bg-emerald-500' },
@@ -354,9 +317,6 @@ export const NigeriaThreatMap = ({ advisories }: { advisories?: FeedAdvisory[] |
                             <span className="text-[9px] font-medium text-muted-foreground">{source.name}</span>
                         </div>
                     ))}
-                    <span className="text-[10px] text-muted-foreground ml-auto">
-                        {data?.enrichment_coverage?.nigerian_confirmed ?? 0} Nigerian IPs enriched beyond Wazuh&apos;s own geolocation
-                    </span>
                 </div>
 
                 {/* Highest attack states */}

@@ -45,22 +45,18 @@ export async function hasDemoData(): Promise<boolean> {
     }
 }
 
-// Reads whatever is currently in nigeria_state_threats. The Nigeria map builds its states from
-// Wazuh alerts, NOT from this table, so seeding alone would leave the map on zeros — routes/
-// dashboard.ts overlays these rows only when Wazuh attributed nothing to any Nigerian state.
+// Reads the collector's non-zero rows from nigeria_state_threats for the Nigeria map
+// (routes/dashboard.ts). Throws on a query error so the map can report an outage instead of
+// rendering an all-clear; returns [] only when the database isn't configured.
 export async function readSeededStates(): Promise<SeededStateRow[]> {
     const supabase = getSupabase();
     if (!supabase) return [];
-    try {
-        const { data, error } = await supabase
-            .from('nigeria_state_threats')
-            .select('state_name, attack_count, threat_score, dominant_type, critical_flag')
-            .gt('attack_count', 0);
-        if (error) return [];
-        return (data ?? []) as SeededStateRow[];
-    } catch {
-        return [];
-    }
+    const { data, error } = await supabase
+        .from('nigeria_state_threats')
+        .select('state_name, attack_count, threat_score, dominant_type, critical_flag')
+        .gt('attack_count', 0);
+    if (error) throw new Error(`nigeria_state_threats read failed: ${error.message}`);
+    return (data ?? []) as SeededStateRow[];
 }
 
 // Wipes the illustrative baseline so real collected data starts from clean zeros.

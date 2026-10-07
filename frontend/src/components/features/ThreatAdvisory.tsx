@@ -94,9 +94,6 @@ export function ThreatAdvisory() {
     // sector filter below needs enough volume to be useful after narrowing.
     const [days, setDays] = useState(30);
     const [sector, setSector] = useState('All');
-    // { [cve]: agentNames[] } from GET /api/threat/advisory/affected-agents — which of THIS
-    // estate's agents actually carry each CVE, per Wazuh's own vulnerability index.
-    const [affectedAgents, setAffectedAgents] = useState<Record<string, string[]>>({});
 
     const loadRecent = () => {
         setLoading(true);
@@ -129,13 +126,6 @@ export function ThreatAdvisory() {
             .catch(() => setAssets([]))
             .finally(() => { setLoading(false); setAssetsLoaded(true); });
     };
-
-    useEffect(() => {
-        apiFetch(apiUrl('/api/threat/advisory/affected-agents'), { cache: 'no-store' })
-            .then((r) => r.json())
-            .then((d) => setAffectedAgents(d?.affected && typeof d.affected === 'object' ? d.affected : {}))
-            .catch(() => setAffectedAgents({}));
-    }, []);
 
     useEffect(() => {
         if (activeTab === 'recent') loadRecent();
@@ -286,14 +276,6 @@ export function ThreatAdvisory() {
                                                 <div className="flex-1 min-w-0">
                                                     <div className="flex items-center gap-2 flex-wrap">
                                                         <span className="font-mono font-bold text-sm text-blue">{cve.id}</span>
-                                                        {(affectedAgents[cve.id]?.length ?? 0) > 0 && (
-                                                            <span
-                                                                className="text-[10px] font-bold bg-red-500/10 text-red-500 border border-red-500/30 px-1.5 py-0.5 rounded"
-                                                                title={affectedAgents[cve.id].join(', ')}
-                                                            >
-                                                                {affectedAgents[cve.id].length} agent{affectedAgents[cve.id].length === 1 ? '' : 's'} affected
-                                                            </span>
-                                                        )}
                                                         {cve.is_kev && (
                                                             <span className="text-[10px] font-bold bg-red-500 text-white px-1.5 py-0.5 rounded animate-pulse">
                                                                 ACTIVELY EXPLOITED
