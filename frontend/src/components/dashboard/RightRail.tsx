@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { FileText, Zap, Settings, User, Bell, Users, CreditCard, ChevronRight, X } from 'lucide-react';
+import { FileText, Zap, Settings, User, Bell, Users, CreditCard, ChevronRight } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { getAdminUser } from '@/lib/admin-auth';
 import { getPortalUser } from '@/lib/portal-auth';
@@ -124,46 +124,9 @@ function SettingsCard({ portal, base }: { portal: 'admin' | 'client'; base: stri
     );
 }
 
-function InviteUserModal({ onClose }: { onClose: () => void }) {
-    const [email, setEmail] = useState('');
-    const [role, setRole] = useState('Analyst');
-    return (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md border border-border">
-                <div className="px-6 py-4 border-b border-border flex items-center justify-between">
-                    <h2 className="font-bold text-base text-foreground">Invite User</h2>
-                    <button onClick={onClose} className="text-foreground-muted hover:text-foreground" aria-label="Close"><X size={16} /></button>
-                </div>
-                <div className="p-6 space-y-4">
-                    <div>
-                        <label className="block text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-1.5">Work Email</label>
-                        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-                            className="w-full border border-border rounded-lg px-3 py-2.5 text-sm text-foreground focus:outline-none focus:border-purple focus:ring-2 focus:ring-purple/10"
-                            placeholder="analyst@cybernovr.com" />
-                    </div>
-                    <div>
-                        <label className="block text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-1.5">Role</label>
-                        <select value={role} onChange={(e) => setRole(e.target.value)}
-                            className="w-full border border-border rounded-lg px-3 py-2.5 text-sm text-foreground bg-white focus:outline-none focus:border-purple">
-                            {['Analyst', 'Manager', 'Executive', 'Administrator'].map((o) => <option key={o}>{o}</option>)}
-                        </select>
-                    </div>
-                </div>
-                <div className="px-6 py-4 border-t border-border flex justify-end gap-3">
-                    <button onClick={onClose} className="text-sm text-foreground-muted px-4 py-2 rounded-lg hover:bg-card-muted">Cancel</button>
-                    <button onClick={onClose} className="text-sm font-bold bg-orange hover:bg-orange-hover text-white px-5 py-2 rounded-lg transition-colors">
-                        Send Invite
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-}
-
 function QuickActionsCard({ portal, base }: { portal: 'admin' | 'client'; base: string }) {
     const router = useRouter();
     const summary = useAccountSummary(portal);
-    const [showInviteModal, setShowInviteModal] = useState(false);
 
     const handleExportReport = () => {
         exportDataAsPDF('Account Summary', 'account-summary', [
@@ -180,7 +143,6 @@ function QuickActionsCard({ portal, base }: { portal: 'admin' | 'client'; base: 
     };
 
     const adminActions = [
-        { label: '+ Invite User', action: () => setShowInviteModal(true), color: 'text-purple' },
         { label: '⚡ Run Security Scan', action: () => router.push(`${base}/threat/cti`), color: 'text-orange' },
         { label: '📋 Export Report', action: handleExportReport, color: 'text-blue' },
     ];
@@ -210,7 +172,6 @@ function QuickActionsCard({ portal, base }: { portal: 'admin' | 'client'; base: 
                 ))}
             </div>
 
-            {showInviteModal && <InviteUserModal onClose={() => setShowInviteModal(false)} />}
         </div>
     );
 }
