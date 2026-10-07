@@ -35,8 +35,9 @@ interface DomainAlerts {
 
 interface DomainLookalike {
     domain: string;
-    similarity: number;
-    risk: 'HIGH' | 'MEDIUM' | 'LOW';
+    // null: pattern-generated candidate, not scored. Similarity/risk used to be hardcoded numbers.
+    similarity: number | null;
+    risk: 'HIGH' | 'MEDIUM' | 'LOW' | null;
     registered?: string;
 }
 
@@ -95,38 +96,7 @@ const monitoredDomains: MonitoredDomain[] = [
         alerts: { lookalike: true, dns_change: true, expiry: true, new_cert: true },
         status: 'active',
         added_at: '2026-01-15',
-        last_scan: {
-            scanned_at: '2026-08-16T06:00:00.000Z',
-            whois: {
-                domain: 'cybernovr.com', registrar: 'Namecheap Inc.', created: '2022-05-09T00:00:00Z',
-                updated: '2026-04-09T00:00:00Z', expires: '2027-05-09T00:00:00Z',
-                nameservers: ['ns1.namecheap.com', 'ns2.namecheap.com'], status: ['active'],
-                dnssec: false, daysUntilExpiry: 268,
-            },
-            ssl_grade: 'A',
-            ct_logs: [
-                { domain: 'cybernovr.com', issuer: "Let's Encrypt", not_before: '2026-06-01', not_after: '2026-09-01', suspicious: false },
-                { domain: '*.cybernovr.com', issuer: "Let's Encrypt", not_before: '2026-06-01', not_after: '2026-09-01', suspicious: false },
-                { domain: 'cybernovr.ng', issuer: "Let's Encrypt", not_before: '2026-08-01', not_after: '2026-11-01', suspicious: true },
-                { domain: 'cybernovre.com', issuer: 'ZeroSSL', not_before: '2026-07-15', not_after: '2026-10-15', suspicious: true },
-            ],
-            lookalikes: [
-                { domain: 'cybernovr.ng', similarity: 95, risk: 'HIGH', registered: '2026-08-01' },
-                { domain: 'cybernovre.com', similarity: 91, risk: 'HIGH', registered: '2026-07-15' },
-                { domain: 'cybernovr-official.com', similarity: 82, risk: 'MEDIUM', registered: '2026-06-20' },
-                { domain: 'cybernovrsecurity.com', similarity: 79, risk: 'MEDIUM', registered: '2026-05-10' },
-            ],
-            dns_records: [
-                { type: 'A', name: 'cybernovr.com', value: '76.76.21.21', ttl: 3600 },
-                { type: 'MX', name: 'cybernovr.com', value: 'mail.proton.me', ttl: 3600 },
-                { type: 'TXT', name: 'cybernovr.com', value: 'v=spf1 include:_spf.protonmail.ch ~all', ttl: 3600 },
-            ],
-            email_security: { spf: true, dmarc: true, dkim: true },
-            alert_history: [
-                { type: 'LOOKALIKE', message: 'New domain cybernovr.ng registered 15 days ago', severity: 'HIGH', time: '2026-08-01' },
-                { type: 'CT_LOG', message: 'SSL cert issued for cybernovre.com', severity: 'HIGH', time: '2026-07-15' },
-            ],
-        },
+        last_scan: null,
     },
     {
         id: 'dom_002',
@@ -136,32 +106,7 @@ const monitoredDomains: MonitoredDomain[] = [
         alerts: { lookalike: true, dns_change: true, expiry: true, new_cert: true },
         status: 'active',
         added_at: '2026-01-15',
-        last_scan: {
-            scanned_at: '2026-08-16T06:00:00.000Z',
-            whois: {
-                domain: 'novrsoc.com', registrar: 'GoDaddy LLC', created: '2024-01-10T00:00:00Z',
-                updated: '2026-01-10T00:00:00Z', expires: '2027-01-10T00:00:00Z',
-                nameservers: ['ns1.vercel-dns.com', 'ns2.vercel-dns.com'], status: ['active'],
-                dnssec: false, daysUntilExpiry: 147,
-            },
-            ssl_grade: 'A+',
-            ct_logs: [
-                { domain: 'novrsoc.com', issuer: "Let's Encrypt", not_before: '2026-07-01', not_after: '2026-10-01', suspicious: false },
-                { domain: 'novrsoc.ng', issuer: "Let's Encrypt", not_before: '2026-08-10', not_after: '2026-11-10', suspicious: true },
-            ],
-            lookalikes: [
-                { domain: 'novrsoc.ng', similarity: 93, risk: 'HIGH', registered: '2026-08-10' },
-                { domain: 'novsoc.com', similarity: 78, risk: 'MEDIUM', registered: '2026-07-01' },
-            ],
-            dns_records: [
-                { type: 'A', name: 'novrsoc.com', value: '76.76.21.21', ttl: 3600 },
-            ],
-            email_security: { spf: true, dmarc: false, dkim: false },
-            alert_history: [
-                { type: 'DMARC', message: 'DMARC record missing — domain can be spoofed for phishing', severity: 'HIGH', time: '2026-08-16' },
-                { type: 'LOOKALIKE', message: 'novrsoc.ng registered 6 days ago', severity: 'HIGH', time: '2026-08-10' },
-            ],
-        },
+        last_scan: null,
     },
 ];
 
@@ -244,10 +189,10 @@ router.post('/investigate', validate(InvestigateSchema), async (req, res) => {
     const base = cleaned.split('.')[0];
     const tld = cleaned.split('.').slice(1).join('.');
     const lookalikes = [
-        { domain: `${base}-official.com`, similarity: 82, risk: 'MEDIUM' as const },
-        { domain: `${base}security.com`, similarity: 79, risk: 'MEDIUM' as const },
-        { domain: `${base}.ng`, similarity: 95, risk: 'HIGH' as const },
-        { domain: `${base.slice(0, -1)}k.${tld}`, similarity: 91, risk: 'HIGH' as const },
+        { domain: `${base}-official.com`, similarity: null, risk: null },
+        { domain: `${base}security.com`, similarity: null, risk: null },
+        { domain: `${base}.ng`, similarity: null, risk: null },
+        { domain: `${base.slice(0, -1)}k.${tld}`, similarity: null, risk: null },
     ].filter((l) => l.domain !== cleaned);
 
     res.json({
@@ -275,7 +220,7 @@ interface DomainScanResult {
     scanned_at: string;
     whois: ParsedWhois | null;
     ct_logs: Array<{ domain: string; issuer: string; not_before: string; not_after: string; suspicious: boolean }>;
-    lookalikes: Array<{ domain: string; similarity: number; risk: 'HIGH' | 'MEDIUM' | 'LOW' }>;
+    lookalikes: Array<{ domain: string; similarity: number | null; risk: 'HIGH' | 'MEDIUM' | 'LOW' | null }>;
 }
 
 // GET /api/brand/domains/:id/scan — run live scan on domain (real RDAP + real crt.sh)
@@ -319,10 +264,10 @@ router.get('/:id/scan', async (req, res) => {
     const tld = domain.domain.split('.').slice(1).join('.');
     results.lookalikes = (
         [
-            { domain: `${base}-official.com`, similarity: 82, risk: 'MEDIUM' },
-            { domain: `${base}security.com`, similarity: 79, risk: 'MEDIUM' },
-            { domain: `${base}.ng`, similarity: 95, risk: 'HIGH' },
-            { domain: `${base.slice(0, -1)}k.${tld}`, similarity: 91, risk: 'HIGH' },
+            { domain: `${base}-official.com`, similarity: null, risk: null },
+            { domain: `${base}security.com`, similarity: null, risk: null },
+            { domain: `${base}.ng`, similarity: null, risk: null },
+            { domain: `${base.slice(0, -1)}k.${tld}`, similarity: null, risk: null },
         ] as const
     ).filter((l) => l.domain !== domain.domain);
 

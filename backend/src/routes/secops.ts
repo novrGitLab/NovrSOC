@@ -36,7 +36,7 @@ router.post('/broadcast', async (req: AuthRequest, res) => {
 // the IOC goes into the shared threat-intel cache (ioc_enrichments, the same table
 // routes/cti.ts's manual lookup already caches into — confirmed live against the real table:
 // its actual columns are ioc_value/ioc_type/risk_score/tags/org_id/source/first_seen/last_seen,
-// no separate "verdict" column, so the malicious classification rides on risk_score + tags
+// no separate "verdict" column, so the analyst classification rides on the tags
 // instead), and a case is opened for analyst follow-up. source_id is the IOC, so hunting the
 // same IP twice returns the existing case rather than opening a second one.
 router.post('/hunting/escalate', async (req: AuthRequest, res) => {
@@ -55,7 +55,8 @@ router.post('/hunting/escalate', async (req: AuthRequest, res) => {
             {
                 ioc_value,
                 ioc_type,
-                risk_score: 85,
+                // No risk_score: the analyst's finding isn't a computed score. (It was a hardcoded 85.)
+                // Omitted, an existing enriched score is kept; a new row gets the column default.
                 tags: ['threat-hunt', 'analyst-confirmed'],
                 org_id: req.user?.org_id ?? null,
                 source: 'threat_hunt',

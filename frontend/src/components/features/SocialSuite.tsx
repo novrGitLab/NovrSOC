@@ -1,55 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { AtSign, Plus, BadgeCheck, FileText, X } from 'lucide-react';
+import { AtSign, Plus, BadgeCheck } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ExportButton } from '@/components/shared/ExportButton';
 
-// Mock monitoring report — a real per-account report generator is a later pass; this shows
-// the shape/UX of what that report will look like once it exists.
-const MOCK_SOCIAL_REPORT = {
-    handle: '@cybernovr',
-    platform: 'twitter',
-    generated_at: '2026-08-16 09:00:00',
-    summary: {
-        impersonation_accounts: 2,
-        keyword_mentions_24h: 47,
-        sentiment_score: 0.72,
-        reach_estimate: 12400,
-    },
-    impersonation_alerts: [
-        {
-            handle: '@cybernovr_ng',
-            display_name: 'Cybernovr Nigeria',
-            similarity_score: 87,
-            followers: 23,
-            created: '2026-08-01',
-            bio_match: true,
-            logo_detected: false,
-            risk: 'HIGH' as const,
-            profile_url: 'https://x.com/cybernovr_ng',
-        },
-        {
-            handle: '@cybernovr.official',
-            display_name: 'Cybernovr Official',
-            similarity_score: 74,
-            followers: 8,
-            created: '2026-08-08',
-            bio_match: false,
-            logo_detected: false,
-            risk: 'MEDIUM' as const,
-            profile_url: 'https://x.com/cybernovr.official',
-        },
-    ],
-    recent_mentions: [
-        { text: 'Just signed up for @cybernovr — great security platform!', sentiment: 'positive' as const, time: '2h ago' },
-        { text: 'Anyone tried @cybernovr for SOC monitoring?', sentiment: 'neutral' as const, time: '5h ago' },
-        { text: 'Warning: fake @cybernovr account spotted, report it', sentiment: 'negative' as const, time: '8h ago' },
-    ],
-};
-
-const MENTION_DOT: Record<string, string> = { positive: '🟢', neutral: '⚪', negative: '🔴' };
 
 interface SocialAccount {
     id: string;
@@ -134,7 +90,6 @@ export function SocialSuite() {
     const [saving, setSaving] = useState(false);
 
     // Report view — mock for now; keyed by account id, all accounts see the same mock report
-    const [reportAccountId, setReportAccountId] = useState<string | null>(null);
 
     const load = () => {
         setLoading(true);
@@ -271,12 +226,6 @@ export function SocialSuite() {
                                                     <p className="text-[10px] text-foreground-muted mt-1">Keywords: {acc.keywords.join(', ')}</p>
                                                 )}
                                                 <p className="text-[10px] text-foreground-muted mt-1">Last checked: {acc.last_checked}</p>
-                                                <button
-                                                    onClick={() => setReportAccountId(acc.id)}
-                                                    className="flex items-center gap-1 text-[10px] font-bold text-blue hover:underline mt-1.5"
-                                                >
-                                                    <FileText size={10} /> View Report
-                                                </button>
                                             </div>
                                         </div>
                                     );
@@ -288,7 +237,7 @@ export function SocialSuite() {
                     {tab === 'impersonation' && (
                         <div className="bg-card border border-border rounded-xl overflow-hidden">
                             {impersonations.length === 0 ? (
-                                <p className="text-xs text-foreground-muted text-center py-10">No impersonation alerts detected</p>
+                                <p className="text-xs text-foreground-muted text-center py-10">Impersonation monitoring is not connected yet — no alerts to show.</p>
                             ) : (
                                 <table className="w-full text-xs">
                                     <thead>
@@ -331,7 +280,7 @@ export function SocialSuite() {
                     {tab === 'mentions' && (
                         <div className="space-y-2">
                             {mentions.length === 0 ? (
-                                <p className="text-xs text-foreground-muted text-center py-10">No mentions found</p>
+                                <p className="text-xs text-foreground-muted text-center py-10">Mention monitoring is not connected yet — no mentions to show.</p>
                             ) : (
                                 mentions.map((m, i) => (
                                     <div key={i} className="bg-card border border-border rounded-xl p-4 flex items-start gap-3">
@@ -416,87 +365,6 @@ export function SocialSuite() {
                 </div>
             )}
 
-            {reportAccountId && (() => {
-                const acc = accounts.find((a) => a.id === reportAccountId);
-                const plat = acc ? PLATFORMS[acc.platform as PlatformKey] : PLATFORMS.twitter;
-                const r = MOCK_SOCIAL_REPORT;
-                return (
-                    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
-                        <div className="bg-card border border-border rounded-2xl w-full max-w-lg shadow-xl max-h-[85vh] overflow-y-auto">
-                            <div className="p-6">
-                                <div className="flex items-start justify-between mb-1">
-                                    <div>
-                                        <h3 className="font-heading font-bold text-lg text-foreground">{acc?.handle ?? r.handle} · {plat?.label ?? 'Report'}</h3>
-                                        <p className="text-[11px] text-foreground-muted">Generated: {r.generated_at}</p>
-                                    </div>
-                                    <button onClick={() => setReportAccountId(null)} className="text-foreground-muted hover:text-foreground" aria-label="Close report">
-                                        <X size={16} />
-                                    </button>
-                                </div>
-
-                                {/* Summary */}
-                                <div className="grid grid-cols-2 gap-3 mt-4">
-                                    <div className="border border-border rounded-lg p-3">
-                                        <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Impersonation Accounts</p>
-                                        <p className="text-xl font-black text-red-500">{r.summary.impersonation_accounts}</p>
-                                    </div>
-                                    <div className="border border-border rounded-lg p-3">
-                                        <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Mentions (24h)</p>
-                                        <p className="text-xl font-black text-blue">{r.summary.keyword_mentions_24h}</p>
-                                    </div>
-                                    <div className="border border-border rounded-lg p-3">
-                                        <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Sentiment</p>
-                                        <p className="text-xl font-black text-purple">{Math.round(r.summary.sentiment_score * 100)}% positive</p>
-                                    </div>
-                                    <div className="border border-border rounded-lg p-3">
-                                        <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Est. Reach</p>
-                                        <p className="text-xl font-black text-foreground">{r.summary.reach_estimate.toLocaleString()}</p>
-                                    </div>
-                                </div>
-
-                                {/* Impersonation alerts */}
-                                <div className="mt-5">
-                                    <p className="text-[11px] font-bold text-foreground-muted uppercase tracking-wide mb-2">⚠️ Impersonation Alerts ({r.impersonation_alerts.length})</p>
-                                    <div className="space-y-2">
-                                        {r.impersonation_alerts.map((a) => (
-                                            <div key={a.handle} className="border border-border rounded-lg p-3">
-                                                <div className="min-w-0">
-                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded mr-1.5 ${a.risk === 'HIGH' ? 'bg-red-500 text-white' : 'bg-grey-100 text-amber'}`}>{a.risk}</span>
-                                                    <span className="text-xs font-bold text-foreground">{a.handle}</span>
-                                                    <span className="text-[11px] text-foreground-muted"> — {a.similarity_score}% similarity, {a.followers} followers</span>
-                                                </div>
-                                                <div className="flex items-center gap-3 mt-2">
-                                                    <button className="text-[10px] font-bold text-blue hover:underline">Report to Platform</button>
-                                                    <a href={a.profile_url} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-foreground-muted hover:text-foreground">View Profile</a>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-
-                                {/* Recent mentions */}
-                                <div className="mt-5">
-                                    <p className="text-[11px] font-bold text-foreground-muted uppercase tracking-wide mb-2">Recent Mentions ({r.recent_mentions.length})</p>
-                                    <div className="space-y-2">
-                                        {r.recent_mentions.map((m, i) => (
-                                            <div key={i} className="flex items-start gap-2 text-xs">
-                                                <span className="flex-shrink-0">{MENTION_DOT[m.sentiment]}</span>
-                                                <span className="flex-1 text-foreground">&ldquo;{m.text}&rdquo;</span>
-                                                <span className="text-[10px] text-foreground-muted flex-shrink-0">{m.time}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-
-                                <div className="flex gap-3 mt-6">
-                                    <button className="flex-1 border border-border text-foreground-muted py-2.5 rounded-lg text-sm hover:border-grey-300 transition-colors">Export Report PDF</button>
-                                    <button className="flex-1 bg-purple hover:bg-purple-hover text-white py-2.5 rounded-lg text-sm font-semibold transition-colors">Schedule Weekly Report</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                );
-            })()}
         </div>
     );
 }

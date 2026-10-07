@@ -59,12 +59,11 @@ const AssetsPatchSchema = z.object({
 });
 
 // Brand Protection — domains, socials, executives, apps, and code-leak monitoring.
-// Every route here returns structured mock data for now; the real crawlers (crt.sh, RDAP,
-// GitHub/GitLab code search, iTunes/Play Store search, X API) land in a later pass. Endpoints
-// that add/list/remove a monitored entity (domains, socials, executives, apps, signatures) keep
-// their state in-memory per resource below so the UI is genuinely usable while crawlers don't
-// exist yet — restarting the backend resets it, same as everything else in this project that
-// isn't backed by Postgres/Supabase yet.
+// Scans call real services where they exist (breach checks, iTunes/Play search, GitHub/GitLab
+// code search, Serper/Google brand search, Ransomwatch). Monitored entities (socials, executives,
+// apps, signatures, brand assets) are kept in memory per resource and reset on restart. Alert
+// feeds with no detector behind them (social impersonation, rogue apps) return empty with
+// connected:false — their fabricated sample data was removed in the 2026-10 cleanup.
 
 const router = Router();
 
@@ -90,28 +89,8 @@ interface MonitoredSocial {
     last_checked: string;
 }
 
-const socials: MonitoredSocial[] = [
-    { id: '1', platform: 'twitter', handle: '@cybernovr', display_name: 'Cybernovr', profile_url: 'https://x.com/cybernovr', exec_names: [], keywords: ['cybernovr', 'novrsoc'], followers: 2841, verified: false, last_checked: '1 hour ago' },
-    { id: '2', platform: 'linkedin', handle: 'cybernovr', display_name: 'Cybernovr', profile_url: 'https://linkedin.com/company/cybernovr', exec_names: [], keywords: ['cybernovr'], followers: 847, verified: false, last_checked: '1 hour ago' },
-    { id: '3', platform: 'facebook', handle: 'cybernovr', display_name: 'Cybernovr Official', profile_url: 'https://facebook.com/cybernovr', exec_names: [], keywords: ['cybernovr'], followers: 1204, verified: false, last_checked: '2 hours ago' },
-    { id: '4', platform: 'instagram', handle: '@cybernovr_hq', display_name: 'Cybernovr HQ', profile_url: 'https://instagram.com/cybernovr_hq', exec_names: [], keywords: ['cybernovr'], followers: 623, verified: false, last_checked: '2 hours ago' },
-];
-
-const MOCK_IMPERSONATION = [
-    { id: 'imp_001', handle: '@cybernovr_ng', platform: 'Twitter', score: 87, followers: 23, created: '2026-08-01', status: 'open', risk: 'HIGH' },
-    { id: 'imp_002', handle: 'Cybernovr Security', platform: 'Facebook', score: 74, followers: 142, created: '2026-07-20', status: 'reported', risk: 'MEDIUM' },
-    { id: 'imp_003', handle: '@cybernovr.official', platform: 'Instagram', score: 61, followers: 8, created: '2026-08-08', status: 'open', risk: 'MEDIUM' },
-    { id: 'imp_004', handle: '@cybernovrAfrica', platform: 'Twitter', score: 55, followers: 67, created: '2026-07-15', status: 'dismissed', risk: 'LOW' },
-];
-
-const MOCK_MENTIONS = [
-    { text: 'Just signed up for @cybernovr — best SOC platform in Nigeria!', platform: 'Twitter', sentiment: 'Positive', reach: 1200, time: '2h ago' },
-    { text: 'Anyone using @cybernovr for their company security?', platform: 'Twitter', sentiment: 'Neutral', reach: 340, time: '4h ago' },
-    { text: 'Warning: fake @cybernovr account spotted — @cybernovr_ng', platform: 'Twitter', sentiment: 'Negative', reach: 890, time: '7h ago' },
-    { text: 'Cybernovr is revolutionizing SOC-as-a-service in Africa', platform: 'LinkedIn', sentiment: 'Positive', reach: 2100, time: '1d ago' },
-    { text: 'Has anyone dealt with this Cybernovr company? Legit?', platform: 'Facebook', sentiment: 'Neutral', reach: 450, time: '1d ago' },
-    { text: 'Partnered with @cybernovr_hq for our cybersecurity needs 🔐', platform: 'Instagram', sentiment: 'Positive', reach: 780, time: '2d ago' },
-];
+// Starts empty: the previous seed carried invented follower counts. Accounts are added via POST.
+const socials: MonitoredSocial[] = [];
 
 router.get('/socials', (_req, res) => {
     res.json({ socials });
@@ -149,13 +128,14 @@ router.post('/socials', validate(SocialSchema), (req, res) => {
     res.status(201).json(entry);
 });
 
+// No impersonation/mention detector is connected; the previous fabricated alerts were removed.
 router.get('/socials/alerts', (_req, res) => {
-    res.json({ impersonations: MOCK_IMPERSONATION, mentions: MOCK_MENTIONS });
+    res.json({ impersonations: [], mentions: [], connected: false, note: 'Impersonation and mention monitoring is not connected yet.' });
 });
 
 // GET /api/brand/socials/search?brand=X — real web/social mention search (services/
-// socialMonitor.ts: rsshub X search + Google Custom Search), separate from the mock
-// /socials/alerts feed above.
+// socialMonitor.ts: rsshub X search + Google Custom Search), separate from the /socials/alerts
+// feed above.
 router.get('/socials/search', async (req, res) => {
     const brand = typeof req.query.brand === 'string' ? req.query.brand.trim() : '';
     if (!brand) {
@@ -437,17 +417,6 @@ const apps: MonitoredApp[] = [
     },
 ];
 
-const MOCK_ROGUE_APPS = [
-    {
-        id: 'rogue_001', name: 'NovrSOC Pro Security', platform: 'Google Play', developer: 'UnknownDev2024', bundle_id: 'com.unknowndev.novrsocpro',
-        downloads: 100, risk: 'HIGH', detected: '2026-08-10', reason: 'Uses Cybernovr brand name and similar icon without authorization', store_url: 'https://play.google.com',
-    },
-    {
-        id: 'rogue_002', name: 'CyberNovr VPN Shield', platform: 'App Store', developer: 'ShieldApps Inc', bundle_id: 'com.shieldapps.cybernovrvpn',
-        downloads: 50, risk: 'MEDIUM', detected: '2026-08-13', reason: 'Uses Cybernovr name in app title — possible brand confusion', store_url: 'https://apps.apple.com',
-    },
-];
-
 router.get('/apps', (_req, res) => {
     res.json({ apps });
 });
@@ -474,8 +443,9 @@ router.post('/apps', validate(AppSchema), (req, res) => {
     res.status(201).json(entry);
 });
 
+// No rogue-app detector is connected; the previous fabricated alerts were removed.
 router.get('/apps/alerts', (_req, res) => {
-    res.json({ rogueApps: MOCK_ROGUE_APPS });
+    res.json({ rogueApps: [], connected: false, note: 'Rogue app detection is not connected yet.' });
 });
 
 interface AppStoreHit {
@@ -573,15 +543,11 @@ interface CodeSignature {
 
 const signatures: CodeSignature[] = [
     { id: '1', type: 'REGEX', pattern: 'AKIA[0-9A-Z]{16}', description: 'AWS Access Key', matches: 0 },
-    { id: '2', type: 'REGEX', pattern: '"api_key"\\s*:\\s*"[^"]+"', description: 'API Key Pattern', matches: 2 },
-    { id: '3', type: 'STRING', pattern: 'cybernovr.com', description: 'Brand Domain', matches: 2 },
+    { id: '2', type: 'REGEX', pattern: '"api_key"\\s*:\\s*"[^"]+"', description: 'API Key Pattern', matches: 0 },
+    { id: '3', type: 'STRING', pattern: 'cybernovr.com', description: 'Brand Domain', matches: 0 },
     { id: '4', type: 'REGEX', pattern: 'postgresql://.*:.*@', description: 'Database URL', matches: 0 },
     { id: '5', type: 'REGEX', pattern: 'JWT_SECRET\\s*=\\s*\\S+', description: 'JWT Secret', matches: 0 },
     { id: '6', type: 'REGEX', pattern: '-----BEGIN.*PRIVATE KEY', description: 'Private Key Block', matches: 0 },
-];
-
-const MOCK_LEAKS = [
-    { platform: 'GitHub', repo: 'github.com/someuser/project', file: '.env', line: 14, committer: 'someuser', date: '2026-08-09', severity: 'critical' },
 ];
 
 router.get('/signatures', (_req, res) => {
@@ -599,17 +565,13 @@ router.post('/signatures', validate(SignatureSchema), (req, res) => {
     res.status(201).json(entry);
 });
 
-router.get('/leaks', (_req, res) => {
-    res.json({ leaks: MOCK_LEAKS });
-});
-
 interface LeakScanHit extends Partial<GitHubCodeMatch>, Partial<GitLabCodeMatch> {
     source: 'github' | 'gitlab';
 }
 
 // POST /api/brand/leaks/scan — triggers a real GitHub + GitLab code search when tokens are
-// configured (services/github.ts, services/gitlab.ts); falls back to the queued-ack response
-// UrlScanSuite-style pages use when there's nothing real to call yet.
+// configured (services/github.ts, services/gitlab.ts). With neither configured it says so —
+// it used to answer {status:'queued'} although nothing was queued.
 router.post('/leaks/scan', async (req, res) => {
     const orgName: string = typeof req.body?.org_name === 'string' ? req.body.org_name : 'cybernovr';
 
@@ -623,7 +585,7 @@ router.post('/leaks/scan', async (req, res) => {
     };
 
     if (!summary.github_configured && !summary.gitlab_configured) {
-        res.json({ status: 'queued', queued_at: summary.scanned_at });
+        res.json({ status: 'not_configured', results, summary, note: 'Neither GITHUB_TOKEN nor GITLAB_TOKEN is set — no code search ran.' });
         return;
     }
 
@@ -671,40 +633,12 @@ router.post('/search', async (req, res) => {
     const provider = serperConfigured() ? 'serper' : googleConfigured() ? 'google' : null;
 
     if (!provider) {
-        // Demo data — Web Intelligence Engine not yet configured for live results
-        const lower = brand_name.toLowerCase();
+        // No search provider configured: say so. (This used to return three fabricated
+        // violations with invented threat scores.)
         res.json({
             configured: false,
-            results: [
-                {
-                    id: 'v_001', type: 'PHISHING', severity: 'CRITICAL',
-                    title: `Fake ${brand_name} Login Portal`,
-                    url: `https://${lower}-login-secure.ru/verify`,
-                    domain: `${lower}-login-secure.ru`,
-                    snippet: `Cloned version of the ${brand_name} login page designed to harvest admin credentials. Hosted on a domain registered 4 days ago.`,
-                    detected: '2026-08-12', status: 'active', threat_score: 94,
-                    evidence: ['Login form submits to an external IP', `${brand_name} logo copied`, 'SSL cert issued 4 days ago'],
-                },
-                {
-                    id: 'v_002', type: 'COUNTERFEIT', severity: 'HIGH',
-                    title: `Unauthorized ${brand_name} Reseller`,
-                    url: `https://${lower}-africa.com/pricing`,
-                    domain: `${lower}-africa.com`,
-                    snippet: `Site claims to sell ${brand_name} licenses at 40% discount. No authorization on file.`,
-                    detected: '2026-08-10', status: 'active', threat_score: 72,
-                    evidence: [`Uses ${brand_name} logo`, 'Claims official partnership', 'Fake pricing page'],
-                },
-                {
-                    id: 'v_003', type: 'IMPERSONATION', severity: 'MEDIUM',
-                    title: `Brand Impersonation Blog`,
-                    url: `https://${lower}-ng.blogspot.com`,
-                    domain: `${lower}-ng.blogspot.com`,
-                    snippet: `Blog claims to publish official ${brand_name} Nigeria security updates and advisories.`,
-                    detected: '2026-08-08', status: 'under_review', threat_score: 45,
-                    evidence: [`Uses ${brand_name} name in title`, 'No authorization', 'Spreading misinformation'],
-                },
-            ],
-            note: 'Demo data — Web Intelligence Engine not yet configured for live results',
+            results: [],
+            note: 'Web Intelligence Engine not configured (SERPER_API_KEY or Google Custom Search keys) — no live results.',
         });
         return;
     }

@@ -11,7 +11,7 @@ interface IncidentKpis {
     high: number;
     medium: number;
     low: number;
-    avgSla: string;
+    avgSla: string | null;
 }
 
 interface RealIncident {
@@ -178,8 +178,9 @@ export const PortalDashboard = () => {
         { label: 'Alerts (7d)', value: loading ? '...' : String(kpis?.total ?? 0), color: 'text-amber', sub: undefined as string | undefined },
         { label: 'High Severity', value: loading ? '...' : String(kpis?.high ?? 0), color: 'text-red-500', sub: undefined as string | undefined },
         {
-            label: 'Threats Blocked',
-            value: threatsBlocked !== null ? `${threatsBlocked.toLocaleString()} threats blocked` : '...',
+            // Counts alerts in attack-related rule groups; nothing here confirms a block happened.
+            label: 'Alerts',
+            value: threatsBlocked !== null ? `${threatsBlocked.toLocaleString()} alerts` : '...',
             color: 'text-blue',
             sub: 'Last 30 days, your endpoints only',
         },

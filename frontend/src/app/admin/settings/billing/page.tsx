@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { AlertTriangle, ExternalLink } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 
 // Billing & platform analytics.
@@ -12,7 +11,7 @@ import { apiUrl, apiFetch } from '@/lib/api';
 // billing table anywhere in this stack, so every one of those figures was fiction.
 //
 // What's here now: real counts from real endpoints (organisations, platform users, open
-// cases, Wazuh alerts, SLA credits), plus an explicit revenue *projection* the operator
+// cases, Wazuh alerts), plus an explicit revenue *projection* the operator
 // drives by entering a price per client. The projection is labelled as one and the input is
 // remembered per browser — it isn't billing data, and nothing here should be read as invoiced.
 //
@@ -21,7 +20,6 @@ import { apiUrl, apiFetch } from '@/lib/api';
 // org list.
 
 interface Org { id: string; name: string; slug: string }
-interface SLASummary { total_endpoints: number; breached: number; total_credits_usd: number }
 interface CaseSummary { active: number; critical: number; resolvedToday: number }
 
 const PRICE_KEY = 'novrsoc.billing.price-per-client';
@@ -32,8 +30,6 @@ export default function BillingPage() {
     const [userCount, setUserCount] = useState<number | null>(null);
     const [incidents, setIncidents] = useState<CaseSummary | null>(null);
     const [alertCount, setAlertCount] = useState<number | null>(null);
-    const [slaSummary, setSlaSummary] = useState<SLASummary | null>(null);
-    const [slaError, setSlaError] = useState(false);
 
     const [pricePerClient, setPricePerClient] = useState('');
     const [hydrated, setHydrated] = useState(false);
@@ -99,10 +95,6 @@ export default function BillingPage() {
             })
             .catch(() => {});
 
-        apiFetch(apiUrl('/api/sla/overview'), { cache: 'no-store' })
-            .then((r) => r.json())
-            .then((d) => setSlaSummary(d?.summary ?? null))
-            .catch(() => setSlaError(true));
     }, []);
 
     const clientCount = orgs?.length ?? null;
@@ -114,7 +106,7 @@ export default function BillingPage() {
         <div className="space-y-5">
             <div>
                 <h1 className="text-lg font-black text-foreground">Billing & Platform Analytics</h1>
-                <p className="text-xs text-foreground-muted">Administration · Live client, user and workload counts, plus SLA credit liability</p>
+                <p className="text-xs text-foreground-muted">Administration · Live client, user and workload counts</p>
             </div>
 
             {/* Real counts */}
@@ -176,33 +168,6 @@ export default function BillingPage() {
                 <p className="text-[10px] text-foreground-muted mt-4">
                     The price you enter is remembered in this browser only.
                 </p>
-            </div>
-
-            {/* SLA credit liability — live from the Recovery Credit feature's real endpoint */}
-            <div className="bg-card border border-border rounded-xl p-4">
-                <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-3">SLA Credit Liability</p>
-                {slaError ? (
-                    <p className="text-xs text-foreground-muted">Could not reach the SLA service.</p>
-                ) : !slaSummary ? (
-                    <div className="h-16 bg-card-muted rounded-lg animate-pulse" />
-                ) : (
-                    <div className="flex items-center justify-between gap-4 flex-wrap">
-                        <div className="flex items-center gap-3">
-                            {slaSummary.total_credits_usd > 0 && <AlertTriangle className="w-5 h-5 text-amber shrink-0" />}
-                            <div>
-                                <p className={`text-2xl font-black ${slaSummary.total_credits_usd > 0 ? 'text-amber' : 'text-green'}`}>
-                                    ${slaSummary.total_credits_usd.toLocaleString()}
-                                </p>
-                                <p className="text-[10px] text-foreground-muted">
-                                    {slaSummary.breached} of {slaSummary.total_endpoints} monitored endpoint{slaSummary.total_endpoints === 1 ? '' : 's'} in breach this month
-                                </p>
-                            </div>
-                        </div>
-                        <a href="/admin/data/sla" className="flex items-center gap-1 text-[11px] font-bold text-purple hover:underline">
-                            View Recovery Credit <ExternalLink size={12} />
-                        </a>
-                    </div>
-                )}
             </div>
 
             {/* Client roster — real orgs, no invented payment state */}

@@ -17,7 +17,6 @@ import vendorAssessmentsRouter from './routes/vendor-assessments';
 import scanRouter from './routes/scan';
 import dnsRouter from './routes/dns';
 import domainsRouter from './routes/domains';
-import reportsRouter from './routes/reports';
 import ctipRouter from './routes/ctip';
 import threatIntelRouter from './routes/threat-intel';
 import wazuhRouter from './routes/wazuh';
@@ -30,9 +29,7 @@ import ctiRouter from './routes/cti';
 import urlscanRouter from './routes/urlscan';
 import webscanRouter from './routes/webscan';
 import emailSecurityRouter from './routes/emailSecurity';
-import vendorsRouter from './routes/vendors';
 import dataRecoveryRouter from './routes/dataRecovery';
-import slaRouter from './routes/sla';
 import alertsRouter from './routes/alerts';
 import threatManagementRouter from './routes/threatManagement';
 import publicRouter from './routes/public';
@@ -44,7 +41,6 @@ import testRouter from './routes/test';
 import communicationsRouter from './routes/communications';
 import teamRouter from './routes/team';
 import { adminRouter as securityAssessmentAdminRouter, clientRouter as securityAssessmentClientRouter } from './routes/securityAssessment';
-import weblogicRouter from './routes/weblogic';
 import assetsRouter from './routes/assets';
 import dashboardRouter from './routes/dashboard';
 import handoverRouter from './routes/handover';
@@ -107,15 +103,15 @@ app.get('/', (_req, res) => {
 // on most feature routes, for a reason specific to this app's architecture:
 //
 // Shared feature components (ThreatManagement, CtiPlatform, DnsSuite,
-// BrandSuite, DomainSuite, UrlScanSuite, WebsiteScanning, VendorAssessments,
-// WebLogicAppliances, DataLossRecovery, RecoveryCredit,
+// BrandSuite, DomainSuite, UrlScanSuite, WebsiteScanning,
+// DataLossRecovery,
 // AlertCommunication, MobileAppSuite, SocialSuite, CopyIdSuite, ExecutiveMonitor,
 // ThreatAdvisory, DigitalAssets — cross-checked by diffing every component imported by any
 // /admin page against every component imported by any /client page) are rendered by BOTH the
 // admin app and the client portal, and call the same backend routes either way: /api/wazuh,
 // /api/threats, /api/threat, /api/brand, /api/dns, /api/urlscan,
-// /api/webscan, /api/vendor-assessments, /api/sla, /api/org-cti, /api/recovery,
-// /api/weblogic, /api/alerts, /api/advisories.
+// /api/webscan, /api/vendor-assessments, /api/org-cti, /api/recovery,
+// /api/alerts, /api/advisories.
 //
 // Client-portal users only ever hold a `portal_token` (see frontend/src/lib/portal-auth.ts),
 // minted by the separate external backend at APP_API_BASE_URL with a secret this backend
@@ -299,7 +295,6 @@ app.use('/api/vendor-assessments', vendorAssessmentsRouter);
 app.use('/api/scan', scanRouter);
 app.use('/api/dns', dnsRouter);
 app.use('/api/domains', domainsRouter);
-app.use('/api/reports', reportsRouter);
 // admin-only — no client-portal component calls this, confirmed safe to gate now.
 app.use('/api/novr-ai', requireAuth, novrAiRouter);
 app.use('/api/ctip', ctipRouter);
@@ -321,9 +316,7 @@ app.use('/api/email-security', emailSecurityRouter);
 app.use('/api/email', emailRouter);
 app.use('/api/email-proxy', emailProxyRouter);
 app.use('/api/mitre', mitreRouter);
-app.use('/api/vendors', vendorsRouter);
 app.use('/api/recovery', dataRecoveryRouter);
-app.use('/api/sla', slaRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/threats', threatManagementRouter);
 // STIX export — gated: a bundle is the org's whole accumulated IOC set in one file.
@@ -344,7 +337,6 @@ app.use('/api/admin/team', requireAuth, teamRouter);
 // Security Assessment: posture from real case data.
 app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
 app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);
-app.use('/api/weblogic', weblogicRouter);
 app.use('/api/assets', assetsRouter);
 // admin-only — no client-portal component calls these, confirmed safe to gate now (see the
 // block comment above for how that was checked and why most other routes aren't gated yet).

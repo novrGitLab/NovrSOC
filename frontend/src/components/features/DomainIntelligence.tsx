@@ -33,7 +33,7 @@ interface Whois {
     daysUntilExpiry: number | null;
 }
 
-interface Lookalike { domain: string; similarity: number; risk: string }
+interface Lookalike { domain: string; similarity: number | null; risk: string | null }
 
 interface InvestigateResponse {
     domain: string;
@@ -430,8 +430,10 @@ export function DomainIntelligence() {
                                                 <div key={l.domain} className="flex items-center justify-between gap-3 border-b border-border pb-2 last:border-0">
                                                     <span className="font-mono text-xs text-foreground break-all">{l.domain}</span>
                                                     <div className="flex items-center gap-4 flex-shrink-0">
-                                                        <span className="text-[11px] text-foreground-muted">{l.similarity}% similar</span>
-                                                        <span className={`text-[10px] font-black uppercase ${RISK_STYLE[l.risk] ?? 'text-foreground-muted'}`}>{l.risk}</span>
+                                                        <span className="text-[11px] text-foreground-muted">{l.similarity === null ? 'Not scored' : `${l.similarity}% similar`}</span>
+                                                        {l.risk === null
+                                                            ? <span className="text-[10px] text-foreground-muted">Unverified</span>
+                                                            : <span className={`text-[10px] font-black uppercase ${RISK_STYLE[l.risk] ?? 'text-foreground-muted'}`}>{l.risk}</span>}
                                                     </div>
                                                 </div>
                                             ))}

@@ -3,7 +3,7 @@
 import {
     LayoutDashboard, FileBarChart, Globe, Users, Shield, UserCheck, Smartphone, Code,
     Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server,
-    Mail, MessageSquare, ShieldAlert, Activity, ClipboardList, Zap,
+    Mail, MessageSquare, ShieldAlert, Activity, Zap,
     HardDrive, BarChart, CreditCard, Settings, BookOpen, FileText, ScrollText,
     ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor,
     Droplets, Wifi, HeartPulse, GraduationCap, Swords, Truck, Wheat, Factory, Mountain,
@@ -76,7 +76,6 @@ const adminNav: NavGroup[] = [
             { label: 'Threat Advisory', href: '/admin/threat/advisory', icon: AlertTriangle, roles: [...NOT_EXEC] },
             { label: 'Threat Actors', href: '/admin/threat/actors', icon: Users, roles: [...NOT_EXEC] },
             { label: 'URL & Web Scanner', href: '/admin/threat/urlscan', icon: LinkIcon, roles: [...NOT_EXEC] },
-            { label: 'Vendor Assessments', href: '/admin/threat/vendor', icon: Building, roles: [...NOT_EXEC] },
         ],
     },
     {
@@ -127,7 +126,6 @@ const adminNav: NavGroup[] = [
         items: [
             { label: 'Digital Assets', href: '/admin/infra/assets', icon: Monitor, roles: [...NOT_EXEC] },
             { label: 'Cloud Assets', href: '/admin/infra/cloud', icon: Cloud, roles: [...NOT_EXEC] },
-            { label: 'WebLogic Appliances', href: '/admin/infra/weblogic', icon: Server, roles: [...NOT_EXEC] },
         ],
     },
     {
@@ -178,8 +176,6 @@ const adminNav: NavGroup[] = [
         // DATA CONTINUITY in the matrix — analyst: ❌.
         items: [
             { label: 'Data Loss Recovery', href: '/admin/data/recovery', icon: HardDrive, roles: [...MANAGER_PLUS_EXEC] },
-            { label: 'Recovery Credit', href: '/admin/data/sla', icon: BarChart, roles: [...MANAGER_PLUS_EXEC] },
-            { label: 'Disaster Recovery Plan', href: '/admin/data/drp', icon: ClipboardList, roles: [...MANAGER_PLUS_EXEC] },
         ],
     },
     {

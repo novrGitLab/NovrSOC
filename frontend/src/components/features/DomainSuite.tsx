@@ -53,8 +53,9 @@ interface CertRow {
 
 interface Lookalike {
     domain: string;
-    similarity: number;
-    risk: 'HIGH' | 'MEDIUM' | 'LOW';
+    // null for pattern-generated candidates: they are not scored or checked for registration.
+    similarity: number | null;
+    risk: 'HIGH' | 'MEDIUM' | 'LOW' | null;
     registered?: string;
 }
 
@@ -109,7 +110,7 @@ interface DnsResult {
     checked_at: string;
 }
 
-const RISK_BADGE: Record<Lookalike['risk'], string> = {
+const RISK_BADGE: Record<NonNullable<Lookalike['risk']>, string> = {
     HIGH: 'bg-red-500/15 text-red-500 border-red-500/30',
     MEDIUM: 'bg-amber-500/15 text-amber-500 border-amber-500/30',
     LOW: 'bg-slate-500/10 text-foreground-muted border-border',
@@ -595,19 +596,27 @@ export function DomainSuite() {
                                                                                 {l.domain}
                                                                             </td>
                                                                             <td className="px-4 py-2.5">
-                                                                                <div className="flex items-center gap-2 max-w-[120px]">
-                                                                                    <div className="w-full bg-border rounded-full h-1.5 overflow-hidden">
-                                                                                        <div className="bg-blue h-full" style={{ width: `${l.similarity}%` }} />
+                                                                                {l.similarity === null ? (
+                                                                                    <span className="text-[11px] font-sans text-foreground-muted">Not scored</span>
+                                                                                ) : (
+                                                                                    <div className="flex items-center gap-2 max-w-[120px]">
+                                                                                        <div className="w-full bg-border rounded-full h-1.5 overflow-hidden">
+                                                                                            <div className="bg-blue h-full" style={{ width: `${l.similarity}%` }} />
+                                                                                        </div>
+                                                                                        <span className="text-[11px] font-sans font-semibold text-foreground">{l.similarity}%</span>
                                                                                     </div>
-                                                                                    <span className="text-[11px] font-sans font-semibold text-foreground">{l.similarity}%</span>
-                                                                                </div>
+                                                                                )}
                                                                             </td>
                                                                             <td className="px-4 py-2.5 font-sans">
-                                                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${RISK_BADGE[l.risk]}`}>
-                                                                                    {l.risk}
-                                                                                </span>
+                                                                                {l.risk === null ? (
+                                                                                    <span className="text-[10px] text-foreground-muted">Unverified candidate</span>
+                                                                                ) : (
+                                                                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${RISK_BADGE[l.risk]}`}>
+                                                                                        {l.risk}
+                                                                                    </span>
+                                                                                )}
                                                                             </td>
-                                                                            <td className="px-4 py-2.5 font-sans text-foreground-muted">{l.registered ?? 'Active'}</td>
+                                                                            <td className="px-4 py-2.5 font-sans text-foreground-muted">{l.registered ?? 'Not checked'}</td>
                                                                         </tr>
                                                                     ))}
                                                                 </tbody>

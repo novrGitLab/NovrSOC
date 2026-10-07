@@ -32,12 +32,6 @@ async function call(method: string, path: string, opts: { role?: string; email?:
 const enableEmail = () => { process.env.EMAIL_ENABLED = 'true'; process.env.BREVO_API_KEY = 'test-key'; };
 const disableEmail = () => { delete process.env.EMAIL_ENABLED; delete process.env.BREVO_API_KEY; };
 
-const REPORT = {
-    to: ['ciso@example.test'], orgName: 'Example Ltd', weekStart: '22/09/2026', weekEnd: '28/09/2026',
-    totalAlerts: 10, criticalCount: 1, highCount: 2, resolvedCount: 5, complianceScore: 80, complianceChange: 1,
-    topThreats: [{ name: 'Brute force', count: 4 }], slaUptime: 99.5, backupStatus: 'OK', openIncidents: 2,
-};
-
 before(() => {
     // Stub only the outbound Brevo call; everything else (incl. our own server) is real.
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -68,54 +62,14 @@ test('the anonymous send routes /api/email/test and /api/email/alert no longer e
     assert.equal(sent.length, 0);
 });
 
-// ── /api/email/weekly-report ──
-
-test('weekly report: unauthenticated → 401, insufficient role → 403, nothing sent', async () => {
+test('the weekly report route /api/email/weekly-report no longer exists (it sent hardcoded figures)', async () => {
     enableEmail();
-    assert.equal((await call('POST', '/api/email/weekly-report', { body: REPORT })).status, 401);
-    assert.equal((await call('POST', '/api/email/weekly-report', { role: 'analyst', body: REPORT })).status, 403);
-    assert.equal((await call('POST', '/api/email/weekly-report', { role: 'executive', body: REPORT })).status, 403);
-    assert.equal((await call('POST', '/api/email/weekly-report', { role: 'portal_user', body: REPORT })).status, 403);
+    for (const role of [undefined, 'super_admin', 'soc_manager']) {
+        assert.equal((await call('POST', '/api/email/weekly-report', { role, body: { to: ['ciso@example.test'] } })).status, 404);
+    }
     assert.equal(sent.length, 0);
-});
-
-test('weekly report: malformed payloads → 400', async () => {
-    enableEmail();
-    const bad = [
-        { ...REPORT, to: [] }, { ...REPORT, to: ['not-an-email'] }, { ...REPORT, to: Array(21).fill('a@b.co') },
-        { ...REPORT, complianceScore: 101 }, { ...REPORT, totalAlerts: -1 }, { ...REPORT, extra: 'field' }, { to: ['a@b.co'] },
-    ];
-    for (const body of bad) assert.equal((await call('POST', '/api/email/weekly-report', { role: 'soc_manager', body })).status, 400, JSON.stringify(body).slice(0, 80));
-    assert.equal(sent.length, 0);
-});
-
-test('weekly report: manager → sent, audited', async () => {
-    enableEmail();
-    const r = await call('POST', '/api/email/weekly-report', { role: 'soc_manager', email: 'mgr@novrsoc.test', body: REPORT });
-    assert.equal(r.status, 200);
-    assert.equal(r.data.success, true);
-    assert.equal(sent.length, 1);
-    assert.deepEqual(sent[0].to, [{ email: 'ciso@example.test' }]);
-    assert.ok(getAuditLog(20).some((e) => e.action === 'EMAIL_WEEKLY_REPORT' && e.user === 'mgr@novrsoc.test' && e.result === 'success'));
-});
-
-test('weekly report: email disabled → 503, never a fake success', async () => {
     disableEmail();
-    const r = await call('POST', '/api/email/weekly-report', { role: 'super_admin', body: REPORT });
-    assert.equal(r.status, 503);
-    assert.equal(r.data.success, false);
 });
-
-test('weekly report: rate limited per user', async () => {
-    enableEmail();
-    const email = `burst-${randomUUID()}@novrsoc.test`;
-    const statuses: number[] = [];
-    for (let i = 0; i < 11; i++) statuses.push((await call('POST', '/api/email/weekly-report', { role: 'soc_manager', email, body: REPORT })).status);
-    assert.deepEqual(statuses.slice(0, 10), Array(10).fill(200));
-    assert.equal(statuses[10], 429);
-});
-
-// ── /api/email/status ──
 
 test('email status needs a staff token', async () => {
     assert.equal((await call('GET', '/api/email/status')).status, 401);

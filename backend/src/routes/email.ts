@@ -3,11 +3,9 @@ import multer from 'multer';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { getDb } from '../services/emailsec/db';
 import { ingestReport } from '../services/emailsec/dmarcService';
-import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
-import { sendWeeklyReportEmail, isEmailEnabled } from '../services/email';
+import { isEmailEnabled } from '../services/email';
 import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth';
-import { validate } from '../middleware/validate';
 import { logAudit } from '../lib/audit';
 
 // Platform notification email + the Mailgun DMARC report inbox.
@@ -51,38 +49,6 @@ router.get('/status', requireAuth, requireRole('super_admin', 'soc_manager', 'an
         smtp_configured: hasSmtp,
         sendgrid_configured: hasSendGrid,
     });
-});
-
-const count = z.number().int().min(0).max(100_000_000);
-export const weeklyReportSchema = z.object({
-    to: z.array(z.string().trim().email().max(254)).min(1).max(20),
-    orgName: z.string().trim().min(1).max(200),
-    weekStart: z.string().trim().min(1).max(40),
-    weekEnd: z.string().trim().min(1).max(40),
-    totalAlerts: count, criticalCount: count, highCount: count, resolvedCount: count, openIncidents: count,
-    complianceScore: z.number().min(0).max(100),
-    complianceChange: z.number().min(-100).max(100),
-    topThreats: z.array(z.object({ name: z.string().trim().min(1).max(200), count })).max(20),
-    slaUptime: z.number().min(0).max(100),
-    backupStatus: z.string().trim().min(1).max(100),
-}).strict();
-
-// POST /api/email/weekly-report — Reports page (Sec Ops Management → Reports, manager-only).
-router.post('/weekly-report', requireAuth, requireRole('super_admin', 'soc_manager'), sendLimiter, validate(weeklyReportSchema), async (req: AuthRequest, res) => {
-    const body = req.body as z.infer<typeof weeklyReportSchema>;
-    // sendWeeklyReportEmail() returns quietly when email is off — say so instead of "success".
-    if (!isEmailEnabled()) {
-        res.status(503).json({ success: false, error: 'Email sending is not enabled on the backend (EMAIL_ENABLED / provider keys).' });
-        return;
-    }
-    try {
-        await sendWeeklyReportEmail(body);
-        logAudit({ user: req.user?.email ?? 'unknown', action: 'EMAIL_WEEKLY_REPORT', resource: 'email', ip: req.ip ?? '', result: 'success', details: `to ${body.to.join(', ')}`, severity: 'info' });
-        res.json({ success: true });
-    } catch (err) {
-        logAudit({ user: req.user?.email ?? 'unknown', action: 'EMAIL_WEEKLY_REPORT', resource: 'email', ip: req.ip ?? '', result: 'failed', details: err instanceof Error ? err.message : 'send failed', severity: 'warning' });
-        res.status(502).json({ success: false, error: err instanceof Error ? err.message : 'Send failed' });
-    }
 });
 
 // Mailgun signs every webhook: HMAC-SHA256(signing key, timestamp + token) = signature.

@@ -185,7 +185,7 @@ function notifyCriticalAlerts(alerts: ThreatAlert[]): void {
             severity: alert.severity,
             agentName: alert.agent_name,
             sourceIp: alert.source_ip || '',
-            mitreId: alert.mitre_technique || 'T0000',
+            mitreId: alert.mitre_technique_id || 'Unknown',
             mitreTactic: alert.mitre_tactic || 'Unknown',
             riskScore: alert.rule_level * 6,
             rawLog: alert.raw_log,

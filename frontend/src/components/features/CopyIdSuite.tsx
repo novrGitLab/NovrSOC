@@ -6,30 +6,6 @@ import { apiUrl, apiFetch } from '@/lib/api';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ExportButton } from '@/components/shared/ExportButton';
 
-// Historical investigated/dismissed alerts — a persistent alert-history store (vs. the live
-// leak-scan result below) is a later pass; this shows what that log looks like once it exists.
-const HISTORICAL_ALERTS = [
-    {
-        id: 'alert_001', severity: 'HIGH' as const, platform: 'GitHub', repo: 'RayneOps/website',
-        file: 'app/api/send-email/route.ts', line: 14, pattern_matched: 'API Key Pattern',
-        committer: 'RayneOps', committed: '2026-08-01', status: 'investigated',
-        resolution: 'Confirmed clean — key reads from process.env, not hardcoded',
-    },
-    {
-        id: 'alert_002', severity: 'MEDIUM' as const, platform: 'GitHub', repo: 'RayneOps/website',
-        file: 'README.md', line: 23, pattern_matched: 'Brand Domain',
-        committer: 'RayneOps', committed: '2026-07-15', status: 'dismissed',
-        resolution: 'Official documentation mention — dismissed',
-    },
-];
-
-const SCAN_HISTORY_SEED = [
-    { date: '2026-08-16 08:30', github: 2847, gitlab: 634, alerts: 0, duration: '4m 12s' },
-    { date: '2026-08-16 05:30', github: 2845, gitlab: 631, alerts: 0, duration: '4m 08s' },
-    { date: '2026-08-15 22:30', github: 2841, gitlab: 628, alerts: 2, duration: '4m 15s' },
-    { date: '2026-08-15 19:30', github: 2838, gitlab: 625, alerts: 0, duration: '3m 58s' },
-];
-
 interface CodeSignature {
     id: string;
     type: 'STRING' | 'REGEX' | 'HASH';
@@ -60,17 +36,6 @@ const TYPE_STYLE: Record<CodeSignature['type'], string> = {
     STRING: 'bg-blue/10 text-blue',
     REGEX: 'bg-purple/10 text-purple',
     HASH: 'bg-card-muted text-foreground-muted',
-};
-
-// One demo leak shown for illustration — matched content is always redacted, never surfaced raw.
-const DEMO_LEAK: Leak = {
-    platform: 'GitHub',
-    repo: 'github.com/somedev/old-project',
-    file: 'config/.env',
-    line: 14,
-    committer: 'somedev',
-    date: '3 days ago',
-    severity: 'critical',
 };
 
 export function CopyIdSuite() {
@@ -163,13 +128,11 @@ export function CopyIdSuite() {
             const data = await res.json();
             if (data?.summary) {
                 setScanSummary(data.summary);
-                // No real leaks found yet in this environment — show the illustrative demo leak
-                // only if a configured scanner actually ran and turned up zero results, so the
-                // page always demonstrates what a hit looks like.
-                setLeaks(data.summary.github_results === 0 && data.summary.gitlab_results === 0 ? [DEMO_LEAK] : []);
+                // Individual hits are not listed here yet; the summary counts above are real.
+                setLeaks([]);
             } else {
                 setScanSummary({ github_configured: false, gitlab_configured: false, github_results: 0, gitlab_results: 0, scanned_at: new Date().toISOString() });
-                setLeaks([DEMO_LEAK]);
+                setLeaks([]);
             }
         } finally {
             setScanning(false);
@@ -195,23 +158,15 @@ export function CopyIdSuite() {
                 </div>
             </div>
 
-            {/* Scan stats summary */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {/* Scan stats — this session's live scan only; nothing is persisted yet */}
+            <div className="grid grid-cols-2 gap-3">
                 <div className="bg-card border border-border rounded-xl p-3 text-center">
-                    <p className="text-xl font-black text-foreground">{SCAN_HISTORY_SEED[0].github.toLocaleString()}</p>
-                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">GitHub Files Scanned</p>
+                    <p className="text-xl font-black text-foreground">{scanSummary ? (scanSummary.github_configured ? scanSummary.github_results.toLocaleString() : 'Not connected') : '—'}</p>
+                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">GitHub results (last scan)</p>
                 </div>
                 <div className="bg-card border border-border rounded-xl p-3 text-center">
-                    <p className="text-xl font-black text-foreground">{SCAN_HISTORY_SEED[0].gitlab.toLocaleString()}</p>
-                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">GitLab Files Scanned</p>
-                </div>
-                <div className="bg-card border border-border rounded-xl p-3 text-center">
-                    <p className="text-xl font-black text-amber">{HISTORICAL_ALERTS.length}</p>
-                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Total Alerts</p>
-                </div>
-                <div className="bg-card border border-border rounded-xl p-3 text-center">
-                    <p className="text-xl font-black text-blue">{HISTORICAL_ALERTS.filter((a) => a.status !== 'active').length}</p>
-                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Resolved</p>
+                    <p className="text-xl font-black text-foreground">{scanSummary ? (scanSummary.gitlab_configured ? scanSummary.gitlab_results.toLocaleString() : 'Not connected') : '—'}</p>
+                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">GitLab results (last scan)</p>
                 </div>
             </div>
 
@@ -363,39 +318,11 @@ export function CopyIdSuite() {
                 )}
             </div>
 
-            {/* Recent Alerts — investigated/dismissed history, distinct from live leak scan above */}
+            {/* Alert history — no persistent store exists; the previous rows were sample data */}
             <div>
-                <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-2">Recent Alerts ({HISTORICAL_ALERTS.length})</p>
-                <div className="bg-card border border-border rounded-xl overflow-hidden">
-                    <table className="w-full text-xs">
-                        <thead>
-                            <tr className="border-b border-border">
-                                {['Severity', 'Repo / File', 'Pattern', 'Committer', 'Committed', 'Status', 'Resolution'].map((h) => (
-                                    <th key={h} className="text-left px-4 py-2.5 text-[10px] font-bold text-foreground-muted uppercase tracking-wider">{h}</th>
-                                ))}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {HISTORICAL_ALERTS.map((a) => (
-                                <tr key={a.id} className="border-b border-border last:border-0 hover:bg-card-muted">
-                                    <td className="px-4 py-2.5">
-                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${a.severity === 'HIGH' ? 'bg-red-500/10 text-red-500 border border-red-500/30' : 'bg-grey-100 text-amber'}`}>{a.severity}</span>
-                                    </td>
-                                    <td className="px-4 py-2.5">
-                                        <p className="font-mono text-foreground">{a.repo}</p>
-                                        <p className="text-[10px] text-foreground-muted font-mono">{a.file}:{a.line}</p>
-                                    </td>
-                                    <td className="px-4 py-2.5 text-foreground-muted">{a.pattern_matched}</td>
-                                    <td className="px-4 py-2.5 text-foreground-muted">{a.committer}</td>
-                                    <td className="px-4 py-2.5 text-foreground-muted whitespace-nowrap">{a.committed}</td>
-                                    <td className="px-4 py-2.5">
-                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-card-muted text-foreground-muted capitalize">{a.status}</span>
-                                    </td>
-                                    <td className="px-4 py-2.5 text-foreground-muted max-w-[220px]">{a.resolution}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-2">Alert History</p>
+                <div className="bg-card border border-border rounded-xl p-5 text-center">
+                    <p className="text-xs text-foreground-muted">No alert history is stored yet — investigated and dismissed leak alerts are not persisted.</p>
                 </div>
             </div>
 
@@ -440,21 +367,21 @@ git config core.hooksPath .novrsoc/hooks`}
                 <table className="w-full text-xs">
                     <thead>
                         <tr className="border-b border-border">
-                            {['Date', 'GitHub Files', 'GitLab Files', 'Alerts', 'Duration'].map((h) => (
+                            {['Date', 'GitHub results', 'GitLab results'].map((h) => (
                                 <th key={h} className="text-left px-4 py-2 text-[10px] font-bold text-foreground-muted uppercase tracking-wider">{h}</th>
                             ))}
                         </tr>
                     </thead>
                     <tbody>
-                        {SCAN_HISTORY_SEED.map((s, i) => (
-                            <tr key={i} className="border-b border-border last:border-0">
-                                <td className="px-4 py-2 text-foreground-muted whitespace-nowrap">{s.date}</td>
-                                <td className="px-4 py-2 flex items-center gap-1.5 text-foreground"><GitBranch size={12} className="text-foreground-muted" /> {s.github.toLocaleString()}</td>
-                                <td className="px-4 py-2 text-foreground"><span className="inline-flex items-center gap-1.5"><Code size={12} className="text-foreground-muted" /> {s.gitlab.toLocaleString()}</span></td>
-                                <td className={`px-4 py-2 font-bold ${s.alerts > 0 ? 'text-amber' : 'text-blue'}`}>{s.alerts === 0 ? '0 ✓' : s.alerts}</td>
-                                <td className="px-4 py-2 text-foreground-muted">{s.duration}</td>
+                        {scanSummary ? (
+                            <tr>
+                                <td className="px-4 py-2 text-foreground-muted whitespace-nowrap">{new Date(scanSummary.scanned_at).toLocaleString()}</td>
+                                <td className="px-4 py-2 text-foreground"><span className="inline-flex items-center gap-1.5"><GitBranch size={12} className="text-foreground-muted" /> {scanSummary.github_configured ? scanSummary.github_results : 'Not connected'}</span></td>
+                                <td className="px-4 py-2 text-foreground"><span className="inline-flex items-center gap-1.5"><Code size={12} className="text-foreground-muted" /> {scanSummary.gitlab_configured ? scanSummary.gitlab_results : 'Not connected'}</span></td>
                             </tr>
-                        ))}
+                        ) : (
+                            <tr><td colSpan={3} className="px-4 py-4 text-center text-foreground-muted">No scans this session. Scan history is not persisted.</td></tr>
+                        )}
                     </tbody>
                 </table>
             </div>

@@ -8,8 +8,8 @@
 // THREE THINGS THIS DELIBERATELY DOES NOT DO, each verified live on 2026-09-17:
 //
 //  1. It does NOT write to `nigeria_intel.advisories`. That schema does not exist on this
-//     project — the real table is public.nigeria_advisories (same finding recorded in
-//     nigeriaDemoSeed.ts). Writing to the former fails on every row.
+//     project — the real table is public.nigeria_advisories. Writing to the former fails
+//     on every row.
 //  2. It does NOT set an `affected_sector` column. nigeria_advisories has no such column; the
 //     frontend's sector filter reads the `tags` array, so sector ships as a `sector:banking`
 //     style tag, matching the existing convention.

@@ -717,7 +717,8 @@ router.get('/incidents', async (req, res) => {
                 status: 'Open' as const,
                 analyst: 'Unassigned',
                 slaTime: slaTimeFor(level),
-                mitre: h._source.rule?.mitre?.technique?.[0] ?? 'T1059',
+                // null when the rule carries no MITRE mapping (this used to default to T1059).
+                mitre: h._source.rule?.mitre?.technique?.[0] ?? null,
                 timestamp: h._source.timestamp ?? null,
                 level,
             };
@@ -728,13 +729,14 @@ router.get('/incidents', async (req, res) => {
         const medium = mediumRes?.hits?.total?.value ?? 0;
         const low = lowRes?.hits?.total?.value ?? 0;
 
-        const kpis = { total: critical + high + medium + low, critical, high, medium, low, investigating: 0, escalated: 0, avgSla: '02:00:00' };
+        // investigating / escalated / avgSla are not tracked for raw Wazuh alerts: null, not invented.
+        const kpis = { total: critical + high + medium + low, critical, high, medium, low, investigating: null, escalated: null, avgSla: null };
 
         res.json({ incidents, kpis });
     } catch {
         res.status(502).json({
             incidents: [],
-            kpis: { total: 0, critical: 0, high: 0, medium: 0, low: 0, investigating: 0, escalated: 0, avgSla: '00:00:00' },
+            kpis: { total: 0, critical: 0, high: 0, medium: 0, low: 0, investigating: null, escalated: null, avgSla: null },
         });
     }
 });

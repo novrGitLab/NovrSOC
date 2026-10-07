@@ -2,9 +2,9 @@
 
 import {
     LayoutDashboard, Globe, Users, Shield, UserCheck, Smartphone, Code,
-    Crosshair, AlertTriangle, Link as LinkIcon, Monitor, Building, Server, Network, Cpu,
+    Crosshair, AlertTriangle, Link as LinkIcon, Monitor, Server, Network,
     Activity, Siren, Bell,
-    HardDrive, BarChart, CreditCard,
+    HardDrive, CreditCard,
 } from 'lucide-react';
 import { Sidebar, type NavGroup } from './Sidebar';
 
@@ -38,7 +38,6 @@ const clientNav: NavGroup[] = [
             { label: 'Threat Advisory', href: '/client/threat/advisory', icon: AlertTriangle },
             { label: 'URL Scan Suite', href: '/client/threat/urlscan', icon: LinkIcon },
             { label: 'Website Scanning', href: '/client/threat/webscan', icon: Monitor },
-            { label: 'Vendor Assessments', href: '/client/threat/vendor', icon: Building },
         ],
     },
     {
@@ -49,7 +48,6 @@ const clientNav: NavGroup[] = [
         items: [
             { label: 'Digital Assets', href: '/client/infra/assets', icon: Server },
             { label: 'DNS Suite', href: '/client/infra/dns', icon: Network },
-            { label: 'WebLogic Appliances', href: '/client/infra/weblogic', icon: Cpu },
         ],
     },
     {
@@ -71,7 +69,6 @@ const clientNav: NavGroup[] = [
         groupLabel: 'Data Continuity',
         items: [
             { label: 'Data Loss Recovery', href: '/client/data/recovery', icon: HardDrive },
-            { label: 'Recovery Credit', href: '/client/data/sla', icon: BarChart },
         ],
     },
     {

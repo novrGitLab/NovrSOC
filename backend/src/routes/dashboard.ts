@@ -12,7 +12,7 @@ import { enrichIPBatch, getSupabase } from '../services/geoEnrichment';
 import { lookupASN } from '../services/ripeStat';
 import { checkBlock, type AbuseIPDBBlockReport } from '../services/abuseipdb';
 import { circlSearchPulses, type CIRCLPulse } from '../services/circl';
-import { readSeededStates, hasDemoData, nigeriaStateToMapName } from '../services/nigeriaDemoSeed';
+import { readSeededStates, hasDemoData, nigeriaStateToMapName } from '../services/nigeriaStateData';
 import { getNigerianCyberNews, type NewsResult } from '../services/serper';
 import {
     runNigerianIntelCollector,

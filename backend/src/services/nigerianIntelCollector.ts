@@ -33,7 +33,7 @@ import { addAttributeToEvent, isMISPConfigured } from './misp';
 import { circlSearchPulses, circlGetPulseIndicators, type CIRCLPulse } from './circl';
 import { getGreyNoiseNigerianIPs, isGreyNoiseConfigured } from './greynoise';
 import { searchFOFANigeria, isConfigured as fofaConfigured } from './fofa';
-import { hasDemoData, clearDemoBaseline } from './nigeriaDemoSeed';
+import { hasDemoData, clearDemoBaseline } from './nigeriaStateData';
 
 const NIGERIA_EVENT_ID = process.env.MISP_NIGERIA_EVENT_ID || '1';
 
@@ -209,7 +209,7 @@ async function storeAdvisories(advisories: CollectedAdvisory[]): Promise<boolean
 
 // Bumps a state's counters on the table the Nigeria map actually reads. Read-modify-write
 // (no unique constraint on state_name to upsert against, same limitation as org_setup).
-// The illustrative baseline (services/nigeriaDemoSeed.ts) writes to the same attack_count column
+// Demo rows an earlier deploy may have seeded (see services/nigeriaStateData.ts) use the same attack_count column
 // this collector increments. Clearing it lazily — at the moment the first REAL state bump is
 // about to happen, and never before — means a demo-populated map stays populated until there's
 // something real to replace it with, and real counts never start from a fabricated number.

@@ -344,7 +344,7 @@ export function MobileAppSuite() {
                     {loading ? (
                         <div className="p-4 space-y-2">{Array.from({ length: 2 }).map((_, i) => <div key={i} className="h-6 bg-card-muted rounded animate-pulse" />)}</div>
                     ) : rogueApps.length === 0 ? (
-                        <p className="text-xs text-foreground-muted text-center py-10">No rogue apps detected</p>
+                        <p className="text-xs text-foreground-muted text-center py-10">Rogue app detection is not connected yet — run a store scan above to search the app stores.</p>
                     ) : (
                         <table className="w-full text-xs">
                             <thead>

@@ -145,32 +145,24 @@ router.delete('/iocs/:id', (req, res) => {
     res.json({ success: true });
 });
 
-// Seed data so the Threat Sharing tab shows something meaningful before any real client has
-// opted into sharing — clearly separable from allSharedManualIOCs() below, never merged into
-// per-org counts.
-const MOCK_SHARED = [
-    { id: 'shared_001', value: '185.220.101.47', type: 'ip', verdict: 'malicious', risk_score: 94, seen_count: 8, tags: ['tor', 'brute-force'], shared_by_clients: 3 },
-    { id: 'shared_002', value: 'malware-c2.ng', type: 'domain', verdict: 'malicious', risk_score: 89, seen_count: 2, tags: ['c2', 'malware'], shared_by_clients: 1 },
-    { id: 'shared_003', value: '91.215.153.180', type: 'ip', verdict: 'malicious', risk_score: 98, seen_count: 12, tags: ['ryuk', 'ransomware', 'c2'], shared_by_clients: 5 },
-    { id: 'shared_004', value: 'phishing-gtbank.xyz', type: 'domain', verdict: 'malicious', risk_score: 96, seen_count: 4, tags: ['phishing', 'banking'], shared_by_clients: 2 },
-    { id: 'shared_005', value: '45.155.205.233', type: 'ip', verdict: 'malicious', risk_score: 87, seen_count: 7, tags: ['brute-force', 'ssh'], shared_by_clients: 4 },
-];
-
 // GET /api/org-cti/shared — cross-client shared IOCs (anonymised)
 router.get('/shared', (_req, res) => {
-    const realShared = allSharedManualIOCs().map((i) => ({
+    const all = allSharedManualIOCs();
+    // How many distinct organisations shared each value — counted, not assumed.
+    const orgsByValue = new Map<string, Set<string>>();
+    for (const i of all) orgsByValue.set(i.value, (orgsByValue.get(i.value) ?? new Set()).add(i.org_id));
+    const realShared = all.map((i) => ({
         ...i,
+        shared_by_clients: orgsByValue.get(i.value)?.size ?? 1,
         org_id: '[anonymised]',
         added_by: 'NovrSOC Client',
         notes: '', // strip internal notes before sharing
     }));
 
     res.json({
-        shared_iocs: [...realShared, ...MOCK_SHARED],
-        total: realShared.length + MOCK_SHARED.length,
-        // +3 accounts for the mock clients seeding MOCK_SHARED above — same idea as the
-        // "N threat feeds active" placeholder elsewhere in the CTI Platform UI.
-        participating_clients: orgCount() + 3,
+        shared_iocs: realShared,
+        total: realShared.length,
+        participating_clients: orgCount(),
     });
 });
 

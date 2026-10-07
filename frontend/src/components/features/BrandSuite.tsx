@@ -1,74 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Shield, Pencil, X, Upload, Search, ExternalLink, CheckCircle, AlertTriangle, History, FileText } from 'lucide-react';
+import { Shield, Pencil, X, Upload, Search, ExternalLink, CheckCircle, AlertTriangle, History } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { ExportButton } from '@/components/shared/ExportButton';
-
-// Mock brand-wide violation report — a real report generator (aggregating scan history +
-// takedown status) is a later pass; this shows the shape/UX of what it will look like.
-const MOCK_BRAND_REPORT = {
-    brand_name: 'Cybernovr',
-    generated_at: '2026-08-16',
-    period: 'Last 30 days',
-    summary: {
-        violations_found: 3,
-        counterfeit_sites: 1,
-        phishing_pages: 2,
-        logo_misuse: 0,
-        domains_monitored: 2,
-        web_scans_run: 47,
-    },
-    violations: [
-        {
-            id: 'viol_001',
-            type: 'PHISHING' as const,
-            url: 'https://cybernovr-login-secure.ru/verify',
-            title: 'Fake Cybernovr Login Page',
-            detected: '2026-08-12',
-            severity: 'CRITICAL' as const,
-            status: 'active',
-            threat_score: 94,
-            description: 'Page mimics Cybernovr login portal. Collects credentials.',
-        },
-        {
-            id: 'viol_002',
-            type: 'COUNTERFEIT' as const,
-            url: 'https://cybernovr-africa.com/products',
-            title: 'Unauthorized Reseller Site',
-            detected: '2026-08-10',
-            severity: 'HIGH' as const,
-            status: 'active',
-            threat_score: 72,
-            description: 'Site claims to sell Cybernovr products without authorization.',
-        },
-        {
-            id: 'viol_003',
-            type: 'IMPERSONATION' as const,
-            url: 'https://cybernovr-ng.blogspot.com',
-            title: 'Brand Impersonation Blog',
-            detected: '2026-08-08',
-            severity: 'MEDIUM' as const,
-            status: 'under_review',
-            threat_score: 45,
-            description: 'Blog claims to be official Cybernovr Nigeria updates.',
-        },
-    ],
-};
 
 const BRAND_SEVERITY_STYLE: Record<string, string> = {
     CRITICAL: 'bg-red-500 text-white',
     HIGH: 'border border-red-500 text-red-500',
     MEDIUM: 'border border-amber text-amber',
 };
-
-// Violations per week, for the report's trend chart — 30 days of MOCK_BRAND_REPORT's data.
-const BRAND_VIOLATION_TREND = [
-    { week: 'Jul 21', count: 0 },
-    { week: 'Jul 28', count: 0 },
-    { week: 'Aug 4', count: 1 },
-    { week: 'Aug 11', count: 2 },
-];
 
 interface BrandAssets {
     official_domain: string;
@@ -129,7 +70,6 @@ export function BrandSuite() {
     const [configured, setConfigured] = useState(true);
     const [violations, setViolations] = useState<SearchHit[]>([]);
     const [scanHistory, setScanHistory] = useState<ScanRecord[]>(SEED_SCAN_HISTORY);
-    const [showBrandReport, setShowBrandReport] = useState(false);
 
     const scanFor = async (brandName: string, officialDomain: string) => {
         setScanning(true);
@@ -224,13 +164,6 @@ export function BrandSuite() {
                 </div>
                 <div className="flex items-center gap-2">
                     <ExportButton elementId="report-content" filename="brand-suite" title="Brand Suite" />
-                    <button
-                        onClick={() => setShowBrandReport(true)}
-                        className="flex items-center gap-2 border border-purple text-purple hover:bg-purple/5 text-xs font-black px-4 py-2.5 rounded-lg transition-colors flex-shrink-0"
-                    >
-                        <FileText size={14} />
-                        View Brand Report
-                    </button>
                 </div>
             </div>
 
@@ -279,7 +212,7 @@ export function BrandSuite() {
                     <div className="flex items-center justify-between border-b border-border pb-2">
                         <span className="text-foreground-muted">Web Scanner</span>
                         <span className={`text-[11px] font-bold flex items-center gap-1 ${assets.capabilities.web_search ? 'text-blue' : 'text-amber'}`}>
-                            {assets.capabilities.web_search ? <><CheckCircle size={12} /> Web Intelligence Engine active</> : <><AlertTriangle size={12} /> Demo mode — not yet configured</>}
+                            {assets.capabilities.web_search ? <><CheckCircle size={12} /> Web Intelligence Engine active</> : <><AlertTriangle size={12} /> Not configured</>}
                         </span>
                     </div>
                 </div>
@@ -310,8 +243,8 @@ export function BrandSuite() {
 
             {tab === 'violations' && (
                 <div className="space-y-3">
-                    {!configured && violations.length > 0 && (
-                        <p className="text-[11px] text-amber">Demo data — Web Intelligence Engine not yet configured for live results.</p>
+                    {!configured && (
+                        <p className="text-[11px] text-amber">Web Intelligence Engine not configured — no live results.</p>
                     )}
 
                     {/* Scan stats summary */}
@@ -453,100 +386,6 @@ export function BrandSuite() {
                 </div>
             )}
 
-            {showBrandReport && (
-                <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
-                    <div className="bg-card border border-border rounded-2xl w-full max-w-2xl shadow-xl max-h-[85vh] overflow-y-auto">
-                        <div className="p-6">
-                            <div className="flex items-start justify-between mb-1">
-                                <div>
-                                    <h3 className="font-heading font-bold text-lg text-foreground">{MOCK_BRAND_REPORT.brand_name} Brand Report</h3>
-                                    <p className="text-[11px] text-foreground-muted">Generated: {MOCK_BRAND_REPORT.generated_at} · {MOCK_BRAND_REPORT.period}</p>
-                                </div>
-                                <button onClick={() => setShowBrandReport(false)} className="text-foreground-muted hover:text-foreground" aria-label="Close report">
-                                    <X size={16} />
-                                </button>
-                            </div>
-
-                            {/* Summary KPIs */}
-                            <div className="grid grid-cols-3 gap-3 mt-4">
-                                <div className="border border-border rounded-lg p-3">
-                                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Violations Found</p>
-                                    <p className="text-xl font-black text-red-500">{MOCK_BRAND_REPORT.summary.violations_found}</p>
-                                </div>
-                                <div className="border border-border rounded-lg p-3">
-                                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Counterfeit Sites</p>
-                                    <p className="text-xl font-black text-orange">{MOCK_BRAND_REPORT.summary.counterfeit_sites}</p>
-                                </div>
-                                <div className="border border-border rounded-lg p-3">
-                                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Phishing Pages</p>
-                                    <p className="text-xl font-black text-red-500">{MOCK_BRAND_REPORT.summary.phishing_pages}</p>
-                                </div>
-                                <div className="border border-border rounded-lg p-3">
-                                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Logo Misuse</p>
-                                    <p className="text-xl font-black text-blue">{MOCK_BRAND_REPORT.summary.logo_misuse}</p>
-                                </div>
-                                <div className="border border-border rounded-lg p-3">
-                                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Domains Monitored</p>
-                                    <p className="text-xl font-black text-purple">{MOCK_BRAND_REPORT.summary.domains_monitored}</p>
-                                </div>
-                                <div className="border border-border rounded-lg p-3">
-                                    <p className="text-[10px] text-foreground-muted uppercase tracking-wide">Web Scans Run</p>
-                                    <p className="text-xl font-black text-foreground">{MOCK_BRAND_REPORT.summary.web_scans_run}</p>
-                                </div>
-                            </div>
-
-                            {/* Trend chart */}
-                            <div className="mt-5">
-                                <p className="text-[11px] font-bold text-foreground-muted uppercase tracking-wide mb-2">Violations Per Week</p>
-                                <div className="flex items-end gap-3 h-20 border border-border rounded-lg p-3">
-                                    {BRAND_VIOLATION_TREND.map((w) => (
-                                        <div key={w.week} className="flex-1 flex flex-col items-center gap-1">
-                                            <div
-                                                className="w-full bg-purple rounded-t"
-                                                style={{ height: `${Math.max(4, (w.count / 2) * 100)}%` }}
-                                            />
-                                            <span className="text-[9px] text-foreground-muted">{w.week}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {/* Violations table */}
-                            <div className="mt-5">
-                                <p className="text-[11px] font-bold text-foreground-muted uppercase tracking-wide mb-2">Violations ({MOCK_BRAND_REPORT.violations.length})</p>
-                                <div className="border border-border rounded-lg overflow-hidden">
-                                    <table className="w-full text-xs">
-                                        <thead>
-                                            <tr className="border-b border-border">
-                                                {['Severity', 'Type', 'URL', 'Detected', 'Action'].map((h) => (
-                                                    <th key={h} className="text-left px-3 py-2 text-[10px] font-bold text-foreground-muted uppercase tracking-wider">{h}</th>
-                                                ))}
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {MOCK_BRAND_REPORT.violations.map((v) => (
-                                                <tr key={v.id} className="border-b border-border last:border-0 hover:bg-card-muted">
-                                                    <td className="px-3 py-2">
-                                                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${BRAND_SEVERITY_STYLE[v.severity]}`}>{v.severity}</span>
-                                                    </td>
-                                                    <td className="px-3 py-2 text-foreground-muted">{v.type}</td>
-                                                    <td className="px-3 py-2 max-w-[180px]">
-                                                        <a href={v.url} target="_blank" rel="noreferrer" className="text-blue hover:underline truncate block" title={v.title}>{v.url}</a>
-                                                    </td>
-                                                    <td className="px-3 py-2 text-foreground-muted whitespace-nowrap">{v.detected}</td>
-                                                    <td className="px-3 py-2">
-                                                        <button className="text-[10px] font-bold text-red-500 hover:underline whitespace-nowrap">Takedown Request</button>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
         </div>
     );
 }

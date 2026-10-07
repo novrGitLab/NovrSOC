@@ -201,24 +201,17 @@ function MITREWidget({ tactics, source }: { tactics: Record<string, number> | nu
     );
 }
 
-/* ── Threat Intel Snapshot Widget (Row 3, right) ── */
-interface CtiStats { total_iocs: number; iocs_last_24h: number; active_campaigns: number; exploitable_cves_this_week: number; sources_active: number }
+/* ── Threat Intel Snapshot Widget (Row 3, right) ──
+ * The platform-wide IOC totals came from the CTIP backend (/api/threat-intel/stats), which no
+ * longer exists, and rendered as 0. They now say "Not connected" instead of a false zero. */
 interface OrgCtiSummary { malicious: number; suspicious: number; total: number }
 
-function ThreatIntelWidget({ ctiStats, orgCti }: { ctiStats: CtiStats | null; orgCti: OrgCtiSummary | null }) {
+function ThreatIntelWidget({ orgCti }: { orgCti: OrgCtiSummary | null }) {
     return (
         <WidgetCard title="Threat Intelligence" linkHref="/admin/threat/cti" linkLabel="Open IOC Lookup →">
-            <div className="grid grid-cols-3 gap-3 mb-4">
-                {[
-                    { label: 'Total IOCs', value: ctiStats?.total_iocs ?? 0, color: 'text-blue' },
-                    { label: 'Last 24h', value: ctiStats?.iocs_last_24h ?? 0, color: 'text-orange' },
-                    { label: 'Sources Active', value: ctiStats?.sources_active ?? 0, color: 'text-green' },
-                ].map((s) => (
-                    <div key={s.label} className="bg-card-muted rounded-lg p-3 text-center">
-                        <div className={`text-lg font-black ${s.color}`}>{s.value.toLocaleString()}</div>
-                        <div className="text-[9px] text-foreground-muted mt-0.5">{s.label}</div>
-                    </div>
-                ))}
+            <div className="bg-card-muted rounded-lg p-3 mb-4 text-center">
+                <div className="text-sm font-bold text-foreground-muted">Not connected</div>
+                <div className="text-[10px] text-foreground-muted mt-0.5">Platform-wide IOC feed totals have no data source</div>
             </div>
             <div className="border-t border-border pt-3">
                 <div className="text-[10px] text-foreground-muted uppercase tracking-wider mb-2">Your Organisation IOCs</div>
@@ -481,7 +474,6 @@ export const GeneralDashboard = () => {
     const [incidentsLoading, setIncidentsLoading] = useState(true);
     const [mitreTactics, setMitreTactics] = useState<Record<string, number> | null>(null);
     const [mitreSource, setMitreSource] = useState<string | null>(null);
-    const [ctiStats, setCtiStats] = useState<CtiStats | null>(null);
     const [orgCti, setOrgCti] = useState<OrgCtiSummary | null>(null);
     const [frameworks, setFrameworks] = useState<FrameworkScore[] | null>(null);
     const [frameworksLoading, setFrameworksLoading] = useState(true);
@@ -546,12 +538,6 @@ export const GeneralDashboard = () => {
             .catch(() => { setMitreTactics({}); setMitreSource('unavailable'); });
     }, []);
 
-    useEffect(() => {
-        apiFetch(apiUrl('/api/threat-intel/stats'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => r.json())
-            .then(data => setCtiStats(data))
-            .catch(() => {});
-    }, []);
 
     useEffect(() => {
         apiFetch(apiUrl('/api/org-cti/stats'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
@@ -672,7 +658,7 @@ export const GeneralDashboard = () => {
             {/* Row 3: MITRE (40%) + Threat Intel (60%) */}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
                 <div className="lg:col-span-2"><MITREWidget tactics={mitreTactics} source={mitreSource} /></div>
-                <div className="lg:col-span-3"><ThreatIntelWidget ctiStats={ctiStats} orgCti={orgCti} /></div>
+                <div className="lg:col-span-3"><ThreatIntelWidget orgCti={orgCti} /></div>
             </div>
 
             {/* Row 4: SOAR (50%) + Compliance (50%) */}
