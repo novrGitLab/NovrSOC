@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { search } from '../lib/wazuh-indexer';
 import { DEFAULT_ORG_ID } from '../services/cases';
+import { severityFromLevel } from '../lib/severity';
 
 // GET /api/search?q= — the header's global search. Analyst-only (it reads cases).
 //
@@ -25,7 +26,6 @@ interface SearchResult {
 // the filter — the org scope must not be something the search box can widen.
 const pgSafe = (q: string) => q.replace(/[,()%_*\\"'`]/g, ' ').replace(/\s+/g, ' ').trim();
 
-const levelBadge = (level: number) => (level >= 13 ? 'critical' : level >= 10 ? 'high' : level >= 7 ? 'medium' : 'low');
 
 interface AlertHit { _source?: { rule?: { description?: string; level?: number }; agent?: { name?: string }; timestamp?: string; data?: { srcip?: string } } }
 
@@ -94,7 +94,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res) => {
                 type: 'alert',
                 title: s.rule?.description || 'Wazuh alert',
                 subtitle: `${s.agent?.name ?? 'Unknown agent'} · ${s.timestamp ? new Date(s.timestamp).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' WAT' : ''}`,
-                badge: levelBadge(level),
+                badge: severityFromLevel(level),
                 url: '/admin/secops/alerts',
             });
         }

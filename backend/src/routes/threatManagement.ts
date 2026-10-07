@@ -12,6 +12,7 @@ import { getGreyNoiseCountryStats, isGreyNoiseConfigured } from '../services/gre
 import { threatfoxGetRecent } from '../services/threatfox';
 import { urlhausGetRecent } from '../services/urlhaus';
 import { feodoGetBlocklist } from '../services/feodo';
+import { severityFromLevel, SEVERITY_MIN_LEVEL, type Severity } from '../lib/severity';
 
 // SecOps Threat Management console — live security event stream from the Wazuh Indexer
 // (wazuh-alerts-4.x-*, same OpenSearch backend /api/wazuh/alerts-indexer queries). There is no
@@ -23,7 +24,6 @@ import { feodoGetBlocklist } from '../services/feodo';
 
 const router = Router();
 
-type Severity = 'critical' | 'high' | 'medium' | 'low';
 type AlertStatus = 'open' | 'investigating' | 'acknowledged' | 'closed';
 
 interface ThreatAlert {
@@ -86,20 +86,14 @@ interface IndexerSearchResponse {
 // default for anything freshly indexed. PATCH/create-incident below mutate whatever list is
 // currently cached here, live or mock, so triage actions still stick between requests even
 // though GET /alerts re-queries the indexer each time.
-// getAlertSeverity — level 13+ critical, 10+ high, 7+ medium, matching the Security Operations
-// redesign's spec exactly. LOW (below 7) is filtered out entirely in loadAlerts() below, not
-// just relabeled — this route no longer shows level 1-6 alerts at all; SOAR handles them
-// silently (the SOAR engine, infra/soar/soar.py, cases level 7+ alerts and auto-closes tier 1).
-function getAlertSeverity(level: number): Severity {
-    if (level >= 13) return 'critical';
-    if (level >= 10) return 'high';
-    return 'medium'; // 7-9
-}
+// Severity comes from lib/severity.ts. LOW (below level 7) is filtered out entirely in
+// loadAlerts() below, not just relabeled — this route doesn't show level 1-6 alerts at all; SOAR
+// handles them silently (infra/soar/soar.py cases level 7+ alerts and auto-closes tier 1).
 
 function mapIndexerAlert(hit: IndexerAlertHit): ThreatAlert {
     const src = hit._source;
     const level = src.rule?.level ?? 0;
-    const severity: Severity = getAlertSeverity(level);
+    const severity: Severity = severityFromLevel(level);
     return {
         id: hit._id,
         rule_id: src.rule?.id != null ? String(src.rule.id) : '',
@@ -202,7 +196,7 @@ async function loadAlerts(limit: number): Promise<LoadResult> {
             sort: [{ timestamp: { order: 'desc' } }],
             // level 7+ only — filtered at the query itself, not just relabeled after the fact,
             // so a LOW alert never even counts against `limit` here.
-            query: { range: { 'rule.level': { gte: 7 } } },
+            query: { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } },
         });
         liveAlerts = (result?.hits?.hits ?? []).map(mapIndexerAlert).map(withTriage);
         notifyCriticalAlerts(liveAlerts); // fire-and-forget — must not add latency to the alert list response
@@ -224,13 +218,17 @@ async function counts24h(): Promise<{ total: number; critical: number; high: num
         const r = await search<CountsResponse>('wazuh-alerts-4.x-*', {
             size: 0,
             track_total_hits: true,
-            query: { bool: { filter: [{ range: { timestamp: { gte: 'now-24h' } } }, { range: { 'rule.level': { gte: 7 } } }] } },
+            query: { bool: { filter: [{ range: { timestamp: { gte: 'now-24h' } } }, { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } }] } },
             aggs: {
                 levels: {
                     range: {
                         field: 'rule.level',
                         keyed: true,
-                        ranges: [{ key: 'medium', from: 7, to: 10 }, { key: 'high', from: 10, to: 13 }, { key: 'critical', from: 13 }],
+                        ranges: [
+                            { key: 'medium', from: SEVERITY_MIN_LEVEL.medium, to: SEVERITY_MIN_LEVEL.high },
+                            { key: 'high', from: SEVERITY_MIN_LEVEL.high, to: SEVERITY_MIN_LEVEL.critical },
+                            { key: 'critical', from: SEVERITY_MIN_LEVEL.critical },
+                        ],
                     },
                 },
             },

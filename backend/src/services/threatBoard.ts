@@ -12,9 +12,11 @@ import { createHash } from 'crypto';
 import { search } from '../lib/wazuh-indexer';
 import { getSupabase } from './geoEnrichment';
 import { dbErrorMessage } from './cases';
+import { severityFromLevel, SEVERITY_MIN_LEVEL, type Severity } from '../lib/severity';
 
 export type ThreatStatus = 'active' | 'contained' | 'resolved' | 'monitoring';
-export type ThreatSeverity = 'critical' | 'high' | 'medium';
+// Threats are built from level 7+ alerts only, so 'low' never occurs in practice.
+export type ThreatSeverity = Severity;
 
 export interface Threat {
     id: string;
@@ -70,7 +72,6 @@ export function threatType(groups: string[], description = '', tactic: string | 
     return tactic ?? 'Suspicious Activity';
 }
 
-const severityFor = (level: number): ThreatSeverity => (level >= 13 ? 'critical' : level >= 10 ? 'high' : 'medium');
 const threatId = (ruleId: string, key: string) => `THR-${createHash('sha1').update(`${ruleId}|${key}`).digest('hex').slice(0, 10)}`;
 
 interface Bucket<T = unknown> { key: string; doc_count: number; [k: string]: T | unknown }
@@ -92,7 +93,7 @@ const NO_IP = '__none__';
 export async function loadThreats(rangeHours: number): Promise<Omit<Threat, 'status' | 'recurred' | 'assigned_to' | 'case_id' | 'case_number' | 'decided_at'>[]> {
     const r = await search<AggResponse>('wazuh-alerts-4.x-*', {
         size: 0,
-        query: { bool: { filter: [{ range: { timestamp: { gte: `now-${rangeHours}h` } } }, { range: { 'rule.level': { gte: 7 } } }] } },
+        query: { bool: { filter: [{ range: { timestamp: { gte: `now-${rangeHours}h` } } }, { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } }] } },
         aggs: {
             rules: {
                 terms: { field: 'rule.id', size: 100, order: { lvl: 'desc' } },
@@ -121,7 +122,7 @@ export async function loadThreats(rangeHours: number): Promise<Omit<Threat, 'sta
             name: src.description ?? `Wazuh rule ${rule.key}`,
             type: threatType(src.groups ?? [], src.description ?? '', src.mitre?.tactic?.[0] ?? null),
             source: 'Wazuh alert' as const,
-            severity: severityFor(level),
+            severity: severityFromLevel(level),
             rule_id: String(rule.key),
             rule_level: level,
             mitre_technique_id: src.mitre?.id?.[0] ?? null,

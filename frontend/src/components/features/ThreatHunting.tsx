@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Plus, X, Download, Save, Play, RefreshCw, Crosshair } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
+import { levelTextClass } from '@/lib/severity';
 
 // Wired to the real Wazuh Indexer via POST /api/wazuh/hunt (routes/wazuh.ts). Saved Hunt
 // Templates and Export Results are still frontend-only — a template just fills the query
@@ -194,7 +195,7 @@ export function ThreatHunting() {
                                         <td className="px-4 py-3 text-foreground-muted whitespace-nowrap">{r.ts}</td>
                                         <td className="px-4 py-3 font-medium text-foreground whitespace-nowrap">{r.agent}</td>
                                         <td className="px-4 py-3 font-mono text-foreground-muted">{r.rule_id ?? '—'}</td>
-                                        <td className="px-4 py-3"><span className={`font-bold ${r.level >= 12 ? 'text-red' : r.level >= 8 ? 'text-amber' : 'text-blue'}`}>{r.level}</span></td>
+                                        <td className="px-4 py-3"><span className={`font-bold ${levelTextClass(r.level)}`}>{r.level}</span></td>
                                         <td className="px-4 py-3 font-mono text-foreground-muted whitespace-nowrap">{r.srcip ?? '—'}</td>
                                         <td className="px-4 py-3 text-foreground-muted">{r.description}</td>
                                         <td className="px-4 py-3 whitespace-nowrap">

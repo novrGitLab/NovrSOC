@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { search } from '../lib/wazuh-indexer';
 import { isConfigured as wazuhConfigured } from '../services/wazuh';
 import { getSupabase } from '../services/geoEnrichment';
+import { severityFromLevel, SEVERITY_MIN_LEVEL } from '../lib/severity';
 
 // MITRE ATT&CK and D3FEND.
 //
@@ -80,20 +81,13 @@ const TECHNIQUE_NAMES: Record<string, string> = {
     'T1574.002': 'DLL Side-Loading',
 };
 
-// Wazuh rule levels, per its own documentation.
-const SEVERITY_LEVELS: Record<string, number[]> = {
-    critical: [13, 14, 15],
-    high: [10, 11, 12],
-    medium: [7, 8, 9],
-    low: [1, 2, 3, 4, 5, 6],
+// rule.level range for each severity, from lib/severity.ts's thresholds.
+const SEVERITY_LEVEL_RANGE: Record<string, { gte?: number; lt?: number }> = {
+    critical: { gte: SEVERITY_MIN_LEVEL.critical },
+    high: { gte: SEVERITY_MIN_LEVEL.high, lt: SEVERITY_MIN_LEVEL.critical },
+    medium: { gte: SEVERITY_MIN_LEVEL.medium, lt: SEVERITY_MIN_LEVEL.high },
+    low: { lt: SEVERITY_MIN_LEVEL.medium },
 };
-
-function severityForLevel(level: number): 'critical' | 'high' | 'medium' | 'low' {
-    if (level >= 13) return 'critical';
-    if (level >= 10) return 'high';
-    if (level >= 7) return 'medium';
-    return 'low';
-}
 
 interface TermBucket { key: string; doc_count: number }
 interface TechniqueBucket {
@@ -172,8 +166,8 @@ export async function collectTechniques(params: {
     if (params.tactic && params.tactic !== 'all') {
         must.push({ term: { 'rule.mitre.tactic': params.tactic } });
     }
-    if (params.severity && params.severity !== 'all' && SEVERITY_LEVELS[params.severity]) {
-        must.push({ terms: { 'rule.level': SEVERITY_LEVELS[params.severity] } });
+    if (params.severity && params.severity !== 'all' && SEVERITY_LEVEL_RANGE[params.severity]) {
+        must.push({ range: { 'rule.level': SEVERITY_LEVEL_RANGE[params.severity] } });
     }
 
     // An hourly histogram over 30 days would return 720 buckets for a sparkline; switch to daily
@@ -227,7 +221,7 @@ export async function collectTechniques(params: {
                 // belong to a sibling technique on multi-mapped alerts.
                 technique_name: TECHNIQUE_NAMES[b.key] ?? b.technique_names?.buckets?.[0]?.key ?? b.key,
                 count: b.doc_count,
-                severity: severityForLevel(maxLevel),
+                severity: severityFromLevel(maxLevel),
                 max_level: maxLevel,
                 tactics: (b.tactics?.buckets ?? []).map((t) => t.key),
                 agents: (b.agents?.buckets ?? []).map((a) => ({ name: a.key, count: a.doc_count })),
@@ -322,7 +316,7 @@ router.get('/technique/:id', async (req: Request, res: Response) => {
             agent_id: h._source?.agent?.id ?? '',
             description: h._source?.rule?.description ?? '',
             level: h._source?.rule?.level ?? 0,
-            severity: severityForLevel(h._source?.rule?.level ?? 0),
+            severity: severityFromLevel(h._source?.rule?.level ?? 0),
             source_ip: h._source?.data?.srcip ?? null,
         }));
 

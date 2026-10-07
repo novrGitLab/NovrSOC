@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { search } from '../lib/wazuh-indexer';
+import { SEVERITY_MIN_LEVEL } from '../lib/severity';
 
 const router = Router();
 
@@ -66,7 +67,7 @@ async function buildTelemetryContext(): Promise<string> {
     try {
         const indexerResult = await search<any>('wazuh-alerts-4.x-*', {
             size: 5,
-            query: { range: { 'rule.level': { gte: 7 } } },
+            query: { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } },
             _source: ['timestamp', 'rule.description', 'rule.level', 'agent.name', 'data.srcip'],
         });
         const hits = indexerResult?.hits?.hits ?? [];

@@ -3,6 +3,7 @@ import { search } from '../lib/wazuh-indexer';
 import { getSupabase } from '../services/geoEnrichment';
 import { requireAuth, type AuthRequest } from '../middleware/auth';
 import { sendAlertCommunicationEmail, socNotificationRecipients } from '../services/email';
+import { SEVERITY_MIN_LEVEL } from '../lib/severity';
 
 // Not gated with requireAuth — Header.tsx (which polls this) is shared by both the admin app
 // and the client portal, and client-portal users carry a portal_token this backend's
@@ -43,7 +44,7 @@ router.get('/', async (_req, res) => {
         const result = await search<IndexerSearchResponse>('wazuh-alerts-4.x-*', {
             size: 20,
             sort: [{ timestamp: { order: 'desc' } }],
-            query: { bool: { must: [{ range: { 'rule.level': { gte: 7, lt: 10 } } }, { range: { timestamp: { gte: 'now-24h' } } }] } },
+            query: { bool: { must: [{ range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium, lt: SEVERITY_MIN_LEVEL.high } } }, { range: { timestamp: { gte: 'now-24h' } } }] } },
         });
         const hits = result?.hits?.hits ?? [];
         for (const h of hits) {

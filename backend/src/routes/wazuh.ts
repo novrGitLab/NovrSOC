@@ -6,6 +6,7 @@ import { search } from '../lib/wazuh-indexer';
 import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents, getAgentInventory } from '../services/wazuh';
 import { getComplianceImpact } from '../services/complianceMapping';
 import { isDemoMode, DEMO_AGENTS } from '../lib/demoMode';
+import { severityFromLevel, SEVERITY_MIN_LEVEL } from '../lib/severity';
 
 const router = Router();
 
@@ -201,7 +202,7 @@ router.get('/notifications', async (_req, res) => {
         const result = await search<SearchResponse>('wazuh-alerts-4.x-*', {
             size: 6,
             sort: [{ 'rule.level': { order: 'desc' } }, { timestamp: { order: 'desc' } }],
-            query: { range: { 'rule.level': { gte: 7 } } },
+            query: { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } },
             _source: ['timestamp', 'rule.description', 'rule.level', 'agent.name'],
         });
 
@@ -211,7 +212,8 @@ router.get('/notifications', async (_req, res) => {
             const description = h._source.rule?.description ?? 'Wazuh alert';
             return {
                 id: h._id,
-                type: level >= 12 ? 'critical' : level >= 7 ? 'warning' : 'info',
+                // Notification styling derived from the shared severity (critical / medium+ / low).
+                type: severityFromLevel(level) === 'critical' ? 'critical' : severityFromLevel(level) === 'low' ? 'info' : 'warning',
                 title: truncate(description, 60),
                 description: 'Detected on ' + (h._source.agent?.name ?? 'unknown agent'),
                 time: timeAgo(h._source.timestamp),
@@ -461,7 +463,7 @@ router.get('/alerts-indexer', async (req, res) => {
         const group = groupParam(req);
         const agentNames = group ? await getAgentNamesForGroup(group) : null;
         const minLevelParam = typeof req.query.minLevel === 'string' ? req.query.minLevel : null;
-        const minLevel = minLevelParam !== null ? Number(minLevelParam) : 7;
+        const minLevel = minLevelParam !== null ? Number(minLevelParam) : SEVERITY_MIN_LEVEL.medium;
         const rangeParam = typeof req.query.range === 'string' ? req.query.range : null;
         const since = RANGE_MAP[rangeParam ?? '24h'] ?? RANGE_MAP['24h'];
 
@@ -478,8 +480,8 @@ router.get('/alerts-indexer', async (req, res) => {
                 query: { bool: { must: hitsMust } },
                 _source: ['timestamp', 'rule.description', 'rule.level', 'agent.name', 'agent.ip', 'location'],
             }),
-            countByLevel(12, agentNames),
-            countByLevel(7, agentNames),
+            countByLevel(SEVERITY_MIN_LEVEL.critical, agentNames),
+            countByLevel(SEVERITY_MIN_LEVEL.medium, agentNames),
         ]).then((results) => results.map((r) => (r.status === 'fulfilled' ? r.value : null)));
 
         const hits = (alertsRes?.hits?.hits ?? []).map((h) => h._source).filter(Boolean);
@@ -525,8 +527,8 @@ router.get('/trend', async (req, res) => {
                         extended_bounds: { min: config.min, max: 'now' },
                     },
                     aggs: {
-                        high_severity: { filter: { range: { 'rule.level': { gte: 7 } } } },
-                        critical: { filter: { range: { 'rule.level': { gte: 12 } } } },
+                        high_severity: { filter: { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } } },
+                        critical: { filter: { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.critical } } } },
                     },
                 },
             },
@@ -634,9 +636,13 @@ router.get('/incidents', async (req, res) => {
     }
     interface SearchResponse { hits?: { hits?: WazuhHit[]; total?: { value?: number } } }
 
-    const severityFor = (level: number): 'Critical' | 'High' | 'Medium' | 'Low' =>
-        level >= 12 ? 'Critical' : level >= 10 ? 'High' : level >= 7 ? 'Medium' : 'Low';
-    const slaTimeFor = (level: number): string => (level >= 12 ? '00:30:00' : level >= 7 ? '02:00:00' : '06:00:00');
+    // Capitalised labels are this route's existing response format.
+    const SEVERITY_LABEL = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' } as const;
+    const severityFor = (level: number) => SEVERITY_LABEL[severityFromLevel(level)];
+    const slaTimeFor = (level: number): string => {
+        const s = severityFromLevel(level);
+        return s === 'critical' ? '00:30:00' : s === 'low' ? '06:00:00' : '02:00:00';
+    };
 
     const countInRange = (minLevel: number, maxLevelExclusive: number | undefined, agentNames: string[] | null) => {
         const levelRange: { gte: number; lt?: number } = { gte: minLevel };
@@ -660,10 +666,10 @@ router.get('/incidents', async (req, res) => {
                 query: { bool: { must: mainMust } },
                 _source: ['timestamp', 'rule.description', 'rule.level', 'rule.groups', 'agent.name', 'agent.ip', 'location', 'data.srcip', 'rule.mitre.technique'],
             }),
-            countInRange(12, undefined, agentNames),
-            countInRange(10, 12, agentNames),
-            countInRange(7, 10, agentNames),
-            countInRange(3, 7, agentNames),
+            countInRange(SEVERITY_MIN_LEVEL.critical, undefined, agentNames),
+            countInRange(SEVERITY_MIN_LEVEL.high, SEVERITY_MIN_LEVEL.critical, agentNames),
+            countInRange(SEVERITY_MIN_LEVEL.medium, SEVERITY_MIN_LEVEL.high, agentNames),
+            countInRange(3, SEVERITY_MIN_LEVEL.medium, agentNames),
         ]).then((results) => results.map((r) => (r.status === 'fulfilled' ? r.value : null)));
 
         const rawHits = alertsRes?.hits?.hits ?? [];
@@ -981,9 +987,7 @@ router.get('/agents/:id/alerts', async (req, res) => {
                 description: h._source?.rule?.description ?? 'Unknown rule',
                 level,
                 rule_id: h._source?.rule?.id ?? '',
-                // Wazuh rule levels, per its own documentation: 12+ critical, 7-11 high,
-                // 4-6 medium, anything lower is low.
-                severity: level >= 12 ? 'critical' : level >= 7 ? 'high' : level >= 4 ? 'medium' : 'low',
+                severity: severityFromLevel(level),
                 mitre_tactic: h._source?.rule?.mitre?.tactic?.[0] ?? null,
                 mitre_id: h._source?.rule?.mitre?.id?.[0] ?? null,
                 source_ip: h._source?.data?.srcip ?? null,
