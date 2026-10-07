@@ -124,59 +124,6 @@ function SettingsCard({ portal, base }: { portal: 'admin' | 'client'; base: stri
     );
 }
 
-interface OrgFormState { name: string; industry: string; plan: string; email: string }
-const EMPTY_ORG_FORM: OrgFormState = { name: '', industry: 'Financial Services', plan: 'Starter ($299/mo)', email: '' };
-
-function AddOrganizationModal({ onClose }: { onClose: () => void }) {
-    const [form, setForm] = useState<OrgFormState>(EMPTY_ORG_FORM);
-    // No backend endpoint exists yet for provisioning an organisation — this collects the
-    // form and closes; wire up a real POST once that endpoint exists.
-    return (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md border border-border">
-                <div className="px-6 py-4 border-b border-border flex items-center justify-between">
-                    <h2 className="font-bold text-base text-foreground">Add Organization</h2>
-                    <button onClick={onClose} className="text-foreground-muted hover:text-foreground" aria-label="Close"><X size={16} /></button>
-                </div>
-                <div className="p-6 space-y-4">
-                    <div>
-                        <label className="block text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-1.5">Organization Name</label>
-                        <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
-                            className="w-full border border-border rounded-lg px-3 py-2.5 text-sm text-foreground focus:outline-none focus:border-purple focus:ring-2 focus:ring-purple/10"
-                            placeholder="Dangote Group" />
-                    </div>
-                    <div>
-                        <label className="block text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-1.5">Industry</label>
-                        <select value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })}
-                            className="w-full border border-border rounded-lg px-3 py-2.5 text-sm text-foreground bg-white focus:outline-none focus:border-purple">
-                            {['Financial Services', 'Telecommunications', 'Manufacturing', 'Oil & Gas', 'Healthcare', 'Government', 'Other'].map((o) => <option key={o}>{o}</option>)}
-                        </select>
-                    </div>
-                    <div>
-                        <label className="block text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-1.5">Plan</label>
-                        <select value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })}
-                            className="w-full border border-border rounded-lg px-3 py-2.5 text-sm text-foreground bg-white focus:outline-none focus:border-purple">
-                            {['Starter ($299/mo)', 'Professional ($799/mo)', 'Enterprise (Custom)'].map((o) => <option key={o}>{o}</option>)}
-                        </select>
-                    </div>
-                    <div>
-                        <label className="block text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-1.5">Primary Contact Email</label>
-                        <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
-                            className="w-full border border-border rounded-lg px-3 py-2.5 text-sm text-foreground focus:outline-none focus:border-purple focus:ring-2 focus:ring-purple/10"
-                            placeholder="ciso@company.com" />
-                    </div>
-                </div>
-                <div className="px-6 py-4 border-t border-border flex justify-end gap-3">
-                    <button onClick={onClose} className="text-sm text-foreground-muted px-4 py-2 rounded-lg hover:bg-card-muted">Cancel</button>
-                    <button onClick={onClose} className="text-sm font-bold bg-orange hover:bg-orange-hover text-white px-5 py-2 rounded-lg transition-colors">
-                        Add Organization
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-}
-
 function InviteUserModal({ onClose }: { onClose: () => void }) {
     const [email, setEmail] = useState('');
     const [role, setRole] = useState('Analyst');
@@ -216,7 +163,6 @@ function InviteUserModal({ onClose }: { onClose: () => void }) {
 function QuickActionsCard({ portal, base }: { portal: 'admin' | 'client'; base: string }) {
     const router = useRouter();
     const summary = useAccountSummary(portal);
-    const [showAddOrgModal, setShowAddOrgModal] = useState(false);
     const [showInviteModal, setShowInviteModal] = useState(false);
 
     const handleExportReport = () => {
@@ -234,7 +180,6 @@ function QuickActionsCard({ portal, base }: { portal: 'admin' | 'client'; base: 
     };
 
     const adminActions = [
-        { label: '+ Add Organization', action: () => setShowAddOrgModal(true), color: 'text-purple' },
         { label: '+ Invite User', action: () => setShowInviteModal(true), color: 'text-purple' },
         { label: '⚡ Run Security Scan', action: () => router.push(`${base}/threat/cti`), color: 'text-orange' },
         { label: '📋 Export Report', action: handleExportReport, color: 'text-blue' },
@@ -265,7 +210,6 @@ function QuickActionsCard({ portal, base }: { portal: 'admin' | 'client'; base: 
                 ))}
             </div>
 
-            {showAddOrgModal && <AddOrganizationModal onClose={() => setShowAddOrgModal(false)} />}
             {showInviteModal && <InviteUserModal onClose={() => setShowInviteModal(false)} />}
         </div>
     );

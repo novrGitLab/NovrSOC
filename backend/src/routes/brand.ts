@@ -375,15 +375,6 @@ router.post('/executives/:id/scan', async (req, res) => {
     res.json(scanResult);
 });
 
-// POST /api/brand/executives/scan-all — queue a scan across all monitored executives
-router.post('/executives/scan-all', (_req, res) => {
-    res.json({
-        message: `Scan initiated for ${executives.length} executives`,
-        estimated_time: `${executives.length * 2} seconds`,
-        executives: executives.map((e) => ({ id: e.id, name: e.name, status: 'queued' })),
-    });
-});
-
 // ── MOBILE APPS ─────────────────────────────────────────────────────
 
 interface MonitoredApp {
@@ -396,24 +387,25 @@ interface MonitoredApp {
     store_url_android: string | null;
     added_at: string;
     last_scanned: string | null;
-    verified: boolean;
+    // null: not checked. The seeded entries used to claim verified:true and an invented scan date.
+    verified: boolean | null;
 }
 
 const apps: MonitoredApp[] = [
     {
         id: 'app_001', name: 'NovrSOC Mobile', bundle_id: 'com.cybernovr.novrsoc', platform: 'iOS', developer: 'Cybernovr Ltd',
         store_url_ios: 'https://apps.apple.com/app/novrsoc', store_url_android: 'https://play.google.com/store/apps/details?id=com.cybernovr.novrsoc',
-        added_at: '2026-01-15', last_scanned: '2026-08-15', verified: true,
+        added_at: '2026-01-15', last_scanned: null, verified: null,
     },
     {
         id: 'app_001b', name: 'NovrSOC Mobile', bundle_id: 'com.cybernovr.novrsoc', platform: 'Android', developer: 'Cybernovr Ltd',
         store_url_ios: 'https://apps.apple.com/app/novrsoc', store_url_android: 'https://play.google.com/store/apps/details?id=com.cybernovr.novrsoc',
-        added_at: '2026-01-15', last_scanned: '2026-08-15', verified: true,
+        added_at: '2026-01-15', last_scanned: null, verified: null,
     },
     {
         id: 'app_002', name: 'Cybernovr Security', bundle_id: 'com.cybernovr.security', platform: 'Android', developer: 'Cybernovr Ltd',
         store_url_ios: null, store_url_android: 'https://play.google.com/store/apps/details?id=com.cybernovr.security',
-        added_at: '2026-03-01', last_scanned: '2026-08-15', verified: true,
+        added_at: '2026-03-01', last_scanned: null, verified: null,
     },
 ];
 

@@ -16,7 +16,7 @@ interface OfficialApp {
     store_url_android: string | null;
     added_at: string;
     last_scanned: string | null;
-    verified: boolean;
+    verified: boolean | null;
 }
 
 interface RogueApp {

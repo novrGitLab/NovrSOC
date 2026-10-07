@@ -166,7 +166,6 @@ export function ExecutiveMonitor() {
     const scanAll = async () => {
         setScanningAll(true);
         try {
-            await apiFetch(apiUrl('/api/brand/executives/scan-all'), { method: 'POST' });
             await Promise.all(executives.map((e) => apiFetch(apiUrl(`/api/brand/executives/${e.id}/scan`), { method: 'POST' })));
             load();
         } finally {
