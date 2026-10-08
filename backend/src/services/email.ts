@@ -262,7 +262,18 @@ export async function testResendDelivery(to: string): Promise<{ id: string | nul
 
 // ─── BASE HTML TEMPLATE ──────────────────────────────────────────────────────
 
+// Links in emails point at the frontend named by FRONTEND_URL (the same variable the M365
+// callback in routes/emailSecurity.ts redirects to). There is no hardcoded fallback host: with
+// FRONTEND_URL unset, link buttons and the logo are left out rather than pointing at a guessed
+// (or dead) domain.
+function appUrl(path = ''): string | null {
+    const base = (process.env.FRONTEND_URL ?? '').trim().replace(/\/$/, '');
+    return base ? `${base}${path}` : null;
+}
+
 function baseTemplate(title: string, preheader: string, body: string): string {
+  const logo = appUrl('/novrsoc.jpg');
+  const home = appUrl();
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -280,10 +291,10 @@ function baseTemplate(title: string, preheader: string, body: string): string {
         <table cellpadding="0" cellspacing="0">
           <tr>
             <td>
-              <img src="https://socnovr.vercel.app/novrsoc.jpg" alt="NovrSOC"
+              ${logo ? `<img src="${logo}" alt="NovrSOC"
                    width="28" height="28"
                    style="width:28px;height:28px;border-radius:6px;
-                          display:inline-block;vertical-align:middle;margin-right:10px;" />
+                          display:inline-block;vertical-align:middle;margin-right:10px;" />` : ''}
               <span style="color:white;font-size:18px;font-weight:900;
                            letter-spacing:-0.5px;vertical-align:middle;">NovrSOC</span>
               <span style="color:rgba(255,255,255,0.5);font-size:11px;
@@ -316,12 +327,8 @@ function baseTemplate(title: string, preheader: string, body: string): string {
           <tr>
             <td style="padding:16px 0;text-align:center;">
               <p style="color:#7A8099;font-size:11px;margin:0;">
-                NovrSOC by Cybernovr · Lagos, Nigeria<br/>
-                <a href="https://socnovr.vercel.app" style="color:#520385;">socnovr.vercel.app</a>
-                &nbsp;·&nbsp;
-                <a href="https://socnovr.vercel.app/unsubscribe" style="color:#7A8099;">
-                  Unsubscribe
-                </a>
+                NovrSOC by Cybernovr · Lagos, Nigeria
+                ${home ? `<br/><a href="${home}" style="color:#520385;">${escapeHtml(home.replace(/^https?:\/\//, ''))}</a>` : ''}
               </p>
             </td>
           </tr>
@@ -357,6 +364,8 @@ export async function sendCriticalAlertEmail(params: {
     incidentId?: string;
     rawLog?: string;
 }): Promise<void> {
+    const threatsUrl = appUrl('/admin/secops/threats');
+    const casesUrl = appUrl('/admin/secops/cases');
     if (!isEmailEnabled()) return;
 
     const severityColor = {
@@ -467,16 +476,16 @@ export async function sendCriticalAlertEmail(params: {
       <td style="padding:0 32px 32px;">
         <table cellpadding="0" cellspacing="0">
           <tr>
-            <td style="background:#520385;border-radius:8px;">
-              <a href="https://socnovr.vercel.app/admin/secops/threats"
+            ${threatsUrl ? `<td style="background:#520385;border-radius:8px;">
+              <a href="${threatsUrl}"
                  style="color:white;font-size:13px;font-weight:700;
                         text-decoration:none;padding:12px 24px;display:inline-block;">
                 View Alert in NovrSOC →
               </a>
-            </td>
-            ${params.incidentId ? `
+            </td>` : ''}
+            ${params.incidentId && casesUrl ? `
             <td style="padding-left:12px;">
-              <a href="https://socnovr.vercel.app/admin/secops/cases"
+              <a href="${casesUrl}"
                  style="color:#520385;font-size:13px;font-weight:700;
                         text-decoration:none;padding:12px 24px;display:inline-block;
                         border:1px solid #520385;border-radius:8px;">
@@ -511,6 +520,7 @@ export async function sendIncidentResolvedEmail(params: {
     rootCause: string;
     containment: string[];
 }): Promise<void> {
+    const casesUrl = appUrl('/admin/secops/cases');
     if (!isEmailEnabled()) return;
 
     const title = escapeHtml(params.title);
@@ -550,12 +560,12 @@ export async function sendIncidentResolvedEmail(params: {
           ✓ ${escapeHtml(a)}
         </p>`).join('')}
         <br/>
-        <a href="https://socnovr.vercel.app/admin/secops/cases"
+        ${casesUrl ? `<a href="${casesUrl}"
            style="background:#520385;color:white;font-size:13px;font-weight:700;
                   text-decoration:none;padding:12px 24px;border-radius:8px;
                   display:inline-block;margin-top:8px;">
           View Full Case Report →
-        </a>
+        </a>` : ''}
       </td>
     </tr>
   `;
@@ -659,6 +669,7 @@ export async function sendEscalationEmail(params: {
     escalated_by?: string;
     note?: string;
 }): Promise<void> {
+    const casesUrl = appUrl('/admin/secops/cases');
     if (!isEmailEnabled()) return;
 
     const title = escapeHtml(params.title);
@@ -703,11 +714,11 @@ export async function sendEscalationEmail(params: {
           ${byRow}
           ${noteRow}
         </table>
-        <a href="https://novr-soc.vercel.app/admin/secops/cases"
+        ${casesUrl ? `<a href="${casesUrl}"
            style="display:inline-block;background:#520385;color:white;padding:12px 24px;
                   border-radius:8px;text-decoration:none;font-weight:bold;margin-top:24px;font-size:13px;">
           View in NovrSOC →
-        </a>
+        </a>` : ''}
       </td>
     </tr>
   `;
@@ -756,6 +767,7 @@ export async function sendCaseNotificationEmail(params: {
     detail?: string | null;
 }): Promise<void> {
     if (!isEmailEnabled()) throw new Error('Email not configured');
+    const casesUrl = appUrl('/admin/secops/cases');
     const row = (label: string, value: string) => `
         <tr><td style="padding:6px 0;color:#7A8099;font-size:12px;width:120px;">${label}</td>
             <td style="padding:6px 0;color:#1C1F2E;font-size:13px;font-weight:600;">${escapeHtml(value)}</td></tr>`;
@@ -770,7 +782,7 @@ export async function sendCaseNotificationEmail(params: {
             ${row('Source IP', params.source_ip || 'N/A')}
           </table>
           ${params.detail ? `<p style="color:#1C1F2E;font-size:13px;line-height:1.6;margin:16px 0 0;white-space:pre-wrap;">${escapeHtml(params.detail)}</p>` : ''}
-          <a href="https://novr-soc.vercel.app/admin/secops/cases" style="display:inline-block;background:#520385;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;margin-top:20px;">View in NovrSOC →</a>
+          ${casesUrl ? `<a href="${casesUrl}" style="display:inline-block;background:#520385;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;margin-top:20px;">View in NovrSOC →</a>` : ''}
         </td>
       </tr>`;
     await sendEmail({
