@@ -3,7 +3,7 @@ import { timingSafeEqual } from 'crypto';
 import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { enrichIOC } from '../services/iocEnrichment';
-import { DEFAULT_ORG_ID, startOfTodayWAT, dbErrorMessage } from '../services/cases';
+import { startOfTodayWAT, dbErrorMessage } from '../services/cases';
 import { requirePermission, tokenOrg } from '../lib/permissions';
 
 // SOAR reporting + the enrichment endpoint the SOAR engine (infra/soar/soar.py) calls.
@@ -14,7 +14,7 @@ import { requirePermission, tokenOrg } from '../lib/permissions';
 // and the engine sends one request per level 7+ alert.
 
 const router = Router();
-const orgOf = (req: AuthRequest) => req.user?.org_id || DEFAULT_ORG_ID;
+const orgOf = tokenOrg;
 
 // GET /api/soar/stats
 router.get('/stats', requirePermission('alerts:read'), async (req: AuthRequest, res) => {

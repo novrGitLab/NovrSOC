@@ -36,7 +36,7 @@ interface Notification {
 }
 
 // GET /api/notifications — medium-severity (level 7-9) Wazuh alerts from the last 24h, plus the
-// most recent open high/critical cases. MEDIUM alerts land here and only here — no email, per
+// most recent open high/critical cases of the caller's organisation. MEDIUM alerts land here and only here — no email, per
 // the Security Operations redesign spec (HIGH/CRITICAL email via routes/threatManagement.ts's
 // notifyCriticalAlerts instead).
 router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
@@ -72,6 +72,7 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
         const { data, error } = await supabase
             .from('cases')
             .select('id, case_number, title, severity, status, created_at')
+            .eq('org_id', tokenOrg(req))
             .in('severity', ['high', 'critical'])
             .neq('status', 'resolved')
             .order('created_at', { ascending: false })

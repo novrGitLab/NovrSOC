@@ -2,7 +2,6 @@ import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { search } from '../lib/wazuh-indexer';
-import { DEFAULT_ORG_ID } from '../services/cases';
 import { severityFromLevel } from '../lib/severity';
 import { requirePermission, tokenOrg } from '../lib/permissions';
 
@@ -34,7 +33,7 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
     const q = pgSafe(raw);
     if (q.length < 2) { res.json({ results: [], query: raw, total: 0 }); return; }
 
-    const orgId = req.user?.org_id || DEFAULT_ORG_ID;
+    const orgId = tokenOrg(req);
     const supabase = getSupabase();
     const like = `%${q}%`;
 

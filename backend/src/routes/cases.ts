@@ -3,12 +3,12 @@ import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import {
     createCase, addTasks, addTimeline, isCaseSeverity, isCaseStatus, isUuid, startOfTodayWAT, formatWAT,
-    dbErrorMessage, DEFAULT_ORG_ID, type CaseRow,
+    dbErrorMessage, type CaseRow,
 } from '../services/cases';
 import { sendEscalationEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients } from '../services/email';
 import { logAudit } from '../lib/audit';
 import { executeStep, isExecutableStep, EXECUTABLE_STEPS } from '../services/responseActions';
-import { requirePermission, hasPermission } from '../lib/permissions';
+import { requirePermission, hasPermission, tokenOrg } from '../lib/permissions';
 
 // Cases API — Supabase-backed.
 //
@@ -20,7 +20,7 @@ import { requirePermission, hasPermission } from '../lib/permissions';
 
 const router = Router();
 
-const orgOf = (req: AuthRequest) => req.user?.org_id || DEFAULT_ORG_ID;
+const orgOf = tokenOrg;
 const actorOf = (req: AuthRequest) => req.user?.email || 'analyst';
 
 // case_notes has no type column. The workbench's note types (Update/Evidence/Decision/
@@ -32,6 +32,13 @@ const NOTE_PREFIX = /^\[(Update|Evidence|Decision|Escalation)\] /;
 function decodeNote(n: { id: string; author: string; content: string; created_at: string }) {
     const m = n.content.match(NOTE_PREFIX);
     return { id: n.id, author: n.author, type: (m?.[1] ?? 'Update') as NoteType, content: m ? n.content.slice(m[0].length) : n.content, created_at: n.created_at };
+}
+
+// Notes and tasks carry only a case_id. The parent case must belong to the caller's organisation
+// before anything is read from or attached to it.
+async function caseInOrg(req: AuthRequest, id: string): Promise<boolean> {
+    const { data } = await getSupabase()!.from('cases').select('id').eq('id', id).eq('org_id', orgOf(req)).maybeSingle();
+    return !!data;
 }
 
 function noStore(res: Response): boolean {
@@ -308,6 +315,7 @@ router.post('/:id/notes', requirePermission('cases:write'), async (req: AuthRequ
     const content = typeof raw === 'string' ? raw.trim() : '';
     if (!content) { res.status(400).json({ error: 'content required' }); return; }
     const type: NoteType = (NOTE_TYPES as readonly string[]).includes(req.body?.type) ? req.body.type : 'Update';
+    if (!(await caseInOrg(req, id))) { res.status(404).json({ error: 'Case not found' }); return; }
 
     const { data, error } = await getSupabase()!
         .from('case_notes')
@@ -331,6 +339,7 @@ router.post('/:id/tasks', requirePermission('cases:write'), async (req: AuthRequ
     if (!isUuid(id)) { res.status(404).json({ error: 'Case not found' }); return; }
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     if (!title) { res.status(400).json({ error: 'title required' }); return; }
+    if (!(await caseInOrg(req, id))) { res.status(404).json({ error: 'Case not found' }); return; }
 
     const [task] = await addTasks(id, [{ title, description: req.body?.description ?? null }]);
     if (!task) { res.status(502).json({ error: 'Failed to add task' }); return; }
@@ -345,6 +354,7 @@ router.patch('/:id/tasks/:taskId', requirePermission('cases:write'), async (req:
     if (!isUuid(id) || !isUuid(taskId)) { res.status(404).json({ error: 'Task not found' }); return; }
     const status = req.body?.status;
     if (!['pending', 'completed', 'skipped'].includes(status)) { res.status(400).json({ error: 'status must be pending, completed or skipped' }); return; }
+    if (!(await caseInOrg(req, id))) { res.status(404).json({ error: 'Task not found' }); return; }
 
     const done = status !== 'pending';
     const { data, error } = await getSupabase()!

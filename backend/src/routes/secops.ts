@@ -65,7 +65,7 @@ router.post('/hunting/escalate', requirePermission('cases:write'), async (req: A
         source: 'threat_hunt',
         source_id: `${ioc_type}:${ioc_value}`,
         source_ip: ioc_type === 'ip' ? ioc_value : null,
-        org_id: req.user?.org_id,
+        org_id: tokenOrg(req),
         tags: ['threat-hunt', 'manual'],
     }, req.user?.email || 'analyst');
 
@@ -103,18 +103,21 @@ router.post('/hunting/escalate', requirePermission('cases:write'), async (req: A
                 iocNote = `IOC enrichment timed out (${HUNT_ENRICH_TIMEOUT_MS / 1000}s per source) — not added to the IOC cache.`;
             } else {
                 enrichment = { verdict: enriched.verdict, risk_score: enriched.risk_score, sources: answered, timed_out: timedOut };
-                const { error } = await supabase.from('ioc_enrichments').upsert(
-                    {
-                        ioc_value,
-                        ioc_type: type,
-                        risk_score: enriched.risk_score,
-                        tags: [...new Set([...enriched.tags, 'threat-hunt', 'analyst-confirmed'])],
-                        org_id: req.user?.org_id ?? null,
-                        source: 'threat_hunt',
-                        last_seen: new Date().toISOString(),
-                    },
-                    { onConflict: 'ioc_value' },
+                // ioc_enrichments is one shared row per IOC value. org_id records the organisation
+                // that first added it and is never overwritten: insert-if-absent with the caller's
+                // org, then refresh the enrichment fields only.
+                const fields = {
+                    ioc_type: type,
+                    risk_score: enriched.risk_score,
+                    tags: [...new Set([...enriched.tags, 'threat-hunt', 'analyst-confirmed'])],
+                    source: 'threat_hunt',
+                    last_seen: new Date().toISOString(),
+                };
+                const inserted = await supabase.from('ioc_enrichments').upsert(
+                    { ioc_value, ...fields, org_id: tokenOrg(req) },
+                    { onConflict: 'ioc_value', ignoreDuplicates: true },
                 );
+                const { error } = inserted.error ? inserted : await supabase.from('ioc_enrichments').update(fields).eq('ioc_value', ioc_value);
                 iocSaved = !error;
                 if (error) {
                     console.error('[secops/hunting/escalate] ioc_enrichments upsert failed:', error.message);

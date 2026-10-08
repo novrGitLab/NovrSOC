@@ -309,7 +309,7 @@ router.post('/alerts/:id/create-incident', requirePermission('cases:write'), asy
         severity: alert.severity as CaseSeverity,
         source: 'wazuh',
         source_id: alert.wazuh_alert_id ?? alert.id,
-        org_id: req.user?.org_id,
+        org_id: tokenOrg(req),
         agent_id: alert.agent_id || null,
         agent_name: alert.agent_name,
         source_ip: alert.source_ip,
@@ -714,25 +714,28 @@ router.get('/live-ioc', requirePermission('alerts:read'), async (req, res) => {
 // decisions layered on. Each route in this router is gated individually with requirePermission.
 
 const RANGE_HOURS: Record<string, number> = { '24h': 24, '7d': 168, '30d': 720 };
+// Keyed by org and threat id: each entry carries that org's triage decisions, so one org's
+// cached view must never be served to another.
 const threatCache = new Map<string, Threat>();
+const cacheKey = (orgId: string, id: string) => `${orgId}:${id}`;
 
 async function findThreat(orgId: string, id: string): Promise<Threat | null> {
-    const cached = threatCache.get(id);
+    const cached = threatCache.get(cacheKey(orgId, id));
     if (cached) return cached;
     const { map } = await readTriage(orgId);
-    for (const t of await loadThreats(720)) threatCache.set(t.id, applyTriage(t, map.get(t.id)));
-    return threatCache.get(id) ?? null;
+    for (const t of await loadThreats(720)) threatCache.set(cacheKey(orgId, t.id), applyTriage(t, map.get(t.id)));
+    return threatCache.get(cacheKey(orgId, id)) ?? null;
 }
 
 // GET /api/threats?range=24h|7d|30d
 router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
-    const orgId = req.user?.org_id || 'cybernovr';
+    const orgId = tokenOrg(req);
     const range = typeof req.query.range === 'string' && RANGE_HOURS[req.query.range] ? req.query.range : '7d';
     const checkedAt = new Date().toISOString();
     try {
         const [raw, { map, store }] = await Promise.all([loadThreats(RANGE_HOURS[range]), readTriage(orgId)]);
         const threats = raw.map((t) => applyTriage(t, map.get(t.id)));
-        for (const t of threats) threatCache.set(t.id, t);
+        for (const t of threats) threatCache.set(cacheKey(orgId, t.id), t);
         const weekAgo = Date.now() - 7 * 24 * 3600_000;
         res.json({
             threats,
@@ -750,7 +753,7 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
 });
 
 async function decide(req: AuthRequest, threat: Threat, patch: Partial<Triage>): Promise<'supabase' | 'memory'> {
-    const orgId = req.user?.org_id || 'cybernovr';
+    const orgId = tokenOrg(req);
     const { map } = await readTriage(orgId);
     const prev = map.get(threat.id);
     const next: Triage = {
@@ -761,7 +764,7 @@ async function decide(req: AuthRequest, threat: Threat, patch: Partial<Triage>):
         updated_by: req.user?.email ?? 'analyst', updated_at: new Date().toISOString(),
     };
     const store = await writeTriage(next);
-    threatCache.set(threat.id, applyTriage(threat, next));
+    threatCache.set(cacheKey(orgId, threat.id), applyTriage(threat, next));
     logAudit({
         user: req.user?.email ?? 'unknown', action: 'THREAT_DECISION', resource: 'threat', resource_id: threat.id, ip: req.ip ?? 'unknown',
         result: 'success', details: `${threat.name.slice(0, 80)}: ${JSON.stringify(patch).slice(0, 100)}`, severity: 'info',
@@ -770,7 +773,7 @@ async function decide(req: AuthRequest, threat: Threat, patch: Partial<Triage>):
 }
 
 async function withThreat(req: AuthRequest, res: import('express').Response): Promise<Threat | null> {
-    const threat = await findThreat(req.user?.org_id || 'cybernovr', req.params.id).catch(() => null);
+    const threat = await findThreat(tokenOrg(req), req.params.id).catch(() => null);
     if (!threat) res.status(404).json({ success: false, error: 'Threat not found — refresh the list' });
     return threat;
 }
@@ -804,7 +807,7 @@ router.post('/:id/escalate', requirePermission('cases:write'), async (req: AuthR
         severity: threat.severity as CaseSeverity,
         source: 'threat',
         source_id: threat.id,
-        org_id: req.user?.org_id,
+        org_id: tokenOrg(req),
         agent_name: threat.assets[0] ?? null,
         source_ip: threat.source_ip,
         rule_id: threat.rule_id,

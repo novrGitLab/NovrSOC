@@ -5,6 +5,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase } from '../services/geoEnrichment';
 import { addTasks, addTimeline, isUuid } from '../services/cases';
 import { isExecutableStep } from '../services/responseActions';
+import { requireOrg, tokenOrg } from '../lib/permissions';
 
 // Supabase-backed playbook library — real columns confirmed live against the actual table:
 // id, name, org_id, icon, severity, description, steps (jsonb array, round-trips as native
@@ -21,6 +22,8 @@ import { isExecutableStep } from '../services/responseActions';
 // seeds defaults for it. (No client-portal page reads playbooks any more.)
 
 const router = Router();
+// Every route needs a token with an organisation; a token without one is 403, never defaulted.
+router.use(requireAuth, requireOrg);
 const STAFF = requireRole('super_admin', 'soc_manager', 'analyst', 'executive');
 
 let clientOverride: SupabaseClient | null = null;
@@ -32,7 +35,7 @@ const isPlatformAdmin = (req: AuthRequest) => req.user?.role === 'super_admin';
 
 /** The organisation this request may act on, or a 403 reason. */
 function orgScope(req: AuthRequest): { orgId: string; crossOrg: boolean } | { error: string } {
-    const own = req.user?.org_id || DEFAULT_ORG_ID;
+    const own = tokenOrg(req);
     const requested = typeof req.query.org_id === 'string' ? req.query.org_id.trim() : '';
     if (!requested || requested === own) return { orgId: own, crossOrg: false };
     if (isPlatformAdmin(req)) return { orgId: requested, crossOrg: true };
@@ -59,8 +62,6 @@ interface PlaybookRow {
     updated_at?: string;
     created_by?: string;
 }
-
-const DEFAULT_ORG_ID = 'cybernovr'; // single-tenant today — see routes/secops.ts's ANALYST_EMAILS comment for the same limitation
 
 // The 5 defaults this task asks to seed. Step time/phase weren't specified for these, unlike
 // the hand-authored library already on the standalone Playbooks page (frontend/src/components/
@@ -221,7 +222,7 @@ router.post('/', requireAuth, requireRole('super_admin', 'soc_manager'), async (
         return;
     }
 
-    const orgId = req.user?.org_id || DEFAULT_ORG_ID; // always the caller's own organisation
+    const orgId = tokenOrg(req); // always the caller's own organisation
     const { data, error } = await supabase
         .from('playbooks')
         .insert({
@@ -256,7 +257,7 @@ router.put('/:id', requireAuth, requireRole('super_admin', 'soc_manager'), async
     if (estimated_time !== undefined) patch.estimated_time = estimated_time;
 
     let q = supabase.from('playbooks').update(patch).eq('id', req.params.id);
-    if (!isPlatformAdmin(req)) q = q.eq('org_id', req.user?.org_id || DEFAULT_ORG_ID);
+    if (!isPlatformAdmin(req)) q = q.eq('org_id', tokenOrg(req));
     const { data, error } = await q.select();
     if (error) {
         console.error('[playbooks] PUT failed:', error.message);
@@ -278,7 +279,7 @@ router.delete('/:id', requireAuth, requireRole('super_admin', 'soc_manager'), as
         return;
     }
     let q = supabase.from('playbooks').delete().eq('id', req.params.id);
-    if (!isPlatformAdmin(req)) q = q.eq('org_id', req.user?.org_id || DEFAULT_ORG_ID);
+    if (!isPlatformAdmin(req)) q = q.eq('org_id', tokenOrg(req));
     const { data, error } = await q.select('id');
     if (error) {
         console.error('[playbooks] DELETE failed:', error.message);
@@ -309,7 +310,7 @@ router.post('/:id/run', requireAuth, requireRole('super_admin', 'soc_manager', '
     }
 
     // Both the playbook and the case must belong to the caller's organisation.
-    const ownOrg = req.user?.org_id || DEFAULT_ORG_ID;
+    const ownOrg = tokenOrg(req);
     let pq = supabase.from('playbooks').select('*').eq('id', req.params.id);
     if (!isPlatformAdmin(req)) pq = pq.eq('org_id', ownOrg);
     const { data: playbook, error } = await pq.maybeSingle();

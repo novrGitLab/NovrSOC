@@ -48,10 +48,8 @@ interface HandoverLog {
 
 // Retained only as the fallback store for when Supabase is unconfigured or erroring — entries
 // here still don't survive a restart, which is why the response flags `source` so the UI can
-// say which one it got.
-const memoryLogs: HandoverLog[] = [];
-
-const DEFAULT_ORG_ID = 'cybernovr';
+// say which one it got. Each entry keeps its organisation and is only ever read back by it.
+const memoryLogs: { orgId: string; log: HandoverLog }[] = [];
 
 interface HandoverRow {
     id: string;
@@ -93,7 +91,7 @@ function rowToLog(row: HandoverRow): HandoverLog {
 }
 
 router.get('/', requirePermission('cases:read'), async (req: AuthRequest, res) => {
-    const orgId = req.user?.org_id || DEFAULT_ORG_ID;
+    const orgId = tokenOrg(req);
     const supabase = getSupabase();
 
     if (supabase) {
@@ -113,7 +111,7 @@ router.get('/', requirePermission('cases:read'), async (req: AuthRequest, res) =
     }
 
     res.json({
-        logs: [...memoryLogs].sort((a, b) => b.submitted_at.localeCompare(a.submitted_at)),
+        logs: memoryLogs.filter((m) => m.orgId === orgId).map((m) => m.log).sort((a, b) => b.submitted_at.localeCompare(a.submitted_at)),
         source: 'memory',
     });
 });
@@ -143,7 +141,7 @@ router.post('/', requirePermission('handover:write'), async (req: AuthRequest, r
         submitted_at: new Date().toISOString(),
     };
 
-    const orgId = req.user?.org_id || DEFAULT_ORG_ID;
+    const orgId = tokenOrg(req);
     const supabase = getSupabase();
 
     if (supabase) {
@@ -171,13 +169,13 @@ router.post('/', requirePermission('handover:write'), async (req: AuthRequest, r
             // tell the caller which one took it.
             const message = err instanceof Error ? err.message : String(err);
             console.error('[Handover] Supabase write failed, falling back to memory:', message);
-            memoryLogs.push(log);
+            memoryLogs.push({ orgId, log });
             res.json({ success: true, source: 'memory', warning: message, log });
             return;
         }
     }
 
-    memoryLogs.push(log);
+    memoryLogs.push({ orgId, log });
     res.json({ success: true, source: 'memory', log });
 });
 
