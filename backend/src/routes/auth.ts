@@ -33,24 +33,18 @@ function issueDevToken(payload: Record<string, unknown>): string {
 
 // POST /api/auth/signin (admin/staff login proxy)
 router.post('/signin', async (req, res) => {
-    // Admin bypass — always reachable now, not gated on the env vars being set. It's how this
-    // platform logs in at all right now, since no downstream account-backed auth exists yet at
-    // APP_API_BASE_URL, and a Railway deploy with DEV_ADMIN_EMAIL/DEV_ADMIN_PASSWORD unset or
-    // wrong (whitespace, a stale value, never redeployed after being changed) used to lock
-    // everyone out with no way to tell why — this hardcoded fallback is the actual login for
-    // rayne@cybernovr.com whether or not Railway's env vars agree with it.
-    //
-    // Security note: because of that fallback, unsetting DEV_ADMIN_EMAIL/DEV_ADMIN_PASSWORD on
-    // Railway no longer disables this bypass — the values below are permanently valid
-    // credentials for a super_admin token as long as this code ships. Treat them, and
-    // DEV_TOKEN_SECRET below, as real production secrets. If this bypass should ever need to
-    // be fully disabled, that requires removing this fallback (and rotating the password), not
-    // just unsetting the env var.
-    const devEmail = process.env.DEV_ADMIN_EMAIL || 'rayne@cybernovr.com';
-    const devPassword = process.env.DEV_ADMIN_PASSWORD || 'N0vrS0C.2026';
+    // Admin bypass — the single env-configured staff login (no account-backed auth exists yet at
+    // APP_API_BASE_URL). It fails closed: with DEV_ADMIN_EMAIL or DEV_ADMIN_PASSWORD unset or
+    // blank, nothing matches and the request falls through to the failed-login path below. There
+    // is deliberately no hardcoded fallback credential. Treat both values, and DEV_TOKEN_SECRET,
+    // as production secrets.
+    const devEmail = (process.env.DEV_ADMIN_EMAIL ?? '').trim();
+    const devPassword = process.env.DEV_ADMIN_PASSWORD ?? '';
+    const bypassConfigured = devEmail.length > 0 && devPassword.length > 0;
+    if (!bypassConfigured) console.error('[auth] DEV_ADMIN_EMAIL / DEV_ADMIN_PASSWORD not set — admin login is disabled');
 
     const { email, password } = req.body ?? {};
-    if (email === devEmail && password === devPassword) {
+    if (bypassConfigured && email === devEmail && password === devPassword) {
         let name = process.env.DEV_ADMIN_NAME || 'Dev Admin';
         let company = process.env.DEV_ADMIN_COMPANY || 'Cybernovr';
         let role = process.env.DEV_ADMIN_ROLE || 'super_admin';

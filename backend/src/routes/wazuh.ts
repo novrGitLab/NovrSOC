@@ -59,7 +59,7 @@ router.get('/enrollment', requireAuth, (_req, res) => {
 });
 
 // GET /api/wazuh/alerts — was previously its own hand-rolled https.request call with a
-// hardcoded fallback password (`|| '.CS+z3I7d?TOTWf88bcuBmdMq0xzuo7+'`) duplicated from
+// hardcoded fallback password (value removed from this comment; rotate it) duplicated from
 // lib/wazuh-indexer.ts's already-correct, auth-required search() helper (the one every other
 // route in this file uses) — a real credential sitting in source, and exactly the kind of
 // duplicated indexer client search()'s own header comment says it was written to eliminate.
