@@ -1,0 +1,289 @@
+// Phase S1 access control for the SecOps routers: 401 without a token, 403 for roles without the
+// permission (executive, portal_user), 403 for a token without an org, and org isolation against
+// an in-memory PostgREST (fakePostgrest.ts). Outbound fetch is stubbed: anything that isn't the
+// local fake is refused, so no external service is ever called.
+process.env.JWT_SECRET = 'secops-access-test-secret';
+for (const k of [
+    'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'WAZUH_HOST', 'WAZUH_API_URL', 'WAZUH_INDEXER_HOST', 'WAZUH_INDEXER_PASS', 'WAZUH_INDEXER_PASSWORD',
+    'EMAIL_ENABLED', 'BREVO_API_KEY', 'RESEND_API_KEY', 'SENDGRID_API_KEY', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS',
+    'ABUSEIPDB_API_KEY', 'URLHAUS_API_KEY', 'VIRUSTOTAL_API_KEY', 'VT_API_KEY', 'GREYNOISE_API_KEY', 'LEAKIX_API_KEY', 'MISP_URL', 'MISP_API_KEY',
+    'OPNSENSE_URL', 'OPNSENSE_KEY', 'OPNSENSE_SECRET',
+]) delete process.env[k];
+process.env.THREATFOX_API_KEY = 'test-only';
+
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
+import type { AddressInfo } from 'net';
+import type { Server } from 'http';
+import { requireAuth } from '../../middleware/auth';
+import { startFakePostgrest, type FakePostgrest, type Row } from './fakePostgrest';
+import wazuhRouter from '../wazuh';
+import mitreRouter from '../mitre';
+import alertsRouter from '../alerts';
+import threatManagementRouter from '../threatManagement';
+import notificationsRouter from '../notifications';
+import casesRouter from '../cases';
+import soarRouter from '../soar';
+import searchRouter from '../search';
+import communicationsRouter from '../communications';
+import secopsRouter from '../secops';
+import handoverRouter from '../handover';
+import { clientRouter as securityAssessmentClientRouter } from '../securityAssessment';
+
+const A = 'org-a';
+const B = 'org-b';
+const caseA = randomUUID();
+const caseB = randomUUID();
+const taskB = randomUUID();
+const ago = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
+
+let db: FakePostgrest;
+let server: Server;
+let base = '';
+const realFetch = globalThis.fetch;
+
+const tok = (role: string, org?: string) =>
+    jwt.sign({ sub: randomUUID(), email: `${role}@${org ?? 'none'}.test`, role, ...(org ? { org_id: org } : {}) }, process.env.JWT_SECRET!);
+
+async function call(method: string, path: string, opts: { role?: string; org?: string; body?: unknown } = {}) {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (opts.role) headers.Authorization = `Bearer ${tok(opts.role, opts.org)}`;
+    const r = await realFetch(`${base}${path}`, { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) });
+    return { status: r.status, data: await r.json().catch(() => null) };
+}
+
+before(async () => {
+    db = await startFakePostgrest({
+        organisations: [
+            { id: 'oa', slug: A, name: 'Org A', is_active: true, contact_name: 'Ann', contact_email: 'contact@a.test', ciso_name: 'Ada', ciso_email: 'ciso@a.test' },
+            { id: 'ob', slug: B, name: 'Org B', is_active: true, contact_name: 'Bob', contact_email: 'contact@b.test', ciso_name: 'Bea', ciso_email: 'ciso@b.test' },
+        ],
+        platform_users: [
+            { id: randomUUID(), org_id: 'oa', email: 'analyst@a.test', name: 'A Analyst', role: 'analyst', status: 'active' },
+            { id: randomUUID(), org_id: 'ob', email: 'analyst@b.test', name: 'B Analyst', role: 'analyst', status: 'active' },
+        ],
+        cases: [
+            { id: caseA, org_id: A, case_number: 'CASE-A-1', title: 'Shared phrase alpha', severity: 'high', status: 'open', tier: 2, auto_closed: false, escalated: false, source: 'wazuh', source_id: 'a-1', created_at: ago(2) },
+            { id: caseB, org_id: B, case_number: 'CASE-B-1', title: 'Shared phrase bravo', severity: 'critical', status: 'open', tier: 2, auto_closed: false, escalated: false, source: 'wazuh', source_id: 'b-1', created_at: ago(1) },
+        ],
+        case_notes: [{ id: randomUUID(), case_id: caseB, author: 'b', content: 'org B note', created_at: ago(1) }],
+        case_tasks: [{ id: taskB, case_id: caseB, title: 'org B task', status: 'pending', created_at: ago(1) }],
+        case_timeline: [],
+        case_iocs: [],
+        soar_log: [
+            { id: randomUUID(), case_id: caseA, tier: 2, action: 'Block IP a', result: 'SUCCESS', executed_at: ago(2) },
+            { id: randomUUID(), case_id: caseB, tier: 2, action: 'Block IP b', result: 'SUCCESS', executed_at: ago(1) },
+        ],
+        handover_logs: [
+            { id: randomUUID(), org_id: A, shift: 'a', summary: 'org A handover', open_incidents: {}, pending_actions: [], escalations: [], submitted_by: 'a', created_at: ago(2) },
+            { id: randomUUID(), org_id: B, shift: 'b', summary: 'org B handover', open_incidents: {}, pending_actions: [], escalations: [], submitted_by: 'b', created_at: ago(1) },
+        ],
+        alert_communications: [
+            { id: randomUUID(), org_id: A, subject: 'org A message', created_at: ago(2) },
+            { id: randomUUID(), org_id: B, subject: 'org B message', created_at: ago(1) },
+        ],
+        nigeria_advisories: [],
+        ioc_enrichments: [],
+        threat_triage: [],
+    });
+    process.env.SUPABASE_URL = db.url;
+    process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (url.startsWith('http://127.0.0.1')) return realFetch(input, init);
+        if (url.startsWith('https://threatfox-api.abuse.ch/')) return Response.json({ query_status: 'no_result', data: 'no results' });
+        throw new Error(`external call blocked in tests: ${url}`);
+    }) as typeof fetch;
+
+    const app = express();
+    app.use(express.json());
+    // Same mounts as index.ts.
+    app.use('/api/wazuh', wazuhRouter);
+    app.use('/api/mitre', mitreRouter);
+    app.use('/api/alerts', alertsRouter);
+    app.use('/api/threats', threatManagementRouter);
+    app.use('/api/notifications', notificationsRouter);
+    app.use('/api/cases', requireAuth, casesRouter);
+    app.use('/api/soar', soarRouter);
+    app.use('/api/search', searchRouter);
+    app.use('/api/communications', requireAuth, communicationsRouter);
+    app.use('/api/secops', requireAuth, secopsRouter);
+    app.use('/api/handover', requireAuth, handoverRouter);
+    app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);
+    server = app.listen(0);
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+});
+
+after(async () => {
+    server.close();
+    await db.close();
+    globalThis.fetch = realFetch;
+});
+
+// ── 401 / 403 on every route ─────────────────────────────────────────────────────────────────
+
+const X = randomUUID();
+const ROUTES: Record<string, [string, string, unknown?][]> = {
+    wazuh: [['GET', '/api/wazuh/status'], ['GET', '/api/wazuh/agents'], ['GET', '/api/wazuh/incidents'], ['GET', '/api/wazuh/alerts-indexer'], ['GET', '/api/wazuh/enrollment'], ['POST', '/api/wazuh/hunt', {}]],
+    mitre: [['GET', '/api/mitre/techniques'], ['GET', '/api/mitre/defend'], ['GET', '/api/mitre/technique/T1110']],
+    alerts: [['GET', '/api/alerts/status']],
+    threats: [
+        ['GET', '/api/threats/alerts'], ['GET', '/api/threats/alerts/x'], ['PATCH', '/api/threats/alerts/x', {}], ['POST', '/api/threats/alerts/x/create-incident', {}],
+        ['GET', '/api/threats/global-map'], ['GET', '/api/threats/stats'], ['GET', '/api/threats/actors'], ['GET', '/api/threats/live-ioc'],
+        ['GET', '/api/threats'], ['POST', '/api/threats/x/contain', {}], ['POST', '/api/threats/x/escalate', {}], ['POST', '/api/threats/x/resolve', {}], ['POST', '/api/threats/x/assign', {}],
+    ],
+    notifications: [['GET', '/api/notifications'], ['POST', '/api/notifications/send', { subject: 's', message: 'm' }]],
+    cases: [
+        ['GET', '/api/cases'], ['POST', '/api/cases', {}], ['GET', `/api/cases/${X}`], ['POST', `/api/cases/${X}/assign`, {}], ['POST', `/api/cases/${X}/close`, {}],
+        ['PATCH', `/api/cases/${X}`, {}], ['POST', `/api/cases/${X}/notes`, {}], ['POST', `/api/cases/${X}/tasks`, {}], ['PATCH', `/api/cases/${X}/tasks/${X}`, {}],
+        ['POST', `/api/cases/${X}/escalate`, {}], ['POST', `/api/cases/${X}/execute-step`, {}], ['GET', `/api/cases/${X}/report`],
+    ],
+    secops: [['POST', '/api/secops/broadcast', {}], ['POST', '/api/secops/hunting/escalate', {}], ['POST', '/api/secops/actions/isolate', {}], ['POST', '/api/secops/actions/block-ip', {}]],
+    soar: [['GET', '/api/soar/stats'], ['GET', '/api/soar/cases?tier=1'], ['GET', '/api/soar/log']],
+    handover: [['GET', '/api/handover'], ['POST', '/api/handover', {}]],
+    search: [['GET', '/api/search?q=shared']],
+    communications: [['GET', '/api/communications/recipients'], ['GET', '/api/communications'], ['POST', '/api/communications/send', {}]],
+};
+
+for (const [router, routes] of Object.entries(ROUTES)) {
+    test(`${router}: 401 without a token`, async () => {
+        for (const [m, p, body] of routes) assert.equal((await call(m, p, { body })).status, 401, `${m} ${p}`);
+    });
+    test(`${router}: 403 for executive and portal_user`, async () => {
+        for (const role of ['executive', 'portal_user']) {
+            for (const [m, p, body] of routes) {
+                const r = await call(m, p, { role, org: A, body });
+                assert.equal(r.status, 403, `${role} ${m} ${p}`);
+                assert.equal(r.data.error, 'Insufficient permissions');
+            }
+        }
+    });
+    test(`${router}: 403 for a token without an org (no default organisation)`, async () => {
+        for (const [m, p, body] of routes) {
+            const r = await call(m, p, { role: 'super_admin', body });
+            assert.equal(r.status, 403, `${m} ${p}`);
+            assert.match(r.data.error, /No organisation/);
+        }
+    });
+}
+
+test('an analyst with an org gets through the gate on read routes', async () => {
+    for (const p of ['/api/cases', '/api/soar/stats', '/api/soar/log', '/api/handover', '/api/search?q=shared', '/api/communications/recipients', '/api/communications', '/api/notifications']) {
+        const r = await call('GET', p, { role: 'analyst', org: A });
+        assert.equal(r.status, 200, `${p}: ${JSON.stringify(r.data)}`);
+    }
+});
+
+// ── Cross-org reads return nothing ───────────────────────────────────────────────────────────
+
+test('cases: org A never sees org B cases, notes, tasks or reports', async () => {
+    const list = await call('GET', '/api/cases', { role: 'analyst', org: A });
+    assert.deepEqual(list.data.cases.map((c: Row) => c.id), [caseA]);
+    assert.equal(list.data.total, 1);
+    assert.equal((await call('GET', `/api/cases/${caseB}`, { role: 'analyst', org: A })).status, 404);
+    assert.equal((await call('GET', `/api/cases/${caseB}/report`, { role: 'analyst', org: A })).status, 404);
+});
+
+test('cases: org A cannot add notes or tasks to org B cases, or change org B tasks', async () => {
+    const notesBefore = db.tables.case_notes.length;
+    const tasksBefore = db.tables.case_tasks.length;
+    assert.equal((await call('POST', `/api/cases/${caseB}/notes`, { role: 'analyst', org: A, body: { content: 'cross-org note' } })).status, 404);
+    assert.equal((await call('POST', `/api/cases/${caseB}/tasks`, { role: 'analyst', org: A, body: { title: 'cross-org task' } })).status, 404);
+    assert.equal((await call('PATCH', `/api/cases/${caseB}/tasks/${taskB}`, { role: 'analyst', org: A, body: { status: 'completed' } })).status, 404);
+    assert.equal(db.tables.case_notes.length, notesBefore);
+    assert.equal(db.tables.case_tasks.length, tasksBefore);
+    assert.equal(db.tables.case_tasks.find((t) => t.id === taskB)?.status, 'pending');
+    // Its own case still works.
+    assert.equal((await call('POST', `/api/cases/${caseA}/notes`, { role: 'analyst', org: A, body: { content: 'own note' } })).status, 200);
+});
+
+test('cases: a case created through the API belongs to the token org, whatever the body says', async () => {
+    const r = await call('POST', '/api/cases', { role: 'analyst', org: A, body: { title: 'Manual case', severity: 'low', org_id: B } });
+    assert.equal(r.status, 201, JSON.stringify(r.data));
+    assert.equal(db.tables.cases.find((c) => c.id === r.data.id)?.org_id, A);
+});
+
+test('soar: stats, cases and log only cover the caller\'s org', async () => {
+    const stats = await call('GET', '/api/soar/stats', { role: 'analyst', org: B });
+    assert.equal(stats.data.total, 1);
+    const cases = await call('GET', '/api/soar/cases?tier=2', { role: 'analyst', org: B });
+    assert.deepEqual(cases.data.cases.map((c: Row) => c.id), [caseB]);
+    const log = await call('GET', '/api/soar/log', { role: 'analyst', org: B });
+    assert.deepEqual(log.data.entries.map((e: Row) => e.action), ['Block IP b']);
+});
+
+test('handover: org A reads only org A logs', async () => {
+    const r = await call('GET', '/api/handover', { role: 'analyst', org: A });
+    assert.deepEqual(r.data.logs.map((l: Row) => l.notes), ['org A handover']);
+});
+
+test('search: cases from another org never match', async () => {
+    const r = await call('GET', '/api/search?q=shared phrase', { role: 'analyst', org: A });
+    const cases = r.data.results.filter((x: Row) => x.type === 'case').map((x: Row) => x.title);
+    assert.deepEqual(cases, ['CASE-A-1 — Shared phrase alpha']);
+});
+
+test('notifications: only the caller\'s org cases', async () => {
+    const r = await call('GET', '/api/notifications', { role: 'analyst', org: A });
+    const cases = r.data.notifications.filter((n: Row) => n.type === 'case').map((n: Row) => n.id);
+    assert.deepEqual(cases, [caseA]);
+});
+
+test('communications: recipients and log are the caller\'s org only; another org\'s contact cannot be mailed', async () => {
+    const rec = await call('GET', '/api/communications/recipients', { role: 'analyst', org: A });
+    assert.deepEqual(rec.data.analysts.map((a: Row) => a.email), ['analyst@a.test']);
+    assert.deepEqual(rec.data.clients.map((c: Row) => c.email).sort(), ['ciso@a.test', 'contact@a.test']);
+    const log = await call('GET', '/api/communications', { role: 'analyst', org: A });
+    assert.deepEqual(log.data.entries.map((e: Row) => e.subject), ['org A message']);
+    const send = await call('POST', '/api/communications/send', { role: 'analyst', org: A, body: { recipient_type: 'client', client_email: 'contact@b.test', subject: 's', body: 'b', severity: 'high' } });
+    assert.equal(send.status, 400);
+    assert.match(send.data.error, /not on file/);
+});
+
+test('notifications/send: explicit recipients must be the caller\'s org contacts', async () => {
+    const out = await call('POST', '/api/notifications/send', { role: 'analyst', org: A, body: { subject: 's', message: 'm', to: ['contact@b.test'] } });
+    assert.equal(out.status, 400);
+    assert.match(out.data.error, /Not a contact of your organisation: contact@b\.test/);
+    const own = await call('POST', '/api/notifications/send', { role: 'analyst', org: A, body: { subject: 's', message: 'm', to: ['CISO@a.test'] } });
+    // Allowed past the recipient check; email itself is not configured in tests.
+    assert.equal(own.status, 200);
+    assert.equal(own.data.outcome, 'skipped');
+});
+
+test('security assessment: client users always get their own org; only staff may pick ?org', async () => {
+    assert.equal((await call('GET', `/api/client/security-assessment?org=${B}`)).status, 401);
+    assert.equal((await call('GET', `/api/client/security-assessment?org=${B}`, { role: 'portal_user' })).status, 403);
+    const client = await call('GET', `/api/client/security-assessment?org=${B}`, { role: 'portal_user', org: A });
+    assert.equal(client.status, 200, JSON.stringify(client.data));
+    assert.equal(client.data.org_id, A);
+    assert.deepEqual(client.data.orgs.map((o: Row) => o.slug), [A]);
+    const staff = await call('GET', `/api/client/security-assessment?org=${B}`, { role: 'analyst', org: A });
+    assert.equal(staff.data.org_id, B);
+    assert.equal(staff.data.orgs.length, 2);
+});
+
+test('ioc_enrichments: a second org escalating the same IOC does not take over its org_id', async () => {
+    const body = { ioc_value: '8.8.4.4', ioc_type: 'ip', finding: 'beaconing' };
+    const first = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: A, body });
+    assert.equal(first.status, 200, JSON.stringify(first.data));
+    assert.equal(first.data.ioc_saved, true, JSON.stringify(first.data));
+    const second = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: B, body });
+    assert.equal(second.data.ioc_saved, true, JSON.stringify(second.data));
+    const rows = db.tables.ioc_enrichments.filter((r) => r.ioc_value === '8.8.4.4');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].org_id, A);
+    assert.ok((rows[0].tags as string[]).includes('analyst-confirmed'), 'enrichment fields are still refreshed');
+});
+
+test('hunt escalate: a second org gets its own case, not the first org\'s', {
+    todo: 'Found, not changed: createCase dedups on (source, source_id) across orgs, backed by a unique constraint — needs a schema change (PHASE_S1_REPORT.md)',
+}, async () => {
+    const body = { ioc_value: '9.9.9.9', ioc_type: 'ip', finding: 'scan' };
+    const a = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: A, body });
+    const b = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: B, body });
+    assert.notEqual(b.data.case_id, a.data.case_id);
+});

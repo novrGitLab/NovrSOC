@@ -81,6 +81,15 @@ test('unauthenticated → 401 on every route, and nothing is seeded', async () =
     assert.equal((await call('GET', '/', { role: 'portal_user', org: 'org-a' })).status, 403, 'portal tokens are not staff');
 });
 
+test('a token without an org → 403 on every route, never a default organisation', async () => {
+    for (const [m, p] of [['GET', '/'], ['GET', '/steps'], ['POST', '/'], ['PUT', '/pb-b1'], ['DELETE', '/pb-b1'], ['POST', '/pb-b1/run']] as const) {
+        const r = await call(m, p, { role: 'super_admin', body: m === 'GET' ? undefined : {} });
+        assert.equal(r.status, 403, `${m} ${p}`);
+        assert.match(r.data.error, /No organisation/);
+    }
+    assert.equal(orgRows('cybernovr').length, 0, 'nothing seeded for a fallback org');
+});
+
 test('org A reading org A → allowed (defaults seeded for its own organisation)', async () => {
     const r = await call('GET', '/', { role: 'analyst', org: 'org-a' });
     assert.equal(r.status, 200);
