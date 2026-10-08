@@ -7,7 +7,7 @@ for (const k of [
     'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'WAZUH_HOST', 'WAZUH_API_URL', 'WAZUH_INDEXER_HOST', 'WAZUH_INDEXER_PASS', 'WAZUH_INDEXER_PASSWORD',
     'EMAIL_ENABLED', 'BREVO_API_KEY', 'RESEND_API_KEY', 'SENDGRID_API_KEY', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS',
     'ABUSEIPDB_API_KEY', 'URLHAUS_API_KEY', 'VIRUSTOTAL_API_KEY', 'VT_API_KEY', 'GREYNOISE_API_KEY', 'LEAKIX_API_KEY', 'MISP_URL', 'MISP_API_KEY',
-    'OPNSENSE_URL', 'OPNSENSE_KEY', 'OPNSENSE_SECRET',
+    'OPNSENSE_URL', 'OPNSENSE_KEY', 'OPNSENSE_SECRET', 'CISO_EMAIL', 'ALERT_EMAIL_TO', 'COMMS_ALLOWED_DOMAINS',
 ]) delete process.env[k];
 process.env.THREATFOX_API_KEY = 'test-only';
 
@@ -329,4 +329,52 @@ test('hunt escalate: a second org gets a NEW case of its own; the same org still
     const again = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: A, body });
     assert.equal(again.data.created, false);
     assert.equal(again.data.case_id, a.data.case_id, 'dedup still works within one org');
+});
+
+// ── CISO_EMAIL has no fallback address ───────────────────────────────────────────────────────
+
+async function capturingWarnings<T>(fn: () => Promise<T>): Promise<{ result: T; warnings: string[] }> {
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+    try {
+        return { result: await fn(), warnings };
+    } finally {
+        console.warn = realWarn;
+    }
+}
+
+test('CISO_EMAIL unset: CISO and SOC-mailbox notifications are skipped with a warning, not sent to a default', async () => {
+    assert.equal(process.env.CISO_EMAIL, undefined);
+    const ciso = await capturingWarnings(() => call('POST', '/api/notifications/send', { role: 'analyst', org: A, body: { subject: 's', message: 'm', recipient: 'ciso' } }));
+    assert.equal(ciso.result.status, 200);
+    assert.equal(ciso.result.data.outcome, 'skipped');
+    assert.match(ciso.result.data.message, /CISO_EMAIL is not set/);
+    assert.ok(ciso.warnings.some((w) => /CISO_EMAIL is not set/.test(w)), ciso.warnings.join('\n'));
+
+    const soc = await call('POST', '/api/notifications/send', { role: 'analyst', org: A, body: { subject: 's', message: 'm' } });
+    assert.equal(soc.status, 200);
+    assert.equal(soc.data.outcome, 'skipped');
+
+    const step = await capturingWarnings(() => call('POST', `/api/cases/${caseA}/execute-step`, { role: 'analyst', org: A, body: { step_id: 'notify_ciso' } }));
+    assert.equal(step.result.status, 200);
+    assert.equal(step.result.data.outcome, 'skipped');
+    assert.match(step.result.data.message, /CISO_EMAIL is not set/);
+    assert.ok(step.warnings.some((w) => /CISO email skipped/.test(w)));
+});
+
+test('cisoEmail() / socNotificationRecipients(): no fallback address', async () => {
+    const { cisoEmail, socNotificationRecipients } = await import('../../services/email');
+    assert.equal(cisoEmail(), null);
+    assert.deepEqual(socNotificationRecipients(), []);
+    process.env.CISO_EMAIL = ' ciso@example.test ';
+    try {
+        assert.equal(cisoEmail(), 'ciso@example.test');
+        assert.deepEqual(socNotificationRecipients(), ['ciso@example.test']);
+        process.env.ALERT_EMAIL_TO = 'soc@example.test';
+        assert.deepEqual(socNotificationRecipients(), ['soc@example.test']);
+    } finally {
+        delete process.env.CISO_EMAIL;
+        delete process.env.ALERT_EMAIL_TO;
+    }
 });

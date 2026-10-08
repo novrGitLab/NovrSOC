@@ -5,7 +5,7 @@ import {
     createCase, addTasks, addTimeline, isCaseSeverity, isCaseStatus, isUuid, startOfTodayWAT, formatWAT,
     dbErrorMessage, type CaseRow,
 } from '../services/cases';
-import { sendEscalationEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients } from '../services/email';
+import { sendEscalationEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients, cisoEmail, warnNoRecipient } from '../services/email';
 import { logAudit } from '../lib/audit';
 import { executeStep, isExecutableStep, EXECUTABLE_STEPS } from '../services/responseActions';
 import { requirePermission, hasPermission, requestOrg } from '../lib/permissions';
@@ -144,9 +144,13 @@ router.post('/', requirePermission('cases:write'), async (req: AuthRequest, res)
 
     // New high/critical cases notify the SOC mailbox. Fire-and-forget: a mail failure must not
     // fail case creation, and only newly created cases notify (not a returned duplicate).
-    if (result.created && isEmailEnabled() && (result.case.severity === 'critical' || result.case.severity === 'high')) {
+    const notify = result.created && isEmailEnabled() && (result.case.severity === 'critical' || result.case.severity === 'high');
+    const newCaseRecipients = socNotificationRecipients();
+    if (notify && newCaseRecipients.length === 0) {
+        warnNoRecipient('New-case notification', 'ALERT_EMAIL_TO / CISO_EMAIL');
+    } else if (notify) {
         sendCaseNotificationEmail({
-            to: socNotificationRecipients(),
+            to: newCaseRecipients,
             case_number: result.case.case_number,
             title: result.case.title,
             severity: result.case.severity,
@@ -393,17 +397,20 @@ router.post('/:id/escalate', requirePermission('cases:write'), async (req: AuthR
     await addTimeline(id, by, `Case escalated to CISO${note ? `. Note: ${note}` : ''}`);
 
     const results: Record<string, string> = { case: recorded ? 'recorded' : `failed: ${dbErrorMessage(updErr)}` };
-    const cisoEmail = process.env.CISO_EMAIL || 'soc@cybernovr.com';
+    const ciso = cisoEmail();
     if (!isEmailEnabled()) {
         results.email = 'skipped — EMAIL_ENABLED is not set';
+    } else if (!ciso) {
+        warnNoRecipient('CISO escalation email');
+        results.email = 'skipped — CISO_EMAIL is not set';
     } else {
         try {
             await sendEscalationEmail({
-                to: [cisoEmail], incident_number: c.case_number, title: c.title, severity: c.severity,
+                to: [ciso], incident_number: c.case_number, title: c.title, severity: c.severity,
                 assignee: c.assigned_to ?? 'Unassigned', opened_at: formatWAT(c.created_at), escalated_by: by, note,
             });
-            results.email = `sent to ${cisoEmail}`;
-            await addTimeline(id, 'NovrSOC', `Escalation email sent to ${cisoEmail}`, { automated: true });
+            results.email = `sent to ${ciso}`;
+            await addTimeline(id, 'NovrSOC', `Escalation email sent to ${ciso}`, { automated: true });
         } catch (err) {
             console.error('[cases/escalate] email failed:', err instanceof Error ? err.message : err);
             results.email = 'failed — see server logs';
@@ -417,7 +424,7 @@ router.post('/:id/escalate', requirePermission('cases:write'), async (req: AuthR
 
     res.json({
         success: recorded,
-        message: results.email.startsWith('sent') ? `Escalation email sent to ${cisoEmail}` : `Escalation recorded — email ${results.email}`,
+        message: results.email.startsWith('sent') ? `Escalation email sent to ${ciso}` : `Escalation recorded — email ${results.email}`,
         results,
     });
 });

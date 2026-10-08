@@ -5,13 +5,12 @@
 // (the previous version kept an in-memory set that reset on restart). A case an analyst or the
 // SOAR engine already escalated is skipped too — the CISO has already been told.
 import { getSupabase } from '../services/geoEnrichment';
-import { sendEscalationEmail, isEmailEnabled } from '../services/email';
+import { sendEscalationEmail, isEmailEnabled, cisoEmail, warnNoRecipient } from '../services/email';
 import { addTimeline, formatWAT, dbErrorMessage, type CaseRow } from '../services/cases';
 
 const CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const HIGH_MINUTES = Number(process.env.ESCALATION_HIGH_MINUTES) || 120;
 const CRITICAL_MINUTES = Number(process.env.ESCALATION_CRITICAL_MINUTES) || 30;
-const CISO_EMAIL = process.env.CISO_EMAIL || 'soc@cybernovr.com';
 
 async function runEscalationCheck(): Promise<void> {
     const supabase = getSupabase();
@@ -30,13 +29,19 @@ async function runEscalationCheck(): Promise<void> {
         .lte('created_at', cutoff)
         .limit(200);
     if (error) throw new Error(dbErrorMessage(error));
+    // CISO_EMAIL unset: the assignee is still emailed when they have an address; the CISO copy is
+    // skipped (warned once per run), never sent to a default mailbox.
+    const ciso = cisoEmail();
+    if (!ciso && (data ?? []).length > 0) warnNoRecipient('CISO copy of SLA escalations');
 
     for (const c of (data ?? []) as CaseRow[]) {
         const threshold = c.severity === 'critical' ? CRITICAL_MINUTES : HIGH_MINUTES;
         const ageMinutes = (Date.now() - Date.parse(c.created_at)) / 60000;
         if (ageMinutes < threshold) continue;
 
-        const recipients = Array.from(new Set([CISO_EMAIL, c.assigned_to ?? ''].filter((e) => e.includes('@'))));
+        const recipients = Array.from(new Set([ciso ?? '', c.assigned_to ?? ''].filter((e) => e.includes('@'))));
+        // Nobody to tell: leave the case un-escalated so it is retried once an address is configured.
+        if (recipients.length === 0) continue;
         try {
             await sendEscalationEmail({
                 to: recipients,

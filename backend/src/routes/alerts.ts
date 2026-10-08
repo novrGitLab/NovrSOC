@@ -3,7 +3,7 @@ import { Router } from 'express';
 // these alerts go through whichever provider is really configured. Email is the only alert
 // channel.
 import { z } from 'zod';
-import { sendTestEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients } from '../services/email';
+import { sendTestEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients, warnNoRecipient } from '../services/email';
 import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { logAudit } from '../lib/audit';
@@ -41,12 +41,17 @@ router.post('/test', requireAuth, requireRole('super_admin', 'soc_manager'), sen
     const results: Record<string, string> = {};
 
     if (isEmailEnabled()) {
-        const to = process.env.ALERT_EMAIL_TO || process.env.CISO_EMAIL || 'soc@cybernovr.com';
-        try {
-            await sendTestEmail(to);
-            results.email = 'sent';
-        } catch (err: any) {
-            results.email = `failed: ${err.message}`;
+        const [to] = socNotificationRecipients();
+        if (!to) {
+            warnNoRecipient('Test alert', 'ALERT_EMAIL_TO / CISO_EMAIL');
+            results.email = 'not configured — set ALERT_EMAIL_TO or CISO_EMAIL';
+        } else {
+            try {
+                await sendTestEmail(to);
+                results.email = 'sent';
+            } catch (err: any) {
+                results.email = `failed: ${err.message}`;
+            }
         }
     } else {
         results.email = 'not configured';
@@ -85,10 +90,14 @@ router.post('/incident', requireAuth, requireRole('super_admin', 'soc_manager', 
     const dispatched: string[] = [];
     let emailError: string | null = null;
 
-    if (isEmailEnabled()) {
+    const incidentRecipients = socNotificationRecipients();
+    if (isEmailEnabled() && incidentRecipients.length === 0) {
+        warnNoRecipient('Incident alert email', 'ALERT_EMAIL_TO / CISO_EMAIL');
+        emailError = 'No recipient configured — set ALERT_EMAIL_TO or CISO_EMAIL';
+    } else if (isEmailEnabled()) {
         try {
             await sendCaseNotificationEmail({
-                to: socNotificationRecipients(),
+                to: incidentRecipients,
                 case_number: incident.incident_id,
                 title: incident.title,
                 severity: incident.severity,

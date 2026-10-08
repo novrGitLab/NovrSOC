@@ -824,9 +824,20 @@ export async function sendAlertCommunicationEmail(params: {
     });
 }
 
-/** Where team notifications go: ALERT_EMAIL_TO, else CISO_EMAIL, else the SOC mailbox. */
+/** CISO_EMAIL, or null when it is unset. There is no fallback address. */
+export function cisoEmail(): string | null {
+    return (process.env.CISO_EMAIL ?? '').trim() || null;
+}
+
+/** Where team notifications go: ALERT_EMAIL_TO, else CISO_EMAIL. Empty when neither is set — no fallback address. */
 export function socNotificationRecipients(): string[] {
-    return [process.env.ALERT_EMAIL_TO || process.env.CISO_EMAIL || 'soc@cybernovr.com'];
+    const to = (process.env.ALERT_EMAIL_TO ?? '').trim() || cisoEmail();
+    return to ? [to] : [];
+}
+
+/** The one warning for a notification skipped because no recipient address is configured. */
+export function warnNoRecipient(what: string, vars = 'CISO_EMAIL'): void {
+    console.warn(`[email] ${what} skipped — ${vars} is not set`);
 }
 
 // 7. TEST EMAIL

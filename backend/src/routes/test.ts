@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { testBrevoDelivery, testResendDelivery, resendDomainStatus, senderAddress, isBrevoConfigured } from '../services/email';
+import { testBrevoDelivery, testResendDelivery, resendDomainStatus, senderAddress, isBrevoConfigured, cisoEmail, warnNoRecipient } from '../services/email';
 
 // Operator diagnostics. Manager-only: these send real messages.
 const router = Router();
@@ -10,7 +10,12 @@ const router = Router();
 // when BREVO_API_KEY is set, otherwise Resend), with no fallback, reporting that provider's exact
 // error on rejection. For Resend it also reports the sender domain's verification status.
 router.post('/email', requireAuth, requireRole('super_admin', 'soc_manager'), async (_req: AuthRequest, res) => {
-    const to = process.env.CISO_EMAIL || 'soc@cybernovr.com';
+    const to = cisoEmail();
+    if (!to) {
+        warnNoRecipient('Test email');
+        res.json({ success: false, outcome: 'skipped', error: 'Not sent — CISO_EMAIL is not set' });
+        return;
+    }
     if (isBrevoConfigured()) {
         try {
             const { id, from } = await testBrevoDelivery(to);

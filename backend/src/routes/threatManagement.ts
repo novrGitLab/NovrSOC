@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { search } from '../lib/wazuh-indexer';
-import { sendCriticalAlertEmail } from '../services/email';
+import { sendCriticalAlertEmail, socNotificationRecipients, warnNoRecipient } from '../services/email';
 import { createCase, type CaseSeverity } from '../services/cases';
 import { loadThreats, readTriage, writeTriage, applyTriage, type Threat, type Triage } from '../services/threatBoard';
 import { blockAddress } from '../services/responseActions';
@@ -172,10 +172,16 @@ const emailedAlertIds = new Set<string>();
 // not email here — it's notification-bell-only, per the Security Operations redesign spec.
 function notifyCriticalAlerts(alerts: ThreatAlert[]): void {
     const toNotify = alerts.filter((a) => (a.severity === 'critical' || a.severity === 'high') && !emailedAlertIds.has(a.id));
+    const recipients = socNotificationRecipients();
+    if (toNotify.length > 0 && recipients.length === 0) {
+        // Not marked as emailed, so they go out once an address is configured.
+        warnNoRecipient('Critical/high alert email', 'ALERT_EMAIL_TO / CISO_EMAIL');
+        return;
+    }
     for (const alert of toNotify) {
         emailedAlertIds.add(alert.id); // mark before send completes so a slow response can't duplicate-send on the next poll
         sendCriticalAlertEmail({
-            to: [process.env.ALERT_EMAIL_TO || process.env.CISO_EMAIL || 'soc@cybernovr.com'],
+            to: recipients,
             alertTitle: alert.rule_description,
             severity: alert.severity,
             agentName: alert.agent_name,

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { search } from '../lib/wazuh-indexer';
 import { getSupabase } from '../services/geoEnrichment';
 import type { AuthRequest } from '../middleware/auth';
-import { sendAlertCommunicationEmail, socNotificationRecipients } from '../services/email';
+import { sendAlertCommunicationEmail, socNotificationRecipients, cisoEmail, warnNoRecipient } from '../services/email';
 import { SEVERITY_MIN_LEVEL } from '../lib/severity';
 import { requirePermission, requestOrg } from '../lib/permissions';
 import { loadOrgContacts, contactAddresses } from '../services/orgContacts';
@@ -106,11 +106,19 @@ router.post('/send', requirePermission('handover:write'), async (req: AuthReques
     // recipient: 'ciso' sends to CISO_EMAIL (the address stays server-side); otherwise explicit
     // `to` addresses, else the SOC mailbox.
     const to: string[] = req.body?.recipient === 'ciso'
-        ? [process.env.CISO_EMAIL || 'soc@cybernovr.com']
+        ? [cisoEmail()].filter((x): x is string => !!x)
         : Array.isArray(req.body?.to) && req.body.to.length > 0
             ? req.body.to.filter((x: unknown): x is string => typeof x === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x))
             : socNotificationRecipients();
     if (!subject || !message) { res.status(400).json({ success: false, error: 'subject and message are required' }); return; }
+    const explicitTo = req.body?.recipient !== 'ciso' && Array.isArray(req.body?.to) && req.body.to.length > 0;
+    if (to.length === 0 && !explicitTo) {
+        // CISO / SOC mailbox not configured: skip with a warning, never a default address.
+        const vars = req.body?.recipient === 'ciso' ? 'CISO_EMAIL' : 'ALERT_EMAIL_TO / CISO_EMAIL';
+        warnNoRecipient('Notification', vars);
+        res.json({ success: false, outcome: 'skipped', message: `Not sent — ${vars} is not set` });
+        return;
+    }
     if (to.length === 0) { res.status(400).json({ success: false, error: 'no valid recipient address' }); return; }
     if (req.body?.recipient !== 'ciso' && Array.isArray(req.body?.to) && req.body.to.length > 0) {
         const allowed = contactAddresses(await loadOrgContacts(requestOrg(req)));

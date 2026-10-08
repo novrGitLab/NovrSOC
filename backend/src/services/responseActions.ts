@@ -12,7 +12,7 @@ import { URL } from 'url';
 import { getSupabase } from './geoEnrichment';
 import { enrichIOC } from './iocEnrichment';
 import { runActiveResponse } from './wazuh';
-import { sendEscalationEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients } from './email';
+import { sendEscalationEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients, cisoEmail, warnNoRecipient } from './email';
 import { addTimeline, formatWAT, dbErrorMessage, type CaseRow } from './cases';
 
 export const EXECUTABLE_STEPS = ['block_ip', 'isolate_agent', 'enrich_iocs', 'notify_email', 'notify_ciso'] as const;
@@ -195,9 +195,15 @@ async function enrichIocs(c: CaseRow): Promise<ActionResult> {
 }
 
 // Team notification by email. Goes to the SOC mailbox
-// (ALERT_EMAIL_TO, else CISO_EMAIL, else soc@cybernovr.com).
+// (ALERT_EMAIL_TO, else CISO_EMAIL). Skipped when neither is set — no fallback address.
 async function notifyEmail(c: CaseRow, by: string): Promise<ActionResult> {
     const to = socNotificationRecipients();
+    if (to.length === 0) {
+        warnNoRecipient('Email notification', 'ALERT_EMAIL_TO / CISO_EMAIL');
+        const r = skip('No recipient configured — set ALERT_EMAIL_TO or CISO_EMAIL on Railway');
+        await soarLog(c, 'Email notification', `SKIPPED — ${r.message}`);
+        return r;
+    }
     if (!isEmailEnabled()) {
         const r = skip('Email is disabled — set EMAIL_ENABLED=true and RESEND_API_KEY on Railway');
         await soarLog(c, 'Email notification', `SKIPPED — ${r.message}`);
@@ -219,7 +225,13 @@ async function notifyEmail(c: CaseRow, by: string): Promise<ActionResult> {
 }
 
 async function notifyCiso(c: CaseRow, by: string): Promise<ActionResult> {
-    const to = process.env.CISO_EMAIL || 'soc@cybernovr.com';
+    const to = cisoEmail();
+    if (!to) {
+        warnNoRecipient('CISO email');
+        const r = skip('CISO_EMAIL is not set on Railway');
+        await soarLog(c, 'CISO email', `SKIPPED — ${r.message}`);
+        return r;
+    }
     if (!isEmailEnabled()) {
         const r = skip('Email is disabled — set EMAIL_ENABLED=true and RESEND_API_KEY on Railway');
         await soarLog(c, 'CISO email', `SKIPPED — ${r.message}`);
