@@ -4,6 +4,7 @@ import { search } from '../lib/wazuh-indexer';
 import { isConfigured as wazuhConfigured } from '../services/wazuh';
 import { getSupabase } from '../services/geoEnrichment';
 import { severityFromLevel, SEVERITY_MIN_LEVEL } from '../lib/severity';
+import { requirePermission } from '../lib/permissions';
 
 // MITRE ATT&CK and D3FEND.
 //
@@ -23,6 +24,9 @@ import { severityFromLevel, SEVERITY_MIN_LEVEL } from '../lib/severity';
 // the thing we group by.
 
 const router = Router();
+
+// MITRE coverage is computed from the SOC's Wazuh alerts: SecOps token with alerts:read only.
+router.use(requirePermission('alerts:read'));
 
 const RANGE_HOURS: Record<string, number> = {
     '1h': 1, '6h': 6, '12h': 12, '24h': 24, '7d': 168, '30d': 720,

@@ -4,11 +4,12 @@ import { getSupabase } from '../services/geoEnrichment';
 import { requireAuth, type AuthRequest } from '../middleware/auth';
 import { sendAlertCommunicationEmail, socNotificationRecipients } from '../services/email';
 import { SEVERITY_MIN_LEVEL } from '../lib/severity';
+import { requirePermission, tokenOrg } from '../lib/permissions';
 
-// Not gated with requireAuth — Header.tsx (which polls this) is shared by both the admin app
-// and the client portal, and client-portal users carry a portal_token this backend's
-// requireAuth can't verify (see index.ts's block comment on the same constraint for
-// /api/wazuh, etc.). Same open-by-necessity category as those routes.
+// GET needs a SecOps token with alerts:read and lists only the caller's organisation's cases.
+// Header.tsx polls it from both the admin app and the client portal; portal tokens can't be
+// verified by this backend, so the portal header gets no notifications until portal auth
+// exists (see index.ts).
 
 const router = Router();
 
@@ -37,7 +38,7 @@ interface Notification {
 // most recent open high/critical cases. MEDIUM alerts land here and only here — no email, per
 // the Security Operations redesign spec (HIGH/CRITICAL email via routes/threatManagement.ts's
 // notifyCriticalAlerts instead).
-router.get('/', async (_req, res) => {
+router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
     const notifications: Notification[] = [];
 
     try {

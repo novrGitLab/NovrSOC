@@ -13,6 +13,7 @@ import { threatfoxGetRecent } from '../services/threatfox';
 import { urlhausGetRecent } from '../services/urlhaus';
 import { feodoGetBlocklist } from '../services/feodo';
 import { severityFromLevel, SEVERITY_MIN_LEVEL, type Severity } from '../lib/severity';
+import { requirePermission, tokenOrg } from '../lib/permissions';
 
 // SecOps Threat Management console — live security event stream from the Wazuh Indexer
 // (wazuh-alerts-4.x-*, same OpenSearch backend /api/wazuh/alerts-indexer queries). There is no
@@ -245,7 +246,7 @@ async function counts24h(): Promise<{ total: number; critical: number; high: num
     }
 }
 
-router.get('/alerts', async (req, res) => {
+router.get('/alerts', requirePermission('alerts:read'), async (req, res) => {
     const { severity, status, limit = '50' } = req.query;
     const parsedLimit = parseInt(String(limit), 10) || 50;
 
@@ -270,7 +271,7 @@ router.get('/alerts', async (req, res) => {
     });
 });
 
-router.get('/alerts/:id', (req, res) => {
+router.get('/alerts/:id', requirePermission('alerts:read'), (req, res) => {
     const alert = liveAlerts.find((a) => a.id === req.params.id);
     if (!alert) {
         res.status(404).json({ error: 'Alert not found' });
@@ -279,7 +280,7 @@ router.get('/alerts/:id', (req, res) => {
     res.json(alert);
 });
 
-router.patch('/alerts/:id', (req, res) => {
+router.patch('/alerts/:id', requirePermission('cases:write'), (req, res) => {
     const { status, assigned_to }: { status?: AlertStatus; assigned_to?: string | null } = req.body ?? {};
     const alert = liveAlerts.find((a) => a.id === req.params.id);
     if (!alert) {
@@ -452,7 +453,7 @@ const COUNTRY_CODES: Record<string, { alpha2: string; numeric: string }> = {
 
 const ALLOWED_WINDOWS = new Set(['24h', '7d', '30d', '90d', 'all']);
 
-router.get('/global-map', async (req, res) => {
+router.get('/global-map', requirePermission('alerts:read'), async (req, res) => {
     const sourcesReporting: string[] = [];
     const windowParam = typeof req.query.window === 'string' && ALLOWED_WINDOWS.has(req.query.window) ? req.query.window : '7d';
 
@@ -548,7 +549,7 @@ router.get('/global-map', async (req, res) => {
     }
 });
 
-router.get('/stats', async (_req, res) => {
+router.get('/stats', requirePermission('alerts:read'), async (_req, res) => {
     res.json(computeStats(liveAlerts, await counts24h()));
 });
 
@@ -559,7 +560,7 @@ router.get('/stats', async (_req, res) => {
 // at all). Every entry is publicly documented by a named vendor or MITRE and carries its own
 // reference URL — this is a curated reference library, not NovrSOC telemetry, and the response
 // says so via `source` so the page can label it accurately.
-router.get('/actors', (_req, res) => {
+router.get('/actors', requirePermission('alerts:read'), (_req, res) => {
     res.json({
         nigerian: NIGERIAN_ACTORS,
         global: GLOBAL_ACTORS,
@@ -618,7 +619,7 @@ function severityFromConfidence(confidence: number): Severity {
     return 'low';
 }
 
-router.get('/live-ioc', async (req, res) => {
+router.get('/live-ioc', requirePermission('alerts:read'), async (req, res) => {
     const typeFilter = typeof req.query.type === 'string' && req.query.type !== 'all' ? req.query.type : null;
     const sourceFilter = typeof req.query.source === 'string' && req.query.source !== 'all' ? req.query.source : null;
     const limit = Math.min(Number(req.query.limit) || 100, 500);
@@ -710,8 +711,7 @@ router.get('/live-ioc', async (req, res) => {
 
 // ── Threat board (/admin/secops/threats) ────────────────────────────────────────────────────
 // Distinct threats derived from live Wazuh alerts (services/threatBoard.ts), with analyst
-// decisions layered on. Each route is gated individually — this router is mounted open because
-// the client portal reads /alerts.
+// decisions layered on. Each route in this router is gated individually with requirePermission.
 
 const RANGE_HOURS: Record<string, number> = { '24h': 24, '7d': 168, '30d': 720 };
 const threatCache = new Map<string, Threat>();

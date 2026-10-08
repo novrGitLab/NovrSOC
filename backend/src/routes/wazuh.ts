@@ -7,8 +7,20 @@ import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents, getAgentI
 import { getComplianceImpact } from '../services/complianceMapping';
 import { isDemoMode, DEMO_AGENTS } from '../lib/demoMode';
 import { severityFromLevel, SEVERITY_MIN_LEVEL } from '../lib/severity';
+import { requirePermission } from '../lib/permissions';
 
 const router = Router();
+
+// Every route here reads Wazuh telemetry for the whole SOC, so all of them need a SecOps token
+// with alerts:read (and an org on the token); POST /hunt additionally needs cases:write, since
+// a hunt is the start of an investigation. Executive and portal_user tokens get 403. The client
+// portal's dashboard used to read /agents, /incidents, /threats-blocked and /network-connections
+// here anonymously; portal tokens can't be verified by this backend, so that path is closed
+// until portal auth exists (see index.ts).
+//
+// /enrollment is not left public: Wazuh agents enroll against the manager itself (ports
+// 1515/1514), never against this API. Its only caller is the admin Setup Guide page.
+router.use(requirePermission('alerts:read'));
 
 // NOTE — multi-tenancy: this is the pre-client baseline, all Wazuh data is Cybernovr-internal.
 // One Wazuh manager currently serves one org, so nothing here filters by org. When multiple
@@ -728,7 +740,7 @@ interface HuntQueryClause {
     exists?: { field: string };
 }
 
-router.post('/hunt', async (req, res) => {
+router.post('/hunt', requirePermission('cases:write'), async (req, res) => {
     const { conditions, time_range = '24h', limit = 100 }: { conditions?: HuntCondition[]; time_range?: string; limit?: number } = req.body ?? {};
     const rangeMs = HUNT_TIME_RANGE_MS[time_range] ?? HUNT_TIME_RANGE_MS['24h'];
 

@@ -117,6 +117,12 @@ app.get('/', (_req, res) => {
 // verification call to it — neither confirmed to exist. Until that's built, those 15 routes
 // stay open on purpose; don't "fix" this by mounting requireAuth on them blind.
 //
+// Exception (phase S1, 2026-10-08): /api/wazuh, /api/mitre, /api/threats, /api/alerts/status
+// and GET /api/notifications are now gated inside their routers with lib/permissions.ts
+// (SecOps token + permission + org). These are SecOps data, which portal_user tokens must not
+// read; client-portal pages that called them (PortalDashboard, DigitalAssets, the client
+// ThreatManagement page, the client layout's Header/RightRail) get 401 until portal auth exists.
+//
 // frontend/src/lib/api.ts's apiFetch() already attaches whichever token the browser holds
 // (portal_token or admin_token — see lib/account.ts's getAuthToken()) to every apiUrl() call,
 // admin and portal alike, so no further frontend work is needed once a route below starts

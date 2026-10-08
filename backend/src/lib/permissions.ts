@@ -1,8 +1,8 @@
 // Role -> permission map and requirePermission() middleware for SecOps.
 //
-// Not applied to any route yet (phase R1 defines it; routes are retrofitted later). Builds on
-// the existing requireAuth (middleware/auth.ts), which is unchanged: requirePermission runs it
-// first, so a missing or invalid token is still a 401 with the same body.
+// Applied to the SecOps routers in phase S1. Builds on the existing requireAuth
+// (middleware/auth.ts), which is unchanged: requirePermission runs it first, so a missing or
+// invalid token is still a 401 with the same body.
 //
 // Every SecOps permission covers tenant data, so a token without an org_id is refused with 403
 // — never defaulted to an organisation.
@@ -42,6 +42,8 @@ export function hasPermission(role: string | undefined, permission: Permission):
     return permissionsFor(role).includes(permission);
 }
 
+const NO_ORG = { error: 'No organisation on this account — tenant data cannot be accessed' };
+
 /**
  * requireAuth + a permission check + a tenant check.
  *   401  no/invalid token (from requireAuth, unchanged)
@@ -56,10 +58,33 @@ export function requirePermission(permission: Permission) {
                 return;
             }
             if (!req.user?.org_id) {
-                res.status(403).json({ error: 'No organisation on this account — tenant data cannot be accessed' });
+                res.status(403).json(NO_ORG);
                 return;
             }
             next();
         });
     };
 }
+
+/**
+ * For routes that only need an authenticated caller with an organisation (no SecOps
+ * permission). Mount after requireAuth. 403 when the token carries no org_id.
+ */
+export function requireOrg(req: AuthRequest, res: Response, next: NextFunction) {
+    if (!req.user?.org_id) { res.status(403).json(NO_ORG); return; }
+    next();
+}
+
+/**
+ * The caller's organisation, from the token. Only call behind requirePermission or requireOrg,
+ * which guarantee it is set; there is deliberately no default organisation.
+ */
+export function tokenOrg(req: AuthRequest): string {
+    const org = req.user?.org_id;
+    if (!org) throw new Error('tokenOrg() reached without an org_id — mount requirePermission or requireOrg first');
+    return org;
+}
+
+/** NovrSOC staff roles — everyone except client-portal users. */
+export const STAFF_ROLES: readonly UserRole[] = ['super_admin', 'soc_manager', 'analyst', 'executive'];
+export const isStaff = (role: string | undefined) => !!role && (STAFF_ROLES as readonly string[]).includes(role);

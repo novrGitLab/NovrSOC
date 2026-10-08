@@ -8,6 +8,7 @@ import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { logAudit } from '../lib/audit';
 import { sendLimiter } from './email';
+import { requirePermission } from '../lib/permissions';
 
 // The two sending routes below need a staff token (2026-09-29 hardening): both were callable
 // anonymously, and /test sent to any address given in the body.
@@ -20,7 +21,7 @@ function envConfigured(name: string): boolean {
 }
 
 // GET /api/alerts/status — check which channels are configured
-router.get('/status', (_req, res) => {
+router.get('/status', requirePermission('alerts:read'), (_req, res) => {
     res.json({
         channels: {
             email: { configured: isEmailEnabled(), name: 'Email', description: 'Resend API (Zoho SMTP / SendGrid fallback)' },
