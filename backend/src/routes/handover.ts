@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
-import { requirePermission, tokenOrg } from '../lib/permissions';
+import { requirePermission, requestOrg } from '../lib/permissions';
 
 // SecOps shift handover log — now persisted to the Supabase `handover_logs` table.
 //
@@ -91,7 +91,7 @@ function rowToLog(row: HandoverRow): HandoverLog {
 }
 
 router.get('/', requirePermission('cases:read'), async (req: AuthRequest, res) => {
-    const orgId = tokenOrg(req);
+    const orgId = requestOrg(req);
     const supabase = getSupabase();
 
     if (supabase) {
@@ -141,7 +141,7 @@ router.post('/', requirePermission('handover:write'), async (req: AuthRequest, r
         submitted_at: new Date().toISOString(),
     };
 
-    const orgId = tokenOrg(req);
+    const orgId = requestOrg(req);
     const supabase = getSupabase();
 
     if (supabase) {

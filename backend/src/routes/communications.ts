@@ -6,7 +6,7 @@ import { sendAlertCommunicationEmail } from '../services/email';
 import { isUuid, dbErrorMessage } from '../services/cases';
 import { loadOrgContacts } from '../services/orgContacts';
 import { logAudit } from '../lib/audit';
-import { requirePermission, tokenOrg } from '../lib/permissions';
+import { requirePermission, requestOrg } from '../lib/permissions';
 
 // Alert Communication — compose and send an alert email, and the log of what was sent.
 //
@@ -46,12 +46,12 @@ const memoryLog: LogEntry[] = [];
 
 // GET /api/communications/recipients
 router.get('/recipients', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
-    res.json(await loadOrgContacts(tokenOrg(req)));
+    res.json(await loadOrgContacts(requestOrg(req)));
 });
 
 // GET /api/communications?limit= — newest first. source says where the log is kept.
 router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
-    const orgId = tokenOrg(req);
+    const orgId = requestOrg(req);
     const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
     const supabase = getSupabase();
     if (supabase) {
@@ -67,7 +67,7 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
 //   { recipient_type, analyst_email?, client_email?, custom_email?, subject, body, severity, case_id? }
 router.post('/send', requirePermission('handover:write'), async (req: AuthRequest, res) => {
     const b = req.body ?? {};
-    const orgId = tokenOrg(req);
+    const orgId = requestOrg(req);
     const sentBy = req.user?.email || 'NovrSOC analyst';
     const type = b.recipient_type as RecipientType;
     const subject = typeof b.subject === 'string' ? b.subject.trim() : '';

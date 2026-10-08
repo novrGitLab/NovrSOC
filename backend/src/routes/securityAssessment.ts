@@ -4,7 +4,8 @@ import { requireRole } from '../middleware/auth';
 import {
     orgMetrics, activeOrgs, SLA_TARGET_HOURS, SLA_SECURE_THRESHOLD, type OrgMetrics,
 } from '../services/securityAssessment';
-import { requireOrg, tokenOrg, isStaff } from '../lib/permissions';
+import { requireOrg, requestOrg } from '../lib/permissions';
+import { isStaffRole } from '../lib/resolveOrg';
 
 // Security Assessment — posture computed from real cases (services/securityAssessment.ts).
 // Mounted behind requireAuth at /api/admin/security-assessment and /api/client/security-assessment.
@@ -56,19 +57,17 @@ adminRouter.get('/overview', requireRole('super_admin', 'soc_manager', 'executiv
     }
 });
 
-// GET /api/client/security-assessment?org=<slug> — one organisation's report card.
-// Staff roles (lib/permissions.ts STAFF_ROLES) can view any active client with ?org=. Everyone
-// else always gets their own organisation from the token — ?org is ignored for them — and only
-// sees their own organisation in `orgs`. A token without an org is 403; there is no default
-// organisation and no "first one found" fallback. Portal tokens can't be verified by this
-// backend yet, so client-portal users get a 401 and the page explains why.
+// GET /api/client/security-assessment — one organisation's report card. The organisation comes
+// from lib/resolveOrg.ts: the token's org, or for staff (super_admin, soc_manager, analyst)
+// another existing org named in the X-Org-Id header (audited). Client roles always get their own
+// and only see it in `orgs`. A token without an org is 403; there is no fallback organisation.
+// Portal tokens can't be verified by this backend yet, so client-portal users get a 401 and the
+// page explains why.
 clientRouter.get('/', requireOrg, async (req: AuthRequest, res) => {
     try {
         const orgs = await activeOrgs();
-        const own = tokenOrg(req);
-        const staff = isStaff(req.user?.role);
-        const requested = typeof req.query.org === 'string' && req.query.org ? req.query.org : null;
-        const wanted = staff && requested ? requested : own;
+        const wanted = requestOrg(req);
+        const staff = isStaffRole(req.user?.role);
         const org = orgs.find((o) => o.slug === wanted);
         if (!org) { res.status(404).json({ error: 'Organisation not found or not active' }); return; }
         const metrics = await orgMetrics(org.slug, org.name);
@@ -82,7 +81,7 @@ clientRouter.get('/', requireOrg, async (req: AuthRequest, res) => {
                     { key: 'client_response', label: 'Cases responded to within 2 hrs', max: 30, value: null, reason: 'Not tracked yet — client replies on cases are not recorded.' },
                 ],
             },
-            orgs: (staff ? orgs : orgs.filter((o) => o.slug === own)).map((o) => ({ slug: o.slug, name: o.name })),
+            orgs: (staff ? orgs : orgs.filter((o) => o.slug === wanted)).map((o) => ({ slug: o.slug, name: o.name })),
             definitions,
             generated_at: new Date().toISOString(),
         });

@@ -12,6 +12,7 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import playbooksRouter, { setPlaybooksClient } from '../playbooks';
+import { startFakePostgrest, type FakePostgrest } from './fakePostgrest';
 
 type Row = Record<string, unknown>;
 const tables: Record<string, Row[]> = { playbooks: [], cases: [], playbook_steps: [{ step_id: 'block_ip', name: 'Block IP', description: null, category: 'containment' }] };
@@ -53,15 +54,23 @@ function fakeClient(): SupabaseClient {
 let base = '';
 let server: Server;
 const tok = (role: string, org?: string) => jwt.sign({ sub: randomUUID(), email: `${role}@${org ?? 'none'}.test`, role, ...(org ? { org_id: org } : {}) }, process.env.JWT_SECRET!);
-async function call(method: string, path: string, opts: { role?: string; org?: string; body?: unknown } = {}) {
+async function call(method: string, path: string, opts: { role?: string; org?: string; body?: unknown; asOrg?: string } = {}) {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (opts.role) headers.Authorization = `Bearer ${tok(opts.role, opts.org)}`;
+    if (opts.asOrg) headers['X-Org-Id'] = opts.asOrg;
     const r = await fetch(`${base}/api/playbooks${path}`, { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) });
     return { status: r.status, data: await r.json().catch(() => null) };
 }
 const orgRows = (org: string) => tables.playbooks.filter((p) => p.org_id === org);
 
-before(() => {
+// lib/resolveOrg.ts checks X-Org-Id against `organisations` through getSupabase(), so that
+// lookup gets a local fake PostgREST; the playbooks themselves stay on the in-memory client.
+let orgDb: FakePostgrest;
+
+before(async () => {
+    orgDb = await startFakePostgrest({ organisations: [{ id: 'oa', slug: 'org-a', name: 'Org A' }, { id: 'ob', slug: 'org-b', name: 'Org B' }] });
+    process.env.SUPABASE_URL = orgDb.url;
+    process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
     setPlaybooksClient(fakeClient());
     tables.playbooks.push({ id: 'pb-b1', org_id: 'org-b', name: 'Org B private playbook', severity: 'high', steps: [] });
     tables.cases.push({ id: '11111111-1111-4111-8111-111111111111', org_id: 'org-b' }, { id: '22222222-2222-4222-8222-222222222222', org_id: 'org-a' });
@@ -71,7 +80,7 @@ before(() => {
     server = app.listen(0);
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
-after(() => { server.close(); setPlaybooksClient(null); });
+after(async () => { server.close(); setPlaybooksClient(null); await orgDb.close(); });
 
 test('unauthenticated → 401 on every route, and nothing is seeded', async () => {
     for (const [m, p] of [['GET', '/'], ['GET', '/?org_id=org-z'], ['GET', '/steps'], ['POST', '/'], ['PUT', '/pb-b1'], ['DELETE', '/pb-b1'], ['POST', '/pb-b1/run']] as const) {
@@ -98,14 +107,20 @@ test('org A reading org A → allowed (defaults seeded for its own organisation)
     assert.equal((await call('GET', '/?org_id=org-a', { role: 'analyst', org: 'org-a' })).status, 200, 'naming your own org is fine');
 });
 
-test('org A requesting org B → 403, never org B data, and no seeding for org B', async () => {
-    for (const role of ['analyst', 'soc_manager', 'executive']) {
+test('?org_id is ignored: org A asking for org B gets org A, never org B data, and no seeding for org B', async () => {
+    for (const role of ['analyst', 'soc_manager', 'executive', 'super_admin']) {
         const r = await call('GET', '/?org_id=org-b', { role, org: 'org-a' });
-        assert.equal(r.status, 403, role);
-        assert.ok(!JSON.stringify(r.data).includes('Org B private playbook'));
+        assert.equal(r.status, 200, role);
+        assert.ok(r.data.playbooks.every((p: Row) => p.org_id === 'org-a'), role);
     }
-    assert.equal((await call('GET', '/?org_id=org-new', { role: 'soc_manager', org: 'org-a' })).status, 403);
+    await call('GET', '/?org_id=org-new', { role: 'soc_manager', org: 'org-a' });
     assert.equal(orgRows('org-new').length, 0, 'seeding cannot be triggered for another organisation');
+});
+
+test("a client role's X-Org-Id is ignored", async () => {
+    const r = await call('GET', '/', { role: 'executive', org: 'org-a', asOrg: 'org-b' });
+    assert.equal(r.status, 200);
+    assert.ok(r.data.playbooks.every((p: Row) => p.org_id === 'org-a'));
 });
 
 test('org A cannot modify, delete or run org B\'s playbook (looks like not found)', async () => {
@@ -125,14 +140,15 @@ test('org B can still manage its own playbook', async () => {
     assert.equal(r.data.playbook.description, 'updated by owner');
 });
 
-test('cross-org access only for super_admin (existing RBAC), read-only, and never seeds', async () => {
-    const r = await call('GET', '/?org_id=org-b', { role: 'super_admin', org: 'org-a' });
+test('staff select another existing org with X-Org-Id; an unknown org is 400; reading it never seeds', async () => {
+    const r = await call('GET', '/', { role: 'analyst', org: 'org-a', asOrg: 'org-b' });
     assert.equal(r.status, 200);
     assert.deepEqual(r.data.playbooks.map((p: Row) => p.id), ['pb-b1']);
-    const empty = await call('GET', '/?org_id=org-unseeded', { role: 'super_admin', org: 'org-a' });
-    assert.equal(empty.status, 200);
-    assert.deepEqual(empty.data.playbooks, []);
-    assert.equal(orgRows('org-unseeded').length, 0, 'a platform admin viewing an org does not seed it');
+    const unknown = await call('GET', '/', { role: 'super_admin', org: 'org-a', asOrg: 'org-unseeded' });
+    assert.equal(unknown.status, 400);
+    assert.equal(orgRows('org-unseeded').length, 0);
+    // No unscoped path any more: super_admin without X-Org-Id is scoped to its own org like everyone.
+    assert.equal((await call('PUT', '/pb-b1', { role: 'super_admin', org: 'org-a', body: { name: 'x' } })).status, 404);
 });
 
 test('creating a playbook always uses the caller\'s organisation, whatever the body says', async () => {

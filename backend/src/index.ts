@@ -168,7 +168,7 @@ const corsOptions: cors.CorsOptions = {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Org-Id'], // X-Org-Id: staff org selection (lib/resolveOrg.ts)
 };
 
 // CORS is registered here — immediately after the two unconditional health-check routes above,

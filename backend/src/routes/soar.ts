@@ -4,7 +4,7 @@ import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { enrichIOC } from '../services/iocEnrichment';
 import { startOfTodayWAT, dbErrorMessage } from '../services/cases';
-import { requirePermission, tokenOrg } from '../lib/permissions';
+import { requirePermission, requestOrg } from '../lib/permissions';
 
 // SOAR reporting + the enrichment endpoint the SOAR engine (infra/soar/soar.py) calls.
 //
@@ -14,7 +14,7 @@ import { requirePermission, tokenOrg } from '../lib/permissions';
 // and the engine sends one request per level 7+ alert.
 
 const router = Router();
-const orgOf = tokenOrg;
+const orgOf = requestOrg;
 
 // GET /api/soar/stats
 router.get('/stats', requirePermission('alerts:read'), async (req: AuthRequest, res) => {

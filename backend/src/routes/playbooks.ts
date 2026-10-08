@@ -5,7 +5,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase } from '../services/geoEnrichment';
 import { addTasks, addTimeline, isUuid } from '../services/cases';
 import { isExecutableStep } from '../services/responseActions';
-import { requireOrg, tokenOrg } from '../lib/permissions';
+import { requireOrg, requestOrg } from '../lib/permissions';
 
 // Supabase-backed playbook library — real columns confirmed live against the actual table:
 // id, name, org_id, icon, severity, description, steps (jsonb array, round-trips as native
@@ -16,10 +16,11 @@ import { requireOrg, tokenOrg } from '../lib/permissions';
 // Access (2026-10-03 hardening): every route needs a NovrSOC staff token. GET used to be public
 // and took ?org_id= from the query string, so anyone could list any organisation's playbooks
 // and trigger default-playbook seeding for it; PUT/DELETE/run matched on id alone, so one
-// organisation could change or run another's. Now the organisation always comes from the token,
-// every query is scoped to it, and only super_admin (platform staff, the existing cross-tenant
-// role) may address another organisation with ?org_id= — reading another organisation never
-// seeds defaults for it. (No client-portal page reads playbooks any more.)
+// organisation could change or run another's. Now every query is scoped to the organisation
+// resolved by lib/resolveOrg.ts: the token's org, or — for staff only — another existing org
+// named in the X-Org-Id header, which is audited. ?org_id is no longer read (phase S2), and no
+// role has an unscoped "any org" path. Reading another organisation never seeds defaults for it.
+// (No client-portal page reads playbooks any more.)
 
 const router = Router();
 // Every route needs a token with an organisation; a token without one is 403, never defaulted.
@@ -31,15 +32,10 @@ let clientOverride: SupabaseClient | null = null;
 export function setPlaybooksClient(c: SupabaseClient | null): void { clientOverride = c; }
 const getDb = () => clientOverride ?? getSupabase();
 
-const isPlatformAdmin = (req: AuthRequest) => req.user?.role === 'super_admin';
-
-/** The organisation this request may act on, or a 403 reason. */
-function orgScope(req: AuthRequest): { orgId: string; crossOrg: boolean } | { error: string } {
-    const own = tokenOrg(req);
-    const requested = typeof req.query.org_id === 'string' ? req.query.org_id.trim() : '';
-    if (!requested || requested === own) return { orgId: own, crossOrg: false };
-    if (isPlatformAdmin(req)) return { orgId: requested, crossOrg: true };
-    return { error: 'You can only access your own organisation\'s playbooks.' };
+/** The organisation this request acts on (lib/resolveOrg.ts), and whether it is another org's. */
+function orgScope(req: AuthRequest): { orgId: string; crossOrg: boolean } {
+    const orgId = requestOrg(req);
+    return { orgId, crossOrg: orgId !== req.user?.org_id };
 }
 
 interface PlaybookStep {
@@ -164,12 +160,7 @@ const DEFAULT_PLAYBOOKS: Omit<PlaybookRow, 'id' | 'org_id' | 'created_at' | 'upd
 // this table (a real upsert 42P10s the same way org_setup's org_id did), so a real upsert isn't
 // available here either.
 router.get('/', requireAuth, STAFF, async (req: AuthRequest, res) => {
-    const scope = orgScope(req);
-    if ('error' in scope) {
-        res.status(403).json({ error: scope.error });
-        return;
-    }
-    const { orgId, crossOrg } = scope;
+    const { orgId, crossOrg } = orgScope(req);
     const supabase = getDb();
     if (!supabase) {
         res.status(503).json({ error: 'Supabase not configured' });
@@ -222,7 +213,7 @@ router.post('/', requireAuth, requireRole('super_admin', 'soc_manager'), async (
         return;
     }
 
-    const orgId = tokenOrg(req); // always the caller's own organisation
+    const orgId = requestOrg(req); // always the caller's own organisation
     const { data, error } = await supabase
         .from('playbooks')
         .insert({
@@ -257,7 +248,7 @@ router.put('/:id', requireAuth, requireRole('super_admin', 'soc_manager'), async
     if (estimated_time !== undefined) patch.estimated_time = estimated_time;
 
     let q = supabase.from('playbooks').update(patch).eq('id', req.params.id);
-    if (!isPlatformAdmin(req)) q = q.eq('org_id', tokenOrg(req));
+    q = q.eq('org_id', requestOrg(req));
     const { data, error } = await q.select();
     if (error) {
         console.error('[playbooks] PUT failed:', error.message);
@@ -279,7 +270,7 @@ router.delete('/:id', requireAuth, requireRole('super_admin', 'soc_manager'), as
         return;
     }
     let q = supabase.from('playbooks').delete().eq('id', req.params.id);
-    if (!isPlatformAdmin(req)) q = q.eq('org_id', tokenOrg(req));
+    q = q.eq('org_id', requestOrg(req));
     const { data, error } = await q.select('id');
     if (error) {
         console.error('[playbooks] DELETE failed:', error.message);
@@ -309,17 +300,17 @@ router.post('/:id/run', requireAuth, requireRole('super_admin', 'soc_manager', '
         return;
     }
 
-    // Both the playbook and the case must belong to the caller's organisation.
-    const ownOrg = tokenOrg(req);
+    // Both the playbook and the case must belong to the organisation this request acts on.
+    const ownOrg = requestOrg(req);
     let pq = supabase.from('playbooks').select('*').eq('id', req.params.id);
-    if (!isPlatformAdmin(req)) pq = pq.eq('org_id', ownOrg);
+    pq = pq.eq('org_id', ownOrg);
     const { data: playbook, error } = await pq.maybeSingle();
     if (error || !playbook) {
         res.status(404).json({ error: 'Playbook not found' });
         return;
     }
     let cq = supabase.from('cases').select('id, org_id').eq('id', caseId);
-    if (!isPlatformAdmin(req)) cq = cq.eq('org_id', ownOrg);
+    cq = cq.eq('org_id', ownOrg);
     const { data: caseRow } = await cq.maybeSingle();
     if (!caseRow) {
         res.status(404).json({ error: 'Case not found' });

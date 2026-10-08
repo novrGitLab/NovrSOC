@@ -4,11 +4,15 @@
 // (middleware/auth.ts), which is unchanged: requirePermission runs it first, so a missing or
 // invalid token is still a 401 with the same body.
 //
-// Every SecOps permission covers tenant data, so a token without an org_id is refused with 403
-// — never defaulted to an organisation.
+// Every SecOps permission covers tenant data, so the request's organisation is resolved too
+// (lib/resolveOrg.ts): a token without an org_id is refused with 403 — never defaulted — and
+// only staff may act on another organisation, via X-Org-Id, which is audited.
 
 import type { Response, NextFunction } from 'express';
 import { requireAuth, type AuthRequest, type UserRole } from '../middleware/auth';
+import { resolveOrg, setRequestOrg } from './resolveOrg';
+
+export { requestOrg } from './resolveOrg';
 
 export const PERMISSIONS = [
     'alerts:read',
@@ -42,12 +46,20 @@ export function hasPermission(role: string | undefined, permission: Permission):
     return permissionsFor(role).includes(permission);
 }
 
-const NO_ORG = { error: 'No organisation on this account — tenant data cannot be accessed' };
+/** Resolve the request's organisation (lib/resolveOrg.ts) and store it, or answer with the failure. */
+async function withOrg(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+    const r = await resolveOrg(req);
+    if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+    setRequestOrg(req, r.orgId);
+    next();
+}
 
 /**
- * requireAuth + a permission check + a tenant check.
+ * requireAuth + a permission check + organisation resolution (lib/resolveOrg.ts).
  *   401  no/invalid token (from requireAuth, unchanged)
  *   403  the role lacks the permission, or the token carries no org_id
+ *   400  a staff X-Org-Id that names no organisation
+ * Route code reads the organisation with requestOrg(req).
  */
 export function requirePermission(permission: Permission) {
     return (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -57,34 +69,15 @@ export function requirePermission(permission: Permission) {
                 res.status(403).json({ error: 'Insufficient permissions', required: permission, current: role ?? null });
                 return;
             }
-            if (!req.user?.org_id) {
-                res.status(403).json(NO_ORG);
-                return;
-            }
-            next();
+            withOrg(req, res, next).catch(next);
         });
     };
 }
 
 /**
  * For routes that only need an authenticated caller with an organisation (no SecOps
- * permission). Mount after requireAuth. 403 when the token carries no org_id.
+ * permission). Mount after requireAuth. Same organisation resolution as requirePermission.
  */
 export function requireOrg(req: AuthRequest, res: Response, next: NextFunction) {
-    if (!req.user?.org_id) { res.status(403).json(NO_ORG); return; }
-    next();
+    withOrg(req, res, next).catch(next);
 }
-
-/**
- * The caller's organisation, from the token. Only call behind requirePermission or requireOrg,
- * which guarantee it is set; there is deliberately no default organisation.
- */
-export function tokenOrg(req: AuthRequest): string {
-    const org = req.user?.org_id;
-    if (!org) throw new Error('tokenOrg() reached without an org_id — mount requirePermission or requireOrg first');
-    return org;
-}
-
-/** NovrSOC staff roles — everyone except client-portal users. */
-export const STAFF_ROLES: readonly UserRole[] = ['super_admin', 'soc_manager', 'analyst', 'executive'];
-export const isStaff = (role: string | undefined) => !!role && (STAFF_ROLES as readonly string[]).includes(role);

@@ -3,7 +3,7 @@ import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { search } from '../lib/wazuh-indexer';
 import { severityFromLevel } from '../lib/severity';
-import { requirePermission, tokenOrg } from '../lib/permissions';
+import { requirePermission, requestOrg } from '../lib/permissions';
 
 // GET /api/search?q= — the header's global search. Analyst-only (it reads cases).
 //
@@ -33,7 +33,7 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
     const q = pgSafe(raw);
     if (q.length < 2) { res.json({ results: [], query: raw, total: 0 }); return; }
 
-    const orgId = tokenOrg(req);
+    const orgId = requestOrg(req);
     const supabase = getSupabase();
     const like = `%${q}%`;
 

@@ -7,7 +7,7 @@ import { logAudit } from '../lib/audit';
 import { getSupabase } from '../services/geoEnrichment';
 import { enrichIOC, configuredSources, type IOCType } from '../services/iocEnrichment';
 import { isPrivateAddress } from '../services/emailsec/safeFetch';
-import { requirePermission, tokenOrg } from '../lib/permissions';
+import { requirePermission, requestOrg } from '../lib/permissions';
 
 const router = Router();
 
@@ -65,7 +65,7 @@ router.post('/hunting/escalate', requirePermission('cases:write'), async (req: A
         source: 'threat_hunt',
         source_id: `${ioc_type}:${ioc_value}`,
         source_ip: ioc_type === 'ip' ? ioc_value : null,
-        org_id: tokenOrg(req),
+        org_id: requestOrg(req),
         tags: ['threat-hunt', 'manual'],
     }, req.user?.email || 'analyst');
 
@@ -114,7 +114,7 @@ router.post('/hunting/escalate', requirePermission('cases:write'), async (req: A
                     last_seen: new Date().toISOString(),
                 };
                 const inserted = await supabase.from('ioc_enrichments').upsert(
-                    { ioc_value, ...fields, org_id: tokenOrg(req) },
+                    { ioc_value, ...fields, org_id: requestOrg(req) },
                     { onConflict: 'ioc_value', ignoreDuplicates: true },
                 );
                 const { error } = inserted.error ? inserted : await supabase.from('ioc_enrichments').update(fields).eq('ioc_value', ioc_value);

@@ -8,7 +8,7 @@ import {
 import { sendEscalationEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients } from '../services/email';
 import { logAudit } from '../lib/audit';
 import { executeStep, isExecutableStep, EXECUTABLE_STEPS } from '../services/responseActions';
-import { requirePermission, hasPermission, tokenOrg } from '../lib/permissions';
+import { requirePermission, hasPermission, requestOrg } from '../lib/permissions';
 
 // Cases API — Supabase-backed.
 //
@@ -20,7 +20,7 @@ import { requirePermission, hasPermission, tokenOrg } from '../lib/permissions';
 
 const router = Router();
 
-const orgOf = tokenOrg;
+const orgOf = requestOrg;
 const actorOf = (req: AuthRequest) => req.user?.email || 'analyst';
 
 // case_notes has no type column. The workbench's note types (Update/Evidence/Decision/

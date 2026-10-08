@@ -13,7 +13,7 @@ import { threatfoxGetRecent } from '../services/threatfox';
 import { urlhausGetRecent } from '../services/urlhaus';
 import { feodoGetBlocklist } from '../services/feodo';
 import { severityFromLevel, SEVERITY_MIN_LEVEL, type Severity } from '../lib/severity';
-import { requirePermission, tokenOrg } from '../lib/permissions';
+import { requirePermission, requestOrg } from '../lib/permissions';
 
 // SecOps Threat Management console — live security event stream from the Wazuh Indexer
 // (wazuh-alerts-4.x-*, same OpenSearch backend /api/wazuh/alerts-indexer queries). There is no
@@ -309,7 +309,7 @@ router.post('/alerts/:id/create-incident', requirePermission('cases:write'), asy
         severity: alert.severity as CaseSeverity,
         source: 'wazuh',
         source_id: alert.wazuh_alert_id ?? alert.id,
-        org_id: tokenOrg(req),
+        org_id: requestOrg(req),
         agent_id: alert.agent_id || null,
         agent_name: alert.agent_name,
         source_ip: alert.source_ip,
@@ -729,7 +729,7 @@ async function findThreat(orgId: string, id: string): Promise<Threat | null> {
 
 // GET /api/threats?range=24h|7d|30d
 router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
-    const orgId = tokenOrg(req);
+    const orgId = requestOrg(req);
     const range = typeof req.query.range === 'string' && RANGE_HOURS[req.query.range] ? req.query.range : '7d';
     const checkedAt = new Date().toISOString();
     try {
@@ -753,7 +753,7 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
 });
 
 async function decide(req: AuthRequest, threat: Threat, patch: Partial<Triage>): Promise<'supabase' | 'memory'> {
-    const orgId = tokenOrg(req);
+    const orgId = requestOrg(req);
     const { map } = await readTriage(orgId);
     const prev = map.get(threat.id);
     const next: Triage = {
@@ -773,7 +773,7 @@ async function decide(req: AuthRequest, threat: Threat, patch: Partial<Triage>):
 }
 
 async function withThreat(req: AuthRequest, res: import('express').Response): Promise<Threat | null> {
-    const threat = await findThreat(tokenOrg(req), req.params.id).catch(() => null);
+    const threat = await findThreat(requestOrg(req), req.params.id).catch(() => null);
     if (!threat) res.status(404).json({ success: false, error: 'Threat not found — refresh the list' });
     return threat;
 }
@@ -807,7 +807,7 @@ router.post('/:id/escalate', requirePermission('cases:write'), async (req: AuthR
         severity: threat.severity as CaseSeverity,
         source: 'threat',
         source_id: threat.id,
-        org_id: tokenOrg(req),
+        org_id: requestOrg(req),
         agent_name: threat.assets[0] ?? null,
         source_ip: threat.source_ip,
         rule_id: threat.rule_id,

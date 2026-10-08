@@ -67,8 +67,8 @@ export function SecurityReportCard({ mode }: { mode: 'client' | 'staff' }) {
 
     useEffect(() => {
         let active = true;
-        const q = org ? `?org=${encodeURIComponent(org)}` : '';
-        apiFetch(apiUrl(`/api/client/security-assessment${q}`), { cache: 'no-store' })
+        // The page's ?org= is UI state; the backend takes the selection from X-Org-Id (staff only).
+        apiFetch(apiUrl('/api/client/security-assessment'), { cache: 'no-store', headers: org ? { 'X-Org-Id': org } : undefined })
             .then(async (r) => {
                 const d = await r.json().catch(() => null);
                 if (!active) return;

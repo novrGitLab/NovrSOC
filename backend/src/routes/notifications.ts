@@ -4,7 +4,7 @@ import { getSupabase } from '../services/geoEnrichment';
 import type { AuthRequest } from '../middleware/auth';
 import { sendAlertCommunicationEmail, socNotificationRecipients } from '../services/email';
 import { SEVERITY_MIN_LEVEL } from '../lib/severity';
-import { requirePermission, tokenOrg } from '../lib/permissions';
+import { requirePermission, requestOrg } from '../lib/permissions';
 import { loadOrgContacts, contactAddresses } from '../services/orgContacts';
 
 // GET needs a SecOps token with alerts:read and lists only the caller's organisation's cases.
@@ -72,7 +72,7 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
         const { data, error } = await supabase
             .from('cases')
             .select('id, case_number, title, severity, status, created_at')
-            .eq('org_id', tokenOrg(req))
+            .eq('org_id', requestOrg(req))
             .in('severity', ['high', 'critical'])
             .neq('status', 'resolved')
             .order('created_at', { ascending: false })
@@ -113,7 +113,7 @@ router.post('/send', requirePermission('handover:write'), async (req: AuthReques
     if (!subject || !message) { res.status(400).json({ success: false, error: 'subject and message are required' }); return; }
     if (to.length === 0) { res.status(400).json({ success: false, error: 'no valid recipient address' }); return; }
     if (req.body?.recipient !== 'ciso' && Array.isArray(req.body?.to) && req.body.to.length > 0) {
-        const allowed = contactAddresses(await loadOrgContacts(tokenOrg(req)));
+        const allowed = contactAddresses(await loadOrgContacts(requestOrg(req)));
         const outside = to.filter((addr) => !allowed.has(addr.toLowerCase()));
         if (outside.length > 0) {
             res.status(400).json({ success: false, error: `Not a contact of your organisation: ${outside.join(', ')}` });

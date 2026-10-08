@@ -48,9 +48,10 @@ const realFetch = globalThis.fetch;
 const tok = (role: string, org?: string) =>
     jwt.sign({ sub: randomUUID(), email: `${role}@${org ?? 'none'}.test`, role, ...(org ? { org_id: org } : {}) }, process.env.JWT_SECRET!);
 
-async function call(method: string, path: string, opts: { role?: string; org?: string; body?: unknown } = {}) {
+async function call(method: string, path: string, opts: { role?: string; org?: string; body?: unknown; asOrg?: string } = {}) {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (opts.role) headers.Authorization = `Bearer ${tok(opts.role, opts.org)}`;
+    if (opts.asOrg) headers['X-Org-Id'] = opts.asOrg;
     const r = await realFetch(`${base}${path}`, { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) });
     return { status: r.status, data: await r.json().catch(() => null) };
 }
@@ -254,16 +255,20 @@ test('notifications/send: explicit recipients must be the caller\'s org contacts
     assert.equal(own.data.outcome, 'skipped');
 });
 
-test('security assessment: client users always get their own org; only staff may pick ?org', async () => {
-    assert.equal((await call('GET', `/api/client/security-assessment?org=${B}`)).status, 401);
-    assert.equal((await call('GET', `/api/client/security-assessment?org=${B}`, { role: 'portal_user' })).status, 403);
-    const client = await call('GET', `/api/client/security-assessment?org=${B}`, { role: 'portal_user', org: A });
-    assert.equal(client.status, 200, JSON.stringify(client.data));
-    assert.equal(client.data.org_id, A);
-    assert.deepEqual(client.data.orgs.map((o: Row) => o.slug), [A]);
-    const staff = await call('GET', `/api/client/security-assessment?org=${B}`, { role: 'analyst', org: A });
+test('security assessment: client roles always get their own org; staff pick with X-Org-Id', async () => {
+    const path = '/api/client/security-assessment';
+    assert.equal((await call('GET', path, { asOrg: B })).status, 401);
+    assert.equal((await call('GET', path, { role: 'portal_user', asOrg: B })).status, 403);
+    for (const role of ['portal_user', 'executive']) {
+        const client = await call('GET', `${path}?org=${B}`, { role, org: A, asOrg: B });
+        assert.equal(client.status, 200, JSON.stringify(client.data));
+        assert.equal(client.data.org_id, A, role);
+        assert.deepEqual(client.data.orgs.map((o: Row) => o.slug), [A]);
+    }
+    const staff = await call('GET', path, { role: 'analyst', org: A, asOrg: B });
     assert.equal(staff.data.org_id, B);
     assert.equal(staff.data.orgs.length, 2);
+    assert.equal((await call('GET', `${path}?org=${B}`, { role: 'analyst', org: A })).data.org_id, A, '?org is no longer read');
 });
 
 test('ioc_enrichments: a second org escalating the same IOC does not take over its org_id', async () => {
