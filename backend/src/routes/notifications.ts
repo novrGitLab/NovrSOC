@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { search } from '../lib/wazuh-indexer';
 import { getSupabase } from '../services/geoEnrichment';
-import { requireAuth, type AuthRequest } from '../middleware/auth';
+import type { AuthRequest } from '../middleware/auth';
 import { sendAlertCommunicationEmail, socNotificationRecipients } from '../services/email';
 import { SEVERITY_MIN_LEVEL } from '../lib/severity';
 import { requirePermission, tokenOrg } from '../lib/permissions';
+import { loadOrgContacts, contactAddresses } from '../services/orgContacts';
 
 // GET needs a SecOps token with alerts:read and lists only the caller's organisation's cases.
 // Header.tsx polls it from both the admin app and the client portal; portal tokens can't be
@@ -95,8 +96,9 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
 
 // POST /api/notifications/send { subject, message, severity?, to?, recipient? } — emails the SOC mailbox
 // (or the given addresses). Real send; success is false with the provider's error otherwise.
-// Gated individually: the GET above is shared with the client portal, this is analyst-only.
-router.post('/send', requireAuth, async (req: AuthRequest, res) => {
+// Needs handover:write. Explicit `to` addresses must all be contacts of the caller's own
+// organisation (services/orgContacts.ts) — anything else is refused, so this is not a relay.
+router.post('/send', requirePermission('handover:write'), async (req: AuthRequest, res) => {
     const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim() : '';
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     const severity = typeof req.body?.severity === 'string' && req.body.severity ? req.body.severity : 'informational';
@@ -109,6 +111,14 @@ router.post('/send', requireAuth, async (req: AuthRequest, res) => {
             : socNotificationRecipients();
     if (!subject || !message) { res.status(400).json({ success: false, error: 'subject and message are required' }); return; }
     if (to.length === 0) { res.status(400).json({ success: false, error: 'no valid recipient address' }); return; }
+    if (req.body?.recipient !== 'ciso' && Array.isArray(req.body?.to) && req.body.to.length > 0) {
+        const allowed = contactAddresses(await loadOrgContacts(tokenOrg(req)));
+        const outside = to.filter((addr) => !allowed.has(addr.toLowerCase()));
+        if (outside.length > 0) {
+            res.status(400).json({ success: false, error: `Not a contact of your organisation: ${outside.join(', ')}` });
+            return;
+        }
+    }
     try {
         await sendAlertCommunicationEmail({ to, subject, body: message, severity, sentBy: req.user?.email ?? 'NovrSOC analyst' });
         res.json({ success: true, outcome: 'success', message: `Sent to ${to.join(', ')}` });

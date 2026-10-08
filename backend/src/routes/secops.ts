@@ -7,6 +7,7 @@ import { logAudit } from '../lib/audit';
 import { getSupabase } from '../services/geoEnrichment';
 import { enrichIOC, configuredSources, type IOCType } from '../services/iocEnrichment';
 import { isPrivateAddress } from '../services/emailsec/safeFetch';
+import { requirePermission, tokenOrg } from '../lib/permissions';
 
 const router = Router();
 
@@ -18,7 +19,7 @@ const ANALYST_EMAILS = ['rayne@cybernovr.com', 'karl@cybernovr.com'];
 
 // POST /api/secops/broadcast — Security Ops Management's "Team Communication" tab. Email is the
 // only team channel. `success` reflects whether the email actually went.
-router.post('/broadcast', async (req: AuthRequest, res) => {
+router.post('/broadcast', requirePermission('handover:write'), async (req: AuthRequest, res) => {
     const { message } = req.body as { message?: string };
     if (!message?.trim()) {
         res.status(400).json({ error: 'message required' });
@@ -48,7 +49,7 @@ router.post('/broadcast', async (req: AuthRequest, res) => {
 const HUNT_IOC_TYPES: IOCType[] = ['ip', 'domain', 'hash', 'url'];
 const HUNT_ENRICH_TIMEOUT_MS = 5000;
 
-router.post('/hunting/escalate', async (req: AuthRequest, res) => {
+router.post('/hunting/escalate', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     const { ioc_value, ioc_type, finding, source_alert_id } = req.body as {
         ioc_value?: string; ioc_type?: string; finding?: string; source_alert_id?: string;
     };
@@ -146,7 +147,7 @@ function sendActionResult(req: AuthRequest, res: import('express').Response, act
 }
 
 // POST /api/secops/actions/isolate { endpoint_id, reason? } — endpoint_id is the Wazuh agent id.
-router.post('/actions/isolate', async (req: AuthRequest, res) => {
+router.post('/actions/isolate', requirePermission('response:contain'), async (req: AuthRequest, res) => {
     const endpointId = typeof req.body?.endpoint_id === 'string' ? req.body.endpoint_id.trim() : '';
     if (!endpointId) { res.status(400).json({ success: false, error: 'endpoint_id is required' }); return; }
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined;
@@ -154,7 +155,7 @@ router.post('/actions/isolate', async (req: AuthRequest, res) => {
 });
 
 // POST /api/secops/actions/block-ip { ip, reason }
-router.post('/actions/block-ip', async (req: AuthRequest, res) => {
+router.post('/actions/block-ip', requirePermission('response:contain'), async (req: AuthRequest, res) => {
     const ip = typeof req.body?.ip === 'string' ? req.body.ip.trim() : '';
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
     if (!ip) { res.status(400).json({ success: false, error: 'ip is required' }); return; }

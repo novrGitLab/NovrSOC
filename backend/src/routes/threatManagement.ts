@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, type AuthRequest } from '../middleware/auth';
+import type { AuthRequest } from '../middleware/auth';
 import { search } from '../lib/wazuh-indexer';
 import { sendCriticalAlertEmail } from '../services/email';
 import { createCase, type CaseSeverity } from '../services/cases';
@@ -297,7 +297,7 @@ router.patch('/alerts/:id', requirePermission('cases:write'), (req, res) => {
 // SOAR engine uses, so an alert the engine already cased returns that case instead of a
 // duplicate. Refused while the list is serving demo/mock alerts — a real case must never be
 // opened from a fabricated alert.
-router.post('/alerts/:id/create-incident', requireAuth, async (req: AuthRequest, res) => {
+router.post('/alerts/:id/create-incident', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     const alert = liveAlerts.find((a) => a.id === req.params.id);
     if (!alert) {
         res.status(404).json({ error: 'Alert not found' });
@@ -725,7 +725,7 @@ async function findThreat(orgId: string, id: string): Promise<Threat | null> {
 }
 
 // GET /api/threats?range=24h|7d|30d
-router.get('/', requireAuth, async (req: AuthRequest, res) => {
+router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
     const orgId = req.user?.org_id || 'cybernovr';
     const range = typeof req.query.range === 'string' && RANGE_HOURS[req.query.range] ? req.query.range : '7d';
     const checkedAt = new Date().toISOString();
@@ -777,7 +777,7 @@ async function withThreat(req: AuthRequest, res: import('express').Response): Pr
 
 // POST /api/threats/:id/contain { reason? } — blocks the threat's source IP at the firewall (real
 // action). Marked contained only when the block succeeded; host-only threats have no IP to block.
-router.post('/:id/contain', requireAuth, async (req: AuthRequest, res) => {
+router.post('/:id/contain', requirePermission('response:contain'), async (req: AuthRequest, res) => {
     const threat = await withThreat(req, res);
     if (!threat) return;
     if (!threat.source_ip) {
@@ -795,7 +795,7 @@ router.post('/:id/contain', requireAuth, async (req: AuthRequest, res) => {
 });
 
 // POST /api/threats/:id/escalate — opens a case (real) for the threat; repeat calls return it.
-router.post('/:id/escalate', requireAuth, async (req: AuthRequest, res) => {
+router.post('/:id/escalate', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     const threat = await withThreat(req, res);
     if (!threat) return;
     const result = await createCase({
@@ -822,7 +822,7 @@ router.post('/:id/escalate', requireAuth, async (req: AuthRequest, res) => {
 });
 
 // POST /api/threats/:id/resolve { note? }
-router.post('/:id/resolve', requireAuth, async (req: AuthRequest, res) => {
+router.post('/:id/resolve', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     const threat = await withThreat(req, res);
     if (!threat) return;
     const note = typeof req.body?.note === 'string' ? req.body.note.trim() || null : null;
@@ -831,7 +831,7 @@ router.post('/:id/resolve', requireAuth, async (req: AuthRequest, res) => {
 });
 
 // POST /api/threats/:id/assign { analyst_id } — a team member's email (platform_users).
-router.post('/:id/assign', requireAuth, async (req: AuthRequest, res) => {
+router.post('/:id/assign', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     const threat = await withThreat(req, res);
     if (!threat) return;
     const email = typeof req.body?.analyst_id === 'string' ? req.body.analyst_id.trim().toLowerCase() : '';

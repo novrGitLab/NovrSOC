@@ -3,8 +3,10 @@ import { randomUUID } from 'crypto';
 import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { sendAlertCommunicationEmail } from '../services/email';
-import { DEFAULT_ORG_ID, isUuid, dbErrorMessage } from '../services/cases';
+import { isUuid, dbErrorMessage } from '../services/cases';
+import { loadOrgContacts } from '../services/orgContacts';
 import { logAudit } from '../lib/audit';
+import { requirePermission, tokenOrg } from '../lib/permissions';
 
 // Alert Communication — compose and send an alert email, and the log of what was sent.
 //
@@ -13,9 +15,10 @@ import { logAudit } from '../lib/audit';
 // alert_communications table (backend/sql/2026-09-alert-communications.sql). Until that table
 // exists, entries are kept in memory and the response says so — they are lost on restart.
 //
-// Recipients are resolved here, not trusted from the browser: analysts come from
-// platform_users, client contacts from organisations.contact_email / ciso_email. Only "custom"
-// takes a typed address. Mounted behind requireAuth (index.ts).
+// Recipients are resolved here, not trusted from the browser, and only from the caller's own
+// organisation (services/orgContacts.ts): its active staff from platform_users and its own
+// organisations.contact_email / ciso_email. Only "custom" takes a typed address. Mounted behind
+// requireAuth (index.ts); reads need alerts:read, sending needs handover:write.
 
 const router = Router();
 
@@ -41,36 +44,14 @@ interface LogEntry {
 
 const memoryLog: LogEntry[] = [];
 
-interface Analyst { name: string; email: string; role: string }
-interface ClientContact { org: string; name: string | null; email: string; kind: 'contact' | 'ciso' }
-
-async function loadRecipients(): Promise<{ analysts: Analyst[]; clients: ClientContact[] }> {
-    const supabase = getSupabase();
-    if (!supabase) return { analysts: [], clients: [] };
-    const [users, orgs] = await Promise.all([
-        supabase.from('platform_users').select('email, name, role, status'),
-        supabase.from('organisations').select('name, contact_name, contact_email, ciso_name, ciso_email, is_active'),
-    ]);
-    const analysts = (users.data ?? [])
-        .filter((u) => u.email && (u.status ?? 'active') === 'active' && ['super_admin', 'soc_manager', 'analyst'].includes(u.role))
-        .map((u) => ({ name: u.name || u.email, email: u.email, role: u.role }));
-    const clients: ClientContact[] = [];
-    for (const o of orgs.data ?? []) {
-        if (o.is_active === false) continue;
-        if (o.contact_email) clients.push({ org: o.name, name: o.contact_name, email: o.contact_email, kind: 'contact' });
-        if (o.ciso_email) clients.push({ org: o.name, name: o.ciso_name, email: o.ciso_email, kind: 'ciso' });
-    }
-    return { analysts, clients };
-}
-
 // GET /api/communications/recipients
-router.get('/recipients', async (_req, res) => {
-    res.json(await loadRecipients());
+router.get('/recipients', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
+    res.json(await loadOrgContacts(tokenOrg(req)));
 });
 
 // GET /api/communications?limit= — newest first. source says where the log is kept.
-router.get('/', async (req: AuthRequest, res) => {
-    const orgId = req.user?.org_id || DEFAULT_ORG_ID;
+router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
+    const orgId = tokenOrg(req);
     const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
     const supabase = getSupabase();
     if (supabase) {
@@ -84,9 +65,9 @@ router.get('/', async (req: AuthRequest, res) => {
 
 // POST /api/communications/send
 //   { recipient_type, analyst_email?, client_email?, custom_email?, subject, body, severity, case_id? }
-router.post('/send', async (req: AuthRequest, res) => {
+router.post('/send', requirePermission('handover:write'), async (req: AuthRequest, res) => {
     const b = req.body ?? {};
-    const orgId = req.user?.org_id || DEFAULT_ORG_ID;
+    const orgId = tokenOrg(req);
     const sentBy = req.user?.email || 'NovrSOC analyst';
     const type = b.recipient_type as RecipientType;
     const subject = typeof b.subject === 'string' ? b.subject.trim() : '';
@@ -97,7 +78,7 @@ router.post('/send', async (req: AuthRequest, res) => {
     if (!subject || !body) { res.status(400).json({ success: false, error: 'subject and body are required' }); return; }
     if (!severity) { res.status(400).json({ success: false, error: `severity must be one of ${SEVERITIES.join(', ')}` }); return; }
 
-    const { analysts, clients } = await loadRecipients();
+    const { analysts, clients } = await loadOrgContacts(orgId);
     let recipients: string[] = [];
     if (type === 'all_analysts') recipients = analysts.map((a) => a.email);
     if (type === 'analyst') recipients = analysts.filter((a) => a.email === b.analyst_email).map((a) => a.email);

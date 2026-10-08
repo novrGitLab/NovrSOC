@@ -1,14 +1,14 @@
 import { Router } from 'express';
 import { timingSafeEqual } from 'crypto';
 import type { AuthRequest } from '../middleware/auth';
-import { requireAuth } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { enrichIOC } from '../services/iocEnrichment';
 import { DEFAULT_ORG_ID, startOfTodayWAT, dbErrorMessage } from '../services/cases';
+import { requirePermission, tokenOrg } from '../lib/permissions';
 
 // SOAR reporting + the enrichment endpoint the SOAR engine (infra/soar/soar.py) calls.
 //
-// Reporting routes are requireAuth'd individually. POST /enrich is instead authenticated by a
+// Reporting routes need a SecOps token with alerts:read (lib/permissions.ts). POST /enrich is instead authenticated by a
 // shared secret: the engine runs on the Wazuh manager with no user session. It exists because
 // the engine can't use /api/public/scan — that route is capped at 10 requests an hour per IP,
 // and the engine sends one request per level 7+ alert.
@@ -17,7 +17,7 @@ const router = Router();
 const orgOf = (req: AuthRequest) => req.user?.org_id || DEFAULT_ORG_ID;
 
 // GET /api/soar/stats
-router.get('/stats', requireAuth, async (req: AuthRequest, res) => {
+router.get('/stats', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Case store not configured' }); return; }
     const orgId = orgOf(req);
@@ -77,7 +77,7 @@ interface TimelineRow { case_id: string; action: string; created_at: string }
 // Cases for one tier, each annotated with what the engine actually did, derived from soar_log
 // and the case timeline rather than inferred from the tier. A tier-3 case whose isolation was
 // skipped shows as not isolated, with the logged reason.
-router.get('/cases', requireAuth, async (req: AuthRequest, res) => {
+router.get('/cases', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Case store not configured' }); return; }
     const tier = Number(req.query.tier);
@@ -134,7 +134,7 @@ router.get('/cases', requireAuth, async (req: AuthRequest, res) => {
 });
 
 // GET /api/soar/log?limit= — most recent engine actions, newest first.
-router.get('/log', requireAuth, async (req: AuthRequest, res) => {
+router.get('/log', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Case store not configured' }); return; }
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);

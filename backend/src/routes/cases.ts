@@ -8,12 +8,15 @@ import {
 import { sendEscalationEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients } from '../services/email';
 import { logAudit } from '../lib/audit';
 import { executeStep, isExecutableStep, EXECUTABLE_STEPS } from '../services/responseActions';
+import { requirePermission, hasPermission } from '../lib/permissions';
 
 // Cases API — Supabase-backed.
 //
-// Mounted at /api/cases behind requireAuth (index.ts). Case records carry source IPs, host names
-// and CISO escalations for the whole SOC, so they are analyst-only and the portal page shows a
-// sign-in notice instead.
+// Mounted at /api/cases behind requireAuth (index.ts); every route also checks a SecOps permission
+// (lib/permissions.ts): reads cases:read, changes cases:write, closing cases:close, running a
+// response action response:contain. Executive and portal_user tokens get 403, and a token without
+// an org gets 403 — there is no default organisation. Notes and tasks verify the parent case
+// belongs to the caller's org before writing.
 
 const router = Router();
 
@@ -42,7 +45,7 @@ function noStore(res: Response): boolean {
 //   ?exclude_auto_closed=true (analyst queue)       ?auto_closed=true (SOAR tier-1 report)
 //   ?escalated=true (escalated and unresolved)
 //   ?since=<ISO date>   ?limit (max 200)   ?offset
-router.get('/', async (req: AuthRequest, res) => {
+router.get('/', requirePermission('cases:read'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const supabase = getSupabase()!;
     const orgId = orgOf(req);
@@ -106,7 +109,7 @@ router.get('/', async (req: AuthRequest, res) => {
 });
 
 // POST /api/cases — analyst-created case (dark web hit, playbook-initiated response, …).
-router.post('/', async (req: AuthRequest, res) => {
+router.post('/', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     const body = req.body ?? {};
     const title = typeof body.title === 'string' ? body.title.trim() : '';
     if (!title) { res.status(400).json({ error: 'title is required' }); return; }
@@ -151,7 +154,7 @@ router.post('/', async (req: AuthRequest, res) => {
 });
 
 // GET /api/cases/:id — case with notes, tasks, timeline and IOCs.
-router.get('/:id', async (req: AuthRequest, res) => {
+router.get('/:id', requirePermission('cases:read'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id } = req.params;
     if (!isUuid(id)) { res.status(404).json({ error: 'Case not found' }); return; }
@@ -200,7 +203,7 @@ async function linkedCases(c: CaseRow) {
 
 // POST /api/cases/:id/assign { analyst_id } — analyst_id is a team member's email
 // (platform_users). Their name is stored, as assigned_to has always held names.
-router.post('/:id/assign', async (req: AuthRequest, res) => {
+router.post('/:id/assign', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id } = req.params;
     if (!isUuid(id)) { res.status(404).json({ success: false, error: 'Case not found' }); return; }
@@ -221,7 +224,7 @@ router.post('/:id/assign', async (req: AuthRequest, res) => {
 
 // POST /api/cases/:id/close { resolution_notes } — resolves the case with a required
 // resolution note, recorded as a Decision note and on the timeline.
-router.post('/:id/close', async (req: AuthRequest, res) => {
+router.post('/:id/close', requirePermission('cases:close'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id } = req.params;
     if (!isUuid(id)) { res.status(404).json({ success: false, error: 'Case not found' }); return; }
@@ -247,7 +250,7 @@ router.post('/:id/close', async (req: AuthRequest, res) => {
 });
 
 // PATCH /api/cases/:id — status / assignee / severity.
-router.patch('/:id', async (req: AuthRequest, res) => {
+router.patch('/:id', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id } = req.params;
     if (!isUuid(id)) { res.status(404).json({ error: 'Case not found' }); return; }
@@ -260,6 +263,11 @@ router.patch('/:id', async (req: AuthRequest, res) => {
     if (status !== undefined && !isCaseStatus(status)) { res.status(400).json({ error: `status must be one of open, investigating, contained, resolved` }); return; }
     if (severity !== undefined && !isCaseSeverity(severity)) { res.status(400).json({ error: 'invalid severity' }); return; }
     if (assignee !== undefined && typeof assignee !== 'string') { res.status(400).json({ error: 'assigned_to must be a string' }); return; }
+    // Resolving through PATCH is still a close.
+    if (status === 'resolved' && !hasPermission(req.user?.role, 'cases:close')) {
+        res.status(403).json({ error: 'Insufficient permissions', required: 'cases:close', current: req.user?.role ?? null });
+        return;
+    }
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     const changes: string[] = [];
@@ -292,7 +300,7 @@ router.patch('/:id', async (req: AuthRequest, res) => {
 });
 
 // POST /api/cases/:id/notes — { content | text, type? }
-router.post('/:id/notes', async (req: AuthRequest, res) => {
+router.post('/:id/notes', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id } = req.params;
     if (!isUuid(id)) { res.status(404).json({ error: 'Case not found' }); return; }
@@ -317,7 +325,7 @@ router.post('/:id/notes', async (req: AuthRequest, res) => {
 });
 
 // POST /api/cases/:id/tasks — { title, description? }
-router.post('/:id/tasks', async (req: AuthRequest, res) => {
+router.post('/:id/tasks', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id } = req.params;
     if (!isUuid(id)) { res.status(404).json({ error: 'Case not found' }); return; }
@@ -331,7 +339,7 @@ router.post('/:id/tasks', async (req: AuthRequest, res) => {
 });
 
 // PATCH /api/cases/:id/tasks/:taskId — { status: pending | completed | skipped }
-router.patch('/:id/tasks/:taskId', async (req: AuthRequest, res) => {
+router.patch('/:id/tasks/:taskId', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id, taskId } = req.params;
     if (!isUuid(id) || !isUuid(taskId)) { res.status(404).json({ error: 'Task not found' }); return; }
@@ -358,7 +366,7 @@ router.patch('/:id/tasks/:taskId', async (req: AuthRequest, res) => {
 // Email goes through services/email.ts rather than a direct Resend call: that is Resend first,
 // then SMTP, then SendGrid, and it honours EMAIL_ENABLED. The response reports each channel
 // separately and never claims the CISO was emailed when nothing was sent.
-router.post('/:id/escalate', async (req: AuthRequest, res) => {
+router.post('/:id/escalate', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id } = req.params;
     if (!isUuid(id)) { res.status(404).json({ error: 'Case not found' }); return; }
@@ -408,7 +416,7 @@ router.post('/:id/escalate', async (req: AuthRequest, res) => {
 // case (services/responseActions.ts). The matching task is marked completed ONLY on success;
 // a skipped or failed action leaves it pending with the reason in `result`, so the checklist
 // never shows a containment step as done when nothing happened.
-router.post('/:id/execute-step', async (req: AuthRequest, res) => {
+router.post('/:id/execute-step', requirePermission('response:contain'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id } = req.params;
     if (!isUuid(id)) { res.status(404).json({ error: 'Case not found' }); return; }
@@ -497,7 +505,7 @@ const REMEDIATION: Record<string, string[]> = {
 
 // GET /api/cases/:id/report — Markdown report download. Every section comes from the case; an
 // empty section says so rather than silently disappearing.
-router.get('/:id/report', async (req: AuthRequest, res) => {
+router.get('/:id/report', requirePermission('cases:read'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id } = req.params;
     if (!isUuid(id)) { res.status(404).json({ error: 'Case not found' }); return; }

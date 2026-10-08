@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
-import { requireAuth } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { search } from '../lib/wazuh-indexer';
 import { DEFAULT_ORG_ID } from '../services/cases';
 import { severityFromLevel } from '../lib/severity';
+import { requirePermission, tokenOrg } from '../lib/permissions';
 
 // GET /api/search?q= — the header's global search. Analyst-only (it reads cases).
 //
@@ -29,7 +29,7 @@ const pgSafe = (q: string) => q.replace(/[,()%_*\\"'`]/g, ' ').replace(/\s+/g, '
 
 interface AlertHit { _source?: { rule?: { description?: string; level?: number }; agent?: { name?: string }; timestamp?: string; data?: { srcip?: string } } }
 
-router.get('/', requireAuth, async (req: AuthRequest, res) => {
+router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
     const raw = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : '';
     const q = pgSafe(raw);
     if (q.length < 2) { res.json({ results: [], query: raw, total: 0 }); return; }
