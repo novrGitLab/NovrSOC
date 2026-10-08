@@ -7,7 +7,7 @@
 // a new observation that shares one finds the open alert through them.
 //
 // Cases go through the existing SOC case system (services/cases.ts). createCase() already
-// de-duplicates on (source, source_id), so escalating the same alert twice returns the same case.
+// de-duplicates on (org_id, source, source_id), so escalating the same alert twice returns the same case.
 import type { Db } from './db';
 import { f } from './db';
 import { createCase, addTimeline, isUuid, type CaseSeverity } from '../cases';

@@ -284,11 +284,17 @@ test('ioc_enrichments: a second org escalating the same IOC does not take over i
     assert.ok((rows[0].tags as string[]).includes('analyst-confirmed'), 'enrichment fields are still refreshed');
 });
 
-test('hunt escalate: a second org gets its own case, not the first org\'s', {
-    todo: 'Found, not changed: createCase dedups on (source, source_id) across orgs, backed by a unique constraint — needs a schema change (PHASE_S1_REPORT.md)',
-}, async () => {
+test('hunt escalate: a second org gets a NEW case of its own; the same org still gets its existing case', async () => {
     const body = { ioc_value: '9.9.9.9', ioc_type: 'ip', finding: 'scan' };
     const a = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: A, body });
+    assert.equal(a.status, 200, JSON.stringify(a.data));
+    assert.equal(a.data.created, true);
     const b = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: B, body });
+    assert.equal(b.status, 200, JSON.stringify(b.data));
+    assert.equal(b.data.created, true, 'org B opened its own case');
     assert.notEqual(b.data.case_id, a.data.case_id);
+    assert.equal(db.tables.cases.find((c) => c.id === b.data.case_id)?.org_id, B);
+    const again = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: A, body });
+    assert.equal(again.data.created, false);
+    assert.equal(again.data.case_id, a.data.case_id, 'dedup still works within one org');
 });

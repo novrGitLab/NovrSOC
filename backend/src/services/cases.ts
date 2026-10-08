@@ -3,8 +3,10 @@
 // Two writers create cases: the Python SOAR engine on the Wazuh manager (infra/soar/soar.py,
 // one case per level 7+ alert) and this backend (analyst actions: alert → case, threat hunt,
 // dark web hit, playbook-initiated case). Both let the database assign case_number from
-// case_number_seq, and both key on UNIQUE(source, source_id), so an analyst opening a case
-// from an alert the engine already cased gets the existing case back instead of a duplicate.
+// case_number_seq, and both key on a unique (org_id, source, source_id), so an analyst opening a
+// case from an alert the engine already cased for the same organisation gets the existing case
+// back instead of a duplicate — and another organisation never gets that case, it gets its own
+// (sql/2026-10-08_cases_unique_per_org.sql; before that, the key was (source, source_id) alone).
 //
 // Schema: backend/sql/2026-09-cases-soar.sql.
 import { getSupabase } from './geoEnrichment';
@@ -101,7 +103,8 @@ export interface NewCaseInput {
     severity: CaseSeverity;
     source: string;
     source_id?: string | null;
-    org_id?: string;
+    /** Required: the dedup key is per organisation and there is no default organisation. */
+    org_id: string;
     agent_id?: string | null;
     agent_name?: string | null;
     source_ip?: string | null;
@@ -124,7 +127,8 @@ export async function createCase(input: NewCaseInput, actor: string): Promise<Cr
 
     const findExisting = async (): Promise<CaseRow | null> => {
         if (!input.source_id) return null;
-        const { data } = await supabase.from('cases').select('*').eq('source', input.source).eq('source_id', input.source_id).maybeSingle();
+        const { data } = await supabase.from('cases').select('*')
+            .eq('org_id', input.org_id).eq('source', input.source).eq('source_id', input.source_id).maybeSingle();
         return (data as CaseRow | null) ?? null;
     };
 
@@ -134,7 +138,7 @@ export async function createCase(input: NewCaseInput, actor: string): Promise<Cr
     const { data, error } = await supabase
         .from('cases')
         .insert({
-            org_id: input.org_id ?? DEFAULT_ORG_ID,
+            org_id: input.org_id,
             title: input.title.slice(0, 500),
             description: input.description ?? null,
             severity: input.severity,
@@ -157,8 +161,8 @@ export async function createCase(input: NewCaseInput, actor: string): Promise<Cr
         .single();
 
     if (error) {
-        // 23505 on (source, source_id): the SOAR engine cased the same alert between our
-        // lookup and insert. Return its case rather than failing the analyst's action.
+        // 23505 on (org_id, source, source_id): the SOAR engine cased the same alert for this
+        // organisation between our lookup and insert. Return its case rather than failing the analyst's action.
         if (error.code === '23505') {
             const raced = await findExisting();
             if (raced) return { ok: true, case: raced, created: false };
