@@ -17,7 +17,9 @@ import { requirePermission, requestOrg } from '../lib/permissions';
 //
 // Recipients are resolved here, not trusted from the browser, and only from the caller's own
 // organisation (services/orgContacts.ts): its active staff from platform_users and its own
-// organisations.contact_email / ciso_email. Only "custom" takes a typed address. Mounted behind
+// organisations.contact_email / ciso_email. Only "custom" takes a typed address, and only from
+// soc_manager / super_admin, to a domain listed in COMMS_ALLOWED_DOMAINS (comma-separated, exact
+// domain match; unset = no custom addresses) — anything else is 403. Mounted behind
 // requireAuth (index.ts); reads need alerts:read, sending needs handover:write.
 
 const router = Router();
@@ -25,6 +27,12 @@ const router = Router();
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'informational'] as const;
 type RecipientType = 'client' | 'analyst' | 'all_analysts' | 'custom';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const CUSTOM_RECIPIENT_ROLES = ['soc_manager', 'super_admin'];
+
+/** Domains a custom address may use, from COMMS_ALLOWED_DOMAINS. Read per request so a config change needs no code. */
+function allowedCustomDomains(): Set<string> {
+    return new Set((process.env.COMMS_ALLOWED_DOMAINS ?? '').split(',').map((d) => d.trim().toLowerCase().replace(/^@/, '')).filter(Boolean));
+}
 
 interface LogEntry {
     id: string;
@@ -77,6 +85,18 @@ router.post('/send', requirePermission('handover:write'), async (req: AuthReques
     if (!['client', 'analyst', 'all_analysts', 'custom'].includes(type)) { res.status(400).json({ success: false, error: 'recipient_type must be client, analyst, all_analysts or custom' }); return; }
     if (!subject || !body) { res.status(400).json({ success: false, error: 'subject and body are required' }); return; }
     if (!severity) { res.status(400).json({ success: false, error: `severity must be one of ${SEVERITIES.join(', ')}` }); return; }
+    if (type === 'custom') {
+        if (!CUSTOM_RECIPIENT_ROLES.includes(req.user?.role ?? '')) {
+            res.status(403).json({ success: false, error: 'Only a SOC manager can send to a custom address — pick a recipient on file' });
+            return;
+        }
+        const addr = typeof b.custom_email === 'string' ? b.custom_email.trim() : '';
+        if (!EMAIL_RE.test(addr)) { res.status(400).json({ success: false, error: 'Enter a valid email address' }); return; }
+        if (!allowedCustomDomains().has(addr.split('@').pop()!.toLowerCase())) {
+            res.status(403).json({ success: false, error: 'That email domain is not allowed for custom recipients (COMMS_ALLOWED_DOMAINS)' });
+            return;
+        }
+    }
 
     const { analysts, clients } = await loadOrgContacts(orgId);
     let recipients: string[] = [];

@@ -245,6 +245,38 @@ test('communications: recipients and log are the caller\'s org only; another org
     assert.match(send.data.error, /not on file/);
 });
 
+test('communications custom address: soc_manager/super_admin only, and only to COMMS_ALLOWED_DOMAINS', async () => {
+    const send = (role: string, custom_email: string) => call('POST', '/api/communications/send', {
+        role, org: A, body: { recipient_type: 'custom', custom_email, subject: 's', body: 'b', severity: 'low' },
+    });
+    delete process.env.COMMS_ALLOWED_DOMAINS;
+    assert.equal((await send('soc_manager', 'someone@partner.test')).status, 403, 'unset list allows no custom address');
+    process.env.COMMS_ALLOWED_DOMAINS = ' partner.test, @Other.test ';
+    try {
+        const analyst = await send('analyst', 'someone@partner.test');
+        assert.equal(analyst.status, 403);
+        assert.match(analyst.data.error, /SOC manager/);
+        const outside = await send('soc_manager', 'someone@evil.test');
+        assert.equal(outside.status, 403);
+        assert.match(outside.data.error, /domain is not allowed/);
+        assert.equal((await send('soc_manager', 'someone@sub.partner.test')).status, 403, 'exact domain match only');
+        assert.equal((await send('super_admin', 'not-an-address')).status, 400);
+        for (const [role, addr] of [['soc_manager', 'someone@partner.test'], ['super_admin', 'x@other.test']]) {
+            const ok = await send(role, addr);
+            // Past both checks; the send itself fails only because email is not configured in tests.
+            assert.notEqual(ok.status, 403, `${role} ${addr}`);
+            assert.deepEqual(ok.data.entry.recipients, [addr]);
+        }
+    } finally {
+        delete process.env.COMMS_ALLOWED_DOMAINS;
+    }
+    // Recipients on file stay allowed for analysts, as before.
+    const onFile = await call('POST', '/api/communications/send', {
+        role: 'analyst', org: A, body: { recipient_type: 'client', client_email: 'contact@a.test', subject: 's', body: 'b', severity: 'low' },
+    });
+    assert.deepEqual(onFile.data.entry.recipients, ['contact@a.test']);
+});
+
 test('notifications/send: explicit recipients must be the caller\'s org contacts', async () => {
     const out = await call('POST', '/api/notifications/send', { role: 'analyst', org: A, body: { subject: 's', message: 'm', to: ['contact@b.test'] } });
     assert.equal(out.status, 400);
