@@ -65,3 +65,33 @@ The test creates a tier-2 case. It appears on **Cases**. Its actions are listed 
 | 3 | 13+ | Enrich IOC, block IP, isolate agent (T1486/T1021/T1055/T1210 only), CISO email (plus a SOC email if `SOC_EMAIL` is a different inbox) |
 
 Each action whose configuration is missing is skipped and logged with the reason. An action is logged as SUCCESS only when the remote system accepted it. Isolation is logged as REQUESTED, because the Wazuh manager accepting the command does not confirm that it ran on the endpoint.
+
+## Alert forwarder (durable alert store)
+
+The integration above only sees one alert at a time and keeps no state. The forwarder is a separate service that copies every alert into the NovrSOC alert store (`POST /api/ingest/alerts`), which feeds the Overview and Alerts pages. It runs `soar.py --forward`. It shares no code path with the response actions, so if forwarding fails, responses still run, and if a response fails, forwarding still runs.
+
+How it works:
+
+1. It reads alerts from the Wazuh Indexer (`WAZUH_ALERTS_INDEX`, default `wazuh-alerts-4.x-*`), oldest first, starting from its cursor.
+2. It looks up each agent's groups through the Wazuh API (`GET /agents`, cached for 5 minutes). The backend uses the groups to decide which organisation owns the alert, using the map at `/api/admin/wazuh-group-map`. If an agent is in no mapped group, its alerts are rejected and recorded, not stored.
+3. It sends alerts in batches of up to 100 with `ALERT_INGEST_TOKEN`. Network errors, 429 and 5xx responses are retried with backoff (2, 4, 8, 16 and 32 seconds). If a batch is still refused, the cursor does not move, and the next cycle replays from the same point.
+4. The cursor (`SOAR_CURSOR_FILE`, default `/var/lib/novrsoc/ingest_cursor.json`) records the timestamp of the last alert the backend took. Each cycle also re-reads the last `SOAR_FORWARD_OVERLAP_SECONDS` (default 120), to catch alerts the indexer stored late. Resending is harmless because the backend ignores duplicates.
+5. On its first run, with no cursor, it backfills the last `SOAR_BACKFILL_HOURS` (default 24).
+
+Setup:
+
+1. Set `ALERT_INGEST_TOKEN` to the same random value on Railway and in `/opt/novrsoc/soar.env` (`openssl rand -hex 32`). It must be different from `SOAR_ENGINE_TOKEN`.
+2. In `soar.env`, also set `WAZUH_INDEXER_URL`, `WAZUH_INDEXER_USER` and `WAZUH_INDEXER_PASSWORD`. `WAZUH_VERIFY_TLS` applies to the indexer as well as the Wazuh API.
+3. Install and start the service:
+
+```bash
+cp soar.py /opt/novrsoc/soar.py
+cp novrsoc-forwarder.service /etc/systemd/system/
+touch /var/log/novrsoc-forwarder.log && chown wazuh:wazuh /var/log/novrsoc-forwarder.log
+systemctl daemon-reload && systemctl enable --now novrsoc-forwarder
+journalctl -u novrsoc-forwarder -f
+```
+
+To replay a time range, for example after mapping a group whose alerts were rejected, stop the service, edit `last_forwarded_timestamp` in the cursor file (or delete the file to backfill again), and start it.
+
+Unit tests (no network): `cd infra/soar && python -m unittest test_forwarder -v`.

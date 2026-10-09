@@ -1,0 +1,26 @@
+# NovrSOC alert forwarder: Wazuh Indexer -> NovrSOC /api/ingest/alerts (soar.py --forward).
+# Runs beside the integratord hook; the two share no state, so one failing never blocks the other.
+#   cp novrsoc-forwarder.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now novrsoc-forwarder
+[Unit]
+Description=NovrSOC alert forwarder (Wazuh -> NovrSOC)
+After=network-online.target wazuh-manager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wazuh
+Group=wazuh
+EnvironmentFile=/opt/novrsoc/soar.env
+Environment=SOAR_LOG_FILE=/var/log/novrsoc-forwarder.log
+ExecStart=/usr/bin/python3 /opt/novrsoc/soar.py --forward
+Restart=always
+RestartSec=15
+# The cursor lives in /var/lib/novrsoc (SOAR_CURSOR_FILE); systemd creates it owned by User=.
+StateDirectory=novrsoc
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
