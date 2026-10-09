@@ -21,9 +21,19 @@
 // CDN/WAF is ever put in front, the hop count changes and this must be revisited
 // (docs/audit/PHASE_X1_REPORT.md).
 //
-// Paging: strict (event_time, id) ascending. The opaque cursor carries both values of the last row
-// returned, and the next page starts strictly after that pair, so rows sharing a timestamp are
-// never skipped or repeated.
+// Paging: strictly by alerts.ingest_seq ascending (sql/2026-10-09_alerts_ingest_seq.sql) — the
+// order rows were stored in, not event_time. Alerts are often stored after the fact (forwarder
+// backfill, replay, overlap), and paging by event_time skipped any that arrived with an event_time
+// behind a client's cursor. The opaque cursor carries the last ingest_seq returned; it is never a
+// client-facing filter. event_time stays in each event.
+//
+// Settle window (EXPORT_SETTLE_SECONDS, default 60): a row is served only once its received_at is
+// that old, and a page stops at the first row that isn't. Sequence values are assigned before a
+// transaction commits, so two concurrent inserts can become visible out of order (seq 101 visible,
+// seq 100 still committing). Without the window, a reader could return 101, move its cursor past
+// 100 and never see it. Ingest writes are single short statements, so any row older than the
+// window has committed (or never will); the guarantee holds as long as no insert into alerts takes
+// longer than EXPORT_SETTLE_SECONDS to commit.
 //
 // Every call by an identifiable client is written to export_access_log (no payloads). Logs carry
 // the client id, row counts and cursors only — never a token or event content.
@@ -32,7 +42,6 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import rateLimit from 'express-rate-limit';
 import { timingSafeEqual } from 'crypto';
 import { getSupabase } from '../services/geoEnrichment';
-import { isUuid } from '../services/cases';
 import { hashToken } from './exportClients';
 import { normalizeIp, ipAllowed } from '../lib/cidr';
 import { toExportEvent, EXPORT_SCHEMA_VERSION, type AlertRowForExport } from '../lib/exportEvent';
@@ -42,7 +51,7 @@ export const EXPORT_MAX_LIMIT = 1000;
 export const EXPORT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 export const EXPORT_CLIENT_RATE_PER_MIN = 60;
 const ALLOWED_PARAMS = new Set(['cursor', 'limit', 'format', 'org']);
-const COLUMNS = 'id, org_id, event_time, received_at, severity, rule_id, rule_level, rule_description, agent_id, agent_name, agent_ip, mitre_ids, location, raw, raw_truncated';
+const COLUMNS = 'id, ingest_seq, org_id, event_time, received_at, severity, rule_id, rule_level, rule_description, agent_id, agent_name, agent_ip, mitre_ids, location, raw, raw_truncated';
 
 interface ExportClient {
     id: string;
@@ -120,18 +129,27 @@ const perClient = rateLimit({
     handler: (req, res) => { void refuse(res, 429, { error: 'Rate limit exceeded' }, clientOf(res), normalizeIp(req.ip), null, null); },
 });
 
-// Cursor: base64url JSON { t: event_time exactly as stored, id: uuid } of the last row returned.
-const CURSOR_TIME = /^[\d\-T:.+Z ]{10,40}$/;
-export const encodeCursor = (t: string, id: string) => Buffer.from(JSON.stringify({ t, id })).toString('base64url');
-export function decodeCursor(c: string): { t: string; id: string } | null {
-    if (!/^[A-Za-z0-9_-]{1,512}$/.test(c)) return null;
+// Cursor: base64url JSON { s: "<ingest_seq>" } of the last row returned — opaque to the client.
+// ingest_seq is a bigint, carried as a decimal string so no precision is lost above 2^53.
+const INT8_MAX = 9223372036854775807n;
+export const encodeCursor = (seq: string | number) => Buffer.from(JSON.stringify({ s: String(seq) })).toString('base64url');
+export function decodeCursor(c: string): string | null {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(c)) return null;
     try {
-        const v = JSON.parse(Buffer.from(c, 'base64url').toString('utf8')) as { t?: unknown; id?: unknown };
-        if (typeof v.t !== 'string' || typeof v.id !== 'string' || !CURSOR_TIME.test(v.t) || Number.isNaN(Date.parse(v.t)) || !isUuid(v.id)) return null;
-        return { t: v.t, id: v.id };
+        const v = JSON.parse(Buffer.from(c, 'base64url').toString('utf8')) as { s?: unknown };
+        if (!v || typeof v !== 'object' || Object.keys(v).length !== 1 || typeof v.s !== 'string' || !/^\d{1,19}$/.test(v.s)) return null;
+        const n = BigInt(v.s);
+        return n <= INT8_MAX ? n.toString() : null;
     } catch {
         return null;
     }
+}
+
+/** EXPORT_SETTLE_SECONDS (default 60, 0-3600): how old received_at must be before a row is served. */
+export function settleSeconds(): number {
+    const raw = process.env.EXPORT_SETTLE_SECONDS;
+    if (raw === undefined || raw === '') return 60;
+    return /^\d{1,4}$/.test(raw) && Number(raw) <= 3600 ? Number(raw) : 60;
 }
 
 router.get('/events', authenticate, perClient, async (req: Request, res: Response) => {
@@ -173,24 +191,35 @@ router.get('/events', authenticate, perClient, async (req: Request, res: Respons
 
     const supabase = getSupabase()!;
     let query = supabase.from('alerts').select(COLUMNS).in('org_id', orgs);
-    if (cursor) query = query.or(`event_time.gt."${cursor.t}",and(event_time.eq."${cursor.t}",id.gt.${cursor.id})`);
-    const { data, error } = await query.order('event_time', { ascending: true }).order('id', { ascending: true }).limit(limit + 1);
+    if (cursor) query = query.gt('ingest_seq', cursor);
+    const { data, error } = await query.order('ingest_seq', { ascending: true }).limit(limit + 1);
     if (error) { await refuse(res, 502, { error: 'Export store unavailable' }, client, ip, orgs, rawCursor); return; }
 
-    const rows = (data ?? []) as unknown as AlertRowForExport[];
+    const rows = (data ?? []) as unknown as (AlertRowForExport & { ingest_seq: number | string })[];
+    // Settle window: serve rows in ingest_seq order only up to the first one received less than
+    // settleSeconds() ago. Sequence numbers are taken before commit, so a lower number can become
+    // visible after a higher one; stopping at the first unsettled row (instead of skipping it) keeps
+    // the cursor from moving past a number that may still be committing.
+    const cutoff = Date.now() - settleSeconds() * 1000;
+    const settledCount = (() => {
+        const i = rows.findIndex((r) => r.received_at !== null && r.received_at !== undefined && Date.parse(r.received_at) > cutoff);
+        return i === -1 ? rows.length : i;
+    })();
     const events: Record<string, unknown>[] = [];
+    let lastSeq: string | null = null;
     let bytes = 0;
     let cutBySize = false;
-    for (const row of rows.slice(0, limit)) {
+    for (const row of rows.slice(0, Math.min(limit, settledCount))) {
         const ev = toExportEvent(row, client.redaction_profile);
         const size = Buffer.byteLength(JSON.stringify(ev)) + 1;
         if (events.length > 0 && bytes + size > EXPORT_MAX_RESPONSE_BYTES) { cutBySize = true; break; }
         events.push(ev);
+        lastSeq = String(row.ingest_seq);
         bytes += size;
     }
-    const last = events[events.length - 1] as { event_time: string; id: string } | undefined;
-    const nextCursor = last ? encodeCursor(last.event_time, last.id) : (rawCursor ?? null);
-    const hasMore = rows.length > limit || cutBySize;
+    const nextCursor = lastSeq !== null ? encodeCursor(lastSeq) : (rawCursor ?? null);
+    // More is available right now only if settled rows remain beyond this page.
+    const hasMore = cutBySize || settledCount > limit;
 
     await logAccess(client, { source_ip: ip, org_ids: orgs, row_count: events.length, cursor_from: rawCursor, cursor_to: nextCursor, status_code: 200 });
     const touched = await supabase.from('export_clients').update({ last_used_at: new Date().toISOString() }).eq('id', client.id);

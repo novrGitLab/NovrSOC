@@ -2,7 +2,7 @@
 // fake PostgREST. The app sets `trust proxy` to 1 exactly as index.ts does, so X-Forwarded-For
 // handling is tested the way it runs on Railway. All data here is synthetic.
 process.env.JWT_SECRET = 'export-api-test-secret';
-for (const k of ['EXPORT_API_ENABLED', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY']) delete process.env[k];
+for (const k of ['EXPORT_API_ENABLED', 'EXPORT_SETTLE_SECONDS', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY']) delete process.env[k];
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,7 +13,7 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { requireAuth, requireRole } from '../../middleware/auth';
 import { startFakePostgrest, type FakePostgrest, type Row } from './fakePostgrest';
-import exportApiRouter, { EXPORT_MAX_LIMIT } from '../exportApi';
+import exportApiRouter, { EXPORT_MAX_LIMIT, EXPORT_CLIENT_RATE_PER_MIN, encodeCursor } from '../exportApi';
 import exportClientsRouter from '../exportClients';
 
 const A = 'org-a';
@@ -51,12 +51,18 @@ async function createClient(body: Record<string, unknown>) {
 }
 
 let seq = 0;
+let ingestSeq = 0;
+const SETTLED = '2026-01-01T00:00:00+00:00';
+/** The ingest_seq the next seeded row will get; a cursor of `before(n)` starts just ahead of it. */
+const nextSeq = () => ingestSeq + 1;
+const cursorBefore = (n: number) => encodeCursor(n - 1);
 function seedAlert(org: string, over: Partial<Row> = {}): Row {
     seq++;
+    ingestSeq++;
     const row: Row = {
         id: randomUUID(), org_id: org, wazuh_alert_id: `w-${seq}`,
         event_time: `2026-10-09T08:${String(Math.floor(seq / 60) % 60).padStart(2, '0')}:${String(seq % 60).padStart(2, '0')}.000+00:00`,
-        received_at: '2026-10-09T09:00:00+00:00', severity: 'high', status: 'new',
+        ingest_seq: ingestSeq, received_at: SETTLED, severity: 'high', status: 'new',
         rule_id: '5710', rule_level: 10, rule_description: 'sshd: authentication failed', agent_id: '001', agent_name: 'web-01', agent_ip: '10.0.0.5',
         mitre_ids: ['T1110'], location: '/var/log/auth.log', raw: { data: { srcip: '192.0.2.10' } }, raw_truncated: false, ...over,
     };
@@ -196,7 +202,7 @@ test('cross-org isolation: client for org A never sees org B; org outside scope 
 // ── Parameters ────────────────────────────────────────────────────────────────────────────────
 
 test('only cursor, limit, format, org — once each; malformed values 400', async () => {
-    for (const q of ['?q=x', '?filter=severity:high', '?limit=1&limit=2', '?org[x]=a', '?limit=0', '?limit=-5', '?limit=ten', '?format=xml', '?cursor=@@@', '?cursor=' + Buffer.from('{"t":"x","id":"y"}').toString('base64url'), '?cursor=' + Buffer.from('not json').toString('base64url')]) {
+    for (const q of ['?q=x', '?filter=severity:high', '?limit=1&limit=2', '?org[x]=a', '?limit=0', '?limit=-5', '?limit=ten', '?format=xml', '?cursor=@@@', '?cursor=' + Buffer.from('{"t":"x","id":"y"}').toString('base64url'), '?cursor=' + Buffer.from('not json').toString('base64url'), '?ingest_seq=5', '?event_time=2026']) {
         assert.equal((await exportCall(clientA.token, q)).status, 400, q);
     }
 });
@@ -215,7 +221,7 @@ test('limit: default 500, capped at 1000', async () => {
     assert.equal(rest.data.has_more, false);
 });
 
-test('cursor stability: identical timestamps are neither skipped nor repeated; end of data', async () => {
+test('paging by ingest_seq: identical timestamps, no skips or duplicates; end of data', async () => {
     const t = '2026-10-09T12:00:00.000+00:00';
     const seeded = Array.from({ length: 7 }, () => seedAlert('org-c', { event_time: t }));
     seedAlert('org-c', { event_time: '2026-10-09T11:59:59.000+00:00' });
@@ -235,13 +241,101 @@ test('cursor stability: identical timestamps are neither skipped nor repeated; e
     }
     assert.equal(seen.length, 9);
     assert.equal(new Set(seen.map((e) => e.id)).size, 9, 'no duplicates');
-    const sameTs = seen.filter((e) => e.event_time === t).map((e) => e.id as string);
-    assert.deepEqual(sameTs, seeded.map((s) => s.id as string).sort(), 'all 7 same-timestamp rows, ordered by id');
+    const stored = db.tables.alerts.filter((x) => x.org_id === 'org-c').sort((x, y) => (x.ingest_seq as number) - (y.ingest_seq as number));
+    assert.deepEqual(seen.map((e) => e.id), stored.map((x) => x.id), 'exactly the stored order');
+    assert.ok(seeded.every((x) => seen.some((e) => e.id === x.id)), 'all same-timestamp rows delivered');
+    assert.ok(seen.every((e) => !('ingest_seq' in e)), 'ingest_seq is not a client-facing field');
     assert.equal(pages.at(-1), false);
     const after = await exportCall(c.token, `?limit=2&cursor=${cursor}`);
     assert.deepEqual(after.data.events, []);
     assert.equal(after.data.has_more, false);
     assert.equal(after.data.next_cursor, cursor, 'cursor stays put at the end, so polling resumes there');
+});
+
+test('a late-arriving alert with an old event_time is still delivered, exactly once', async () => {
+    const c = await createClient({ name: 'Late', org_ids: ['org-c'], allowed_cidrs: [ALLOWED_IP] });
+    // Drain everything currently stored for org-c.
+    let cursor: string | null = null;
+    const ids: string[] = [];
+    for (;;) {
+        const r = await exportCall(c.token, `?limit=1000${cursor ? `&cursor=${cursor}` : ''}`);
+        ids.push(...r.data.events.map((e) => e.id as string));
+        cursor = r.data.next_cursor as string;
+        if (!r.data.has_more) break;
+    }
+    // The forwarder replays an old alert after the consumer has passed its event_time.
+    const late = seedAlert('org-c', { event_time: '2020-01-01T00:00:00.000+00:00' });
+    const fresh = seedAlert('org-c', { event_time: '2026-10-09T13:00:00.000+00:00' });
+    const r1 = await exportCall(c.token, `?limit=1&cursor=${cursor}`);
+    assert.deepEqual(r1.data.events.map((e) => e.id), [late.id], 'the late alert comes next, by storage order');
+    assert.equal(r1.data.events[0].event_time, '2020-01-01T00:00:00.000+00:00', 'event_time is kept in the payload');
+    assert.equal(r1.data.has_more, true);
+    const r2 = await exportCall(c.token, `?limit=1&cursor=${r1.data.next_cursor}`);
+    assert.deepEqual(r2.data.events.map((e) => e.id), [fresh.id]);
+    const r3 = await exportCall(c.token, `?cursor=${r2.data.next_cursor}`);
+    assert.deepEqual(r3.data.events, []);
+    const all = [...ids, late.id, fresh.id];
+    assert.equal(new Set(all).size, all.length, 'nothing delivered twice');
+});
+
+test('settle window: rows received too recently are withheld (and block later rows), then delivered', async () => {
+    process.env.EXPORT_SETTLE_SECONDS = '60';
+    try {
+        const c = await createClient({ name: 'Settle', org_ids: ['org-d'], allowed_cidrs: [ALLOWED_IP] });
+        const start = cursorBefore(nextSeq());
+        const settledFirst = seedAlert('org-d');
+        const recent = seedAlert('org-d', { received_at: new Date().toISOString() });
+        const settledAfter = seedAlert('org-d'); // committed "out of order": settled but numbered after `recent`
+
+        const r1 = await exportCall(c.token, `?cursor=${start}`);
+        assert.deepEqual(r1.data.events.map((e) => e.id), [settledFirst.id], 'stops at the first unsettled row');
+        assert.equal(r1.data.has_more, false);
+        const r1b = await exportCall(c.token, `?cursor=${r1.data.next_cursor}`);
+        assert.deepEqual(r1b.data.events, [], 'still withheld');
+        assert.equal(r1b.data.next_cursor, r1.data.next_cursor, 'the cursor does not move past it');
+
+        // Time passes: the row settles.
+        db.tables.alerts.find((x) => x.id === recent.id)!.received_at = new Date(Date.now() - 61_000).toISOString();
+        const r2 = await exportCall(c.token, `?cursor=${r1.data.next_cursor}`);
+        assert.deepEqual(r2.data.events.map((e) => e.id), [recent.id, settledAfter.id], 'delivered in order, once');
+
+        process.env.EXPORT_SETTLE_SECONDS = '0';
+        const instant = seedAlert('org-d', { received_at: new Date().toISOString() });
+        const r3 = await exportCall(c.token, `?cursor=${r2.data.next_cursor}`);
+        assert.deepEqual(r3.data.events.map((e) => e.id), [instant.id], 'EXPORT_SETTLE_SECONDS=0 serves immediately');
+    } finally {
+        delete process.env.EXPORT_SETTLE_SECONDS;
+    }
+});
+
+test('cursor validation: opaque ingest_seq only; malformed is 400', async () => {
+    const bad = [
+        Buffer.from(JSON.stringify({ t: '2026-10-09T08:00:00Z', id: '00000000-0000-4000-8000-000000000000' })).toString('base64url'), // old (event_time, id) form
+        Buffer.from(JSON.stringify({ s: 5 })).toString('base64url'),
+        Buffer.from(JSON.stringify({ s: '-5' })).toString('base64url'),
+        Buffer.from(JSON.stringify({ s: '1.5' })).toString('base64url'),
+        Buffer.from(JSON.stringify({ s: '9223372036854775808' })).toString('base64url'), // > int8
+        Buffer.from(JSON.stringify({ s: '1', extra: 1 })).toString('base64url'),
+        Buffer.from(JSON.stringify({ s: '1);drop table alerts' })).toString('base64url'),
+        Buffer.from('[]').toString('base64url'),
+        'x'.repeat(200),
+        '',
+    ];
+    for (const c of bad) assert.equal((await exportCall(clientA.token, `?cursor=${c}`)).status, 400, c);
+    assert.equal((await exportCall(clientA.token, `?cursor=${encodeCursor('9223372036854775807')}`)).status, 200, 'max int8 is valid');
+    assert.equal((await exportCall(clientA.token, `?cursor=${encodeCursor(0)}`)).status, 200);
+});
+
+test('per-client rate limit: request 61 in a minute is 429 and logged', async () => {
+    const c = await createClient({ name: 'Busy', org_ids: [A], allowed_cidrs: ['203.0.113.0/24'] });
+    const ip = '203.0.113.77'; // its own per-IP bucket, so only the per-client limit is hit
+    for (let i = 0; i < EXPORT_CLIENT_RATE_PER_MIN; i++) assert.equal((await exportCall(c.token, '?limit=1', ip)).status, 200, `call ${i + 1}`);
+    const over = await exportCall(c.token, '?limit=1', ip);
+    assert.equal(over.status, 429);
+    assert.ok(db.tables.export_access_log.some((l) => l.client_id === c.id && l.status_code === 429), '429 is logged');
+    // Another client from the same address is unaffected.
+    const other = await createClient({ name: 'Calm', org_ids: [A], allowed_cidrs: ['203.0.113.0/24'] });
+    assert.equal((await exportCall(other.token, '?limit=1', ip)).status, 200);
 });
 
 test('ndjson: one event per line and a final line with next_cursor', async () => {
@@ -267,14 +361,14 @@ test('envelope and per-event shape', async () => {
 });
 
 test('five-tuple from data.*, Sysmon fallback, nulls for missing or invalid', async () => {
-    const c = await createClient({ name: 'Net', org_ids: ['org-n'].length ? [A] : [A], allowed_cidrs: [ALLOWED_IP] });
+    const c = await createClient({ name: 'Net', org_ids: [A], allowed_cidrs: [ALLOWED_IP] });
+    const start = cursorBefore(nextSeq());
     const full = seedAlert(A, { event_time: '2026-10-10T00:00:01.000+00:00', raw: { data: { srcip: '192.0.2.1', srcport: '51515', dstip: '198.51.100.2', dstport: 443, protocol: 'TCP' } } });
     const sysmon = seedAlert(A, { event_time: '2026-10-10T00:00:02.000+00:00', raw: { data: { win: { eventdata: { sourceIp: '10.1.1.1', sourcePort: '50000', destinationIp: '2001:db8::5', destinationPort: '3389', protocol: 'tcp' } } } } });
     const partial = seedAlert(A, { event_time: '2026-10-10T00:00:03.000+00:00', raw: { data: { srcip: '-', srcport: '99999', dstip: 'example.com', protocol: 'tcp; rm -rf /' } } });
     const noData = seedAlert(A, { event_time: '2026-10-10T00:00:04.000+00:00', raw: { full_log: 'x' } });
     const truncated = seedAlert(A, { event_time: '2026-10-10T00:00:05.000+00:00', raw: { truncated: true, preview: '{"data":{"srcip":"1.2.3.4"' }, raw_truncated: true });
-    const cursor = Buffer.from(JSON.stringify({ t: '2026-10-10T00:00:00.000+00:00', id: '00000000-0000-4000-8000-000000000000' })).toString('base64url');
-    const r = await exportCall(c.token, `?cursor=${cursor}`);
+    const r = await exportCall(c.token, `?cursor=${start}`);
     const byId = Object.fromEntries(r.data.events.map((e) => [e.id, e.network]));
     assert.deepEqual(byId[full.id as string], { src_ip: '192.0.2.1', src_port: 51515, dst_ip: '198.51.100.2', dst_port: 443, protocol: 'TCP' });
     assert.deepEqual(byId[sysmon.id as string], { src_ip: '10.1.1.1', src_port: 50000, dst_ip: '2001:db8::5', dst_port: 3389, protocol: 'tcp' });
@@ -286,8 +380,8 @@ test('five-tuple from data.*, Sysmon fallback, nulls for missing or invalid', as
 
 test('raw only per profile, always redacted', async () => {
     const SECRET = 'synthetic-Secret-123';
+    const cur = cursorBefore(nextSeq());
     const row = seedAlert(A, { event_time: '2026-10-11T00:00:00.000+00:00', raw: { full_log: `login password=${SECRET} Authorization: Bearer ${SECRET}`, data: { api_key: SECRET } }, rule_description: `token=${SECRET}` });
-    const cur = Buffer.from(JSON.stringify({ t: '2026-10-10T23:59:59.000+00:00', id: '00000000-0000-4000-8000-000000000000' })).toString('base64url');
     const std = await exportCall(clientA.token, `?cursor=${cur}`);
     const ev = std.data.events.find((e) => e.id === row.id)!;
     assert.ok(ev.raw, 'standard profile includes raw');
