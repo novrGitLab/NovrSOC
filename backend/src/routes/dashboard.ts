@@ -16,6 +16,7 @@ import {
     setLastCollectorResult,
     type CollectedAdvisory,
 } from '../services/nigerianIntelCollector';
+import { verdictFromScore } from '../lib/severity';
 
 const router = Router();
 
@@ -65,7 +66,7 @@ async function getSupplementalNigeriaData(): Promise<SupplementalNigeriaData> {
                 const cidr = mask >= 24 ? topPrefix : `${addr}/24`;
                 const reported = await checkBlock(cidr, 14);
                 return reported
-                    .filter((r) => r.abuseConfidenceScore >= 50)
+                    .filter((r) => verdictFromScore(r.abuseConfidenceScore) !== 'clean')
                     .map((r) => ({ ...r, isp: info.holder, asn }));
             } catch {
                 return [];

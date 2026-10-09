@@ -7,6 +7,7 @@
 import type { Resemblance } from './similarity';
 import type { WebsiteEvidence } from './siteInspect';
 import { emailsecConfig } from './config';
+import { severityFromScore } from '../../lib/severity';
 
 export type Risk = 'informational' | 'low' | 'medium' | 'high' | 'critical';
 export const RISK_ORDER: Risk[] = ['informational', 'low', 'medium', 'high', 'critical'];
@@ -50,7 +51,7 @@ export function assessPhishingRisk(i: RiskInput): { risk: Risk; score: number; s
     }
 
     const score = s.reduce((a, x) => a + x.points, 0);
-    let risk: Risk = score >= 75 ? 'critical' : score >= 50 ? 'high' : score >= 30 ? 'medium' : score > 0 ? 'low' : 'informational';
+    let risk: Risk = score > 0 ? severityFromScore(score) : 'informational';
     // Guard rails: an intelligence listing is at least high; similarity with no behaviour caps at low.
     if (i.ti_hits.length && !riskAtLeast(risk, 'high')) risk = 'high';
     const behaviour = s.some((x) => ['login_form', 'brand_on_page', 'external_form', 'threat_intel', 'credential_harvest', 'young_domain'].includes(x.id));

@@ -1,6 +1,7 @@
 // Shapes returned by the backend's /api/cnii routes (backend/src/routes/cnii.ts), plus the
 // client helpers every CNII page uses to call them.
 import { apiUrl, apiFetch } from './api';
+import { verdictFromScore } from './severity';
 
 export interface CniiAsset {
   id: string;
@@ -116,4 +117,4 @@ export const SEV_BADGE: Record<string, string> = {
   low:      'bg-gray-50 text-[#7A8099] border-gray-200',
 };
 
-export const riskColor = (score: number) => (score >= 75 ? '#CC2B2B' : score >= 50 ? '#F59E0B' : '#10B981');
+export const riskColor = (score: number) => ({ malicious: '#CC2B2B', suspicious: '#F59E0B', clean: '#10B981' } as const)[verdictFromScore(score)];

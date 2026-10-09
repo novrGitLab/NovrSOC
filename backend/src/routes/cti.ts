@@ -3,6 +3,7 @@ import { enrichIOC, type IOCType } from '../services/iocEnrichment';
 import { circlGetPulses } from '../services/circl';
 import { getSupabase } from '../services/geoEnrichment';
 import { checkLeakIX, isConfigured as leakixConfigured } from '../services/leakix';
+import { verdictFromScore } from '../lib/severity';
 
 const router = Router();
 
@@ -135,8 +136,8 @@ router.get('/stats', async (_req, res) => {
 
         res.json({
             total: iocs.length,
-            malicious: iocs.filter((i) => i.risk_score >= 70).length,
-            suspicious: iocs.filter((i) => i.risk_score >= 30 && i.risk_score < 70).length,
+            malicious: iocs.filter((i) => verdictFromScore(i.risk_score) === 'malicious').length,
+            suspicious: iocs.filter((i) => verdictFromScore(i.risk_score) === 'suspicious').length,
             clean: iocs.filter((i) => i.risk_score < 30).length,
         });
     } catch (err) {

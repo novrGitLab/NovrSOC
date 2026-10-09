@@ -269,11 +269,12 @@ test('OpenCTI lookup parses relationships in both directions and exact indicator
             { node: { id: 'ind4', name: ip, confidence: 90, revoked: true } },                            // revoked
         ] },
     });
+    // Severity from confidence uses the shared score bands (lib/severity.ts: 90/70/30).
     assert.deepEqual(intel.map((i) => [i.description, i.severity]), [
-        ['related-to Cobalt Strike (Malware)', 'high'],
-        ['communicates-with Emotet (Malware)', 'low'],
-        ['uses T1566 Phishing (Attack-Pattern)', 'medium'],
-        ['Indicator: 41.203.64.1 [malicious-activity]', 'critical'],
+        ['related-to Cobalt Strike (Malware)', 'medium'],   // 65
+        ['communicates-with Emotet (Malware)', 'medium'],   // 30
+        ['uses T1566 Phishing (Attack-Pattern)', 'medium'], // 50
+        ['Indicator: 41.203.64.1 [malicious-activity]', 'high'], // 85
         ["Indicator: x", 'medium'],
     ]);
     assert.equal(severityFromConfidence(undefined), 'low');

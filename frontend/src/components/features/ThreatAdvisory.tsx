@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle, Shield, RefreshCw, ExternalLink, Clock } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
+import { severityFromCvss } from '@/lib/severity';
 
 interface CVESummary {
     id: string;
@@ -58,10 +59,10 @@ const TABS = [
 type Tab = (typeof TABS)[number]['id'];
 
 function cvssColor(score: number): string {
-    return score >= 9.0 ? 'text-red-500' : score >= 7.0 ? 'text-red-500' : score >= 4.0 ? 'text-amber' : 'text-blue';
+    return ({ critical: 'text-red-500', high: 'text-red-500', medium: 'text-amber', low: 'text-blue' } as const)[severityFromCvss(score)];
 }
 function cvssBarColor(score: number): string {
-    return score >= 9.0 ? 'bg-red-500' : score >= 7.0 ? 'bg-red-500' : score >= 4.0 ? 'bg-amber' : 'bg-blue';
+    return ({ critical: 'bg-red-500', high: 'bg-red-500', medium: 'bg-amber', low: 'bg-blue' } as const)[severityFromCvss(score)];
 }
 
 export function ThreatAdvisory() {
