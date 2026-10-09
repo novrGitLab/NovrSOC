@@ -22,7 +22,7 @@ import {
     Mail, MessageSquare, ShieldAlert, Activity, Zap, Siren,
     HardDrive, BarChart, CreditCard, Settings, BookOpen, FileText, ScrollText,
     ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor,
-    Droplets, Wifi, HeartPulse, GraduationCap, Swords, Truck, Wheat, Factory, Mountain,
+    Droplets, Wifi, HeartPulse, GraduationCap, Swords, Truck, Wheat, Factory, Mountain, KeyRound,
     type LucideIcon,
 } from 'lucide-react';
 import type { NavGroup, NavItem, NavRole } from '@/components/layout/Sidebar';
@@ -180,6 +180,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'billing', label: 'Billing', href: '/admin/settings/billing', domain: 'settings', status: 'PARTIAL', roles: SUPER_ADMIN, icon: CreditCard },
             { id: 'analytics', label: 'Analytics', href: '/admin/settings/analytics', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: BarChart },
             { id: 'audit-log', label: 'Audit Log', href: '/admin/settings/audit', domain: 'settings', status: 'PARTIAL', roles: SUPER_ADMIN, icon: ScrollText },
+            { id: 'export-clients', label: 'Export Clients', href: '/admin/settings/export-clients', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: KeyRound },
             { id: 'platform-health', label: 'Platform Health', href: '/admin/settings/health', domain: 'settings', status: 'WORKING', roles: MANAGER_ONLY, icon: Activity },
         ],
     },

@@ -5,6 +5,8 @@
 //   POST   /                 { name, org_ids[], allowed_cidrs[], redaction_profile? } -> client + token (shown once)
 //   POST   /:id/rotate       new token (shown once); the old one stops working immediately
 //   POST   /:id/disable | /:id/enable
+//   PATCH  /:id              { name?, allowed_cidrs? } — same validation as create (phase X2)
+//   GET    /:id/access-log   recent export_access_log rows for this client (phase X2)
 //
 // Tokens are 32 random bytes (base64url, "nsx_" prefix so secret scanners can spot them). Only the
 // SHA-256 hex digest is stored; the plaintext exists in exactly one HTTP response.
@@ -36,6 +38,20 @@ const CreateBody = z.object({
     redaction_profile: z.enum(REDACTION_PROFILES).optional(),
 });
 
+// Only name and allowed_cidrs can change after creation; org scope, profile and the token can't
+// (rotate replaces the token). Unknown fields are refused rather than ignored.
+const PatchBody = z.object({
+    name: CreateBody.shape.name.optional(),
+    allowed_cidrs: CreateBody.shape.allowed_cidrs.optional(),
+}).strict().refine((b) => b.name !== undefined || b.allowed_cidrs !== undefined, { message: 'nothing to update' });
+
+/** Unique, trimmed CIDRs, or the list of invalid ones (/0 is invalid). */
+function checkCidrs(input: string[]): { ok: true; cidrs: string[] } | { ok: false; bad: string[] } {
+    const cidrs = [...new Set(input)];
+    const bad = cidrs.filter((c) => !parseCidr(c));
+    return bad.length ? { ok: false, bad } : { ok: true, cidrs };
+}
+
 function noStore(res: Response): boolean {
     if (getSupabase()) return false;
     res.status(503).json({ error: 'Database not configured' });
@@ -65,9 +81,9 @@ router.post('/', async (req: AuthRequest, res) => {
     }
     const { name, redaction_profile } = parsed.data;
     const orgIds = [...new Set(parsed.data.org_ids)];
-    const cidrs = [...new Set(parsed.data.allowed_cidrs)];
-    const badCidr = cidrs.filter((c) => !parseCidr(c));
-    if (badCidr.length) { res.status(400).json({ error: `Invalid CIDR (or /0): ${badCidr.join(', ')}` }); return; }
+    const checked = checkCidrs(parsed.data.allowed_cidrs);
+    if (!checked.ok) { res.status(400).json({ error: `Invalid CIDR (or /0): ${checked.bad.join(', ')}` }); return; }
+    const cidrs = checked.cidrs;
 
     const supabase = getSupabase()!;
     const { data: orgs, error: orgErr } = await supabase.from('organisations').select('slug').in('slug', orgIds);
@@ -103,5 +119,39 @@ router.post('/:id/rotate', (req: AuthRequest, res) => {
 });
 router.post('/:id/disable', (req: AuthRequest, res) => { void setFields(req, res, { enabled: false }, 'EXPORT_CLIENT_DISABLED', 'disabled'); });
 router.post('/:id/enable', (req: AuthRequest, res) => { void setFields(req, res, { enabled: true }, 'EXPORT_CLIENT_ENABLED', 'enabled'); });
+
+router.patch('/:id', async (req: AuthRequest, res) => {
+    if (noStore(res)) return;
+    const { id } = req.params;
+    if (!isUuid(id)) { res.status(404).json({ error: 'Export client not found' }); return; }
+    const parsed = PatchBody.safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ error: 'Body must be { name?, allowed_cidrs?: [≥1 CIDR] } with at least one of them; nothing else can be changed' });
+        return;
+    }
+    const fields: Record<string, unknown> = {};
+    const changes: string[] = [];
+    if (parsed.data.name !== undefined) { fields.name = parsed.data.name; changes.push(`name=${parsed.data.name}`); }
+    if (parsed.data.allowed_cidrs !== undefined) {
+        const checked = checkCidrs(parsed.data.allowed_cidrs);
+        if (!checked.ok) { res.status(400).json({ error: `Invalid CIDR (or /0): ${checked.bad.join(', ')}` }); return; }
+        fields.allowed_cidrs = checked.cidrs;
+        changes.push(`cidrs=${checked.cidrs.join(',')}`);
+    }
+    await setFields(req, res, fields, 'EXPORT_CLIENT_UPDATED', changes.join(' '));
+});
+
+// GET /:id/access-log?limit=20 (max 100) — newest first. No payloads exist to return.
+router.get('/:id/access-log', async (req, res) => {
+    if (noStore(res)) return;
+    const { id } = req.params;
+    if (!isUuid(id)) { res.status(404).json({ error: 'Export client not found' }); return; }
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const { data, error } = await getSupabase()!.from('export_access_log')
+        .select('at, source_ip, org_ids, row_count, cursor_from, cursor_to, status_code')
+        .eq('client_id', id).order('at', { ascending: false }).limit(limit);
+    if (error) { res.status(502).json({ error: dbErrorMessage(error) }); return; }
+    res.json({ entries: data ?? [] });
+});
 
 export default router;
