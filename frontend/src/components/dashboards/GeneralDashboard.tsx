@@ -8,10 +8,11 @@ import {
 } from 'lucide-react';
 import { KpiCard, type KpiCardProps } from '../shared/KpiCard';
 import { ChartWrapper } from '../shared/ChartWrapper';
-import { getPortalContext } from '@/lib/portal-context';
 import { GlobalThreatMap } from '../geo/GlobalThreatMap';
 import { NigeriaThreatMap } from '../geo/NigeriaThreatMap';
 import { apiUrl, apiFetch } from '@/lib/api';
+import { fetchAlertStats, loadJson, watTime, type AlertStats } from '@/lib/alerts';
+import { AlertFeedStatus } from '@/components/shared/AlertFeedStatus';
 
 const Card = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
     <div className={`bg-card border border-border rounded-xl overflow-hidden shadow-sm ${className}`}>
@@ -309,48 +310,36 @@ function ComplianceWidget({ frameworks, loading }: { frameworks: FrameworkScore[
     );
 }
 
-/* ── Recent Alerts Feed (Row 5, full width) — real /api/threats/alerts ── */
-interface FeedAlert { id: string; severity: string; rule_description: string; agent_name: string; source_ip: string | null; detected_at: string }
+/* ── Recent Alerts Feed (Row 5, full width) — stored alerts, GET /api/alerts (phase R2) ── */
+interface FeedAlert { id: string; severity: string; rule_description: string | null; agent_name: string | null; agent_ip: string | null; event_time: string }
 const FEED_SEV_STYLE: Record<string, string> = {
     critical: 'bg-red text-white', high: 'bg-orange/10 text-orange',
     medium: 'bg-amber/10 text-amber', low: 'bg-card-muted text-foreground-muted',
 };
 
-function AlertsFeed({ alerts, source, loading }: { alerts: FeedAlert[]; source: 'wazuh' | 'error' | null; loading: boolean }) {
+function AlertsFeed({ alerts, failure, loading }: { alerts: FeedAlert[]; failure: string | null; loading: boolean }) {
     return (
         <Card>
             <div className="p-5">
                 <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-3">
-                        <h3 className="font-bold text-sm text-foreground">Live Alert Feed</h3>
-                        {source === 'wazuh' && (
-                            <div className="flex items-center gap-1.5 bg-green/10 border border-green/30 rounded-full px-2.5 py-1">
-                                <span className="relative flex h-1.5 w-1.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green opacity-60" /><span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-green" /></span>
-                                <span className="text-[10px] font-bold text-green">LIVE</span>
-                            </div>
-                        )}
-                        {source === 'error' && (
-                            <div className="flex items-center gap-1.5 bg-red-500/10 border border-red-500/30 rounded-full px-2.5 py-1">
-                                <div className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                                <span className="text-[10px] font-bold text-red-500">WAZUH UNREACHABLE</span>
-                            </div>
-                        )}
+                        <h3 className="font-bold text-sm text-foreground">Recent Alerts</h3>
                     </div>
                     <Link href="/admin/secops/alerts" className="text-xs text-purple font-medium hover:underline">View all alerts →</Link>
                 </div>
 
                 {loading ? (
                     <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-8 bg-card-muted rounded animate-pulse" />)}</div>
-                ) : source === 'error' ? (
-                    <p className="text-xs text-red-500 text-center py-8">Alerts unavailable — the Wazuh indexer did not answer.</p>
+                ) : failure ? (
+                    <p className="text-xs text-red-500 text-center py-8">{failure}</p>
                 ) : alerts.length === 0 ? (
-                    <p className="text-xs text-foreground-muted text-center py-8">No alerts at this time.</p>
+                    <p className="text-xs text-foreground-muted text-center py-8">No data — no alerts stored for this organisation.</p>
                 ) : (
                     <div className="overflow-x-auto scrollbar-thin">
                         <table className="w-full text-left">
                             <thead>
                                 <tr className="bg-grey-800">
-                                    {['Time', 'Severity', 'Alert', 'Agent', 'Source IP', ''].map((h) => (
+                                    {['Time', 'Severity', 'Alert', 'Agent', 'Agent IP', ''].map((h) => (
                                         <th key={h} className="px-4 py-2.5 text-[10px] font-semibold text-white uppercase tracking-widest whitespace-nowrap">{h}</th>
                                     ))}
                                 </tr>
@@ -358,11 +347,11 @@ function AlertsFeed({ alerts, source, loading }: { alerts: FeedAlert[]; source: 
                             <tbody className="divide-y divide-border text-xs">
                                 {alerts.slice(0, 10).map((a) => (
                                     <tr key={a.id} className="hover:bg-card-muted transition-colors">
-                                        <td className="px-4 py-3 text-foreground-muted font-mono whitespace-nowrap">{a.detected_at}</td>
+                                        <td className="px-4 py-3 text-foreground-muted font-mono whitespace-nowrap">{watTime(a.event_time)}</td>
                                         <td className="px-4 py-3"><span className={`text-[10px] font-bold px-2 py-1 rounded-full ${FEED_SEV_STYLE[a.severity] ?? 'bg-card-muted text-foreground-muted'}`}>{a.severity?.toUpperCase()}</span></td>
-                                        <td className="px-4 py-3 text-foreground font-medium max-w-xs truncate">{a.rule_description}</td>
-                                        <td className="px-4 py-3 text-foreground-muted whitespace-nowrap">{a.agent_name}</td>
-                                        <td className="px-4 py-3 text-foreground font-mono whitespace-nowrap">{a.source_ip || '—'}</td>
+                                        <td className="px-4 py-3 text-foreground font-medium max-w-xs truncate">{a.rule_description ?? '—'}</td>
+                                        <td className="px-4 py-3 text-foreground-muted whitespace-nowrap">{a.agent_name ?? '—'}</td>
+                                        <td className="px-4 py-3 text-foreground font-mono whitespace-nowrap">{a.agent_ip || '—'}</td>
                                         <td className="px-4 py-3 whitespace-nowrap"><Link href="/admin/secops/alerts" className="text-[10px] text-purple font-medium hover:underline">Investigate</Link></td>
                                     </tr>
                                 ))}
@@ -467,8 +456,8 @@ const OnboardedClientsWidget = ({ clients, loading }: { clients: OnboardedClient
 export const GeneralDashboard = () => {
     const [wazuhStatus, setWazuhStatus] = useState<{ connected: boolean; agent_count: number; active_agents: number; disconnected_agents: number } | null>(null);
     const [platformHealth, setPlatformHealth] = useState<{ overall: string; services: Array<{ name: string; status: string; latency_ms: number }> } | null>(null);
-    const [criticalAlertsCount, setCriticalAlertsCount] = useState<number | null>(null);
-    const [openIncidentsCount, setOpenIncidentsCount] = useState<number | null>(null);
+    const [alertStats, setAlertStats] = useState<AlertStats | null>(null);
+    const [alertsState, setAlertsState] = useState<{ loaded: boolean; notConnected: boolean; error: string | null }>({ loaded: false, notConnected: false, error: null });
     const [incidentKpis, setIncidentKpis] = useState<{ total: number; critical: number } | null>(null);
     const [incidentQueue, setIncidentQueue] = useState<QueueIncident[] | null>(null);
     const [incidentsLoading, setIncidentsLoading] = useState(true);
@@ -478,7 +467,7 @@ export const GeneralDashboard = () => {
     const [frameworks, setFrameworks] = useState<FrameworkScore[] | null>(null);
     const [frameworksLoading, setFrameworksLoading] = useState(true);
     const [feedAlerts, setFeedAlerts] = useState<FeedAlert[]>([]);
-    const [feedSource, setFeedSource] = useState<'wazuh' | 'error' | null>(null);
+    const [feedFailure, setFeedFailure] = useState<string | null>(null);
     const [feedLoading, setFeedLoading] = useState(true);
     const [customerCount, setCustomerCount] = useState<number | null>(null);
 
@@ -496,17 +485,13 @@ export const GeneralDashboard = () => {
             .catch(() => setPlatformHealth({ overall: 'unknown', services: [] }));
     }, []);
 
+    // Alert counts come from the stored, org-scoped alert table (phase R2). A failure leaves them
+    // null, shown as "—" with the reason — never 0.
     useEffect(() => {
-        const group = getPortalContext().wazuhGroup;
-        const params = new URLSearchParams({ minLevel: '7', range: '24h' });
-        if (group) params.set('group', group);
-        apiFetch(apiUrl(`/api/wazuh/alerts-indexer?${params.toString()}`), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => r.json())
-            .then(data => {
-                setCriticalAlertsCount(typeof data?.criticalCount === 'number' ? data.criticalCount : 0);
-                setOpenIncidentsCount(typeof data?.openIncidentsCount === 'number' ? data.openIncidentsCount : 0);
-            })
-            .catch(() => { setCriticalAlertsCount(0); setOpenIncidentsCount(0); });
+        void fetchAlertStats('24h').then((r) => {
+            setAlertStats(r.ok ? r.data : null);
+            setAlertsState({ loaded: true, notConnected: !r.ok && r.notConnected, error: r.ok ? null : r.error });
+        });
     }, []);
 
     useEffect(() => {
@@ -557,14 +542,11 @@ export const GeneralDashboard = () => {
     }, []);
 
     useEffect(() => {
-        apiFetch(apiUrl('/api/threats/alerts?limit=10'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => r.json())
-            .then(data => {
-                setFeedAlerts(Array.isArray(data?.alerts) ? data.alerts : []);
-                setFeedSource(data?.source === 'wazuh' ? 'wazuh' : 'error');
-            })
-            .catch(() => { setFeedAlerts([]); setFeedSource('error'); })
-            .finally(() => setFeedLoading(false));
+        void loadJson<{ alerts: FeedAlert[] }>('/api/alerts?limit=10').then((r) => {
+            setFeedAlerts(r.ok ? r.data.alerts : []);
+            setFeedFailure(r.ok ? null : r.notConnected ? 'Not connected — the alert store is unavailable.' : `Alerts unavailable — ${r.error}`);
+            setFeedLoading(false);
+        });
     }, []);
 
     const [clients, setClients] = useState<OnboardedClient[] | null>(null);
@@ -600,6 +582,10 @@ export const GeneralDashboard = () => {
     const platformHealthPct = platformHealth?.overall === 'operational' ? '100%' : platformHealth?.overall === 'degraded' ? `${Math.round((servicesUp / Math.max(servicesTotal, 1)) * 100)}%` : '0%';
     const platformHealthType: KpiCardProps['type'] = platformHealth?.overall === 'operational' ? 'green' : platformHealth?.overall === 'degraded' ? 'orange' : 'red';
 
+    const criticalAlertsCount = alertStats ? alertStats.by_severity.critical : null;
+    const level7PlusCount = alertStats ? alertStats.by_severity.critical + alertStats.by_severity.high + alertStats.by_severity.medium : null;
+    const alertsUnavailable = !alertsState.loaded ? 'checking…' : alertsState.notConnected ? 'not connected' : 'unavailable';
+
     const kpiCards: KpiCardProps[] = [
         // Registered / online / offline, from /api/wazuh/status. When the manager can't be reached
         // the card says so instead of showing 0 agents, which would read as "nothing monitored".
@@ -612,8 +598,8 @@ export const GeneralDashboard = () => {
                 : 'Wazuh manager unreachable',
         },
         { label: 'Open Cases', value: String(incidentKpis?.total ?? 0), trend: '', type: 'orange', icon: Siren, subValue: `${incidentKpis?.critical ?? 0} critical` },
-        { label: 'Critical Alerts', value: criticalAlertsCount !== null ? String(criticalAlertsCount) : '0', trend: '', type: 'red', icon: ShieldAlert, subValue: 'last 24 hours' },
-        { label: 'Alerts Level 7+', value: openIncidentsCount !== null ? String(openIncidentsCount) : '0', trend: '', type: 'orange', icon: Shield, subValue: 'last 24 hours' },
+        { label: 'Critical Alerts', value: criticalAlertsCount !== null ? String(criticalAlertsCount) : '—', trend: '', type: 'red', icon: ShieldAlert, subValue: alertStats ? 'last 24 hours' : alertsUnavailable },
+        { label: 'Alerts Level 7+', value: level7PlusCount !== null ? String(level7PlusCount) : '—', trend: '', type: 'orange', icon: Shield, subValue: alertStats ? 'last 24 hours' : alertsUnavailable },
         { label: 'Clients Protected', value: customerCount !== null ? String(customerCount) : '0', trend: '', type: 'blue', icon: Building2, subValue: 'organisations' },
         { label: 'Mean Time to Detect', value: '—', trend: '', type: 'purple', icon: Timer, subValue: 'no data yet' },
         { label: 'Mean Time to Respond', value: '—', trend: '', type: 'blue', icon: Zap, subValue: 'no data yet' },
@@ -627,10 +613,12 @@ export const GeneralDashboard = () => {
                 <div>
                     <p className="text-xs text-foreground-muted">{new Date().toLocaleString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Lagos' })} WAT</p>
                 </div>
-                <Link href="/admin/secops/threats" className="flex items-center gap-2 border border-border rounded-lg px-3 py-2 text-xs font-bold text-foreground-muted hover:text-foreground hover:border-grey-300 transition-colors">
-                    <Bell size={14} /> {criticalAlertsCount ?? 0} critical
+                <Link href="/admin/secops/alerts" className="flex items-center gap-2 border border-border rounded-lg px-3 py-2 text-xs font-bold text-foreground-muted hover:text-foreground hover:border-grey-300 transition-colors">
+                    <Bell size={14} /> {criticalAlertsCount ?? '—'} critical
                 </Link>
             </div>
+
+            <AlertFeedStatus loaded={alertsState.loaded} notConnected={alertsState.notConnected} error={alertsState.error} lastReceivedAt={alertStats?.last_received_at ?? null} />
 
 
             {/* Row 1: KPI cards */}
@@ -660,7 +648,7 @@ export const GeneralDashboard = () => {
             </div>
 
             {/* Row 5: Recent alerts feed */}
-            <AlertsFeed alerts={feedAlerts} source={feedSource} loading={feedLoading} />
+            <AlertsFeed alerts={feedAlerts} failure={feedFailure} loading={feedLoading} />
 
             {/* Supplementary — kept from the previous dashboard, still real data */}
             <GlobalThreatMap />

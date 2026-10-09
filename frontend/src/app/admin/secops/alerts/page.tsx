@@ -1,5 +1,5 @@
-import { ThreatManagement } from '@/components/features/ThreatManagement';
+import { AlertQueue } from '@/components/features/AlertQueue';
 
 export default function Page() {
-    return <ThreatManagement />;
+    return <AlertQueue />;
 }
