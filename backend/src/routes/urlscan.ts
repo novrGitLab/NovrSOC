@@ -5,6 +5,7 @@ import { getSupabase } from '../services/geoEnrichment';
 import { searchURL, searchDomain, isConfigured as urlscanConfigured, type URLScanSearchResult } from '../services/urlscanio';
 import { checkURLSafety } from '../services/google';
 import type { AuthRequest } from '../middleware/auth';
+import { verdictFromScore } from '../lib/severity';
 
 const router = Router();
 
@@ -117,7 +118,7 @@ router.post('/submit', async (req: AuthRequest, res) => {
         }
 
         results.risk_score = Math.min(100, results.risk_score);
-        results.verdict = results.risk_score >= 70 ? 'malicious' : results.risk_score >= 30 ? 'suspicious' : 'clean';
+        results.verdict = verdictFromScore(results.risk_score);
         results.scan_duration_ms = Date.now() - startTime;
 
         try {

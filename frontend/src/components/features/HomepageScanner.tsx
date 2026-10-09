@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { apiUrl } from '@/lib/api';
+import { verdictFromScore } from '@/lib/severity';
 
 // The landing page's free scanner. Extracted into its own client component so app/page.tsx can
 // stay a server component — it's ~700 lines of otherwise static marketing content, and making
@@ -70,7 +71,7 @@ export function HomepageScanner() {
     };
 
     const riskColor = (score: number) =>
-        score > 70 ? 'text-red-600' : score > 40 ? 'text-amber-600' : 'text-green-600';
+        ({ malicious: 'text-red-600', suspicious: 'text-amber-600', clean: 'text-green-600' } as const)[verdictFromScore(score)];
 
     return (
         <div className="bg-white rounded-3xl border border-gray-200 p-6 shadow-xl text-left">

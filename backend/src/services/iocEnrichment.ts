@@ -8,6 +8,7 @@ import { vtCheckIP, vtCheckDomain, vtCheckHash, vtCheckURL, vtToRiskScore, isCon
 import { checkGreyNoise, isGreyNoiseConfigured, type GreyNoiseResult } from './greynoise';
 import { checkLeakIX, isConfigured as leakixConfigured, type LeakIXResult } from './leakix';
 import { searchMISP, mispEventUrl, isMISPConfigured } from './misp';
+import { verdictFromScore } from '../lib/severity';
 
 // OTX and Censys were removed from this pipeline (2026-09-09). OTX's pulse contribution is now
 // covered by ThreatFox (which has a working key here) plus the keyless CIRCL OSINT feed for the
@@ -164,7 +165,7 @@ export async function enrichIOC(value: string, type: IOCType, options: EnrichOpt
     if (misp?.found) score = Math.min(100, score + 25);
     score = Math.min(100, score);
 
-    const verdict: EnrichedIOC['verdict'] = score >= 70 ? 'malicious' : score >= 30 ? 'suspicious' : 'clean';
+    const verdict: EnrichedIOC['verdict'] = verdictFromScore(score);
 
     // Collect tags
     const tags = new Set<string>();

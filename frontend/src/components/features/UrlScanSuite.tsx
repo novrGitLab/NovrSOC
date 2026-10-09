@@ -5,6 +5,7 @@ import {
     Link as LinkIcon, Search, RefreshCw, ExternalLink, Clock, Shield, Zap,
 } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
+import { verdictFromScore } from '@/lib/severity';
 
 type Verdict = 'clean' | 'suspicious' | 'malicious';
 
@@ -48,10 +49,10 @@ const TABS = [
 type Tab = (typeof TABS)[number]['id'];
 
 function scoreColor(score: number): string {
-    return score >= 70 ? 'text-red-500' : score >= 30 ? 'text-amber' : 'text-green';
+    return ({ malicious: 'text-red-500', suspicious: 'text-amber', clean: 'text-green' } as const)[verdictFromScore(score)];
 }
 function scoreBg(score: number): string {
-    return score >= 70 ? 'bg-red-500' : score >= 30 ? 'bg-amber' : 'bg-green';
+    return ({ malicious: 'bg-red-500', suspicious: 'bg-amber', clean: 'bg-green' } as const)[verdictFromScore(score)];
 }
 
 export function UrlScanSuite() {

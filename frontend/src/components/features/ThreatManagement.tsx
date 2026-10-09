@@ -8,6 +8,7 @@ import {
     CheckCircle, RefreshCw, Eye, Shield,
     ExternalLink, Crosshair, MessageSquarePlus, UserPlus, User,
 } from 'lucide-react';
+import { verdictFromScore } from '@/lib/severity';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low';
 type AlertStatus = 'open' | 'investigating' | 'acknowledged' | 'closed';
@@ -96,13 +97,9 @@ const STATUS_STYLE: Record<AlertStatus, string> = {
     closed: 'bg-card-muted text-foreground-muted border-border',
 };
 
-function scoreColor(v: number | null, highIsBad = true): string {
+function scoreColor(v: number | null): string {
     if (v === null) return 'text-foreground-muted';
-    const bad = highIsBad ? v >= 70 : v <= 30;
-    const warn = highIsBad ? v >= 30 : v <= 70;
-    if (bad) return 'text-red-500';
-    if (warn) return 'text-amber';
-    return 'text-green';
+    return ({ malicious: 'text-red-500', suspicious: 'text-amber', clean: 'text-green' } as const)[verdictFromScore(v)];
 }
 
 export function ThreatManagement() {

@@ -4,7 +4,8 @@
 //
 // Supports what the SecOps routers use: select (column lists and to-one embeds such as
 // `cases!inner(case_number)`), eq/neq/gt/gte/lt/lte/like/ilike/in/is filters (also on embedded
-// columns, `cases.org_id=eq.x`), or=(...), order, limit/offset, count=exact (GET and HEAD),
+// columns, `cases.org_id=eq.x`; "quoted" values), or=(...) with nested and(...), order on
+// several columns, limit/offset, count=exact (GET and HEAD),
 // single() objects, insert / upsert (merge or ignore duplicates on on_conflict) / update / delete.
 // Not a PostgREST implementation — just enough to exercise tenant scoping honestly.
 
@@ -49,7 +50,8 @@ function cmp(a: unknown, b: string): number {
     const na = Number(a);
     const nb = Number(b);
     if (a !== null && a !== '' && b !== '' && !Number.isNaN(na) && !Number.isNaN(nb) && typeof a !== 'boolean') return na - nb;
-    return String(a).localeCompare(b);
+    const sa = String(a);
+    return sa < b ? -1 : sa > b ? 1 : 0; // byte order, like Postgres' C collation for these ids/timestamps
 }
 
 function test(row: Row, col: string, opValue: string): boolean {
@@ -57,7 +59,8 @@ function test(row: Row, col: string, opValue: string): boolean {
     const ov = neg ? opValue.slice(4) : opValue;
     const dot = ov.indexOf('.');
     const op = ov.slice(0, dot);
-    const val = ov.slice(dot + 1);
+    const rawVal = ov.slice(dot + 1);
+    const val = op !== 'in' && /^".*"$/.test(rawVal) ? rawVal.slice(1, -1) : rawVal;
     const v = get(row, col);
     let r: boolean;
     switch (op) {
@@ -80,6 +83,17 @@ function test(row: Row, col: string, opValue: string): boolean {
     return neg ? !r : r;
 }
 
+/** or(...) / and(...) bodies, nested as PostgREST allows: `a.eq.1,and(b.gt.2,c.lt.3)`. */
+function logical(row: Row, kind: 'or' | 'and', body: string): boolean {
+    const results = splitTop(body).map((p) => {
+        const m = p.match(/^(and|or)\((.*)\)$/);
+        if (m) return logical(row, m[1] as 'or' | 'and', m[2]);
+        const i = p.indexOf('.');
+        return test(row, p.slice(0, i), p.slice(i + 1));
+    });
+    return kind === 'or' ? results.some(Boolean) : results.every(Boolean);
+}
+
 interface Embed { name: string; inner: boolean; cols: string[] }
 
 function parseSelect(select: string | null): { cols: string[] | null; embeds: Embed[] } {
@@ -98,7 +112,8 @@ function parseSelect(select: string | null): { cols: string[] | null; embeds: Em
 
 const pick = (row: Row, cols: string[] | null) => (cols ? Object.fromEntries(cols.map((c) => [c, row[c] ?? null])) : { ...row });
 
-export async function startFakePostgrest(tables: Record<string, Row[]> = {}, relations: Record<string, string> = {}): Promise<FakePostgrest> {
+/** `defaults`: per-table column defaults applied on insert, like the real tables' DEFAULTs. */
+export async function startFakePostgrest(tables: Record<string, Row[]> = {}, relations: Record<string, string> = {}, defaults: Record<string, Row> = {}): Promise<FakePostgrest> {
     const rel = { ...DEFAULT_RELATIONS, ...relations };
     const log: string[] = [];
 
@@ -134,8 +149,7 @@ export async function startFakePostgrest(tables: Record<string, Row[]> = {}, rel
                 for (const [k, v] of url.searchParams) {
                     if (['select', 'order', 'limit', 'offset', 'on_conflict', 'columns'].includes(k)) continue;
                     if (k === 'or') {
-                        const parts = splitTop(v.replace(/^\(|\)$/g, ''));
-                        if (!parts.some((p) => { const i = p.indexOf('.'); return test(r, p.slice(0, i), p.slice(i + 1)); })) return false;
+                        if (!logical(r, 'or', v.replace(/^\(|\)$/g, ''))) return false;
                         continue;
                     }
                     if (!test(r, k, v)) return false;
@@ -166,7 +180,8 @@ export async function startFakePostgrest(tables: Record<string, Row[]> = {}, rel
                         const keys = order.split(',').map((o) => { const [c, dir] = o.split('.'); return { c, desc: dir === 'desc' }; });
                         list = [...list].sort((a, b) => {
                             for (const k of keys) {
-                                const d = String(a[k.c] ?? '').localeCompare(String(b[k.c] ?? ''));
+                                const x = String(a[k.c] ?? ''), y = String(b[k.c] ?? '');
+                                const d = x < y ? -1 : x > y ? 1 : 0;
                                 if (d) return k.desc ? -d : d;
                             }
                             return 0;
@@ -191,7 +206,7 @@ export async function startFakePostgrest(tables: Record<string, Row[]> = {}, rel
                         if (existing && ignore) continue;
                         if (existing && merge) { Object.assign(existing, input); out.push(existing); continue; }
                         if (existing) { send(409, { code: '23505', message: 'duplicate key value violates unique constraint', details: null, hint: null }); return; }
-                        const row = { id: randomUUID(), created_at: new Date().toISOString(), ...input };
+                        const row = { id: randomUUID(), created_at: new Date().toISOString(), ...(defaults[table] ?? {}), ...input };
                         rows.push(row);
                         out.push(row);
                     }

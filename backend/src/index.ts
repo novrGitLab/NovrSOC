@@ -24,6 +24,9 @@ import webscanRouter from './routes/webscan';
 import emailSecurityRouter from './routes/emailSecurity';
 import dataRecoveryRouter from './routes/dataRecovery';
 import alertsRouter from './routes/alerts';
+import alertStoreRouter from './routes/alertStore';
+import ingestRouter from './routes/ingest';
+import wazuhGroupMapRouter from './routes/wazuhGroupMap';
 import threatManagementRouter from './routes/threatManagement';
 import publicRouter from './routes/public';
 import intelligenceRouter from './routes/intelligence';
@@ -244,6 +247,11 @@ if (process.env.NODE_ENV === 'production') {
     });
 }
 
+// Machine alert ingest (routes/ingest.ts) is mounted before the global 100 KB JSON parser and the
+// /api limiter: it authenticates with its own service token, parses up to 1 MB itself and has
+// its own rate limit.
+app.use('/api/ingest', ingestRouter);
+
 app.use(express.json());
 
 // Rate limiting — auth endpoints get a tight per-IP window (stacks with the general limiter
@@ -310,6 +318,7 @@ app.use('/api/email-proxy', emailProxyRouter);
 app.use('/api/mitre', mitreRouter);
 app.use('/api/recovery', dataRecoveryRouter);
 app.use('/api/alerts', alertsRouter);
+app.use('/api/alerts', alertStoreRouter); // stored, org-scoped alerts (phase R2)
 app.use('/api/threats', threatManagementRouter);
 // STIX export — gated: a bundle is the org's whole accumulated IOC set in one file.
 app.use('/api/intelligence', requireAuth, intelligenceRouter);
@@ -326,6 +335,7 @@ app.use('/api/test', testRouter);
 app.use('/api/communications', requireAuth, communicationsRouter);
 // Team presence (Settings → Team, Security Assessment widget).
 app.use('/api/admin/team', requireAuth, teamRouter);
+app.use('/api/admin/wazuh-group-map', requireAuth, requireRole('super_admin'), wazuhGroupMapRouter);
 // Security Assessment: posture from real case data.
 app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
 app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);

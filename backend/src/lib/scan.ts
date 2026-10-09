@@ -1,4 +1,7 @@
 import { CTIP_URL } from './legacyBackend';
+import { verdictFromScore, type Verdict } from './severity';
+
+const VERDICT_LABEL: Record<Verdict, 'Malicious' | 'Suspicious' | 'Clean'> = { malicious: 'Malicious', suspicious: 'Suspicious', clean: 'Clean' };
 const ABUSEIPDB_KEY = process.env.ABUSEIPDB_API_KEY;
 const URLHAUS_AUTH_KEY = process.env.URLHAUS_AUTH_KEY;
 
@@ -42,7 +45,7 @@ async function checkCtip(value: string): Promise<{ source: SourceResult; match: 
                 name: 'CTIP Database',
                 result: match ? 'Found' : 'Not Found',
                 detail: match ? `Confidence ${match.confidence ?? 0}% · source: ${match.source ?? 'unknown'}` : 'No match in CTIP database',
-                verdict: match && (match.confidence ?? 0) >= 80 ? 'Malicious' : match && (match.confidence ?? 0) >= 50 ? 'Suspicious' : match ? 'Clean' : 'Unknown',
+                verdict: match ? VERDICT_LABEL[verdictFromScore(match.confidence ?? 0)] : 'Unknown',
             },
             match,
         };
@@ -102,7 +105,7 @@ async function checkAbuseIpdb(value: string): Promise<{ source: SourceResult; sc
                 name: 'AbuseIPDB',
                 result: `${data?.data?.totalReports ?? 0} reports`,
                 detail: `Confidence score ${score}% · last reported ${data?.data?.lastReportedAt ?? 'never'}`,
-                verdict: score >= 75 ? 'Malicious' : score >= 25 ? 'Suspicious' : 'Clean',
+                verdict: VERDICT_LABEL[verdictFromScore(score)],
             },
             score,
             country: data?.data?.countryCode ?? null,
@@ -152,10 +155,10 @@ export async function runScan(value: string, requestedType: string): Promise<Sca
     if (!anySucceeded) {
         verdict = 'Unknown';
         confidence = 0;
-    } else if (ctipConfidence >= 80 || (abuseScore ?? 0) >= 75 || urlhausThreat === 'malware_download' || urlhausThreat === 'phishing') {
+    } else if (verdictFromScore(ctipConfidence) === 'malicious' || verdictFromScore(abuseScore ?? 0) === 'malicious' || urlhausThreat === 'malware_download' || urlhausThreat === 'phishing') {
         verdict = 'Malicious';
         confidence = Math.max(ctipConfidence, abuseScore ?? 0, urlhausThreat ? 90 : 0);
-    } else if (ctipConfidence >= 50 || (abuseScore ?? 0) >= 25) {
+    } else if (verdictFromScore(ctipConfidence) === 'suspicious' || verdictFromScore(abuseScore ?? 0) === 'suspicious') {
         verdict = 'Suspicious';
         confidence = Math.max(ctipConfidence, abuseScore ?? 0);
     } else {

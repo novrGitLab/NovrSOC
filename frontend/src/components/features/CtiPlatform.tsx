@@ -9,6 +9,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { StixExportButton } from '@/components/features/StixExportButton';
+import { verdictFromScore } from '@/lib/severity';
 
 type IOCType = 'ip' | 'domain' | 'hash' | 'url';
 type Verdict = 'clean' | 'suspicious' | 'malicious';
@@ -142,10 +143,10 @@ const NIGERIAN_ISPS = [
 ] as const;
 
 function scoreColor(score: number): string {
-    return score >= 70 ? 'text-red-500' : score >= 30 ? 'text-amber' : 'text-green';
+    return ({ malicious: 'text-red-500', suspicious: 'text-amber', clean: 'text-green' } as const)[verdictFromScore(score)];
 }
 function scoreBg(score: number): string {
-    return score >= 70 ? 'bg-red-500' : score >= 30 ? 'bg-amber' : 'bg-green';
+    return ({ malicious: 'bg-red-500', suspicious: 'bg-amber', clean: 'bg-green' } as const)[verdictFromScore(score)];
 }
 
 export function CtiPlatform() {
@@ -888,7 +889,7 @@ export function CtiPlatform() {
                                                 <td className="px-4 py-3"><span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase ${ORG_TYPE_BADGE[ioc.type]}`}>{ioc.type}</span></td>
                                                 <td className="px-4 py-3 font-mono text-foreground max-w-xs truncate">{ioc.value}</td>
                                                 <td className="px-4 py-3"><span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase ${ORG_VERDICT_BADGE[ioc.verdict]}`}>{ioc.verdict}</span></td>
-                                                <td className="px-4 py-3"><span className={`font-bold ${ioc.risk_score >= 70 ? 'text-red' : ioc.risk_score >= 40 ? 'text-amber' : 'text-blue'}`}>{ioc.risk_score}</span></td>
+                                                <td className="px-4 py-3"><span className={`font-bold ${scoreColor(ioc.risk_score)}`}>{ioc.risk_score}</span></td>
                                                 <td className="px-4 py-3 text-foreground-muted capitalize">{ioc.source}</td>
                                                 <td className="px-4 py-3 text-foreground-muted whitespace-nowrap">{new Date(ioc.first_seen).toLocaleDateString()}</td>
                                                 <td className="px-4 py-3 text-foreground-muted whitespace-nowrap">{new Date(ioc.last_seen).toLocaleDateString()}</td>
@@ -952,7 +953,7 @@ export function CtiPlatform() {
                                                 <td className="px-4 py-3"><span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase ${ORG_TYPE_BADGE[ioc.type]}`}>{ioc.type}</span></td>
                                                 <td className="px-4 py-3 font-mono text-foreground max-w-xs truncate">{ioc.value}</td>
                                                 <td className="px-4 py-3"><span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase ${ORG_VERDICT_BADGE[ioc.verdict]}`}>{ioc.verdict}</span></td>
-                                                <td className="px-4 py-3"><span className={`font-bold ${ioc.risk_score >= 70 ? 'text-red' : 'text-amber'}`}>{ioc.risk_score}</span></td>
+                                                <td className="px-4 py-3"><span className={`font-bold ${scoreColor(ioc.risk_score)}`}>{ioc.risk_score}</span></td>
                                                 <td className="px-4 py-3 text-foreground-muted">{ioc.shared_by_clients} client{ioc.shared_by_clients === 1 ? '' : 's'}</td>
                                                 <td className="px-4 py-3">
                                                     <div className="flex gap-1 flex-wrap">{ioc.tags.map((t) => <span key={t} className="text-[10px] bg-card-muted text-foreground-muted px-1.5 py-0.5 rounded">{t}</span>)}</div>
@@ -976,7 +977,7 @@ export function CtiPlatform() {
                 const combined: FeedEntry[] = [
                     ...orgIocs.map((i): FeedEntry => ({ value: i.value, type: i.type, verdict: i.verdict, time: i.last_seen, source: i.source === 'wazuh' ? 'Wazuh alert' : 'Manual add' })),
                     ...sharedIocs.map((i): FeedEntry => ({ value: i.value, type: i.type, verdict: i.verdict, time: new Date().toISOString(), source: 'Shared from community' })),
-                    ...feed.slice(0, 15).map((i): FeedEntry => ({ value: i.ioc_value, type: i.ioc_type, verdict: i.risk_score >= 70 ? 'malicious' : i.risk_score >= 30 ? 'suspicious' : 'clean', time: i.last_seen, source: 'External feed lookup' })),
+                    ...feed.slice(0, 15).map((i): FeedEntry => ({ value: i.ioc_value, type: i.ioc_type, verdict: verdictFromScore(i.risk_score), time: i.last_seen, source: 'External feed lookup' })),
                 ].sort((a, b) => (b.time > a.time ? 1 : -1));
 
                 const today = new Date().toISOString().slice(0, 10);

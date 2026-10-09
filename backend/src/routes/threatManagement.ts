@@ -12,7 +12,7 @@ import { getGreyNoiseCountryStats, isGreyNoiseConfigured } from '../services/gre
 import { threatfoxGetRecent } from '../services/threatfox';
 import { urlhausGetRecent } from '../services/urlhaus';
 import { feodoGetBlocklist } from '../services/feodo';
-import { severityFromLevel, SEVERITY_MIN_LEVEL, type Severity } from '../lib/severity';
+import { severityFromLevel, severityFromScore, SEVERITY_MIN_LEVEL, type Severity } from '../lib/severity';
 import { requirePermission, requestOrg } from '../lib/permissions';
 
 // SecOps Threat Management console — live security event stream from the Wazuh Indexer
@@ -618,12 +618,7 @@ function normaliseThreatFoxType(raw: string | undefined): LiveIOCType | null {
     return null;
 }
 
-function severityFromConfidence(confidence: number): Severity {
-    if (confidence >= 90) return 'critical';
-    if (confidence >= 70) return 'high';
-    if (confidence >= 40) return 'medium';
-    return 'low';
-}
+const severityFromConfidence = (confidence: number): Severity => severityFromScore(confidence);
 
 router.get('/live-ioc', requirePermission('alerts:read'), async (req, res) => {
     const typeFilter = typeof req.query.type === 'string' && req.query.type !== 'all' ? req.query.type : null;

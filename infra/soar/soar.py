@@ -24,7 +24,8 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -460,7 +461,240 @@ def process_alert(alert: dict):
                  'Awaiting analyst review.' if tier == 2 else 'Automated response finished; see entries above for each action.')
 
 
+# ── Alert forwarder (phase R2) ───────────────────────────────────────────────────────────────
+# A separate, long-running mode: `soar.py --forward` (systemd unit novrsoc-forwarder.service).
+# The integratord path above only ever sees one alert at a time and keeps no state, so anything
+# missed while it was down would be lost. The forwarder instead reads alerts from the Wazuh
+# Indexer, resolves each agent's groups through the Wazuh API, and POSTs batches to
+# NOVRSOC_BACKEND/api/ingest/alerts. It persists a cursor (the timestamp of the last alert the
+# backend accepted) so a restart or an outage resumes where it stopped and missed alerts are
+# replayed; on first run it backfills SOAR_BACKFILL_HOURS. The backend de-duplicates on the Wazuh
+# alert id, so resending is harmless — each cycle re-reads a short overlap window to catch alerts
+# the indexer stored late.
+#
+# It shares no code path with the response actions: a forwarding failure can't block a response
+# and a response failure can't block forwarding. ALERT_INGEST_TOKEN is sent only in the
+# Authorization header and never logged.
+INGEST_TOKEN = os.environ.get('ALERT_INGEST_TOKEN', '')
+INDEXER_URL = os.environ.get('WAZUH_INDEXER_URL', 'https://localhost:9200').rstrip('/')
+INDEXER_USER = os.environ.get('WAZUH_INDEXER_USER', '')
+INDEXER_PASSWORD = os.environ.get('WAZUH_INDEXER_PASSWORD', '')
+ALERTS_INDEX = os.environ.get('WAZUH_ALERTS_INDEX', 'wazuh-alerts-4.x-*')
+CURSOR_FILE = os.environ.get('SOAR_CURSOR_FILE', '/var/lib/novrsoc/ingest_cursor.json')
+
+
+def _int_env(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        return max(lo, min(hi, int(os.environ.get(name, default))))
+    except ValueError:
+        return default
+
+
+BACKFILL_HOURS = _int_env('SOAR_BACKFILL_HOURS', 24, 0, 24 * 30)
+FORWARD_INTERVAL = _int_env('SOAR_FORWARD_INTERVAL', 30, 5, 3600)          # seconds between cycles
+FORWARD_BATCH = _int_env('SOAR_FORWARD_BATCH', 100, 1, 100)                # the backend's batch cap
+FORWARD_OVERLAP = _int_env('SOAR_FORWARD_OVERLAP_SECONDS', 120, 0, 3600)   # re-read window for late-indexed alerts
+FORWARD_MIN_LEVEL = _int_env('SOAR_FORWARD_MIN_LEVEL', 0, 0, 16)           # 0 = everything the indexer holds
+MAX_PAGES_PER_CYCLE = 50
+GROUP_CACHE_SECONDS = 300
+RETRY_DELAYS = (2, 4, 8, 16, 32)
+
+
+def parse_ts(ts: str) -> Optional[datetime]:
+    """Wazuh writes 2026-10-09T10:00:00.123+0000; fromisoformat wants +00:00."""
+    if not ts:
+        return None
+    t = ts.strip().replace('Z', '+00:00')
+    if len(t) >= 5 and t[-5] in '+-' and t[-4:].isdigit():
+        t = f'{t[:-2]}:{t[-2:]}'
+    try:
+        dt = datetime.fromisoformat(t)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def load_cursor() -> Optional[datetime]:
+    try:
+        with open(CURSOR_FILE, encoding='utf-8') as f:
+            return parse_ts(json.load(f).get('last_forwarded_timestamp', ''))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        log.error(f'Forwarder: cursor file unreadable ({e}) — treating as first run')
+        return None
+
+
+def save_cursor(ts: datetime):
+    """Atomic write: a crash mid-write must not leave a corrupt cursor."""
+    os.makedirs(os.path.dirname(CURSOR_FILE) or '.', exist_ok=True)
+    tmp = f'{CURSOR_FILE}.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump({'last_forwarded_timestamp': ts.isoformat(), 'saved_at': now_iso()}, f)
+    os.replace(tmp, CURSOR_FILE)
+
+
+class AgentGroups:
+    """agent id -> Wazuh groups, from GET /agents, refreshed every GROUP_CACHE_SECONDS."""
+
+    def __init__(self):
+        self.groups: dict = {}
+        self.loaded_at = 0.0
+
+    def refresh(self) -> bool:
+        token = wazuh_token()
+        if not token:
+            return False
+        groups, offset = {}, 0
+        while True:
+            try:
+                resp = requests.get(f'{WAZUH_API}/agents', params={'select': 'id,group', 'limit': 500, 'offset': offset},
+                                    headers={'Authorization': f'Bearer {token}'}, verify=WAZUH_VERIFY_TLS, timeout=15)
+            except requests.RequestException as e:
+                log.error(f'Forwarder: Wazuh agent list failed: {e}')
+                return False
+            if not resp.ok:
+                log.error(f'Forwarder: Wazuh agent list failed: HTTP {resp.status_code}')
+                return False
+            data = (resp.json().get('data') or {})
+            items = data.get('affected_items') or []
+            for a in items:
+                groups[str(a.get('id'))] = [g for g in (a.get('group') or []) if isinstance(g, str)]
+            offset += len(items)
+            if not items or offset >= int(data.get('total_affected_items') or 0):
+                break
+        self.groups, self.loaded_at = groups, time.monotonic()
+        return True
+
+    def get(self, agent_id: str) -> list:
+        if time.monotonic() - self.loaded_at > GROUP_CACHE_SECONDS:
+            self.refresh()  # on failure the previous map (possibly stale) is kept
+        return self.groups.get(str(agent_id), [])
+
+
+def search_alerts(since: datetime, search_after: Optional[list]) -> Optional[list]:
+    """One page of alerts at or after `since`, oldest first. None on failure."""
+    query: dict = {'bool': {'filter': [{'range': {'timestamp': {'gte': since.isoformat()}}}]}}
+    if FORWARD_MIN_LEVEL > 0:
+        query['bool']['filter'].append({'range': {'rule.level': {'gte': FORWARD_MIN_LEVEL}}})
+    body: dict = {'size': FORWARD_BATCH, 'sort': [{'timestamp': 'asc'}, {'id': 'asc'}], 'query': query}
+    if search_after:
+        body['search_after'] = search_after
+    try:
+        resp = requests.post(f'{INDEXER_URL}/{ALERTS_INDEX}/_search', json=body, auth=(INDEXER_USER, INDEXER_PASSWORD),
+                             verify=WAZUH_VERIFY_TLS, timeout=30)
+    except requests.RequestException as e:
+        log.error(f'Forwarder: indexer search failed: {e}')
+        return None
+    if not resp.ok:
+        log.error(f'Forwarder: indexer search failed: HTTP {resp.status_code}')
+        return None
+    return (resp.json().get('hits') or {}).get('hits') or []
+
+
+def to_ingest(alert: dict, groups: AgentGroups) -> dict:
+    """The backend's ingest shape. Org, severity and status are never sent — the backend derives
+    them. The whole alert goes along as `raw` (the backend caps it at 32 KB)."""
+    rule = alert.get('rule') or {}
+    agent = alert.get('agent') or {}
+    mitre = rule.get('mitre') or {}
+    out: dict = {
+        'id': alert_source_id(alert),
+        'timestamp': alert.get('timestamp') or '',
+        'rule': {'id': str(rule.get('id', '')), 'level': int(rule.get('level') or 0)},
+        'agent': {k: str(agent[k]) for k in ('id', 'name', 'ip') if agent.get(k)},
+        'agent_groups': groups.get(agent.get('id', '')),
+        'raw': alert,
+    }
+    if rule.get('description'):
+        out['rule']['description'] = str(rule['description'])[:2000]
+    ids = mitre.get('id')
+    if ids:
+        out['rule']['mitre'] = {'id': [str(i) for i in (ids if isinstance(ids, list) else [ids])][:50]}
+    if alert.get('location'):
+        out['location'] = str(alert['location'])[:1024]
+    return out
+
+
+def post_batch(alerts: list) -> bool:
+    """POST one batch, retrying network errors, 429 and 5xx with backoff. True = the backend took
+    it (accepted, duplicate or rejected as unmappable), so the cursor may advance."""
+    url = f'{BACKEND_URL}/api/ingest/alerts'
+    headers = {'Authorization': f'Bearer {INGEST_TOKEN}', 'Content-Type': 'application/json'}
+    for attempt, delay in enumerate((0, *RETRY_DELAYS)):
+        if delay:
+            time.sleep(delay)
+        try:
+            resp = requests.post(url, json={'alerts': alerts}, headers=headers, timeout=30)
+        except requests.RequestException as e:
+            log.warning(f'Forwarder: ingest POST failed (attempt {attempt + 1}): {type(e).__name__}')
+            continue
+        if resp.ok:
+            try:
+                r = resp.json()
+            except ValueError:
+                r = {}
+            log.info(f"Forwarder: {len(alerts)} sent — accepted {r.get('accepted')}, duplicates {r.get('duplicates')}, rejected {r.get('rejected')}")
+            return True
+        if resp.status_code == 429 or resp.status_code >= 500:
+            log.warning(f'Forwarder: ingest returned HTTP {resp.status_code} (attempt {attempt + 1})')
+            continue
+        # 401 (wrong token), 400/413 (a bug in this shape): retrying won't help. Stop without
+        # advancing, so nothing is skipped once it is fixed.
+        log.error(f'Forwarder: ingest refused the batch: HTTP {resp.status_code} — not advancing the cursor')
+        return False
+    log.error('Forwarder: ingest unavailable after retries — will resume from the cursor next cycle')
+    return False
+
+
+def forward_once(groups: AgentGroups) -> int:
+    """One cycle. Returns the number of alerts the backend took."""
+    cursor = load_cursor()
+    if cursor is None:
+        since = datetime.now(timezone.utc) - timedelta(hours=BACKFILL_HOURS)
+        log.info(f'Forwarder: no cursor — backfilling from {since.isoformat()} ({BACKFILL_HOURS}h)')
+    else:
+        since = cursor - timedelta(seconds=FORWARD_OVERLAP)
+    sent, search_after = 0, None
+    for _ in range(MAX_PAGES_PER_CYCLE):
+        hits = search_alerts(since, search_after)
+        if not hits:
+            break
+        batch = [to_ingest(h.get('_source') or {}, groups) for h in hits]
+        if not post_batch(batch):
+            break
+        sent += len(batch)
+        stamps = [t for t in (parse_ts((h.get('_source') or {}).get('timestamp', '')) for h in hits) if t]
+        newest = max(stamps) if stamps else None
+        if newest and (cursor is None or newest > cursor):
+            cursor = newest
+            save_cursor(cursor)
+        search_after = hits[-1].get('sort')
+        if len(hits) < FORWARD_BATCH or not search_after:
+            break
+    return sent
+
+
+def forward_loop():
+    missing = [n for n, v in (('ALERT_INGEST_TOKEN', INGEST_TOKEN), ('WAZUH_INDEXER_USER', INDEXER_USER),
+                              ('WAZUH_INDEXER_PASSWORD', INDEXER_PASSWORD), ('WAZUH_PASSWORD', WAZUH_PASSWORD)) if not v]
+    if missing:
+        log.error(f"Forwarder: {', '.join(missing)} not set — not starting")
+        sys.exit(1)
+    log.info(f'Forwarder: started — {INDEXER_URL}/{ALERTS_INDEX} -> {BACKEND_URL}/api/ingest/alerts every {FORWARD_INTERVAL}s, cursor {CURSOR_FILE}')
+    groups = AgentGroups()
+    while True:
+        try:
+            forward_once(groups)
+        except Exception as e:  # noqa: BLE001 — one bad cycle must not stop the service
+            log.exception(f'Forwarder cycle failed: {e}')
+        time.sleep(FORWARD_INTERVAL)
+
+
 def main():
+    if '--forward' in sys.argv[1:]:
+        forward_loop()
+        return
     if not SUPABASE_URL or not SUPABASE_KEY:
         log.error('SUPABASE_URL / SUPABASE_SERVICE_KEY not set — cannot record cases')
         sys.exit(1)

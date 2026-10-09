@@ -3,6 +3,7 @@
 // valid filter key for observables but not for Indicators (OpenCTI 6 rejects unknown keys), so
 // the lookup goes through the IP observable — its linked indicators and relationships — plus a
 // full-text indicator search for indicators that exist without an observable.
+import { severityFromScore } from './severity';
 
 export const openctiConfigured = () => !!(process.env.OPENCTI_URL && process.env.OPENCTI_TOKEN);
 
@@ -81,8 +82,7 @@ interface LookupData {
 }
 
 export function severityFromConfidence(c: number | null | undefined): OpenCTIIntel['severity'] {
-    const n = c ?? 0;
-    return n >= 80 ? 'critical' : n >= 60 ? 'high' : n >= 40 ? 'medium' : 'low';
+    return severityFromScore(c ?? 0);
 }
 
 const describe = (r: Related) => {

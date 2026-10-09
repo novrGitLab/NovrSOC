@@ -16,6 +16,7 @@ export { requestOrg } from './resolveOrg';
 
 export const PERMISSIONS = [
     'alerts:read',
+    'alerts:triage',
     'cases:read',
     'cases:write',
     'cases:close',
@@ -29,10 +30,11 @@ export type Permission = (typeof PERMISSIONS)[number];
 // Follows the existing role matrix (frontend/src/config/nav.ts): Security Operations is for
 // super_admin, soc_manager and analyst; executive and portal_user get no SecOps access. Approving
 // a response action is a manager decision, so analysts can request containment but not approve.
+// alerts:triage (phase R2) changes a stored alert's status: super_admin, soc_manager and analyst.
 export const ROLE_PERMISSIONS: Readonly<Record<UserRole, readonly Permission[]>> = {
     super_admin: PERMISSIONS,
     soc_manager: PERMISSIONS,
-    analyst: ['alerts:read', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write'],
+    analyst: ['alerts:read', 'alerts:triage', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write'],
     executive: [],
     portal_user: [],
 };
