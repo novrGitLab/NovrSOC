@@ -26,6 +26,8 @@ import dataRecoveryRouter from './routes/dataRecovery';
 import alertsRouter from './routes/alerts';
 import alertStoreRouter from './routes/alertStore';
 import ingestRouter from './routes/ingest';
+import exportApiRouter from './routes/exportApi';
+import exportClientsRouter from './routes/exportClients';
 import wazuhGroupMapRouter from './routes/wazuhGroupMap';
 import threatManagementRouter from './routes/threatManagement';
 import publicRouter from './routes/public';
@@ -251,6 +253,8 @@ if (process.env.NODE_ENV === 'production') {
 // /api limiter: it authenticates with its own service token, parses up to 1 MB itself and has
 // its own rate limit.
 app.use('/api/ingest', ingestRouter);
+// Vendor export (routes/exportApi.ts): machine credential, own kill switch and rate limits; GET only.
+app.use('/api/export/v1', exportApiRouter);
 
 app.use(express.json());
 
@@ -336,6 +340,7 @@ app.use('/api/communications', requireAuth, communicationsRouter);
 // Team presence (Settings → Team, Security Assessment widget).
 app.use('/api/admin/team', requireAuth, teamRouter);
 app.use('/api/admin/wazuh-group-map', requireAuth, requireRole('super_admin'), wazuhGroupMapRouter);
+app.use('/api/admin/export-clients', requireAuth, requireRole('super_admin'), exportClientsRouter);
 // Security Assessment: posture from real case data.
 app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
 app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);
