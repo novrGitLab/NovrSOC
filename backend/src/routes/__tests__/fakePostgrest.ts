@@ -180,8 +180,10 @@ export async function startFakePostgrest(tables: Record<string, Row[]> = {}, rel
                         const keys = order.split(',').map((o) => { const [c, dir] = o.split('.'); return { c, desc: dir === 'desc' }; });
                         list = [...list].sort((a, b) => {
                             for (const k of keys) {
-                                const x = String(a[k.c] ?? ''), y = String(b[k.c] ?? '');
-                                const d = x < y ? -1 : x > y ? 1 : 0;
+                                const av = a[k.c], bv = b[k.c];
+                                // Numbers (bigint columns) compare numerically; everything else byte-wise.
+                                const d = typeof av === 'number' && typeof bv === 'number' ? av - bv
+                                    : (() => { const x = String(av ?? ''), y = String(bv ?? ''); return x < y ? -1 : x > y ? 1 : 0; })();
                                 if (d) return k.desc ? -d : d;
                             }
                             return 0;
