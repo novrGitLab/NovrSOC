@@ -28,6 +28,7 @@ import alertStoreRouter from './routes/alertStore';
 import ingestRouter from './routes/ingest';
 import exportApiRouter from './routes/exportApi';
 import exportClientsRouter from './routes/exportClients';
+import pushStatusRouter from './routes/pushStatus';
 import wazuhGroupMapRouter from './routes/wazuhGroupMap';
 import threatManagementRouter from './routes/threatManagement';
 import publicRouter from './routes/public';
@@ -52,6 +53,7 @@ import { startEscalationJob } from './jobs/incidentEscalation';
 import { startNigerianIntelJob } from './jobs/nigerianIntelJob';
 import { startGlobalIntelJob } from './jobs/globalIntelJob';
 import { startEmailSecurityJob } from './jobs/emailSecurityJob';
+import { startStellarPushJob } from './jobs/stellarPush';
 import { announceJobPolicy } from './lib/runtimeEnv';
 import { announceVerificationSecret } from './services/emailsec/verification';
 import platformRouter from './routes/platform';
@@ -341,6 +343,7 @@ app.use('/api/communications', requireAuth, communicationsRouter);
 app.use('/api/admin/team', requireAuth, teamRouter);
 app.use('/api/admin/wazuh-group-map', requireAuth, requireRole('super_admin'), wazuhGroupMapRouter);
 app.use('/api/admin/export-clients', requireAuth, requireRole('super_admin'), exportClientsRouter);
+app.use('/api/admin/push-status', requireAuth, requireRole('super_admin'), pushStatusRouter);
 // Security Assessment: posture from real case data.
 app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
 app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);
@@ -418,4 +421,7 @@ if (announceJobPolicy()) {
     startGlobalIntelJob();
     // DMARC DNS checks, Phish ID discovery/enrichment, mail-provider sync — jobs/emailSecurityJob.ts.
     startEmailSecurityJob();
+    // Push stored alerts to Stellar Cyber's webhook — jobs/stellarPush.ts. Off unless
+    // STELLAR_PUSH_ENABLED=true and its URL, key and org list are set.
+    startStellarPushJob();
 }
