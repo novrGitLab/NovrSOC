@@ -12,6 +12,7 @@ import { Copy, KeyRound, Plus, RefreshCw, ShieldAlert, X } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { getAdminUser } from '@/lib/admin-auth';
 import { loadJson } from '@/lib/alerts';
+import { PushStatus } from './PushStatus';
 
 /** Stored when no IPs are given yet: TEST-NET-1, never routable, so the client can't connect. */
 export const PENDING_CIDR = '192.0.2.1/32';
@@ -327,6 +328,8 @@ export function ExportClients() {
                     clients.map((c) => <ClientRow key={c.id} c={c} orgNames={orgNames} onChanged={reload} onToken={(t, title) => setShownToken({ token: t, title })} />)
                 )}
             </div>
+
+            <PushStatus />
 
             {shownToken && <TokenOnce title={shownToken.title} token={shownToken.token} onClose={() => setShownToken(null)} />}
         </div>
