@@ -36,6 +36,7 @@ interface Integration {
 interface PlatformHealthResponse {
     overall: 'operational' | 'degraded' | 'outage';
     services: HealthCheck[];
+    pipelines?: { name: string; status: 'up' | 'degraded' | 'down' | 'off'; detail: string }[];
     integrations?: Record<string, Integration>;
     checked_at: string;
 }
@@ -221,6 +222,25 @@ export function PlatformHealth() {
                     </div>
                 )}
             </div>
+
+            {/* Data pipelines: whether data is actually flowing (services/pipelineHealth.ts). */}
+            {!!health?.pipelines?.length && (
+                <div>
+                    <p className="text-xs font-black text-foreground mb-3">Data Pipelines</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {health.pipelines.map((p) => (
+                            <div key={p.name} className="bg-card border border-border rounded-xl p-4">
+                                <div className="flex items-center justify-between mb-2 gap-2">
+                                    <p className="text-sm font-bold text-foreground">{p.name}</p>
+                                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${p.status === 'off' ? 'bg-grey-300' : STATUS_DOT[p.status]}`} />
+                                </div>
+                                <span className={`text-xs font-bold uppercase ${p.status === 'off' ? 'text-foreground-muted' : STATUS_LABEL[p.status]}`}>{p.status}</span>
+                                <p className="text-[10px] text-foreground-muted mt-2 leading-snug">{p.detail}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {/* Integration key/config state, straight from the health response. This is a
                 configuration report — whether the key is present and the right shape — not a

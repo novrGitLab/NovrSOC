@@ -30,6 +30,7 @@ import ingestRouter from './routes/ingest';
 import exportApiRouter from './routes/exportApi';
 import exportClientsRouter from './routes/exportClients';
 import pushStatusRouter from './routes/pushStatus';
+import usersRouter from './routes/users';
 import wazuhGroupMapRouter from './routes/wazuhGroupMap';
 import threatManagementRouter from './routes/threatManagement';
 import publicRouter from './routes/public';
@@ -319,6 +320,7 @@ app.use('/api/admin/team', requireAuth, teamRouter);
 app.use('/api/admin/wazuh-group-map', requireAuth, requireRole('super_admin'), wazuhGroupMapRouter);
 app.use('/api/admin/export-clients', requireAuth, requireRole('super_admin'), exportClientsRouter);
 app.use('/api/admin/push-status', requireAuth, requireRole('super_admin'), pushStatusRouter);
+app.use('/api/admin/users', requireAuth, requireRole('super_admin'), usersRouter);
 // Security Assessment: posture from real case data.
 app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
 app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);

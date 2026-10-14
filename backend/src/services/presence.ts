@@ -87,7 +87,7 @@ export async function teamPresence(): Promise<{ members: TeamMemberPresence[]; h
     const days = Array.from({ length: 7 }, (_, i) => watDay(now - (6 - i) * 24 * 3600_000));
 
     const [usersRes, daysRes, openRes] = await Promise.all([
-        supabase.from('platform_users').select('*'),
+        supabase.from('platform_users').select('id, email, name, role, status, last_login, last_active, is_online, org_id'),
         supabase.from('user_activity_days').select('email, day').gte('day', days[0]),
         supabase.from('cases').select('assigned_to').neq('status', 'resolved').not('assigned_to', 'is', null),
     ]);

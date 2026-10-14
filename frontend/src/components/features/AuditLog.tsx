@@ -11,9 +11,9 @@ import { apiUrl, apiFetch } from '@/lib/api';
 // logged yet" rather than showing invented activity. Instrumenting more routes is what fills
 // this in — don't re-add placeholder rows.
 //
-// The audit store is in-memory (lib/audit.ts), so it resets when the backend restarts. That is a
-// real limitation of the current implementation, not of this page — it needs a Supabase table
-// before this can be called a durable audit trail.
+// Entries come from the durable audit_log table once it exists (phase P2); until then the backend
+// serves its in-memory copy, which resets on restart. The response's `source` says which, and the
+// page says so when it is memory.
 
 type Severity = 'info' | 'warning' | 'critical';
 interface AuditEntry {
@@ -47,11 +47,13 @@ export function AuditLog() {
     const [severityFilter, setSeverityFilter] = useState<'all' | Severity>('all');
     const [entries, setEntries] = useState<AuditEntry[]>([]);
     const [loading, setLoading] = useState(true);
+    const [source, setSource] = useState<'database' | 'memory' | null>(null);
 
     useEffect(() => {
         apiFetch(apiUrl('/api/platform/audit-log?limit=100'), { cache: 'no-store' })
             .then((r) => r.json())
-            .then((data: { entries?: BackendAuditEntry[] }) => {
+            .then((data: { entries?: BackendAuditEntry[]; source?: 'database' | 'memory' }) => {
+                setSource(data.source ?? null);
                 setEntries((data.entries ?? []).map((e): AuditEntry => ({
                     // Backend timestamp is already ISO 8601 UTC — reformat in place rather than
                     // round-tripping through Date/toLocaleString, which would silently relabel
@@ -91,7 +93,10 @@ export function AuditLog() {
             <div className="flex items-start justify-between gap-4 flex-wrap">
                 <div>
                     <h1 className="text-lg font-black text-foreground">Audit Log</h1>
-                    <p className="text-xs text-foreground-muted">Platform Administration · Every admin action, permanently logged. Super admin only.</p>
+                    <p className="text-xs text-foreground-muted">Platform Administration · Recorded admin and security actions. Super admin only.</p>
+                    {source === 'memory' && (
+                        <p className="text-[11px] text-amber font-semibold mt-1">Showing this server&apos;s in-memory copy: the durable audit table is not available, so entries reset on restart.</p>
+                    )}
                 </div>
                 <button onClick={exportCsv} className="flex items-center gap-2 bg-orange hover:bg-orange-hover text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-colors flex-shrink-0">
                     <Download size={14} /> Export Log CSV

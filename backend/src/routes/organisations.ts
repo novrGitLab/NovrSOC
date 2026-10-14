@@ -19,6 +19,10 @@ import { requireRole, type AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
+// platform_users columns safe to return. Never select('*'): the table holds password hashes
+// and lockout state (phase P2).
+export const PUBLIC_USER_COLUMNS = 'id, org_id, email, name, role, status, last_login, created_at, updated_at, last_active, is_online';
+
 interface ComplianceFrameworkSelection {
     framework: string;
     enabled: boolean;
@@ -184,9 +188,11 @@ interface PlatformUserRow {
     role: string;
     status: string;
     last_login: string | null;
-    avatar_url: string | null;
     created_at: string;
     updated_at: string;
+    last_active: string | null;
+    is_online: boolean | null;
+
 }
 
 // GET /api/organisations — list all orgs (super_admin only)
@@ -369,7 +375,7 @@ router.get('/:id/users', async (req: AuthRequest, res) => {
             }
             orgUuid = org.id;
         }
-        const { data, error } = await supabase.from('platform_users').select('*').eq('org_id', orgUuid).order('created_at');
+        const { data, error } = await supabase.from('platform_users').select(PUBLIC_USER_COLUMNS).eq('org_id', orgUuid).order('created_at');
         if (error) throw error;
         res.json({ users: (data || []) as PlatformUserRow[] });
     } catch (err) {
@@ -416,15 +422,14 @@ router.post('/:id/users', requireRole('super_admin', 'soc_manager'), async (req:
 
         const { data, error } = await supabase
             .from('platform_users')
-            .insert({ org_id: orgUuid, email: email.trim().toLowerCase(), name: name || null, role, status: 'active' })
-            .select()
+            .insert({ org_id: orgUuid, email: email.trim().toLowerCase(), name: name || null, role, status: 'invited' })
+            .select(PUBLIC_USER_COLUMNS)
             .single();
 
         if (error) throw error;
-        // TODO: send a welcome email via services/email.ts once there's a real per-user login
-        // flow for them to land on — today only the single DEV_ADMIN_EMAIL/PASSWORD bypass can
-        // actually sign in (see routes/auth.ts), so a welcome email would link somewhere a new
-        // team member still couldn't use.
+        // New accounts start "invited" with no password; a super_admin issues a one-time link
+        // (POST /api/admin/users/:id/password-link) for them to set one. Not emailed
+        // automatically: the admin hands the link over directly.
         res.status(201).json(data);
     } catch (err) {
         console.error('[organisations] Add user error:', err);
