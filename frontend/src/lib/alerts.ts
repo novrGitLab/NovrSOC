@@ -28,6 +28,11 @@ export interface StoredAlert {
     received_at: string;
     status: StoredAlertStatus;
     case_id: string | null;
+    // Triage fields (phase P3); absent until the P3 SQL has run.
+    assigned_to?: string | null;
+    acknowledged_at?: string | null;
+    acknowledged_by?: string | null;
+    triage_note?: string | null;
 }
 
 export interface AlertStats {

@@ -18,7 +18,7 @@
 // admin nav. Their pages may still exist; they are simply not linked.
 import {
     LayoutDashboard, FileBarChart, Globe, Users, Shield, UserCheck, Smartphone, Code,
-    Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network,
+    Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network, ShieldCheck,
     Mail, MessageSquare, ShieldAlert, Activity, Zap, Siren,
     HardDrive, BarChart, CreditCard, Settings, BookOpen, FileText, ScrollText,
     ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor,
@@ -90,6 +90,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'vulnerabilities', label: 'Vulnerability Mgmt', href: '/admin/secops/vulnerabilities', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: Bug },
             { id: 'playbooks', label: 'Playbooks', href: '/admin/secops/playbooks', domain: 'secops', status: 'PARTIAL', roles: NOT_EXEC, icon: BookOpen },
             { id: 'soar', label: 'SOAR Automation', href: '/admin/secops/soar', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: Zap },
+            { id: 'response-approvals', label: 'Response Approvals', href: '/admin/secops/approvals', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: ShieldCheck },
             { id: 'security-assessment', label: 'Security Assessment', href: '/admin/secops/security-assessment', domain: 'secops', status: 'WORKING', roles: MANAGER_PLUS_EXEC, icon: ClipboardCheck },
             { id: 'secops-management', label: 'Sec Ops Management', href: '/admin/secops/management', domain: 'secops', status: 'PARTIAL', roles: MANAGER_ONLY, icon: Settings },
         ],

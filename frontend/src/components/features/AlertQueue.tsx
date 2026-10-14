@@ -2,12 +2,18 @@
 
 // Alerts — the stored, org-scoped alert table (GET /api/alerts, phase R2), fed by the SOAR
 // forwarder. Replaces the in-memory Wazuh list on this page. Triage writes
-// PATCH /api/alerts/:id/status (needs alerts:triage). Nothing here is sample data: an unavailable
-// store says "not connected", an empty one says "no data".
+// PATCH /api/alerts/:id/status (needs alerts:triage). Phase P3 adds search, assignment to real
+// accounts, acknowledgement, a triage note, the alert's history and promote-to-case
+// (POST /api/alerts/:id/case, which returns the existing case instead of opening a second one).
+// Nothing here is sample data: an unavailable store says "not connected", an empty one "no data".
+
 
 import { useCallback, useEffect, useState } from 'react';
-import { RefreshCw, Shield } from 'lucide-react';
+import Link from 'next/link';
+import { RefreshCw, Shield, Search } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
+import { getAdminUser } from '@/lib/admin-auth';
+import { AiPanel } from '@/components/shared/AiPanel';
 import type { Severity } from '@/lib/severity';
 import {
     fetchAlertStats, loadJson, watTime, STATUS_LABEL, STORED_ALERT_STATUSES,
@@ -30,6 +36,8 @@ const STATUS_STYLE: Record<StoredAlertStatus, string> = {
 };
 
 type Page = { alerts: StoredAlert[]; next_cursor: string | null };
+interface AlertEvent { at: string; actor: string; action: string; from_value: string | null; to_value: string | null; details: string | null }
+const EVENT_LABEL: Record<string, string> = { status: 'Status', assign: 'Assigned', acknowledge: 'Acknowledged', note: 'Note', case_link: 'Linked to case' };
 
 export function AlertQueue() {
     const [severity, setSeverity] = useState<'all' | Severity>('all');
@@ -45,14 +53,22 @@ export function AlertQueue() {
     const [busy, setBusy] = useState(false);
     const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
     const [reloadKey, setReloadKey] = useState(0);
+    const [search, setSearch] = useState('');
+    const [text, setText] = useState('');
+    const [assigned, setAssigned] = useState<'all' | 'me' | 'unassigned'>('all');
+    const [events, setEvents] = useState<AlertEvent[] | null>(null);
+    const [note, setNote] = useState('');
+    const me = getAdminUser();
 
     const query = useCallback((after: string | null) => {
         const p = new URLSearchParams({ limit: '50' });
         if (severity !== 'all') p.set('severity', severity);
         if (status !== 'all') p.set('status', status);
+        if (text) p.set('q', text);
+        if (assigned !== 'all') p.set('assigned', assigned);
         if (after) p.set('cursor', after);
         return `/api/alerts?${p.toString()}`;
-    }, [severity, status]);
+    }, [severity, status, text, assigned]);
 
     useEffect(() => {
         let active = true;
@@ -85,11 +101,58 @@ export function AlertQueue() {
         setBusy(false);
     }
 
+    async function loadEvents(id: string) {
+        const r = await loadJson<{ events: AlertEvent[] }>(`/api/alerts/${id}/events`);
+        setEvents(r.ok ? r.data.events : null);
+    }
+
     async function open(a: StoredAlert) {
         setSelected(a);
         setActionMsg(null);
+        setEvents(null);
+        setNote(a.triage_note ?? '');
         const r = await loadJson<{ alert: StoredAlert }>(`/api/alerts/${a.id}`);
-        if (r.ok) setSelected(r.data.alert);
+        if (r.ok) { setSelected(r.data.alert); setNote(r.data.alert.triage_note ?? ''); }
+        void loadEvents(a.id);
+    }
+
+    function merge(updated: StoredAlert) {
+        setAlerts((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)));
+        setSelected((s) => (s && s.id === updated.id ? { ...s, ...updated } : s));
+    }
+
+    async function triage(a: StoredAlert, body: Record<string, unknown>, done: string) {
+        setBusy(true);
+        setActionMsg(null);
+        try {
+            const r = await apiFetch(apiUrl(`/api/alerts/${a.id}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            const d = await r.json().catch(() => null);
+            if (!r.ok) { setActionMsg({ ok: false, text: r.status === 403 ? 'You do not have permission to triage alerts.' : d?.error ?? `HTTP ${r.status}` }); return; }
+            if (d?.alert) merge(d.alert as StoredAlert);
+            setActionMsg({ ok: true, text: done });
+            void loadEvents(a.id);
+        } catch {
+            setActionMsg({ ok: false, text: 'Could not reach the backend' });
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function promote(a: StoredAlert) {
+        setBusy(true);
+        setActionMsg(null);
+        try {
+            const r = await apiFetch(apiUrl(`/api/alerts/${a.id}/case`), { method: 'POST' });
+            const d = await r.json().catch(() => null);
+            if (!r.ok) { setActionMsg({ ok: false, text: d?.error ?? `HTTP ${r.status}` }); return; }
+            merge({ ...a, case_id: d.case.id });
+            setActionMsg({ ok: true, text: d.created ? `Case ${d.case.case_number} opened` : d.message ?? `In case ${d.case.case_number}` });
+            void loadEvents(a.id);
+        } catch {
+            setActionMsg({ ok: false, text: 'Could not reach the backend' });
+        } finally {
+            setBusy(false);
+        }
     }
 
     async function setAlertStatus(a: StoredAlert, next: StoredAlertStatus) {
@@ -107,6 +170,7 @@ export function AlertQueue() {
             setAlerts((prev) => prev.map((x) => (x.id === a.id ? { ...x, status: next } : x)));
             setSelected((s) => (s && s.id === a.id ? { ...s, status: next } : s));
             setActionMsg({ ok: true, text: `Marked ${STATUS_LABEL[next].toLowerCase()}` });
+            void loadEvents(a.id);
         } catch {
             setActionMsg({ ok: false, text: 'Could not reach the backend' });
         } finally {
@@ -163,6 +227,18 @@ export function AlertQueue() {
                         </button>
                     ))}
                 </div>
+                <div className="flex items-center gap-1 bg-card border border-border rounded-lg p-1">
+                    {(['all', 'me', 'unassigned'] as const).map((s) => (
+                        <button key={s} onClick={() => { setLoading(true); setAssigned(s); }}
+                            className={`text-[11px] font-bold px-2.5 py-1 rounded-md transition-colors ${assigned === s ? 'bg-blue text-white' : 'text-foreground-muted hover:text-foreground'}`}>
+                            {s === 'all' ? 'Anyone' : s === 'me' ? 'Mine' : 'Unassigned'}
+                        </button>
+                    ))}
+                </div>
+                <form onSubmit={(e) => { e.preventDefault(); setLoading(true); setText(search.trim()); }} className="flex items-center gap-1 bg-card border border-border rounded-lg px-2 py-1">
+                    <Search className="w-3.5 h-3.5 text-foreground-muted" />
+                    <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Rule, rule id or agent" aria-label="Search alerts" maxLength={100} className="bg-transparent text-[11px] text-foreground outline-none w-40" />
+                </form>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
@@ -230,6 +306,8 @@ export function AlertQueue() {
                                     ['Wazuh groups', selected.wazuh_groups?.length ? selected.wazuh_groups.join(', ') : '—'],
                                     ['Location', selected.location ?? '—'],
                                     ['Wazuh alert id', selected.wazuh_alert_id],
+                                    ['Assigned to', selected.assigned_to ?? 'Nobody'],
+                                    ['Acknowledged', selected.acknowledged_at ? `${watTime(selected.acknowledged_at)} by ${selected.acknowledged_by ?? '—'}` : 'No'],
                                 ].map(([k, v]) => (
                                     <div key={k}>
                                         <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">{k}</p>
@@ -257,8 +335,44 @@ export function AlertQueue() {
                                         {STATUS_LABEL[s]}
                                     </button>
                                 ))}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button disabled={busy || selected.assigned_to === me.email.toLowerCase()} onClick={() => void triage(selected, { assigned_to: me.email }, 'Assigned to you')}
+                                    className="text-[11px] font-bold text-foreground border border-border rounded-lg px-3 py-1.5 hover:bg-card-muted disabled:opacity-50">Assign to me</button>
+                                {selected.assigned_to && (
+                                    <button disabled={busy} onClick={() => void triage(selected, { assigned_to: null }, 'Unassigned')}
+                                        className="text-[11px] font-bold text-foreground-muted border border-border rounded-lg px-3 py-1.5 hover:bg-card-muted disabled:opacity-50">Unassign</button>
+                                )}
+                                <button disabled={busy || !!selected.acknowledged_at} onClick={() => void triage(selected, { acknowledged: true }, 'Acknowledged')}
+                                    className="text-[11px] font-bold text-foreground border border-border rounded-lg px-3 py-1.5 hover:bg-card-muted disabled:opacity-50">{selected.acknowledged_at ? 'Acknowledged' : 'Acknowledge'}</button>
+                                {selected.case_id ? (
+                                    <Link href={`/admin/secops/cases?case=${selected.case_id}`} className="text-[11px] font-bold text-purple border border-purple/40 rounded-lg px-3 py-1.5">Open case</Link>
+                                ) : (
+                                    <button disabled={busy} onClick={() => void promote(selected)}
+                                        className="text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1.5 disabled:opacity-50">Promote to case</button>
+                                )}
                                 {actionMsg && <span className={`text-[11px] font-bold ${actionMsg.ok ? 'text-emerald-500' : 'text-red-500'}`}>{actionMsg.text}</span>}
                             </div>
+                            <div className="space-y-1.5">
+                                <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">Triage note</p>
+                                <textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={4000} rows={2} aria-label="Triage note"
+                                    className="w-full bg-card-muted border border-border rounded-lg p-2 text-xs text-foreground" />
+                                <button disabled={busy || note === (selected.triage_note ?? '')} onClick={() => void triage(selected, { triage_note: note.trim() || null }, 'Note saved')}
+                                    className="text-[11px] font-bold text-foreground border border-border rounded-lg px-3 py-1.5 hover:bg-card-muted disabled:opacity-50">Save note</button>
+                            </div>
+                            <AiPanel key={selected.id} purpose="alert_summary" subjectId={selected.id} title="AI alert summary" />
+                            {events && events.length > 0 && (
+                                <div className="space-y-1">
+                                    <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">History</p>
+                                    {events.map((e, i) => (
+                                        <p key={i} className="text-[11px] text-foreground-muted">
+                                            {watTime(e.at)} · {e.actor} · {EVENT_LABEL[e.action] ?? e.action}
+                                            {e.to_value && e.action !== 'case_link' ? `: ${e.from_value ? `${e.from_value} → ` : ''}${e.to_value}` : ''}
+                                            {e.details ? ` — ${e.details}` : ''}
+                                        </p>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>

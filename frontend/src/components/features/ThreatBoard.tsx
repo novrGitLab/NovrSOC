@@ -94,7 +94,7 @@ export function ThreatBoard() {
             });
             const d = await res.json().catch(() => ({}));
             const text = d?.message ?? d?.error ?? `HTTP ${res.status}`;
-            setFeedback({ threatId: t.id, ok: !!d?.success, neutral: d?.outcome === 'skipped', text: d?.outcome === 'skipped' ? `Not done — ${text}` : text });
+            setFeedback({ threatId: t.id, ok: !!d?.success, neutral: d?.outcome === 'skipped' || d?.outcome === 'pending_approval', text: d?.outcome === 'skipped' ? `Not done — ${text}` : text });
             if (d?.success) setNonce((n) => n + 1);
         } catch {
             setFeedback({ threatId: t.id, ok: false, text: 'Could not reach the backend' });

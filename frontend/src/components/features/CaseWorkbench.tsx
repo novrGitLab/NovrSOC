@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { exportDataAsPDF } from '@/lib/exportPDF';
+import { AiPanel } from '@/components/shared/AiPanel';
 import {
     AlertTriangle, Clock, CheckCircle, RefreshCw, TrendingUp, FileText, ChevronRight, MessageSquarePlus,
     FileDown, Briefcase, Server, Terminal, UserCheck, ListChecks, Plus, X, UserPlus, BookOpen,
@@ -45,6 +46,7 @@ interface CaseItem {
     created_at: string;
     updated_at: string;
     resolved_at: string | null;
+    due_at?: string | null;
     tier: number;
     auto_closed: boolean;
     containment_done: boolean;
@@ -115,6 +117,11 @@ const NOTE_TYPE_STYLE: Record<NoteType, string> = {
     Decision: 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30',
     Escalation: 'bg-red-500/15 text-red-500 border-red-500/30',
 };
+
+/** An open case whose deadline has passed. */
+function isOverdue(c: { due_at?: string | null; status: string }): boolean {
+    return !!c.due_at && c.status !== 'resolved' && Date.parse(c.due_at) < Date.now();
+}
 
 const wat = (iso: string | null | undefined) =>
     iso ? `${new Date(iso).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} WAT` : '—';
@@ -294,6 +301,7 @@ export function CaseWorkbench() {
     }
 
     const updateStatus = (id: string, status: CaseStatus) => mutate(id, '', { method: 'PATCH', body: JSON.stringify({ status }) });
+    const setDeadline = (id: string, due: string | null) => mutate(id, '', { method: 'PATCH', body: JSON.stringify({ due_at: due }) });
     const assignAnalyst = async (id: string, email: string) => {
         const member = team?.find((m) => m.email === email);
         if (await mutate(id, '/assign', { method: 'POST', body: JSON.stringify({ analyst_id: email }) })) setActionOk(`Assigned to ${member?.name ?? email}`);
@@ -321,7 +329,7 @@ export function CaseWorkbench() {
             });
             const data = await res.json().catch(() => ({}));
             const text = data?.message ?? data?.error ?? `HTTP ${res.status}`;
-            setExecResult({ taskId: task.id, ok: Boolean(data?.success), text: data?.outcome === 'skipped' ? `Skipped — ${text}` : text });
+            setExecResult({ taskId: task.id, ok: Boolean(data?.success), text: data?.outcome === 'skipped' ? `Skipped — ${text}` : data?.outcome === 'pending_approval' ? `Waiting for approval — ${text}. Approve it under Security Operations → Approvals.` : text });
             await refreshDetail(caseId);
         } catch {
             setExecResult({ taskId: task.id, ok: false, text: 'Could not reach the backend' });
@@ -734,6 +742,20 @@ export function CaseWorkbench() {
                                                     ))}
                                                 </div>
                                             </div>
+
+                                            <div className="bg-card border border-border rounded-xl p-3 flex items-center gap-2 flex-wrap text-xs">
+                                                <span className="font-bold text-foreground">Deadline</span>
+                                                <span className={isOverdue(selected.case) ? 'text-red-500 font-bold' : 'text-foreground-muted'}>
+                                                    {selected.case.due_at ? wat(selected.case.due_at) : 'None set'}
+                                                    {isOverdue(selected.case) ? ' · overdue' : ''}
+                                                </span>
+                                                <input type="datetime-local" aria-label="Set deadline" className="bg-card-muted border border-border rounded px-2 py-1 text-[11px]"
+                                                    onChange={(e) => { if (e.target.value) void setDeadline(selected.case.id, new Date(e.target.value).toISOString()); }} />
+                                                {selected.case.due_at && <button onClick={() => void setDeadline(selected.case.id, null)} className="text-[11px] font-bold text-foreground-muted">Clear</button>}
+                                            </div>
+
+                                            <AiPanel key={selected.case.id} purpose="case_summary" subjectId={selected.case.id} title="AI case analysis"
+                                                purposes={[{ value: 'case_summary', label: 'Case summary' }, { value: 'case_handover', label: 'Shift handover' }, { value: 'incident_report', label: 'Incident report' }]} />
 
                                             <div className="bg-card border border-border rounded-xl p-4 sm:p-5 shadow-xs">
                                                 <h3 className="text-xs font-bold text-foreground uppercase tracking-wider mb-4 flex items-center gap-2">
