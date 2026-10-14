@@ -181,6 +181,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'analytics', label: 'Analytics', href: '/admin/settings/analytics', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: BarChart },
             { id: 'audit-log', label: 'Audit Log', href: '/admin/settings/audit', domain: 'settings', status: 'PARTIAL', roles: SUPER_ADMIN, icon: ScrollText },
             { id: 'export-clients', label: 'Export Clients', href: '/admin/settings/export-clients', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: KeyRound },
+            { id: 'wazuh-groups', label: 'Wazuh Groups', href: '/admin/settings/wazuh-groups', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: Network },
             { id: 'platform-health', label: 'Platform Health', href: '/admin/settings/health', domain: 'settings', status: 'WORKING', roles: MANAGER_ONLY, icon: Activity },
         ],
     },

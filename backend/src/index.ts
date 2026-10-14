@@ -55,6 +55,7 @@ import { startNigerianIntelJob } from './jobs/nigerianIntelJob';
 import { startGlobalIntelJob } from './jobs/globalIntelJob';
 import { startEmailSecurityJob } from './jobs/emailSecurityJob';
 import { startStellarPushJob } from './jobs/stellarPush';
+import { startAutoCaseJob } from './jobs/autoCase';
 import { announceJobPolicy } from './lib/runtimeEnv';
 import { announceVerificationSecret } from './services/emailsec/verification';
 import platformRouter from './routes/platform';
@@ -398,4 +399,7 @@ if (announceJobPolicy()) {
     // Push stored alerts to Stellar Cyber's webhook — jobs/stellarPush.ts. Off unless
     // STELLAR_PUSH_ENABLED=true and its URL, key and org list are set.
     startStellarPushJob();
+    // Open cases from stored alerts by documented rules — jobs/autoCase.ts. Off unless
+    // AUTO_CASE_ENABLED=true.
+    startAutoCaseJob();
 }

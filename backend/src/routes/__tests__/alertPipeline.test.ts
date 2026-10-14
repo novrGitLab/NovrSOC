@@ -116,7 +116,7 @@ test('an invalid alert is rejected on its own; the rest of the batch is stored',
     const badTime = wazuhAlert({ timestamp: 'yesterday' });
     const r = await ingest([good, bad, badTime]);
     assert.equal(r.status, 200);
-    assert.deepEqual(r.data, { accepted: 1, duplicates: 0, rejected: 2 });
+    assert.deepEqual(r.data, { accepted: 1, duplicates: 0, rejected: 2, quarantined: 0 });
     const reasons = db.tables.alert_ingest_rejects.map((x) => x.reason);
     assert.ok(reasons.includes('invalid: rule.level'), reasons.join());
     assert.ok(reasons.includes('invalid: timestamp'), reasons.join());
@@ -160,11 +160,11 @@ test('severity boundaries 13 / 10 / 7 on ingest', async () => {
     levels.forEach(([, expected], i) => assert.equal(db.tables.alerts.find((x) => x.wazuh_alert_id === batch[i].id)!.severity, expected, `level ${levels[i][0]}`));
 });
 
-test('an agent in no mapped group is rejected and recorded without its payload', async () => {
+test('an agent in no mapped group is rejected (reject row has no payload) and quarantined', async () => {
     const before = db.tables.alerts.length;
     const a = wazuhAlert({ groups: ['default', 'unknown-group'] });
     const r = await ingest([a]);
-    assert.deepEqual(r.data, { accepted: 0, duplicates: 0, rejected: 1 });
+    assert.deepEqual(r.data, { accepted: 0, duplicates: 0, rejected: 1, quarantined: 1 });
     assert.equal(db.tables.alerts.length, before);
     const rej = db.tables.alert_ingest_rejects.at(-1)!;
     assert.equal(rej.reason, 'unmapped_group');
@@ -176,7 +176,7 @@ test('an agent in no mapped group is rejected and recorded without its payload',
 test('groups that map to more than one org are rejected as ambiguous', async () => {
     const before = db.tables.alerts.length;
     const r = await ingest([wazuhAlert({ groups: ['acme-servers', 'beta-servers'] })]);
-    assert.deepEqual(r.data, { accepted: 0, duplicates: 0, rejected: 1 });
+    assert.deepEqual(r.data, { accepted: 0, duplicates: 0, rejected: 1, quarantined: 1 });
     assert.equal(db.tables.alerts.length, before);
     assert.equal(db.tables.alert_ingest_rejects.at(-1)!.reason, 'ambiguous_org');
     // Two groups of the same org are fine.
@@ -185,12 +185,12 @@ test('groups that map to more than one org are rejected as ambiguous', async () 
 
 test('dedupe: resending stored alerts, or repeating one in a batch, counts duplicates', async () => {
     const batch = [wazuhAlert(), wazuhAlert()];
-    assert.deepEqual((await ingest(batch)).data, { accepted: 2, duplicates: 0, rejected: 0 });
-    assert.deepEqual((await ingest(batch)).data, { accepted: 0, duplicates: 2, rejected: 0 });
+    assert.deepEqual((await ingest(batch)).data, { accepted: 2, duplicates: 0, rejected: 0, quarantined: 0 });
+    assert.deepEqual((await ingest(batch)).data, { accepted: 0, duplicates: 2, rejected: 0, quarantined: 0 });
     const c = wazuhAlert();
-    assert.deepEqual((await ingest([c, c])).data, { accepted: 1, duplicates: 1, rejected: 0 });
+    assert.deepEqual((await ingest([c, c])).data, { accepted: 1, duplicates: 1, rejected: 0, quarantined: 0 });
     // The same Wazuh id in another org's group is a different alert.
-    assert.deepEqual((await ingest([{ ...c, agent_groups: ['beta-servers'] }])).data, { accepted: 1, duplicates: 0, rejected: 0 });
+    assert.deepEqual((await ingest([{ ...c, agent_groups: ['beta-servers'] }])).data, { accepted: 1, duplicates: 0, rejected: 0, quarantined: 0 });
     assert.equal(db.tables.alerts.filter((a) => a.wazuh_alert_id === c.id).length, 2);
 });
 
