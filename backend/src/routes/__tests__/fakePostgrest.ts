@@ -113,7 +113,10 @@ function parseSelect(select: string | null): { cols: string[] | null; embeds: Em
 const pick = (row: Row, cols: string[] | null) => (cols ? Object.fromEntries(cols.map((c) => [c, row[c] ?? null])) : { ...row });
 
 /** `defaults`: per-table column defaults applied on insert, like the real tables' DEFAULTs. */
-export async function startFakePostgrest(tables: Record<string, Row[]> = {}, relations: Record<string, string> = {}, defaults: Record<string, Row> = {}): Promise<FakePostgrest> {
+/** A test-supplied stand-in for a Postgres function called through POST /rest/v1/rpc/<name>. */
+export type FakeRpc = (args: Record<string, unknown>, tables: Record<string, Row[]>) => unknown;
+
+export async function startFakePostgrest(tables: Record<string, Row[]> = {}, relations: Record<string, string> = {}, defaults: Record<string, Row> = {}, rpcs: Record<string, FakeRpc> = {}): Promise<FakePostgrest> {
     const rel = { ...DEFAULT_RELATIONS, ...relations };
     const log: string[] = [];
 
@@ -127,6 +130,14 @@ export async function startFakePostgrest(tables: Record<string, Row[]> = {}, rel
                 res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
                 res.end(payload === undefined || req.method === 'HEAD' ? '' : JSON.stringify(payload));
             };
+            const rpc = url.pathname.match(/^\/rest\/v1\/rpc\/([\w]+)$/);
+            if (rpc) {
+                const fn = rpcs[rpc[1]];
+                log.push(`RPC ${rpc[1]}`);
+                if (!fn) { send(404, { message: `Could not find the function public.${rpc[1]}` }); return; }
+                send(200, fn(body ? JSON.parse(body) : {}, tables));
+                return;
+            }
             if (!m) { send(404, { message: 'not found' }); return; }
             const table = m[1];
             log.push(`${req.method} ${table}?${decodeURIComponent(url.searchParams.toString())}`);

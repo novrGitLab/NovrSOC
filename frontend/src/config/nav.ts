@@ -18,7 +18,7 @@
 // admin nav. Their pages may still exist; they are simply not linked.
 import {
     LayoutDashboard, FileBarChart, Globe, Users, Shield, UserCheck, Smartphone, Code,
-    Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network, ShieldCheck,
+    Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network, ShieldCheck, Radar, ScanSearch,
     Mail, MessageSquare, ShieldAlert, Activity, Zap, Siren,
     HardDrive, BarChart, CreditCard, Settings, BookOpen, FileText, ScrollText,
     ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor,
@@ -29,7 +29,7 @@ import type { NavGroup, NavItem, NavRole } from '@/components/layout/Sidebar';
 
 export type NavStatus = 'WORKING' | 'PARTIAL' | 'MOCK' | 'BROKEN' | 'PLANNED';
 export type NavDomain =
-    | 'overview' | 'secops' | 'threat-intel' | 'cnii' | 'brand' | 'infra' | 'email'
+    | 'overview' | 'secops' | 'vms' | 'threat-intel' | 'cnii' | 'brand' | 'infra' | 'email'
     | 'compliance' | 'ai' | 'data' | 'clients' | 'settings' | 'account';
 
 export interface NavItemConfig {
@@ -54,6 +54,8 @@ const NOT_EXEC: NavRole[] = ['super_admin', 'soc_manager', 'analyst'];
 const MANAGER_PLUS_EXEC: NavRole[] = ['super_admin', 'soc_manager', 'executive'];
 const MANAGER_ONLY: NavRole[] = ['super_admin', 'soc_manager'];
 const SUPER_ADMIN: NavRole[] = ['super_admin'];
+// VMS is readable by executives too (their organisation's attack surface and risk).
+const VMS_READ: NavRole[] = ['super_admin', 'soc_manager', 'analyst', 'executive'];
 
 const CNII_SECTORS: [string, string, LucideIcon][] = [
     ['power', 'Power & Energy', Zap],
@@ -87,12 +89,24 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'alerts', label: 'Alerts', href: '/admin/secops/alerts', domain: 'secops', status: 'PARTIAL', roles: NOT_EXEC, icon: Bell },
             { id: 'threats', label: 'Threats', href: '/admin/secops/threats', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: ShieldAlert },
             { id: 'mitre', label: 'MITRE Intelligence', href: '/admin/secops/mitre', domain: 'secops', status: 'PARTIAL', roles: NOT_EXEC, icon: Shield },
-            { id: 'vulnerabilities', label: 'Vulnerability Mgmt', href: '/admin/secops/vulnerabilities', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: Bug },
             { id: 'playbooks', label: 'Playbooks', href: '/admin/secops/playbooks', domain: 'secops', status: 'PARTIAL', roles: NOT_EXEC, icon: BookOpen },
             { id: 'soar', label: 'SOAR Automation', href: '/admin/secops/soar', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: Zap },
             { id: 'response-approvals', label: 'Response Approvals', href: '/admin/secops/approvals', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: ShieldCheck },
             { id: 'security-assessment', label: 'Security Assessment', href: '/admin/secops/security-assessment', domain: 'secops', status: 'WORKING', roles: MANAGER_PLUS_EXEC, icon: ClipboardCheck },
             { id: 'secops-management', label: 'Sec Ops Management', href: '/admin/secops/management', domain: 'secops', status: 'PARTIAL', roles: MANAGER_ONLY, icon: Settings },
+        ],
+    },
+    {
+        // Phase P4: attack surface, authorised scope and scans. The Wazuh endpoint inventory and
+        // Wazuh vulnerability pages moved here from Infrastructure and Security Operations.
+        section: 'Vulnerability Management', collapsible: true, icon: Radar, groupLabel: 'Vulnerability Management',
+        items: [
+            { id: 'vms-overview', label: 'Overview', href: '/admin/vms', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Radar },
+            { id: 'vms-assets', label: 'Attack Surface', href: '/admin/vms/assets', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Globe },
+            { id: 'digital-assets', label: 'Wazuh Endpoints', href: '/admin/infra/assets', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: Monitor },
+            { id: 'vulnerabilities', label: 'Wazuh Vulnerabilities', href: '/admin/secops/vulnerabilities', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: Bug },
+            { id: 'vms-scans', label: 'Scans', href: '/admin/vms/scans', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: ScanSearch },
+            { id: 'vms-scope', label: 'Authorised Scope', href: '/admin/vms/scope', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: ShieldCheck },
         ],
     },
     {
@@ -130,7 +144,6 @@ export const ADMIN_NAV: NavSectionConfig[] = [
     {
         section: 'Infrastructure & Assets', collapsible: true, icon: Server, groupLabel: 'Infrastructure & Assets',
         items: [
-            { id: 'digital-assets', label: 'Digital Assets', href: '/admin/infra/assets', domain: 'infra', status: 'WORKING', roles: NOT_EXEC, icon: Monitor },
             { id: 'cloud-assets', label: 'Cloud Assets', href: '/admin/infra/cloud', domain: 'infra', status: 'PARTIAL', roles: NOT_EXEC, icon: Cloud },
         ],
     },

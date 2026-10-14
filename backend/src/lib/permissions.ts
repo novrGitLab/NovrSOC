@@ -23,6 +23,12 @@ export const PERMISSIONS = [
     'response:contain',
     'response:approve',
     'handover:write',
+    // VMS (phase P4): read inventory/findings, queue scans, approve authorised scope, manage
+    // findings and remediation.
+    'vms:read',
+    'vms:scan',
+    'vms:scope',
+    'vms:manage',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -34,8 +40,9 @@ export type Permission = (typeof PERMISSIONS)[number];
 export const ROLE_PERMISSIONS: Readonly<Record<UserRole, readonly Permission[]>> = {
     super_admin: PERMISSIONS,
     soc_manager: PERMISSIONS,
-    analyst: ['alerts:read', 'alerts:triage', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write'],
-    executive: [],
+    analyst: ['alerts:read', 'alerts:triage', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write', 'vms:read', 'vms:scan', 'vms:manage'],
+    // Executives see their organisation's attack surface and risk; they change nothing.
+    executive: ['vms:read'],
     portal_user: [],
 };
 

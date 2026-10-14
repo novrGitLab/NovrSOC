@@ -27,13 +27,16 @@ before(() => {
 });
 after(() => { server.close(); });
 
-test('role map: managers hold every SecOps permission; executive and portal_user hold none', () => {
+test('role map: managers hold every permission; executives only read VMS; portal_user holds none', () => {
     assert.deepEqual([...ROLE_PERMISSIONS.super_admin], [...PERMISSIONS]);
     assert.deepEqual([...ROLE_PERMISSIONS.soc_manager], [...PERMISSIONS]);
-    assert.deepEqual([...ROLE_PERMISSIONS.executive], []);
+    assert.deepEqual([...ROLE_PERMISSIONS.executive], ['vms:read']);
+    assert.ok(!ROLE_PERMISSIONS.executive.some((p) => /^(alerts|cases|response|handover):/.test(p)), 'no SecOps access for executives');
     assert.deepEqual([...ROLE_PERMISSIONS.portal_user], []);
     assert.equal(hasPermission('analyst', 'response:contain'), true);
     assert.equal(hasPermission('analyst', 'response:approve'), false);
+    assert.equal(hasPermission('analyst', 'vms:scan'), true);
+    assert.equal(hasPermission('analyst', 'vms:scope'), false, 'approving what may be scanned is a manager decision');
 });
 
 test('unknown or missing roles hold no permissions', () => {

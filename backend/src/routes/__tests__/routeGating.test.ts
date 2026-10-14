@@ -33,6 +33,7 @@ const NO_MOUNT_GATE: Record<string, { reason: string; router?: string }> = {
     '/api/email-security': { reason: 'gated in router; the Microsoft 365 consent callback must be public', router: 'routes/emailSecurity.ts' },
     '/api/email': { reason: 'gated per route; the Mailgun DMARC inbox uses its own signature', router: 'routes/email.ts' },
     '/api/email-proxy': { reason: 'gated per route; the mail-gateway feed uses its own token', router: 'routes/emailProxy.ts' },
+    '/api/vms/worker': { reason: 'machine credential (VMS_WORKER_TOKEN) for the scanner worker', router: 'routes/vmsWorker.ts' },
 };
 
 const mounts = [...index.matchAll(/^app\.use\('(\/api[^']*)'(.*)$/gm)].map((m) => ({ path: m[1], rest: m[2] }));
@@ -60,7 +61,7 @@ test('"gated in router" entries really apply a gate in their router', () => {
     for (const [p, { router }] of Object.entries(NO_MOUNT_GATE)) {
         if (!router) continue;
         const src = readFileSync(path.join(SRC, router), 'utf8');
-        const hasGate = GATE.test(src) || /requireIngestToken|authenticate|requireEngineToken|verify/i.test(src);
+        const hasGate = GATE.test(src) || /requireIngestToken|requireWorkerToken|authenticate|requireEngineToken|verify/i.test(src);
         assert.ok(hasGate, `${p}: ${router} applies no gate`);
     }
 });

@@ -1,0 +1,133 @@
+'use client';
+
+// Attack surface inventory (phase P4) — every hostname and IP the scanners found inside authorised
+// scope, with services, technologies and change history. Owner and criticality are set by people
+// (they drive risk prioritisation in Release 2); everything else is what the tools observed.
+
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Search, Globe } from 'lucide-react';
+import { apiUrl, apiFetch } from '@/lib/api';
+import { loadJson } from '@/lib/alerts';
+import { fmtWat, CRIT_STYLE, EVENT_LABEL, describeEvent, type VmsAsset, type VmsService, type VmsTech, type VmsEvent } from '@/lib/vms';
+
+interface Detail { asset: VmsAsset; services: VmsService[]; technologies: VmsTech[]; events: VmsEvent[] }
+
+export function VmsAssets() {
+    const params = useSearchParams();
+    const [exposure, setExposure] = useState(params.get('exposure') ?? 'all');
+    const [status, setStatus] = useState('active');
+    const [search, setSearch] = useState('');
+    const [text, setText] = useState('');
+    const [assets, setAssets] = useState<VmsAsset[] | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [detail, setDetail] = useState<Detail | null>(null);
+    const [msg, setMsg] = useState<string | null>(null);
+
+    useEffect(() => {
+        let active = true;
+        const p = new URLSearchParams();
+        if (exposure !== 'all') p.set('exposure', exposure);
+        if (status !== 'all') p.set('status', status);
+        if (text) p.set('q', text);
+        void loadJson<{ assets: VmsAsset[] }>(`/api/vms/assets?${p.toString()}`).then((r) => {
+            if (!active) return;
+            setAssets(r.ok ? r.data.assets : null);
+            setError(r.ok ? null : r.error);
+        });
+        return () => { active = false; };
+    }, [exposure, status, text]);
+
+    async function open(a: VmsAsset) {
+        setMsg(null);
+        const r = await loadJson<Detail>(`/api/vms/assets/${a.id}`);
+        setDetail(r.ok ? r.data : null);
+    }
+    async function patch(body: Record<string, unknown>) {
+        if (!detail) return;
+        const r = await apiFetch(apiUrl(`/api/vms/assets/${detail.asset.id}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const d = await r.json().catch(() => null);
+        if (!r.ok) { setMsg(d?.error ?? `HTTP ${r.status}`); return; }
+        setDetail({ ...detail, asset: d.asset });
+        setAssets((prev) => prev?.map((x) => (x.id === d.asset.id ? d.asset : x)) ?? prev);
+        setMsg('Saved');
+    }
+
+    const chip = (on: boolean) => `text-[11px] font-bold px-2.5 py-1 rounded-md ${on ? 'bg-blue text-white' : 'text-foreground-muted hover:text-foreground'}`;
+    return (
+        <div className="space-y-4">
+            <div>
+                <h1 className="text-lg font-black text-foreground flex items-center gap-2"><Globe className="w-5 h-5" /> Attack Surface</h1>
+                <p className="text-xs text-foreground-muted">Hostnames and IP addresses found inside authorised scope, with what they expose.</p>
+            </div>
+            <div className="flex flex-wrap gap-2 items-center">
+                <div className="flex gap-1 bg-card border border-border rounded-lg p-1">{['all', 'internet', 'internal', 'unknown'].map((x) => <button key={x} onClick={() => setExposure(x)} className={chip(exposure === x)}>{x === 'all' ? 'Any exposure' : x}</button>)}</div>
+                <div className="flex gap-1 bg-card border border-border rounded-lg p-1">{['active', 'gone', 'all'].map((x) => <button key={x} onClick={() => setStatus(x)} className={chip(status === x)}>{x}</button>)}</div>
+                <form onSubmit={(e) => { e.preventDefault(); setText(search.trim()); }} className="flex items-center gap-1 bg-card border border-border rounded-lg px-2 py-1">
+                    <Search className="w-3.5 h-3.5 text-foreground-muted" />
+                    <input aria-label="Search assets" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="hostname or IP" className="bg-transparent text-[11px] outline-none w-40" />
+                </form>
+            </div>
+            {error && <p role="alert" className="text-xs text-red font-semibold">{error}</p>}
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                <div className="lg:col-span-2 bg-card border border-border rounded-xl overflow-hidden">
+                    {assets === null && !error && <div className="h-24 bg-card-muted animate-pulse" />}
+                    {assets && assets.length === 0 && <p className="text-sm text-foreground-muted text-center py-10">No data — no assets{text || exposure !== 'all' ? ' for these filters' : ' found yet; run a discovery scan'}.</p>}
+                    <div className="max-h-[640px] overflow-y-auto divide-y divide-border">
+                        {assets?.map((a) => (
+                            <button key={a.id} onClick={() => void open(a)} className={`w-full text-left p-3 hover:bg-card-muted ${detail?.asset.id === a.id ? 'bg-card-muted' : ''}`}>
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-xs font-bold font-mono text-foreground break-all">{a.value}</span>
+                                    <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${CRIT_STYLE[a.criticality]}`}>{a.criticality}</span>
+                                </div>
+                                <p className="text-[10px] text-foreground-muted mt-1">{a.exposure} · {a.ips.join(', ') || 'no IP'} · {a.http?.status ? `HTTP ${a.http.status}` : 'no HTTP'} · seen {fmtWat(a.last_seen)}{a.status === 'gone' ? ' · gone' : ''}</p>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+                <div className="lg:col-span-3 bg-card border border-border rounded-xl p-4">
+                    {!detail ? <p className="text-xs text-foreground-muted text-center py-10">Select an asset.</p> : (
+                        <div className="space-y-4 text-xs">
+                            <div>
+                                <h2 className="text-sm font-black font-mono text-foreground break-all">{detail.asset.value}</h2>
+                                <p className="text-foreground-muted">{detail.asset.asset_type} · {detail.asset.exposure} · first seen {fmtWat(detail.asset.first_seen)} · last seen {fmtWat(detail.asset.last_seen)} · found by {detail.asset.discovery_sources.join(', ')}</p>
+                            </div>
+                            <div className="flex flex-wrap gap-3 items-end">
+                                <label className="text-[11px] font-bold text-foreground-muted">Owner
+                                    <input key={detail.asset.id} defaultValue={detail.asset.owner ?? ''} onBlur={(e) => { if (e.target.value !== (detail.asset.owner ?? '')) void patch({ owner: e.target.value.trim() || null }); }} className="block bg-card-muted border border-border rounded px-2 py-1 text-xs" placeholder="team or person" />
+                                </label>
+                                <label className="text-[11px] font-bold text-foreground-muted">Business criticality
+                                    <select value={detail.asset.criticality} onChange={(e) => void patch({ criticality: e.target.value })} className="block bg-card-muted border border-border rounded px-2 py-1 text-xs">
+                                        {['low', 'medium', 'high', 'critical'].map((c) => <option key={c} value={c}>{c}</option>)}
+                                    </select>
+                                </label>
+                                {msg && <span className="text-[11px] text-foreground-muted">{msg}</span>}
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div><p className="text-[10px] font-bold text-foreground-muted uppercase">IP addresses</p><p className="font-mono">{detail.asset.ips.join(', ') || '—'}</p></div>
+                                <div><p className="text-[10px] font-bold text-foreground-muted uppercase">CNAME</p><p className="font-mono">{detail.asset.dns?.cname?.join(', ') || '—'}</p></div>
+                                <div className="col-span-2"><p className="text-[10px] font-bold text-foreground-muted uppercase">HTTP</p><p>{detail.asset.http ? `${detail.asset.http.url} · ${detail.asset.http.status ?? '—'} · ${detail.asset.http.title ?? 'no title'} · ${detail.asset.http.webserver ?? 'server unknown'}${detail.asset.http.cdn ? ` · CDN ${detail.asset.http.cdn}` : ''}` : 'No web service seen'}</p></div>
+                            </div>
+                            <div>
+                                <p className="text-[10px] font-bold text-foreground-muted uppercase mb-1">Services</p>
+                                {detail.services.length === 0 ? <p className="text-foreground-muted">None recorded (port scans need port-scan authorisation).</p> : (
+                                    <table className="w-full"><tbody>
+                                        {detail.services.map((s) => <tr key={s.id} className="border-t border-border"><td className="py-1 font-mono">{s.port}/{s.protocol}</td><td>{s.service ?? '—'}</td><td>{[s.product, s.version].filter(Boolean).join(' ') || '—'}</td><td className={s.status === 'gone' ? 'text-foreground-muted' : 'text-green'}>{s.status}</td></tr>)}
+                                    </tbody></table>
+                                )}
+                            </div>
+                            <div>
+                                <p className="text-[10px] font-bold text-foreground-muted uppercase mb-1">Technologies</p>
+                                <p>{detail.technologies.length ? detail.technologies.map((t) => `${t.name}${t.version ? ` ${t.version}` : ''}`).join(', ') : '—'}</p>
+                            </div>
+                            <div>
+                                <p className="text-[10px] font-bold text-foreground-muted uppercase mb-1">History</p>
+                                {detail.events.length === 0 ? <p className="text-foreground-muted">—</p> : detail.events.slice(0, 30).map((e) => <p key={e.id} className="text-foreground-muted">{fmtWat(e.at)} · {EVENT_LABEL[e.event] ?? e.event} · {describeEvent(e)}</p>)}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}

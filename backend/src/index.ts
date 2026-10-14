@@ -33,6 +33,8 @@ import pushStatusRouter from './routes/pushStatus';
 import usersRouter from './routes/users';
 import responseApprovalsRouter from './routes/responseApprovals';
 import aiRouter from './routes/ai';
+import vmsRouter from './routes/vms';
+import vmsWorkerRouter from './routes/vmsWorker';
 import wazuhGroupMapRouter from './routes/wazuhGroupMap';
 import threatManagementRouter from './routes/threatManagement';
 import publicRouter from './routes/public';
@@ -59,6 +61,7 @@ import { startGlobalIntelJob } from './jobs/globalIntelJob';
 import { startEmailSecurityJob } from './jobs/emailSecurityJob';
 import { startStellarPushJob } from './jobs/stellarPush';
 import { startAutoCaseJob } from './jobs/autoCase';
+import { startVmsMaintenanceJob } from './jobs/vmsMaintenance';
 import { announceJobPolicy } from './lib/runtimeEnv';
 import { announceVerificationSecret } from './services/emailsec/verification';
 import platformRouter from './routes/platform';
@@ -234,6 +237,8 @@ if (process.env.NODE_ENV === 'production') {
 app.use('/api/ingest', ingestRouter);
 // Vendor export (routes/exportApi.ts): machine credential, own kill switch and rate limits; GET only.
 app.use('/api/export/v1', exportApiRouter);
+// VMS scanner worker (routes/vmsWorker.ts): machine credential VMS_WORKER_TOKEN, own rate limit.
+app.use('/api/vms/worker', express.json({ limit: '2mb' }), vmsWorkerRouter);
 
 app.use(express.json());
 
@@ -327,6 +332,8 @@ app.use('/api/admin/users', requireAuth, requireRole('super_admin'), usersRouter
 app.use('/api/response-approvals', requireAuth, responseApprovalsRouter);
 // Claude-backed analysis (services/ai.ts). Advice only: never changes records or runs actions.
 app.use('/api/ai', requireAuth, aiRouter);
+// Vulnerability Management (routes/vms.ts) — attack surface, scope, scans.
+app.use('/api/vms', requireAuth, vmsRouter);
 // Security Assessment: posture from real case data.
 app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
 app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);
@@ -410,4 +417,6 @@ if (announceJobPolicy()) {
     // Open cases from stored alerts by documented rules — jobs/autoCase.ts. Off unless
     // AUTO_CASE_ENABLED=true.
     startAutoCaseJob();
+    // VMS scan queue upkeep: dead workers' jobs requeued/failed, expired-scope jobs cancelled.
+    startVmsMaintenanceJob();
 }
