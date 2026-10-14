@@ -3,7 +3,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { getAdminUser } from '@/lib/admin-auth';
-import { ASSIGNABLE_ANALYSTS } from '@/lib/mockTeam';
 import {
     CheckCircle, RefreshCw, Eye, Shield,
     ExternalLink, Crosshair, MessageSquarePlus, UserPlus, User,
@@ -113,6 +112,9 @@ export function ThreatManagement() {
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [showAssignMenu, setShowAssignMenu] = useState(false);
+    // Assignable analysts are the real platform users the backend lists for this org (the same
+    // source the admin Threats board uses) — never a hardcoded roster.
+    const [analysts, setAnalysts] = useState<string[]>([]);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [checkedAt, setCheckedAt] = useState<string | null>(null);
 
@@ -129,6 +131,19 @@ export function ThreatManagement() {
     useEffect(() => {
         let active = true;
         void fetchAlerts((r) => { if (active) apply(r); });
+        return () => { active = false; };
+    }, []);
+
+    useEffect(() => {
+        let active = true;
+        apiFetch(apiUrl('/api/communications/recipients'), { cache: 'no-store' })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => {
+                if (!active) return;
+                const names = Array.isArray(d?.analysts) ? d.analysts.map((a: { name?: string; email?: string }) => a.name || a.email || '').filter(Boolean) : [];
+                setAnalysts(names);
+            })
+            .catch(() => {});
         return () => { active = false; };
     }, []);
 
@@ -391,7 +406,10 @@ export function ThreatManagement() {
                                     </button>
                                     {showAssignMenu && (
                                         <div className="absolute right-0 top-full mt-1 bg-card border border-border rounded-lg shadow-lg z-10 w-40 overflow-hidden">
-                                            {ASSIGNABLE_ANALYSTS.map((name) => (
+                                            {analysts.length === 0 && (
+                                                <p className="text-[11px] text-foreground-muted px-3 py-2">No analysts available</p>
+                                            )}
+                                            {analysts.map((name) => (
                                                 <button
                                                     key={name}
                                                     onClick={() => assignAlert(selected.id, name)}

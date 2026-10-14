@@ -49,8 +49,8 @@ export function Header({ initials, onSignOut }: HeaderProps) {
 
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [open, setOpen] = useState(false);
-    // No per-user read-state on the backend (no per-user accounts to key it to yet — see
-    // lib/mockTeam.ts's header comment) — "read" is tracked client-side only, per browser, and
+    // No per-user read-state on the backend (sign-in is still one shared account, so there's
+    // nothing per-user to key it to) — "read" is tracked client-side only, per browser, and
     // resets on reload. Opening the dropdown marks whatever's currently loaded as seen; a
     // notification that's genuinely new on the next poll still counts toward the badge.
     const seenIds = useRef<Set<string>>(new Set());
