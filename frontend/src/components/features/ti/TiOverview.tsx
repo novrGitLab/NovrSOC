@@ -67,10 +67,10 @@ export function TiOverview() {
             {error && <p role="alert" className="text-xs text-red font-semibold">{error}</p>}
             {data && (
                 <>
-                    {data.feeds.some((f) => f.enabled && (f.failing || f.stale)) && (
+                    {data.feeds.some((f) => f.enabled && f.configured !== false && (f.failing || f.stale)) && (
                         <div className="rounded-xl p-3 border border-amber/30 bg-amber/10 text-xs text-amber font-semibold flex items-center gap-2">
                             <AlertTriangle className="w-4 h-4" />
-                            Coverage gap: {data.feeds.filter((f) => f.enabled && (f.failing || f.stale)).map((f) => f.name).join(', ')} {data.feeds.filter((f) => f.enabled && (f.failing || f.stale)).length === 1 ? 'is' : 'are'} failing or out of date. Matches from those sources may be missing.
+                            Coverage gap: {data.feeds.filter((f) => f.enabled && f.configured !== false && (f.failing || f.stale)).map((f) => f.name).join(', ')} {data.feeds.filter((f) => f.enabled && f.configured !== false && (f.failing || f.stale)).length === 1 ? 'is' : 'are'} failing or out of date. Matches from those sources may be missing.
                         </div>
                     )}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -91,7 +91,7 @@ export function TiOverview() {
                                         <td className="py-1.5 font-semibold">{f.name}</td>
                                         <td>{fmtWat(f.last_success_at)}</td>
                                         <td className="text-foreground-muted">{f.last_counts ? `${f.last_counts.fetched} fetched · ${f.last_counts.new} new · ${f.last_counts.invalid} invalid` : '—'}</td>
-                                        <td className={f.failing ? 'text-red' : f.stale ? 'text-amber' : 'text-green'}>{!f.enabled ? 'off' : f.failing ? `failing: ${f.last_error}` : f.stale ? 'stale' : 'current'}</td>
+                                        <td className={f.configured === false ? 'text-foreground-muted' : f.failing ? 'text-red' : f.stale ? 'text-amber' : 'text-green'}>{!f.enabled ? 'off' : f.configured === false ? 'not configured' : f.failing ? `failing: ${f.last_error}` : f.stale ? 'stale' : 'current'}</td>
                                         <td className="text-right"><button disabled={busy !== null} onClick={() => void run(f.id)} className="text-[11px] font-bold text-blue disabled:opacity-50 inline-flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${busy === f.id ? 'animate-spin' : ''}`} /> Run now</button></td>
                                     </tr>
                                 ))}

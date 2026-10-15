@@ -22,7 +22,7 @@ import { requestOrg } from '../lib/resolveOrg';
 import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid, createCase, addTimeline } from '../services/cases';
 import { logAudit } from '../lib/audit';
-import { runFeed, FEEDS, FEED_STALE_HOURS, normalizeIndicator, type IndicatorType } from '../services/threatInfo';
+import { runFeed, FEEDS, FEED_STALE_HOURS, feedConfigured, normalizeIndicator, type IndicatorType } from '../services/threatInfo';
 
 const router = Router();
 const P6_MISSING = 'The Threat Information System is not set up yet (run sql/2026-10-15_p6_threat_info.sql)';
@@ -56,6 +56,7 @@ router.get('/overview', requirePermission('intel:read'), async (req: AuthRequest
             ...f,
             stale: !f.last_success_at || Date.now() - Date.parse(f.last_success_at) > (FEED_STALE_HOURS[f.id] ?? 24) * 3_600_000,
             failing: !!f.last_error,
+            configured: feedConfigured(f.id),
         })),
     });
 });

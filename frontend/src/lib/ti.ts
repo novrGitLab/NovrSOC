@@ -6,7 +6,7 @@ export interface TiFeed {
     id: string; name: string; url: string; enabled: boolean; validity_days: number | null;
     last_run_at: string | null; last_success_at: string | null; last_error: string | null;
     last_counts: { fetched: number; new: number; updated: number; duplicates: number; invalid: number } | null;
-    stale?: boolean; failing?: boolean;
+    stale?: boolean; failing?: boolean; configured?: boolean;
 }
 export interface TiRun { id: string; feed_id: string; started_at: string; finished_at: string | null; status: 'running' | 'ok' | 'failed'; fetched: number; new: number; updated: number; duplicates: number; invalid: number; error: string | null }
 export interface TiIndicator {

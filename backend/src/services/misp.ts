@@ -278,3 +278,20 @@ export async function getMISPStats(): Promise<MISPStats> {
         };
     }
 }
+
+/**
+ * restSearch over attributes for the Threat Information feed (phase P9). Unlike mispFetch this
+ * throws with the reason, so a failed feed run says why instead of looking like "no data".
+ */
+export async function mispAttributeSearch(body: Record<string, unknown>, timeoutMs = 60_000): Promise<unknown> {
+    if (!isMISPConfigured()) throw new Error('MISP is not configured (MISP_URL, MISP_API_KEY)');
+    let res: Response;
+    try {
+        res = await mispRequest(`${normalizeBase()}/attributes/restSearch`, { method: 'POST', headers: mispHeaders(), body: JSON.stringify(body), timeoutMs });
+    } catch (err) {
+        throw new Error(`MISP could not be reached: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (res.status === 401 || res.status === 403) throw new Error(`MISP refused the API key (HTTP ${res.status})`);
+    if (!res.ok) throw new Error(`MISP answered HTTP ${res.status}`);
+    return res.json().catch(() => { throw new Error('MISP returned no JSON'); });
+}

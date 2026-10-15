@@ -7,7 +7,7 @@ import { getSupabase } from './geoEnrichment';
 import { pushConfig } from '../jobs/stellarPush';
 import { autoCaseConfig } from '../jobs/autoCase';
 import { readAuditLog } from '../lib/audit';
-import { FEED_STALE_HOURS } from './threatInfo';
+import { FEED_STALE_HOURS, feedConfigured } from './threatInfo';
 import { PASSIVE_RUNNER_ID } from '../lib/vmsScope';
 import { spiderfootConfigured } from '../lib/spiderfoot';
 import { openctiConfigured } from '../lib/opencti';
@@ -75,7 +75,8 @@ export async function pipelineChecks(): Promise<PipelineCheck[]> {
     const feeds = await supabase.from('ti_feeds').select('id, name, enabled, last_success_at, last_error');
     if (feeds.error) out.push({ name: 'Threat feeds', status: 'off', detail: 'Threat Information System tables not created yet' });
     else {
-        const on = (feeds.data ?? []).filter((f) => f.enabled);
+        // A feed whose connector is not configured (OpenCTI, MISP) is not running, not failing.
+        const on = (feeds.data ?? []).filter((f) => f.enabled && feedConfigured(f.id));
         const bad = on.filter((f) => f.last_error || !f.last_success_at || Date.now() - Date.parse(f.last_success_at) > (FEED_STALE_HOURS[f.id] ?? 24) * 3_600_000);
         out.push({
             name: 'Threat feeds',

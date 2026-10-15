@@ -6,6 +6,12 @@
 //   urlhaus    abuse.ch URLhaus — recent malware distribution URLs (same key)
 //   feodo      abuse.ch Feodo Tracker — botnet C2 IP blocklist (public)
 //   cisa_kev   CISA Known Exploited Vulnerabilities catalogue (public), also feeding cve_intel
+//   opencti    this platform's own OpenCTI: indicators with a simple STIX pattern (phase P9; needs
+//              OPENCTI_URL + OPENCTI_TOKEN). OpenCTI's confidence and labels are kept as its claims.
+//   misp       this platform's own MISP: to_ids attributes of the last day (phase P9; needs MISP_URL
+//              + MISP_API_KEY). The event NovrSOC itself writes to (MISP_NIGERIA_EVENT_ID) is left
+//              out, so the platform does not read its own collection back as a second source.
+// A feed whose connector is not configured is not run and shows as "not configured", not failing.
 // Each source record is kept as provenance (ti_indicator_sources) with exactly what that source
 // said: its own confidence (or none), its malware/threat labels, reporter and reference. An
 // indicator's ATT&CK techniques are only ids a source itself listed. Nothing is attributed to a
@@ -16,6 +22,8 @@
 import { isIP } from 'net';
 import { getSupabase } from './geoEnrichment';
 import { parseKev, KEV_URL, CVE_RE } from './cveIntel';
+import { openctiConfigured, openctiQuery } from '../lib/opencti';
+import { isMISPConfigured, mispAttributeSearch } from './misp';
 
 export type IndicatorType = 'ip' | 'domain' | 'url' | 'md5' | 'sha1' | 'sha256' | 'cve';
 export interface SourceRecord {
@@ -99,6 +107,93 @@ export function fromKev(json: unknown): SourceRecord[] {
     });
 }
 
+// ── OpenCTI and MISP (phase P9) ──────────────────────────────────────────────────────────────
+// Only single-comparison STIX patterns are indicators here; anything else is counted invalid.
+const STIX = /^\[\s*(ipv4-addr|ipv6-addr|domain-name|url|file)\s*:\s*(value|hashes\s*\.\s*'?(MD5|SHA-1|SHA1|SHA-256|SHA256)'?)\s*=\s*'((?:[^'\\]|\\.)*)'\s*\]$/i;
+export function stixToIndicator(pattern: string | null | undefined): { type: IndicatorType; value: string } | null {
+    const m = STIX.exec((pattern ?? '').trim());
+    if (!m) return null;
+    const obj = m[1].toLowerCase();
+    const value = m[4].replace(/\\(.)/g, '$1');
+    if (obj === 'ipv4-addr' || obj === 'ipv6-addr') return m[2].toLowerCase() === 'value' ? { type: 'ip', value: value.replace(/\/(32|128)$/, '') } : null;
+    if (obj === 'domain-name') return m[2].toLowerCase() === 'value' ? { type: 'domain', value } : null;
+    if (obj === 'url') return m[2].toLowerCase() === 'value' ? { type: 'url', value } : null;
+    const h = (m[3] ?? '').toUpperCase().replace('-', '');
+    return h === 'MD5' ? { type: 'md5', value } : h === 'SHA1' ? { type: 'sha1', value } : h === 'SHA256' ? { type: 'sha256', value } : null;
+}
+
+export const OPENCTI_INDICATORS_QUERY = `
+query NovrsocIndicators($filters: FilterGroup, $first: Int, $after: ID) {
+  indicators(first: $first, after: $after, filters: $filters, orderBy: updated_at, orderMode: desc) {
+    pageInfo { hasNextPage endCursor }
+    edges { node {
+      id standard_id name pattern pattern_type confidence revoked valid_from valid_until created updated_at
+      x_opencti_score indicator_types
+      createdBy { name }
+      objectLabel { value }
+      killChainPhases { kill_chain_name phase_name }
+    } }
+  }
+}`;
+
+interface OctiIndicator {
+    id: string; standard_id?: string; name?: string; pattern?: string; pattern_type?: string; confidence?: number | null; revoked?: boolean;
+    valid_from?: string | null; valid_until?: string | null; created?: string | null; updated_at?: string | null; x_opencti_score?: number | null;
+    indicator_types?: string[] | null; createdBy?: { name?: string } | null; objectLabel?: { value?: string }[] | { edges?: { node: { value?: string } }[] } | null;
+    killChainPhases?: { kill_chain_name?: string; phase_name?: string }[] | null;
+}
+const labelsOf = (l: OctiIndicator['objectLabel']): string[] => (Array.isArray(l) ? l.map((x) => x.value) : (l?.edges ?? []).map((e) => e.node.value)).filter((x): x is string => typeof x === 'string').map((x) => x.slice(0, 80)).slice(0, 30);
+
+/** OpenCTI indicators → records. Revoked ones are left out; complex patterns count as invalid. */
+export function fromOpenCti(json: unknown): SourceRecord[] {
+    const edges = (json as { indicators?: { edges?: { node: OctiIndicator }[] } })?.indicators?.edges;
+    if (!Array.isArray(edges)) throw new Error('OpenCTI: unexpected response');
+    return edges.map((e) => e.node).filter((n) => !n.revoked).map((n) => {
+        const ind = n.pattern_type === 'stix' ? stixToIndicator(n.pattern) : null;
+        const labels = labelsOf(n.objectLabel);
+        const conf = typeof n.confidence === 'number' && n.confidence >= 0 && n.confidence <= 100 ? n.confidence : null;
+        return {
+            type: ind?.type as IndicatorType, value: ind?.value ?? '', source_ref: n.standard_id ?? n.id, confidence: conf,
+            first_seen: toIso(n.valid_from ?? n.created ?? undefined), last_seen: toIso(n.updated_at ?? undefined) ?? toIso(n.valid_from ?? undefined),
+            tags: labels, malware: null, threat_type: n.indicator_types?.[0]?.slice(0, 60) ?? null,
+            context: {
+                name: n.name ?? null, author: n.createdBy?.name ?? null, opencti_score: n.x_opencti_score ?? null, valid_until: n.valid_until ?? null,
+                indicator_types: n.indicator_types ?? [], opencti_id: n.id,
+                techniques: [...labels, ...(n.killChainPhases ?? []).map((k) => String(k.phase_name ?? ''))].filter((t) => TECHNIQUE.test(t)),
+            },
+        };
+    });
+}
+
+const MISP_TYPES: Record<string, IndicatorType> = {
+    'ip-src': 'ip', 'ip-dst': 'ip', 'ip-src|port': 'ip', 'ip-dst|port': 'ip', domain: 'domain', hostname: 'domain', url: 'url',
+    md5: 'md5', sha1: 'sha1', sha256: 'sha256', vulnerability: 'cve',
+};
+export const MISP_FEED_TYPES = Object.keys(MISP_TYPES);
+
+/** MISP restSearch attributes → records. `excludeEvent` is the event NovrSOC itself writes to. */
+export function fromMisp(json: unknown, excludeEvent: string | null): SourceRecord[] {
+    const attrs = (json as { response?: { Attribute?: unknown } })?.response?.Attribute;
+    if (!Array.isArray(attrs)) throw new Error('MISP: unexpected response');
+    return (attrs as Record<string, unknown>[]).filter((a) => !excludeEvent || String(a.event_id) !== excludeEvent).map((a) => {
+        const type = MISP_TYPES[String(a.type)];
+        const raw = String(a.value ?? '');
+        const value = String(a.type).endsWith('|port') ? raw.split('|')[0] : raw;
+        const ts = typeof a.timestamp === 'string' || typeof a.timestamp === 'number' ? new Date(Number(a.timestamp) * 1000).toISOString() : null;
+        const ev = (a.Event ?? {}) as Record<string, unknown>;
+        const tags = Array.isArray(a.Tag) ? (a.Tag as { name?: string }[]).map((t) => String(t.name ?? '').slice(0, 80)).filter(Boolean).slice(0, 30) : [];
+        return {
+            type, value, source_ref: String(a.uuid ?? a.id ?? ''), confidence: null, first_seen: ts, last_seen: ts,
+            tags, malware: null, threat_type: typeof a.category === 'string' ? a.category.slice(0, 60) : null,
+            context: { event_id: a.event_id ?? null, event_info: typeof ev.info === 'string' ? ev.info.slice(0, 200) : null, comment: typeof a.comment === 'string' ? a.comment.slice(0, 300) : null, techniques: tags.map((t) => /T\d{4}(\.\d{3})?/.exec(t)?.[0]).filter((t): t is string => !!t) },
+        } as SourceRecord;
+    });
+}
+
+/** Feeds that need a connector, and whether it is configured. Others are always runnable. */
+export const FEED_CONFIGURED: Record<string, () => boolean> = { opencti: openctiConfigured, misp: isMISPConfigured };
+export const feedConfigured = (id: string) => (FEED_CONFIGURED[id] ? FEED_CONFIGURED[id]() : true);
+
 export const FEEDS: Record<string, { fetch: () => Promise<SourceRecord[]> }> = {
     threatfox: { fetch: async () => {
         const key = process.env.THREATFOX_API_KEY?.trim();
@@ -124,10 +219,30 @@ export const FEEDS: Record<string, { fetch: () => Promise<SourceRecord[]> }> = {
         if (!r.ok) throw new Error(`CISA KEV: HTTP ${r.status}`);
         return fromKev(await r.json());
     } },
+    // Indicators updated in the last 2 days (the feed runs every 6 h), up to 5 pages of 500.
+    opencti: { fetch: async () => {
+        if (!openctiConfigured()) throw new Error('OpenCTI is not configured (OPENCTI_URL, OPENCTI_TOKEN)');
+        const since = new Date(Date.now() - 2 * 86_400_000).toISOString();
+        const filters = { mode: 'and', filters: [{ key: ['updated_at'], values: [since], operator: 'gt' }], filterGroups: [] };
+        const out: SourceRecord[] = [];
+        let after: string | null = null;
+        for (let page = 0; page < 5; page++) {
+            const data: { indicators?: { pageInfo?: { hasNextPage?: boolean; endCursor?: string } } } = await openctiQuery(OPENCTI_INDICATORS_QUERY, { filters, first: 500, after });
+            out.push(...fromOpenCti(data));
+            const info = data.indicators?.pageInfo;
+            if (!info?.hasNextPage || !info.endCursor) break;
+            after = info.endCursor;
+        }
+        return out;
+    } },
+    misp: { fetch: async () => {
+        const json = await mispAttributeSearch({ returnFormat: 'json', to_ids: true, last: '1d', type: MISP_FEED_TYPES, limit: 5000, includeEventTags: false });
+        return fromMisp(json, (process.env.MISP_NIGERIA_EVENT_ID || '1').trim() || null);
+    } },
 };
 
 /** A feed is stale when it has not succeeded for this long (runs every 6 h; KEV daily). */
-export const FEED_STALE_HOURS: Record<string, number> = { threatfox: 12, urlhaus: 12, feodo: 12, cisa_kev: 48 };
+export const FEED_STALE_HOURS: Record<string, number> = { threatfox: 12, urlhaus: 12, feodo: 12, cisa_kev: 48, opencti: 12, misp: 12 };
 
 export interface RunCounts { fetched: number; new: number; updated: number; duplicates: number; invalid: number }
 
@@ -280,7 +395,8 @@ export async function correlateOrg(org: string): Promise<{ candidates: number; m
     const { data: assets } = await supabase.from('vms_assets').select('id, asset_type, value, ips').eq('org_id', org).eq('status', 'active').limit(5000);
     for (const a of assets ?? []) {
         for (const ip of a.ips ?? []) { const n = normalizeIndicator('ip', ip); if (n) cands.push({ type: 'ip', value: n, entity_type: 'asset', entity_id: a.id, field: 'ips' }); }
-        if (a.asset_type === 'host') { const n = normalizeIndicator('domain', a.value); if (n) cands.push({ type: 'domain', value: n, entity_type: 'asset', entity_id: a.id, field: 'hostname' }); }
+        if (a.asset_type === 'host' || a.asset_type === 'domain') { const n = normalizeIndicator('domain', a.value); if (n) cands.push({ type: 'domain', value: n, entity_type: 'asset', entity_id: a.id, field: 'hostname' }); }
+        if (a.asset_type === 'ip' && !(a.ips ?? []).length) { const n = normalizeIndicator('ip', a.value); if (n) cands.push({ type: 'ip', value: n, entity_type: 'asset', entity_id: a.id, field: 'value' }); }
     }
     const { data: findings } = await supabase.from('vms_findings').select('id, cve_ids').eq('org_id', org).in('status', ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened']).limit(10000);
     for (const f of findings ?? []) for (const c of f.cve_ids ?? []) cands.push({ type: 'cve', value: c, entity_type: 'finding', entity_id: f.id, field: 'cve_ids' });

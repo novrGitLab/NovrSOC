@@ -5,9 +5,10 @@
 //     against active indicators (services/threatInfo.ts correlateOrg)
 // Off with TI_ENABLED=false. ThreatFox and URLhaus need THREATFOX_API_KEY (an abuse.ch Auth-Key);
 // without it those runs fail and the feed's health says why — nothing is pretended.
+// OpenCTI and MISP (phase P9) run every 6 hours only when their connector is configured.
 
 import { getSupabase } from '../services/geoEnrichment';
-import { runFeed, expireIndicators, correlateOrg } from '../services/threatInfo';
+import { runFeed, expireIndicators, correlateOrg, feedConfigured } from '../services/threatInfo';
 
 export const lastThreatInfoRun: { correlation: Record<string, unknown> | null; at: string | null } = { correlation: null, at: null };
 
@@ -32,6 +33,7 @@ export function startThreatInfoJob(): void {
     };
     const feeds = (ids: string[]) => once(`feeds:${ids.join(',')}`, async () => {
         for (const id of ids) {
+            if (!feedConfigured(id)) continue;
             const r = await runFeed(id);
             console.log(`[ti] ${id}: ${r.status}${r.counts ? ` ${JSON.stringify(r.counts)}` : ''}${r.error ? ` — ${r.error}` : ''}`);
         }
@@ -45,7 +47,7 @@ export function startThreatInfoJob(): void {
         lastThreatInfoRun.correlation = result;
         lastThreatInfoRun.at = new Date().toISOString();
     });
-    const abuse = feeds(['threatfox', 'urlhaus', 'feodo']);
+    const abuse = feeds(['threatfox', 'urlhaus', 'feodo', 'opencti', 'misp']);
     const kev = feeds(['cisa_kev']);
     setTimeout(() => { void abuse().then(kev).then(correlate); }, 90_000).unref();
     setInterval(() => { void abuse(); }, 6 * 60 * 60_000).unref();
