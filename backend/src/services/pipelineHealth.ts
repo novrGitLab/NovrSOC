@@ -8,7 +8,7 @@ import { pushConfig } from '../jobs/stellarPush';
 import { autoCaseConfig } from '../jobs/autoCase';
 import { readAuditLog } from '../lib/audit';
 import { FEED_STALE_HOURS, feedConfigured } from './threatInfo';
-import { PASSIVE_RUNNER_ID } from '../lib/vmsScope';
+import { loadScannerStatus } from './vmsWorkers';
 import { spiderfootConfigured } from '../lib/spiderfoot';
 import { openctiConfigured } from '../lib/opencti';
 
@@ -93,16 +93,18 @@ export async function pipelineChecks(): Promise<PipelineCheck[]> {
 export async function vmsChecks(): Promise<PipelineCheck[]> {
     const supabase = getSupabase()!;
     const out: PipelineCheck[] = [];
-    // The backend's passive runner also heartbeats its jobs; only the scanner worker counts here.
-    const beat = await supabase.from('vms_scan_jobs').select('heartbeat_at').not('heartbeat_at', 'is', null).neq('worker_id', PASSIVE_RUNNER_ID).order('heartbeat_at', { ascending: false }).limit(1).maybeSingle();
-    if (beat.error) { out.push({ name: 'VMS scanner', status: 'off', detail: 'VMS tables not created yet' }); return out; }
     const queued = await supabase.from('vms_scan_jobs').select('requested_at').eq('status', 'queued').neq('kind', 'passive_osint').order('requested_at', { ascending: true }).limit(1).maybeSingle();
-    const last = beat.data?.heartbeat_at as string | undefined;
+    if (queued.error) { out.push({ name: 'VMS scanner', status: 'off', detail: 'VMS tables not created yet' }); return out; }
+    // Presence recorded from authenticated worker requests (services/vmsWorkers.ts), not a process check.
+    const s = await loadScannerStatus();
     const oldest = queued.data?.requested_at as string | undefined;
+    const via = s.source === 'job_heartbeat' ? ' (job heartbeats only: worker presence SQL not applied)' : '';
     out.push({
         name: 'VMS scanner',
-        status: !last ? (oldest ? 'down' : 'off') : Date.now() - Date.parse(last) < 15 * 60_000 ? 'up' : oldest ? 'down' : 'degraded',
-        detail: !last ? (oldest ? 'No worker has ever connected, and scans are waiting' : 'No worker installed yet') : `Last heartbeat ${ago(last)}`,
+        status: s.state === 'online' ? 'up' : s.state === 'never' ? (oldest ? 'down' : 'off') : oldest ? 'down' : 'degraded',
+        detail: s.state === 'online' ? `${s.online_workers} worker(s) online${s.workers.length ? `: ${s.workers.filter((w) => w.online).map((w) => w.worker_id).join(', ')}` : ''}; last seen ${ago(s.last_seen_at!)}${via}`
+            : s.state === 'never' ? (oldest ? 'No worker has ever connected, and scans are waiting' : 'No worker has connected yet')
+                : `No worker seen for ${Math.round(s.online_window_seconds / 60)} min; last seen ${ago(s.last_seen_at!)}${via}`,
     });
     const failed = await supabase.from('vms_scan_jobs').select('id', { count: 'exact', head: true }).eq('status', 'failed').gte('finished_at', new Date(Date.now() - 24 * H).toISOString());
     const waitH = oldest ? (Date.now() - Date.parse(oldest)) / H : 0;

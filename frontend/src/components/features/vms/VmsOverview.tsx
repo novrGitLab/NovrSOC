@@ -2,6 +2,8 @@
 
 // VMS overview (phase P4) — the attack-surface landing page: what is exposed, what changed in the
 // last 7 days, recent scans and whether the scanner worker is alive. All from /api/vms/overview.
+// "Connected" (phase P10) is the backend's record of authenticated worker requests (heartbeat or
+// job poll) within its online window — never a guess from a process running.
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -15,7 +17,22 @@ interface Overview {
     last_7_days: { new_assets: number; changed_assets: number; gone_assets: number; new_services: number };
     active_scopes: number;
     recent_scans: VmsScan[];
-    worker: { last_heartbeat_at: string | null; seen_recently: boolean };
+    worker: {
+        last_heartbeat_at: string | null; seen_recently: boolean;
+        // Phase P10 (absent from an older backend):
+        state?: 'online' | 'offline' | 'never'; source?: 'presence' | 'job_heartbeat' | 'none';
+        online_workers?: number; online_window_seconds?: number; workers?: WorkerInfo[];
+    };
+}
+interface WorkerInfo {
+    worker_id: string; online: boolean; kinds: string[]; tools: Record<string, boolean>; version: string | null;
+    last_seen_at: string; last_heartbeat_at: string | null; last_claim_at: string | null; last_job_at: string | null;
+}
+
+/** Tools a worker needs for the kinds it runs, that it reported as missing. */
+function missingTools(w: WorkerInfo): string[] {
+    const need: Record<string, string[]> = { discovery: ['subfinder', 'dnsx', 'httpx'], ports: ['nmap'], vuln_nuclei: ['nuclei'], vuln_openvas: ['openvas'] };
+    return [...new Set(w.kinds.flatMap((k) => need[k] ?? []))].filter((t) => w.tools[t] === false);
 }
 
 function Tile({ label, value, href }: { label: string; value: number | string; href?: string }) {
@@ -56,7 +73,35 @@ export function VmsOverview() {
                     {!data.worker.seen_recently && (
                         <div className="rounded-xl p-3 border border-amber/30 bg-amber/10 text-xs text-amber font-semibold flex items-center gap-2">
                             <AlertTriangle className="w-4 h-4" />
-                            {data.worker.last_heartbeat_at ? `The scanner worker was last seen ${fmtWat(data.worker.last_heartbeat_at)}. Queued scans will wait until it is back.` : 'No scanner worker has connected yet. Scans can be queued but will not run until one is installed.'}
+                            {data.worker.last_heartbeat_at
+                                ? `No scanner worker has been heard from for ${Math.round((data.worker.online_window_seconds ?? 900) / 60)} minutes; last seen ${fmtWat(data.worker.last_heartbeat_at)}. Queued scans will wait until one is back.`
+                                : 'No scanner worker has connected yet: the backend has not accepted a request from one. A worker process that is running but cannot authenticate does not count. Scans can be queued but will not run until one connects.'}
+                        </div>
+                    )}
+                    {data.worker.source === 'job_heartbeat' && (
+                        <p className="text-[11px] text-foreground-muted">Worker status is read from scan-job heartbeats only, so an idle worker cannot be seen. Apply sql/2026-10-18_p10_vms_worker_presence.sql to record worker presence.</p>
+                    )}
+                    {data.worker.workers && data.worker.workers.length > 0 && (
+                        <div className="bg-card border border-border rounded-xl p-4">
+                            <h2 className="text-sm font-black text-foreground mb-2">Scanner workers</h2>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-xs">
+                                    <thead><tr className="text-left text-foreground-muted"><th className="py-1 pr-3">Worker</th><th className="pr-3">Status</th><th className="pr-3">Last seen</th><th className="pr-3">Last poll</th><th className="pr-3">Last job</th><th className="pr-3">Runs</th><th>Missing tools</th></tr></thead>
+                                    <tbody>
+                                        {data.worker.workers.map((w) => (
+                                            <tr key={w.worker_id} className="border-t border-border">
+                                                <td className="py-1.5 pr-3 font-mono text-foreground">{w.worker_id}{w.version ? <span className="text-foreground-muted"> v{w.version}</span> : null}</td>
+                                                <td className="pr-3"><span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${w.online ? 'bg-green/10 text-green' : 'bg-amber/10 text-amber'}`}>{w.online ? 'connected' : 'not heard from'}</span></td>
+                                                <td className="pr-3">{fmtWat(w.last_seen_at)}</td>
+                                                <td className="pr-3">{fmtWat(w.last_claim_at)}</td>
+                                                <td className="pr-3">{fmtWat(w.last_job_at)}</td>
+                                                <td className="pr-3">{w.kinds.join(', ') || '—'}</td>
+                                                <td className={missingTools(w).length ? 'text-amber font-semibold' : 'text-foreground-muted'}>{missingTools(w).join(', ') || 'none'}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     )}
                     {data.active_scopes === 0 && (

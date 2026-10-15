@@ -58,6 +58,19 @@ async function main() {
         }
     }
 
+    // Scanner worker API (P4/P10): deployed and refusing a request without the worker token. The body
+    // is empty and unauthenticated, so the backend rejects it before reading anything; no job can be claimed.
+    for (const path of ['/api/vms/worker/claim', '/api/vms/worker/heartbeat']) {
+        try {
+            const r = await fetch(`${API}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(30_000) });
+            const st = r.status;
+            results.push({ check: `Worker ${path.split('/').pop()} without token refused`, outcome: st === 401 ? 'PASS' : st === 404 ? 'NOT SET UP' : 'FAIL',
+                detail: st === 401 ? 'HTTP 401 (worker token configured on the backend)' : st === 503 ? 'HTTP 503: VMS_WORKER_TOKEN is not set (or shorter than 32) on the backend' : st === 404 ? 'HTTP 404: route not deployed' : `HTTP ${st}` });
+        } catch (err) {
+            results.push({ check: `Worker ${path} without token refused`, outcome: 'FAIL', detail: err instanceof Error ? err.message : String(err) });
+        }
+    }
+
     // Per phase, authenticated, read-only
     await probe('Platform health and pipelines (P2)', '/api/platform/health', (b) => {
         const p = (b.pipelines ?? []) as { name: string; status: string }[];
@@ -69,8 +82,9 @@ async function main() {
     await probe('Response approvals (P3)', '/api/response-approvals');
     await probe('AI service (P3)', '/api/ai/health', (b) => `model ${String(b.model)}: ${String(b.detail)}`, (b) => b.reachable === true);
     await probe('VMS attack surface (P4)', '/api/vms/overview', (b) => {
-        const w = b.worker as { seen_recently?: boolean; last_heartbeat_at?: string | null } | undefined;
-        return `active scopes ${String(b.active_scopes ?? '?')}; scanner worker ${w?.seen_recently ? 'connected' : w?.last_heartbeat_at ? `last seen ${w.last_heartbeat_at}` : 'never connected'}`;
+        const w = b.worker as { seen_recently?: boolean; last_heartbeat_at?: string | null; source?: string; workers?: { worker_id: string; online: boolean }[] } | undefined;
+        const ids = (w?.workers ?? []).filter((x) => x.online).map((x) => x.worker_id).join(', ');
+        return `active scopes ${String(b.active_scopes ?? '?')}; scanner worker ${w?.seen_recently ? `connected${ids ? ` (${ids})` : ''}` : w?.last_heartbeat_at ? `last seen ${w.last_heartbeat_at}` : 'never connected'}${w?.source === 'job_heartbeat' ? '; presence SQL (P10) not applied' : ''}`;
     });
     await probe('VMS findings (P5)', '/api/vms/findings/summary');
     await probe('Threat Information System (P6)', '/api/ti/overview', (b) => {

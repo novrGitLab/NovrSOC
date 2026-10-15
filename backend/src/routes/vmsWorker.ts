@@ -2,6 +2,7 @@
 // separate host with the scanning tools; it authenticates with VMS_WORKER_TOKEN (Bearer) and is
 // never a user. Fails closed: with the variable unset every call is 503.
 //
+//   POST /heartbeat            { worker_id, kinds[], version?, tools? } -> { ok, server_time, queued } (phase P10)
 //   POST /claim                { worker_id, kinds[] }          -> { job, scopes } | { job: null }
 //   POST /jobs/:id/heartbeat   { progress }                    -> { cancel }   (cancel = stop now)
 //   POST /jobs/:id/results     { observations: [...] }         -> accepted / rejected counts
@@ -9,6 +10,10 @@
 //
 // The worker receives the job's scope entries so it can re-check targets before running a tool,
 // but the backend re-checks every result it accepts (services/vmsIngest.ts).
+//
+// Presence (phase P10, services/vmsWorkers.ts): every request that passes the token check —
+// heartbeat, claim (including an empty queue) and job heartbeats — records the worker in
+// vms_workers. That record, not a running process, is what the dashboard calls "connected".
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -20,6 +25,7 @@ import { ingestObservations, markGoneServices } from '../services/vmsIngest';
 import { ingestFindings, concludeVerification } from '../services/vmsFindings';
 import { activeScopes } from './vms';
 import { logAudit } from '../lib/audit';
+import { recordWorkerSeen, WORKER_ONLINE_SECONDS, PRESENCE_MISSING_MESSAGE } from '../services/vmsWorkers';
 
 const router = Router();
 const digest = (s: string) => createHash('sha256').update(s).digest();
@@ -50,6 +56,31 @@ async function ownJob(req: Request, res: Response): Promise<Job | null> {
     return data as Job;
 }
 
+// The worker's own heartbeat, independent of jobs: says it is alive, what it runs and which tools
+// it has. Validated strictly; tool names are limited to the ones the worker knows.
+const TOOL_NAMES = ['subfinder', 'dnsx', 'httpx', 'nmap', 'nuclei', 'openvas'] as const;
+const WorkerHeartbeat = z.object({
+    worker_id: z.string().regex(WORKER_ID),
+    kinds: z.array(z.enum(VMS_KINDS)).min(1).max(VMS_KINDS.length),
+    version: z.string().trim().max(40).regex(/^[\w.+-]*$/).optional(),
+    tools: z.record(z.enum(TOOL_NAMES), z.boolean()).optional(),
+}).strict();
+const heartbeatLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many worker heartbeats: at most 30 a minute' } });
+
+router.post('/heartbeat', heartbeatLimiter, async (req, res) => {
+    const p = WorkerHeartbeat.safeParse(req.body);
+    if (!p.success) { res.status(400).json({ error: `Body must be { worker_id: [A-Za-z0-9_.-]{1,64}, kinds: [${VMS_KINDS.join(' | ')}], version?, tools?: { ${TOOL_NAMES.join(', ')}: boolean } }` }); return; }
+    const supabase = getSupabase();
+    if (!supabase) { res.status(503).json({ error: 'Database not configured' }); return; }
+    const now = new Date().toISOString();
+    const r = await recordWorkerSeen(p.data.worker_id, { kinds: [...new Set(p.data.kinds)], version: p.data.version ?? null, tools: p.data.tools ?? {}, last_heartbeat_at: now });
+    if (r === 'missing') { res.status(503).json({ error: PRESENCE_MISSING_MESSAGE }); return; }
+    if (r === 'failed') { res.status(503).json({ error: 'Could not record the heartbeat' }); return; }
+    // How many jobs are waiting for this worker's kinds: lets the worker say "idle" vs "work waiting".
+    const { count } = await supabase.from('vms_scan_jobs').select('id', { count: 'exact', head: true }).eq('status', 'queued').in('kind', p.data.kinds);
+    res.json({ ok: true, worker_id: p.data.worker_id, server_time: now, online_window_seconds: WORKER_ONLINE_SECONDS, queued: count ?? 0 });
+});
+
 router.post('/claim', async (req, res) => {
     const workerId = String(req.body?.worker_id ?? '');
     const kinds = Array.isArray(req.body?.kinds) ? req.body.kinds.filter((k: unknown) => (VMS_KINDS as readonly unknown[]).includes(k)) : [];
@@ -59,6 +90,9 @@ router.post('/claim', async (req, res) => {
     const { data, error } = await supabase.rpc('vms_claim_job', { p_worker: workerId, p_kinds: kinds });
     if (error) { res.status(503).json({ error: 'Queue unavailable' }); return; }
     const job = (Array.isArray(data) ? data[0] : data) as Job | undefined;
+    const now = new Date().toISOString();
+    // An authenticated poll is presence, even when the queue is empty.
+    await recordWorkerSeen(workerId, { kinds, last_claim_at: now, ...(job ? { last_job_id: job.id, last_job_at: now } : {}) });
     if (!job) { res.json({ job: null }); return; }
     const scopes = await activeScopes(job.org_id);
     res.json({ job, scopes: scopes.map((s) => ({ kind: s.kind, value: s.value, include_subdomains: s.include_subdomains, allow_discovery: s.allow_discovery !== false, allow_port_scan: s.allow_port_scan, allow_vuln_scan: s.allow_vuln_scan, expires_at: s.expires_at, status: s.status })) });
@@ -70,6 +104,7 @@ router.post('/jobs/:id/heartbeat', async (req, res) => {
     if (!job) return;
     const p = Progress.safeParse(req.body?.progress ?? {});
     await getSupabase()!.from('vms_scan_jobs').update({ heartbeat_at: new Date().toISOString(), ...(p.success ? { progress: p.data } : {}) }).eq('id', job.id);
+    if (job.worker_id) await recordWorkerSeen(job.worker_id, {});
     res.json({ cancel: job.cancel_requested });
 });
 

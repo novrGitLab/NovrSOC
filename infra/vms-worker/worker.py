@@ -15,6 +15,15 @@ Safety: tools are run with argument lists (never a shell); every target is re-va
 plain hostname, IP or the job's own CIDR; rates and timeouts are conservative; a heartbeat every
 30 s reports progress and stops the running tool when the backend asks to cancel (e.g. scope
 revoked). The API token is read from the environment and never logged.
+
+Presence (phase P10): besides polling for jobs, the worker sends its own heartbeat every
+VMS_PRESENCE_SECONDS (default 60) with its kinds and which tools are installed. The backend records
+every authenticated request, and that record is what the dashboard calls "connected". The log says
+when the worker connects, explains each kind of failure once (wrong token, wrong URL or old backend,
+rejected request, backend not ready) instead of repeating it every poll, and writes a short status
+line every VMS_STATUS_LOG_SECONDS (default 600) so a quiet log is never ambiguous.
+
+  python3 worker.py --check   one heartbeat to the backend and a plain-language result; claims nothing
 """
 from __future__ import annotations
 
@@ -42,6 +51,10 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
+VERSION = '1.1.0'
+PRESENCE_SECONDS = max(15, int(os.environ.get('VMS_PRESENCE_SECONDS', '60')))
+STATUS_LOG_SECONDS = max(60, int(os.environ.get('VMS_STATUS_LOG_SECONDS', '600')))
+ERROR_REPEAT_SECONDS = 600   # the same failure is logged again at most this often
 BATCH = 200
 TOOL_TIMEOUT = int(os.environ.get('VMS_TOOL_TIMEOUT_SECONDS', '3600'))
 HTTPX_RATE = os.environ.get('VMS_HTTPX_RATE', '50')         # requests per second
@@ -329,16 +342,136 @@ def parse_openvas_report(xml_text: str) -> list[dict]:
 
 
 # ── Backend API ───────────────────────────────────────────────────────────────────────────────
+class ApiError(RuntimeError):
+    """A backend answer other than success, with what it means for the operator."""
+
+    def __init__(self, path: str, status: Optional[int], detail: str):
+        self.path, self.status, self.detail = path, status, detail
+        super().__init__(explain(path, status, detail))
+
+
+def _server_error(text: str) -> str:
+    try:
+        return str(json.loads(text).get('error', ''))[:200]
+    except (ValueError, AttributeError):
+        return text.strip()[:200]
+
+
+def explain(path: str, status: Optional[int], detail: str) -> str:
+    """A plain-language reason for a failed call. Never includes the token."""
+    where = f'{API}/api/vms/worker{path}'
+    if status is None:
+        return f'cannot reach the backend at {where}: {detail}'
+    if status == 401:
+        return f'the backend rejected the worker token (HTTP 401 on {path}): VMS_WORKER_TOKEN on this host is not the value set on Railway'
+    if status == 404:
+        return f'endpoint not found (HTTP 404 at {where}): NOVRSOC_API_URL is wrong, or the backend is not running a version with this endpoint'
+    if status == 400:
+        return f'the backend rejected the request (HTTP 400 on {path}): {detail} — check VMS_WORKER_ID and VMS_WORKER_KINDS'
+    if status == 429:
+        return f'rate limited by the backend (HTTP 429 on {path})'
+    if status == 503:
+        return f'the backend is not ready for workers (HTTP 503 on {path}): {detail}'
+    return f'HTTP {status} on {path}: {detail}'
+
+
 class Api:
     def __init__(self):
         self.s = requests.Session()
         self.s.headers.update({'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'})
 
     def post(self, path: str, body: dict, timeout: int = 60) -> dict:
-        r = self.s.post(f'{API}/api/vms/worker{path}', json=body, timeout=timeout)
+        try:
+            r = self.s.post(f'{API}/api/vms/worker{path}', json=body, timeout=timeout)
+        except requests.RequestException as e:
+            raise ApiError(path, None, type(e).__name__) from None
         if r.status_code >= 400:
-            raise RuntimeError(f'{path}: HTTP {r.status_code} {r.text[:200]}')
+            raise ApiError(path, r.status_code, _server_error(r.text))
         return r.json()
+
+
+class ConnectionLog:
+    """Logs state changes and a periodic status line instead of one line per poll."""
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.connected: Optional[bool] = None
+        self.last_error: dict[str, tuple[str, float]] = {}
+        self.polls = self.jobs = 0
+        self.queued: Optional[int] = None
+        self.window_start = clock()
+
+    def ok(self, what: str) -> None:
+        with self.lock:
+            if self.connected is not True:
+                log.info('connected: the backend accepted this worker (%s)%s', what, ' again' if self.connected is False else '')
+            self.connected = True
+            self.last_error.pop(what, None)
+
+    def fail(self, what: str, err: Exception) -> None:
+        msg = str(err)
+        now = self.clock()
+        with self.lock:
+            prev = self.last_error.get(what)
+            if prev is None or prev[0] != msg or now - prev[1] >= ERROR_REPEAT_SECONDS:
+                log.error('%s failed: %s', what, msg)
+                self.last_error[what] = (msg, now)
+            self.connected = False
+
+    def poll(self, got_job: bool) -> None:
+        with self.lock:
+            self.polls += 1
+            self.jobs += 1 if got_job else 0
+
+    def status_due(self) -> Optional[str]:
+        now = self.clock()
+        with self.lock:
+            if now - self.window_start < STATUS_LOG_SECONDS:
+                return None
+            minutes = round((now - self.window_start) / 60)
+            line = (f'status: {"connected" if self.connected else "NOT connected"}; {self.polls} poll(s), {self.jobs} job(s) in the last {minutes} min'
+                    + (f'; backend reports {self.queued} queued job(s) for this worker\'s kinds' if self.queued is not None else ''))
+            self.polls = self.jobs = 0
+            self.window_start = now
+            return line
+
+
+def tool_inventory() -> dict:
+    """Which tools this host has (by PATH lookup). OpenVAS counts when python-gvm and the socket exist."""
+    tools = {n: bool(shutil.which(TOOLS[n])) for n in ('subfinder', 'dnsx', 'httpx', 'nmap', 'nuclei')}
+    try:
+        import gvm  # noqa: F401
+        tools['openvas'] = os.path.exists(GVM_SOCKET)
+    except ImportError:
+        tools['openvas'] = False
+    return tools
+
+
+def heartbeat_body() -> dict:
+    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory()}
+
+
+def presence_loop(conn: ConnectionLog, stop: threading.Event) -> None:
+    """The worker's own heartbeat, separate from jobs (its own session: requests sessions are not thread-safe)."""
+    api = Api()
+    unsupported = False
+    while True:
+        try:
+            r = api.post('/heartbeat', heartbeat_body(), timeout=30)
+            conn.queued = int(r.get('queued', 0))
+            conn.ok('heartbeat')
+        except ApiError as e:
+            if e.status == 404 and not unsupported:
+                # An older backend has /claim but no /heartbeat; claims still count as presence there.
+                log.warning('%s; heartbeats are skipped, job polling continues', e)
+                unsupported = True
+            elif e.status != 404:
+                conn.fail('heartbeat', e)
+        except Exception as e:  # noqa: BLE001 — keep the presence thread alive
+            conn.fail('heartbeat', e)
+        if stop.wait(PRESENCE_SECONDS):
+            return
 
 
 class Cancelled(Exception):
@@ -363,7 +496,7 @@ class JobRunner:
                     if self.proc and self.proc.poll() is None:
                         self.proc.terminate()
             except Exception as e:  # noqa: BLE001 — a missed heartbeat is retried next round
-                log.warning('heartbeat failed: %s', e)
+                log.warning('job heartbeat failed: %s', e)
 
     def run_tool(self, args: list[str], stdin: Optional[str] = None) -> str:
         if self.cancel.is_set():
@@ -509,25 +642,49 @@ class JobRunner:
         log.info('job %s %s: %s', self.job['id'], status, self.summary)
 
 
+def check() -> int:
+    """One heartbeat, a plain-language result and an exit code. Claims no job."""
+    try:
+        r = Api().post('/heartbeat', heartbeat_body(), timeout=30)
+    except ApiError as e:
+        print(f'FAIL: {e}')
+        return 1
+    tools = ', '.join('%s %s' % (k, 'yes' if v else 'no') for k, v in heartbeat_body()['tools'].items())
+    print('OK: the backend accepted worker %s (%s) at %s; %s job(s) queued for these kinds. Tools: %s'
+          % (WORKER_ID, ','.join(KINDS), r.get('server_time'), r.get('queued', 0), tools))
+    return 0
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [vms-worker] %(levelname)s: %(message)s')
     if not API.startswith('https://') and not API.startswith('http://127.0.0.1'):
         sys.exit('NOVRSOC_API_URL must be the backend https URL')
     if len(TOKEN) < 32:
-        sys.exit('VMS_WORKER_TOKEN is not set')
+        sys.exit('VMS_WORKER_TOKEN is not set (or shorter than 32 characters)')
+    if '--check' in sys.argv[1:]:
+        sys.exit(check())
     missing = [n for n in ('subfinder', 'dnsx', 'httpx', 'nmap') if not shutil.which(TOOLS[n])]
     if missing:
         log.warning('not installed: %s — jobs needing them will fail with that reason', ', '.join(missing))
+    log.info('started as %s (version %s) for %s against %s', WORKER_ID, VERSION, ','.join(KINDS), API)
+    conn = ConnectionLog()
+    stop = threading.Event()
+    threading.Thread(target=presence_loop, args=(conn, stop), daemon=True).start()
     api = Api()
-    log.info('started as %s for %s', WORKER_ID, ','.join(KINDS))
     while True:
         try:
             r = api.post('/claim', {'worker_id': WORKER_ID, 'kinds': KINDS})
+            conn.ok('job polling')
+            conn.poll(bool(r.get('job')))
             if r.get('job'):
+                log.info('claimed job %s (%s)', r['job'].get('id'), r['job'].get('kind'))
                 JobRunner(api, r['job'], r.get('scopes') or []).run()
                 continue
         except Exception as e:  # noqa: BLE001 — keep polling
-            log.warning('poll failed: %s', e)
+            conn.fail('job polling', e)
+        line = conn.status_due()
+        if line:
+            log.info(line)
         time.sleep(POLL_SECONDS)
 
 
