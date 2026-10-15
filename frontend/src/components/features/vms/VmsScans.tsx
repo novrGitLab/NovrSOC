@@ -15,7 +15,7 @@ export function VmsScans() {
     const [scopes, setScopes] = useState<VmsScope[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [msg, setMsg] = useState<string | null>(null);
-    const [form, setForm] = useState({ scope_id: '', kind: 'discovery' as 'discovery' | 'ports', targets: '', ports: 'top-1000' });
+    const [form, setForm] = useState({ scope_id: '', kind: 'discovery' as VmsScan['kind'], targets: '', ports: 'top-1000' });
     const [reloadKey, setReloadKey] = useState(0);
     const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -74,9 +74,11 @@ export function VmsScans() {
                     </select>
                 </label>
                 <label className="text-[11px] font-bold text-foreground-muted">Scan
-                    <select className={`${input} w-full`} value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as 'discovery' | 'ports' })}>
+                    <select className={`${input} w-full`} value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as VmsScan['kind'] })}>
                         <option value="discovery">{SCAN_KIND_LABEL.discovery}</option>
                         <option value="ports" disabled={!!scope && !scope.allow_port_scan}>{SCAN_KIND_LABEL.ports}{scope && !scope.allow_port_scan ? ' — not authorised for this scope' : ''}</option>
+                        <option value="vuln_nuclei" disabled={!!scope && !scope.allow_vuln_scan}>{SCAN_KIND_LABEL.vuln_nuclei}{scope && !scope.allow_vuln_scan ? ' — not authorised for this scope' : ''}</option>
+                        <option value="vuln_openvas" disabled={!!scope && !scope.allow_vuln_scan}>{SCAN_KIND_LABEL.vuln_openvas}{scope && !scope.allow_vuln_scan ? ' — not authorised for this scope' : ''}</option>
                     </select>
                 </label>
                 <label className="text-[11px] font-bold text-foreground-muted">Targets (optional)

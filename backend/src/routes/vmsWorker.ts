@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { getSupabase } from '../services/geoEnrichment';
 import { isUuid } from '../services/cases';
 import { ingestObservations, markGoneServices } from '../services/vmsIngest';
+import { ingestFindings, concludeVerification } from '../services/vmsFindings';
 import { activeScopes } from './vms';
 import { logAudit } from '../lib/audit';
 
@@ -36,12 +37,12 @@ function requireWorkerToken(req: Request, res: Response, next: NextFunction) {
 router.use(requireWorkerToken);
 
 const WORKER_ID = /^[\w.-]{1,64}$/;
-type Job = { id: string; org_id: string; kind: string; status: string; started_at: string | null; targets: unknown; options: unknown; worker_id: string | null; cancel_requested: boolean };
+type Job = { id: string; org_id: string; kind: string; status: string; started_at: string | null; targets: unknown; options: unknown; worker_id: string | null; cancel_requested: boolean; purpose?: string };
 
 async function ownJob(req: Request, res: Response): Promise<Job | null> {
     if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Job not found' }); return null; }
     const workerId = String(req.body?.worker_id ?? '');
-    const { data } = await getSupabase()!.from('vms_scan_jobs').select('id, org_id, kind, status, started_at, targets, options, worker_id, cancel_requested').eq('id', req.params.id).maybeSingle();
+    const { data } = await getSupabase()!.from('vms_scan_jobs').select('id, org_id, kind, status, started_at, targets, options, worker_id, cancel_requested, purpose').eq('id', req.params.id).maybeSingle();
     if (!data) { res.status(404).json({ error: 'Job not found' }); return null; }
     if (data.worker_id !== workerId) { res.status(409).json({ error: 'This job belongs to another worker' }); return null; }
     if (data.status !== 'running') { res.status(409).json({ error: `Job is ${data.status}` }); return null; }
@@ -77,7 +78,9 @@ router.post('/jobs/:id/results', async (req, res) => {
     const obs = req.body?.observations;
     if (!Array.isArray(obs) || obs.length > MAX_OBSERVATIONS_PER_BATCH) { res.status(400).json({ error: `observations must be an array of at most ${MAX_OBSERVATIONS_PER_BATCH}` }); return; }
     try {
-        const r = await ingestObservations(job, obs, await activeScopes(job.org_id));
+        // Vulnerability jobs send findings; discovery and port jobs send inventory observations.
+        const scopes = await activeScopes(job.org_id);
+        const r = job.kind.startsWith('vuln_') ? await ingestFindings(job, obs, scopes) : await ingestObservations(job, obs, scopes);
         await getSupabase()!.from('vms_scan_jobs').update({ heartbeat_at: new Date().toISOString() }).eq('id', job.id);
         if (r.rejected_out_of_scope) logAudit({ user: `worker:${job.worker_id}`, action: 'VMS_RESULT_OUT_OF_SCOPE', resource: 'vms_scan_job', resource_id: job.id, org_id: job.org_id, ip: req.ip ?? 'unknown', result: 'failed', severity: 'warning', details: `${r.rejected_out_of_scope} observation(s) outside authorised scope dropped` });
         res.json(r);
@@ -94,7 +97,9 @@ router.post('/jobs/:id/complete', async (req, res) => {
     if (!p.success) { res.status(400).json({ error: 'Body must be { worker_id, status: succeeded|failed|cancelled, error?, summary? }' }); return; }
     let gone = 0;
     if (p.data.status === 'succeeded' && job.kind === 'ports') gone = await markGoneServices(job);
-    const summary = { ...(p.data.summary ?? {}), ...(gone ? { services_gone: gone } : {}) };
+    // A verification scan concludes its findings: verified only when it succeeded without detecting them.
+    const verification = job.purpose === 'verification' ? await concludeVerification(job, p.data.status) : null;
+    const summary = { ...(p.data.summary ?? {}), ...(gone ? { services_gone: gone } : {}), ...(verification ? { verification } : {}) };
     await getSupabase()!.from('vms_scan_jobs').update({ status: p.data.status, finished_at: new Date().toISOString(), error: p.data.error ?? null, summary }).eq('id', job.id);
     res.json({ ok: true, services_gone: gone });
 });

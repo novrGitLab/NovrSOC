@@ -18,6 +18,7 @@ import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid } from '../services/cases';
 import { aiHealth, generate } from '../services/ai';
 import { aiPurpose, aiPurposeNames } from '../services/aiPurposes';
+import '../services/aiPurposesVms'; // registers the VMS purposes
 import { logAudit } from '../lib/audit';
 
 const router = Router();

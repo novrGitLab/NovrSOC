@@ -49,6 +49,8 @@ Set the **same** `VMS_WORKER_TOKEN` on Railway; it must be at least 32 character
 |---|---|---|
 | `discovery` | `subfinder` (passive; queries public sources, not the target), `dnsx`, `httpx` | DNS lookups; one HTTP(S) request per host, at most `VMS_HTTPX_RATE` per second |
 | `ports` | `nmap -sT -sV -Pn -T3` | TCP connect scan with service detection, at most `VMS_NMAP_MAX_RATE` packets per second. No root. |
+| `vuln_nuclei` | `nuclei` | HTTP/network checks from templates, excluding disruptive ones, at most `VMS_NUCLEI_RATE` requests per second |
+| `vuln_openvas` | Greenbone | "Full and fast" network vulnerability tests |
 
 - **Shell:** tools run with argument lists, never through a shell.
 - **Time limit:** a job that runs longer than `VMS_TOOL_TIMEOUT_SECONDS` is stopped.
@@ -56,7 +58,38 @@ Set the **same** `VMS_WORKER_TOKEN` on Railway; it must be at least 32 character
 - **If it stops responding:** the backend requeues the job once, then fails it with the reason.
 - **Cancelling:** revoking a scope or cancelling a scan stops the running tool at the next heartbeat.
 
-## 5. Tests
+## 5. Release 2: vulnerability scanning
+
+### Nuclei
+
+```bash
+go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest && sudo cp ~/go/bin/nuclei /usr/local/bin/
+sudo -u novrsoc-vms nuclei -update-templates
+```
+
+Add `vuln_nuclei` to `VMS_WORKER_KINDS`. How it runs:
+- **Excluded templates:** `dos`, `fuzz`, `intrusive` and `bruteforce` are never run.
+- **Rate:** at most `VMS_NUCLEI_RATE` requests per second.
+- **Verification:** a rescan runs only the template that found the issue.
+- **Stored output:** requests and responses are not stored; evidence is redacted.
+
+**Template updates:** keep templates current with a daily cron of `nuclei -update-templates` under that user.
+
+### OpenVAS / Greenbone (optional)
+
+OpenVAS needs its own installation (Greenbone Community Edition). Use a larger host: about 4 vCPU and 8 GB.
+
+1. Install it following Greenbone's documentation.
+2. Install the client library on the worker: `pip install python-gvm`.
+3. Give the `novrsoc-vms` user access to the gvmd socket.
+4. Create a dedicated GVM user.
+5. Set `GVM_SOCKET`, `GVM_USER` and `GVM_PASSWORD`, and add `vuln_openvas` to `VMS_WORKER_KINDS`.
+
+**What runs:** the built-in "Full and fast" scan configuration (non-destructive checks) against "All IANA assigned TCP" ports. The temporary task and target are deleted after each run.
+
+**Object ids:** the worker uses Greenbone's standard object ids. If your installation differs, override them with `GVM_CONFIG_ID`, `GVM_SCANNER_ID` or `GVM_PORT_LIST_ID`.
+
+## 6. Tests
 
 ```bash
 python3 -m unittest test_worker -v

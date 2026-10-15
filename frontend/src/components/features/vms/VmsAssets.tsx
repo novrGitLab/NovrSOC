@@ -9,6 +9,7 @@ import { useSearchParams } from 'next/navigation';
 import { Search, Globe } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
+import { AiPanel } from '@/components/shared/AiPanel';
 import { fmtWat, CRIT_STYLE, EVENT_LABEL, describeEvent, type VmsAsset, type VmsService, type VmsTech, type VmsEvent } from '@/lib/vms';
 
 interface Detail { asset: VmsAsset; services: VmsService[]; technologies: VmsTech[]; events: VmsEvent[] }
@@ -120,6 +121,7 @@ export function VmsAssets() {
                                 <p className="text-[10px] font-bold text-foreground-muted uppercase mb-1">Technologies</p>
                                 <p>{detail.technologies.length ? detail.technologies.map((t) => `${t.name}${t.version ? ` ${t.version}` : ''}`).join(', ') : '—'}</p>
                             </div>
+                            <AiPanel key={detail.asset.id} purpose="asset_assessment" subjectId={detail.asset.id} title="AI exposure assessment" />
                             <div>
                                 <p className="text-[10px] font-bold text-foreground-muted uppercase mb-1">History</p>
                                 {detail.events.length === 0 ? <p className="text-foreground-muted">—</p> : detail.events.slice(0, 30).map((e) => <p key={e.id} className="text-foreground-muted">{fmtWat(e.at)} · {EVENT_LABEL[e.event] ?? e.event} · {describeEvent(e)}</p>)}

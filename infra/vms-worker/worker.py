@@ -46,7 +46,21 @@ BATCH = 200
 TOOL_TIMEOUT = int(os.environ.get('VMS_TOOL_TIMEOUT_SECONDS', '3600'))
 HTTPX_RATE = os.environ.get('VMS_HTTPX_RATE', '50')         # requests per second
 NMAP_MAX_RATE = os.environ.get('VMS_NMAP_MAX_RATE', '300')  # packets per second
-TOOLS = {name: os.environ.get(f'VMS_{name.upper()}_PATH', name) for name in ('subfinder', 'dnsx', 'httpx', 'nmap')}
+TOOLS = {name: os.environ.get(f'VMS_{name.upper()}_PATH', name) for name in ('subfinder', 'dnsx', 'httpx', 'nmap', 'nuclei')}
+NUCLEI_RATE = os.environ.get('VMS_NUCLEI_RATE', '50')                    # requests per second
+NUCLEI_SEVERITIES = os.environ.get('VMS_NUCLEI_SEVERITIES', 'low,medium,high,critical')
+# Templates that could disrupt a service or brute-force credentials are never run.
+NUCLEI_EXCLUDE_TAGS = 'dos,fuzz,intrusive,bruteforce'
+# OpenVAS / Greenbone (Release 2, optional): reached over its management socket with python-gvm.
+GVM_SOCKET = os.environ.get('GVM_SOCKET', '/run/gvmd/gvmd.sock')
+GVM_USER = os.environ.get('GVM_USER', '')
+GVM_PASSWORD = os.environ.get('GVM_PASSWORD', '')
+# Greenbone's built-in object ids (same on every installation); override if yours differ.
+GVM_CONFIG_ID = os.environ.get('GVM_CONFIG_ID', 'daba56c8-73ec-11df-a475-002264764cea')        # "Full and fast"
+GVM_SCANNER_ID = os.environ.get('GVM_SCANNER_ID', '08b69003-5fc2-4037-a479-93b440211c73')      # "OpenVAS Default"
+GVM_PORT_LIST_ID = os.environ.get('GVM_PORT_LIST_ID', '33d0cd82-57c6-11e1-8ed1-406186ea4fc5')  # "All IANA assigned TCP"
+GVM_XML_FORMAT_ID = 'a994b278-1f62-11e1-96ac-406186ea4fc5'
+CVE_RE = re.compile(r'^CVE-\d{4}-\d{4,7}$')
 
 LABEL = re.compile(r'^(?!-)[a-z0-9-]{1,63}(?<!-)$')
 
@@ -215,6 +229,90 @@ def parse_nmap_xml(xml_text: str) -> list[dict]:
     return out
 
 
+def _sev_from_score(score: Optional[float]) -> str:
+    if score is None:
+        return 'info'
+    return 'critical' if score >= 9.0 else 'high' if score >= 7.0 else 'medium' if score >= 4.0 else 'low' if score > 0 else 'info'
+
+
+def _host_port_from_url(u: str):
+    m = re.match(r'^[a-z]+://\[?([^\]/:]+)\]?(?::(\d+))?', u or '', re.I)
+    if not m:
+        return None, None
+    return m.group(1), int(m.group(2)) if m.group(2) else (443 if u.lower().startswith('https') else 80 if u.lower().startswith('http') else None)
+
+
+def parse_nuclei(lines: Iterable[str]) -> list[dict]:
+    """Nuclei -jsonl output into finding observations. Requests/responses are not kept."""
+    out = []
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        info = d.get('info') or {}
+        cls = info.get('classification') or {}
+        host_field = str(d.get('host') or '')
+        host, port = _host_port_from_url(host_field) if '://' in host_field else (host_field.split(':')[0], None)
+        if d.get('port') and str(d.get('port')).isdigit():
+            port = int(d['port'])
+        t = parse_target(host or '')
+        tid = str(d.get('template-id') or d.get('templateID') or '')
+        if not t or not tid:
+            continue
+        sev = str(info.get('severity') or 'info').lower()
+        cvss = cls.get('cvss-score')
+        cves = [c.upper() for c in (cls.get('cve-id') or []) if isinstance(c, str) and CVE_RE.match(c.upper())]
+        refs = info.get('reference') or []
+        out.append({
+            'type': 'finding', 'host': t[1], 'port': port, 'protocol': 'tcp', 'scanner': 'nuclei', 'rule_id': tid[:200],
+            'title': str(info.get('name') or tid)[:300], 'severity': sev if sev in ('critical', 'high', 'medium', 'low', 'info') else 'info',
+            'cve_ids': cves, 'cvss': float(cvss) if isinstance(cvss, (int, float)) and 0 <= cvss <= 10 else None,
+            'description': (info.get('description') or None) and str(info['description'])[:8000],
+            'remediation': (info.get('remediation') or None) and str(info['remediation'])[:8000],
+            'references': [str(r)[:1000] for r in (refs if isinstance(refs, list) else [refs]) if r][:50],
+            'matched_at': str(d.get('matched-at') or d.get('matched') or '')[:2048] or None,
+            'finding_type': 'vulnerability' if cves else 'misconfiguration' if 'misconfig' in (info.get('tags') or []) else 'exposure' if sev == 'info' else 'vulnerability',
+            'evidence': {'template': tid, 'matcher': d.get('matcher-name'), 'extracted': (d.get('extracted-results') or [])[:10], 'type': d.get('type')},
+        })
+    return out
+
+
+def parse_openvas_report(xml_text: str) -> list[dict]:
+    """A GVM XML report into finding observations. Log/debug-level results are skipped."""
+    out = []
+    root = ET.fromstring(xml_text)
+    for r in root.iter('result'):
+        threat = (r.findtext('threat') or '').strip()
+        if threat in ('Log', 'Debug', 'False Positive'):
+            continue
+        host_el = r.find('host')
+        hostname = (host_el.findtext('hostname') if host_el is not None else '') or ''
+        ip = (host_el.text or '').strip() if host_el is not None else ''
+        t = parse_target(hostname) or parse_target(ip)
+        nvt = r.find('nvt')
+        oid = nvt.get('oid') if nvt is not None else None
+        if not t or not oid:
+            continue
+        try:
+            score = float(r.findtext('severity') or nvt.findtext('cvss_base') or '')
+        except ValueError:
+            score = None
+        port_txt = r.findtext('port') or ''
+        m = re.match(r'^(\d+)/(tcp|udp)$', port_txt)
+        cves = sorted({ref.get('id', '').upper() for ref in nvt.iter('ref') if ref.get('type') == 'cve' and CVE_RE.match(ref.get('id', '').upper())})
+        refs = [ref.get('id') for ref in nvt.iter('ref') if ref.get('type') == 'url' and ref.get('id')][:50]
+        out.append({
+            'type': 'finding', 'host': t[1], 'port': int(m.group(1)) if m else None, 'protocol': m.group(2) if m else None, 'scanner': 'openvas',
+            'rule_id': oid[:200], 'title': (nvt.findtext('name') or oid)[:300], 'severity': _sev_from_score(score),
+            'cve_ids': cves, 'cvss': score if score is not None and 0 <= score <= 10 else None,
+            'description': (r.findtext('description') or '')[:8000] or None, 'remediation': (nvt.findtext('solution') or '')[:8000] or None,
+            'references': refs, 'matched_at': f'{t[1]}:{port_txt}'[:2048], 'finding_type': 'vulnerability',
+            'evidence': {'oid': oid, 'threat': threat, 'qod': r.findtext('qod/value')},
+        })
+    return out
+
+
 # ── Backend API ───────────────────────────────────────────────────────────────────────────────
 class Api:
     def __init__(self):
@@ -322,12 +420,69 @@ class JobRunner:
             self.send(parse_nmap_xml(xml) if xml.strip() else [], 'ports')
         self.summary['targets'] = len(targets)
 
+    def vuln_nuclei(self):
+        targets = [t for t in self.job['targets'] if job_target_allowed(t, self.scopes, 'vuln')]
+        if not targets:
+            raise RuntimeError('No target of this job is in vulnerability-scan scope')
+        opts = self.job.get('options') or {}
+        templates = [x for x in (opts.get('templates') or []) if re.match(r'^[\w./-]{1,200}$', str(x))]
+        args = [TOOLS['nuclei'], '-silent', '-jsonl', '-duc', '-no-color', '-rl', NUCLEI_RATE, '-c', '10', '-timeout', '10', '-retries', '1', '-etags', NUCLEI_EXCLUDE_TAGS]
+        # A verification rescan runs exactly the check that found the issue (any severity).
+        args += ['-id', ','.join(templates)] if templates else ['-severity', NUCLEI_SEVERITIES]
+        self.progress = {'phase': 'nuclei', 'done': 0, 'total': len(targets)}
+        out = self.run_tool(args, '\n'.join(targets))
+        self.send(parse_nuclei(out.splitlines()), 'vuln')
+        self.summary['targets'] = len(targets)
+
+    def vuln_openvas(self):
+        targets = [t for t in self.job['targets'] if job_target_allowed(t, self.scopes, 'vuln')]
+        if not targets:
+            raise RuntimeError('No target of this job is in vulnerability-scan scope')
+        try:
+            from gvm.connections import UnixSocketConnection
+            from gvm.protocols.gmp import Gmp
+            from gvm.transforms import EtreeCheckCommandTransform
+        except ImportError:
+            raise RuntimeError('OpenVAS is not available on this worker (python-gvm not installed)')
+        if not GVM_USER or not GVM_PASSWORD:
+            raise RuntimeError('OpenVAS credentials (GVM_USER / GVM_PASSWORD) are not set on this worker')
+        name = f'novrsoc-{self.job["id"]}'
+        with Gmp(connection=UnixSocketConnection(path=GVM_SOCKET), transform=EtreeCheckCommandTransform()) as gmp:
+            gmp.authenticate(GVM_USER, GVM_PASSWORD)
+            target_id = gmp.create_target(name=name, hosts=targets, port_list_id=GVM_PORT_LIST_ID).get('id')
+            task_id = None
+            try:
+                task_id = gmp.create_task(name=name, config_id=GVM_CONFIG_ID, target_id=target_id, scanner_id=GVM_SCANNER_ID).get('id')
+                report_id = gmp.start_task(task_id).findtext('report_id')
+                while True:
+                    if self.cancel.is_set():
+                        gmp.stop_task(task_id)
+                        raise Cancelled()
+                    task = gmp.get_task(task_id).find('task')
+                    status, progress = task.findtext('status'), task.findtext('progress')
+                    self.progress = {'phase': 'openvas', 'message': f'{status} {progress}%'}
+                    if status in ('Done', 'Stopped', 'Interrupted'):
+                        break
+                    time.sleep(30)
+                if status != 'Done':
+                    raise RuntimeError(f'OpenVAS task ended as {status}')
+                report = gmp.get_report(report_id, report_format_id=GVM_XML_FORMAT_ID, ignore_pagination=True, details=True)
+                self.send(parse_openvas_report(ET.tostring(report, encoding='unicode')), 'vuln')
+            finally:
+                for fn, oid in ((gmp.delete_task, task_id), (gmp.delete_target, target_id)):
+                    if oid:
+                        try:
+                            fn(oid, ultimate=True)
+                        except Exception:  # noqa: BLE001 — cleanup is best effort
+                            log.warning('could not delete OpenVAS object %s', oid)
+        self.summary['targets'] = len(targets)
+
     def run(self):
         hb = threading.Thread(target=self.heartbeat_loop, daemon=True)
         hb.start()
         status, error = 'succeeded', None
         try:
-            {'discovery': self.discovery, 'ports': self.ports}[self.job['kind']]()
+            {'discovery': self.discovery, 'ports': self.ports, 'vuln_nuclei': self.vuln_nuclei, 'vuln_openvas': self.vuln_openvas}[self.job['kind']]()
         except Cancelled:
             status, error = 'cancelled', 'Cancelled on request'
         except Exception as e:  # noqa: BLE001 — reported to the backend as the job's failure

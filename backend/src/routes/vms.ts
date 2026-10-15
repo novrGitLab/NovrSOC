@@ -134,21 +134,23 @@ router.get('/scans', requirePermission('vms:read'), async (req: AuthRequest, res
 const PORT_SPEC = /^(top-(100|1000)|(\d{1,5}(-\d{1,5})?)(,\d{1,5}(-\d{1,5})?){0,63})$/;
 const NewScan = z.object({
     scope_id: z.string().uuid(),
-    kind: z.enum(['discovery', 'ports']),
+    kind: z.enum(['discovery', 'ports', 'vuln_nuclei', 'vuln_openvas']),
     targets: z.array(z.string().max(253)).max(MAX_TARGETS).optional(),
     ports: z.string().regex(PORT_SPEC).optional(),
 }).strict();
+const activityOf = (kind: string) => (kind === 'ports' ? 'ports' : kind.startsWith('vuln_') ? 'vuln' : 'discovery') as 'ports' | 'vuln' | 'discovery';
 
 /** Queues a scan after checking every target against scope. Shared with the scheduler (Release 3). */
-export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification' } = {}):
+export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification'; options?: Record<string, unknown> } = {}):
     Promise<{ ok: true; job: Record<string, unknown>; existing: boolean } | { ok: false; status: number; error: string }> {
     const supabase = getSupabase()!;
     const { data: scope, error } = await supabase.from('vms_scopes').select('*').eq('id', input.scope_id).eq('org_id', org).maybeSingle();
     if (error) return { ok: false, status: missing(error) ? 503 : 502, error: missing(error) ? P4_MISSING : dbErrorMessage(error) };
     const entry = scope as ScopeEntry | null;
     if (!entry || entry.status !== 'active' || Date.parse(entry.expires_at) <= Date.now()) return { ok: false, status: 400, error: 'That scope is not active (revoked, expired or not found)' };
-    const activity = input.kind === 'ports' ? 'ports' : 'discovery';
+    const activity = activityOf(input.kind);
     if (activity === 'ports' && !entry.allow_port_scan) return { ok: false, status: 403, error: 'This scope does not authorise port scanning' };
+    if (activity === 'vuln' && !entry.allow_vuln_scan) return { ok: false, status: 403, error: 'This scope does not authorise vulnerability scanning' };
     const requested = input.targets?.length ? input.targets : [entry.kind === 'cidr' ? entry.value : entry.value];
     const targets: string[] = [];
     for (const raw of requested) {
@@ -158,7 +160,7 @@ export async function queueScan(org: string, by: string, input: z.infer<typeof N
         targets.push(t.value);
     }
     const uniq = [...new Set(targets)].sort();
-    const options = input.kind === 'ports' ? { ports: input.ports ?? 'top-1000' } : {};
+    const options = { ...(input.kind === 'ports' ? { ports: input.ports ?? 'top-1000' } : {}), ...(extra.options ?? {}) };
     // The same scan already waiting or running: return it instead of queueing a duplicate.
     const { data: open } = await supabase.from('vms_scan_jobs').select('*').eq('org_id', org).eq('scope_id', entry.id).eq('kind', input.kind).in('status', ['queued', 'running']);
     const dup = (open ?? []).find((j) => JSON.stringify(j.targets) === JSON.stringify(uniq) && JSON.stringify(j.options ?? {}) === JSON.stringify(options));
@@ -171,7 +173,7 @@ export async function queueScan(org: string, by: string, input: z.infer<typeof N
 
 router.post('/scans', requirePermission('vms:scan'), async (req: AuthRequest, res) => {
     const p = NewScan.safeParse(req.body);
-    if (!p.success) { res.status(400).json({ error: 'Body must be { scope_id, kind: discovery|ports, targets?: [host or IP], ports?: "top-100" | "top-1000" | "22,80,8000-8100" }' }); return; }
+    if (!p.success) { res.status(400).json({ error: 'Body must be { scope_id, kind: discovery|ports|vuln_nuclei|vuln_openvas, targets?: [host or IP], ports?: "top-100" | "top-1000" | "22,80,8000-8100" }' }); return; }
     const r = await queueScan(requestOrg(req), actor(req), p.data);
     if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
     res.status(r.existing ? 200 : 201).json({ scan: r.job, existing: r.existing });

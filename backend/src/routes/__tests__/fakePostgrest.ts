@@ -78,6 +78,12 @@ function test(row: Row, col: string, opValue: string): boolean {
             break;
         }
         case 'is': r = val === 'null' ? v === null || v === undefined : String(v) === val; break;
+        // Array contains: col=cs.{a,b} — every listed element is in the row's array.
+        case 'cs': {
+            const want = val.replace(/^\{|\}$/g, '').split(',').map((x) => x.replace(/^"|"$/g, '')).filter(Boolean);
+            r = Array.isArray(v) && want.every((w) => (v as unknown[]).map(String).includes(w));
+            break;
+        }
         default: throw new Error(`fakePostgrest: unsupported operator ${op}`);
     }
     return neg ? !r : r;

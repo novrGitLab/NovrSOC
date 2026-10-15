@@ -68,6 +68,35 @@ class Parsers(unittest.TestCase):
         self.assertEqual(out[0]['cpe'], ['cpe:/a:openbsd:openssh:8.9p1'])
 
 
+class VulnParsers(unittest.TestCase):
+    def test_nuclei_jsonl(self):
+        line = json.dumps({'template-id': 'CVE-2023-12345', 'host': 'https://api.example.test:8443', 'matched-at': 'https://api.example.test:8443/login',
+                           'type': 'http', 'matcher-name': 'version', 'extracted-results': ['1.2.3'],
+                           'info': {'name': 'Example RCE', 'severity': 'critical', 'description': 'An RCE.', 'remediation': 'Upgrade to 1.2.4.',
+                                    'reference': ['https://nvd.nist.gov/vuln/detail/CVE-2023-12345'],
+                                    'classification': {'cve-id': ['cve-2023-12345', 'bogus'], 'cvss-score': 9.8}},
+                           'request': 'GET / HTTP/1.1', 'response': 'HTTP/1.1 200 OK secret=abc'})
+        o = worker.parse_nuclei([line, 'not json', json.dumps({'template-id': 'x', 'host': 'not a host!'})])
+        self.assertEqual(len(o), 1)
+        f = o[0]
+        self.assertEqual((f['host'], f['port'], f['rule_id'], f['severity'], f['cve_ids'], f['cvss']), ('api.example.test', 8443, 'CVE-2023-12345', 'critical', ['CVE-2023-12345'], 9.8))
+        self.assertNotIn('response', json.dumps(f), 'raw requests/responses are not sent')
+
+    def test_openvas_report(self):
+        xml = """<report><report><results>
+          <result><host>203.0.113.5<hostname>api.example.test</hostname></host><port>443/tcp</port><threat>High</threat><severity>7.5</severity>
+            <nvt oid="1.3.6.1.4.1.25623.1.0.123456"><name>TLS weak cipher</name><solution>Disable weak ciphers.</solution>
+              <refs><ref type="cve" id="CVE-2016-2183"/><ref type="url" id="https://example.test/advisory"/></refs></nvt>
+            <description>Weak cipher suites accepted.</description><qod><value>80</value></qod></result>
+          <result><host>203.0.113.5</host><port>general/tcp</port><threat>Log</threat><severity>0.0</severity><nvt oid="1.3.6.1.4.1.25623.1.0.1"><name>OS detection</name></nvt></result>
+        </results></report></report>"""
+        o = worker.parse_openvas_report(xml)
+        self.assertEqual(len(o), 1, 'log-level results skipped')
+        f = o[0]
+        self.assertEqual((f['host'], f['port'], f['protocol'], f['severity'], f['cve_ids'], f['scanner']), ('api.example.test', 443, 'tcp', 'high', ['CVE-2016-2183'], 'openvas'))
+        self.assertEqual(f['references'], ['https://example.test/advisory'])
+
+
 class SendFiltersScope(unittest.TestCase):
     def test_out_of_scope_results_never_leave_the_worker(self):
         sent = []
