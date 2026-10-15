@@ -130,12 +130,15 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         ],
     },
     {
-        // CNII alerts are "not connected" since Wazuh was decoupled, hence PARTIAL.
+        // Phase P9: a sector view over VMS and the Threat Information System. Sector pages read
+        // across organisations, so they are for SOC staff; an executive sees only their own
+        // organisation. PARTIAL until the P9 SQL is applied and passive sources are configured.
         section: 'CNII Watch', collapsible: true, icon: Shield, groupLabel: 'CNII Watch',
         items: [
-            { id: 'cnii-overview', label: 'Overview', href: '/admin/cnii', domain: 'cnii', status: 'PARTIAL', roles: 'all', icon: LayoutDashboard },
+            { id: 'cnii-overview', label: 'Overview', href: '/admin/cnii', domain: 'cnii', status: 'PARTIAL', roles: NOT_EXEC, icon: LayoutDashboard },
+            { id: 'cnii-my-org', label: 'My organisation', href: '/admin/cnii/org/me', domain: 'cnii', status: 'PARTIAL', roles: ['executive'], icon: LayoutDashboard },
             ...CNII_SECTORS.map(([slug, label, icon]): NavItemConfig => (
-                { id: `cnii-${slug}`, label, href: `/admin/cnii/${slug}`, domain: 'cnii', status: 'PARTIAL', roles: 'all', icon }
+                { id: `cnii-${slug}`, label, href: `/admin/cnii/${slug}`, domain: 'cnii', status: 'PARTIAL', roles: NOT_EXEC, icon }
             )),
         ],
     },
