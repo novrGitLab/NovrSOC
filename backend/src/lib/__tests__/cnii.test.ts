@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
-import { scanIP, parseSpiderFootResults, pingSpiderFoot, cleanAsHolder, SpiderFootError, SPIDERFOOT_MODULES } from '../spiderfoot';
+import { scanIP, scanTarget, parseSpiderFootResults, pingSpiderFoot, cleanAsHolder, SpiderFootError, SPIDERFOOT_MODULES, isActiveModule } from '../spiderfoot';
 import { parseLookup, severityFromConfidence, openctiQuery } from '../opencti';
 import { classifySector, assessCnii, CNII_OPERATOR_ASNS } from '../cnii-classify';
 
@@ -131,7 +131,7 @@ test('assessCnii rates likelihood from independent signals', () => {
 // ── scanIP against a local sfwebui-compatible server ──────────────────────────────────────
 
 let server: Server;
-const sf = { statuses: [] as string[], started: [] as Record<string, string>[], stopped: [] as string[], startReply: null as unknown, rows: ROWS as unknown[] };
+const sf = { statuses: [] as string[], started: [] as Record<string, string>[], stopped: [] as string[], startReply: null as unknown, rows: ROWS as unknown[], auth: [] as (string | undefined)[] };
 
 before(async () => {
     const app = express();
@@ -140,6 +140,7 @@ before(async () => {
     app.post('/startscan', (req, res) => {
         assert.match(String(req.headers.accept), /application\/json/);
         sf.started.push(req.body);
+        sf.auth.push(req.headers.authorization);
         res.json(sf.startReply ?? ['SUCCESS', 'SCAN1']);
     });
     app.get('/scanstatus', (req, res) => {
@@ -169,6 +170,31 @@ test('scanIP starts, polls to FINISHED and parses the results', async () => {
     assert.equal(r.scanId, 'SCAN1');
     assert.equal(r.status, 'FINISHED');
     assert.equal(r.hostname, 'portal.inec.gov.ng');
+});
+
+test('SpiderFoot runs passive modules only — nothing that connects to the target', () => {
+    assert.ok(SPIDERFOOT_MODULES.length > 0);
+    for (const m of SPIDERFOOT_MODULES) assert.equal(isActiveModule(m), false, m);
+    assert.ok(!SPIDERFOOT_MODULES.includes('sfp_portscan_tcp'));
+    assert.ok(isActiveModule('sfp_portscan_tcp') && isActiveModule('sfp_tool_nmap'));
+});
+
+test('scanTarget accepts a hostname and sends proxy credentials only when both are set', async () => {
+    sf.statuses = ['FINISHED'];
+    sf.startReply = null;
+    sf.auth.length = 0;
+    await scanTarget('portal.example.gov.ng', { pollMs: 5, timeoutMs: 2000 });
+    assert.equal(sf.started.at(-1)!.scantarget, 'portal.example.gov.ng');
+    assert.equal(sf.auth.at(-1), undefined);
+    process.env.SPIDERFOOT_USER = 'novrsoc';
+    process.env.SPIDERFOOT_PASSWORD = 'pw-for-tests';
+    try {
+        await scanTarget('portal.example.gov.ng', { pollMs: 5, timeoutMs: 2000 });
+        assert.equal(sf.auth.at(-1), `Basic ${Buffer.from('novrsoc:pw-for-tests').toString('base64')}`);
+    } finally {
+        delete process.env.SPIDERFOOT_USER;
+        delete process.env.SPIDERFOOT_PASSWORD;
+    }
 });
 
 // What this SpiderFoot instance actually returns for a Nigerian IP (seen on live scans): the AS
