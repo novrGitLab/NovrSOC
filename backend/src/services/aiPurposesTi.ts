@@ -2,12 +2,13 @@
 // organisation's matches and verdicts, and feed health. The output keeps three things apart:
 // facts in the platform's records, claims a source made, and the model's own assessment. No
 // threat actor is named unless a source record names it; no confidence or exploitation status is
-// made up — a source's own confidence is reported as that source's.
+// made up — a source's own confidence is reported as that source's. Also the weekly-insights purpose (P8).
 
 import { z } from 'zod';
 import { getSupabase } from './geoEnrichment';
 import { registerAiPurpose, Confidence, type BuiltContext } from './aiPurposes';
 import type { SourceRef } from './ai';
+import { weeklyFacts } from './weeklyInsights';
 
 function push(records: Record<string, unknown>[], refs: SourceRef[], kind: string, id: string, row: Record<string, unknown>, label?: string) {
     const ref = `${kind}:${id}`;
@@ -92,6 +93,38 @@ registerAiPurpose('threat_briefing', {
         actions: z.array(z.object({ action: z.string(), priority: z.enum(['high', 'medium', 'low']), evidence_refs: z.array(z.string()) })),
         coverage_gaps: z.array(z.string()),
         limitations: z.array(z.string()),
+        confidence: Confidence,
+    }),
+});
+
+// ── Weekly insights (phase P8) ────────────────────────────────────────────────────────────────
+// subject id: "7d" or "30d". The facts are services/weeklyInsights.ts, the same ones the page shows.
+async function buildWeekly(org: string, period: string): Promise<BuiltContext | null> {
+    const days = period === '7d' ? 7 : period === '30d' ? 30 : 0;
+    if (!days) return null;
+    const f = await weeklyFacts(org, days);
+    const records: Record<string, unknown>[] = [];
+    const refs: SourceRef[] = [];
+    push(records, refs, 'period', period, { ...f.period, organisation: org });
+    push(records, refs, 'metric', 'alerts', f.alerts, 'Alerts');
+    push(records, refs, 'metric', 'cases', f.cases, 'Cases');
+    push(records, refs, 'metric', 'approvals', { by_status: f.approvals }, 'Response approvals');
+    if (f.vulnerabilities) push(records, refs, 'metric', 'vulnerabilities', f.vulnerabilities, 'Vulnerabilities');
+    if (f.threat_intel) push(records, refs, 'metric', 'threat_intel', f.threat_intel, 'Threat intelligence');
+    for (const h of f.health) push(records, refs, 'health', h.name, h, h.name);
+    push(records, refs, 'limitations', 'all', { limitations: f.limitations });
+    return { records, refs };
+}
+
+registerAiPurpose('weekly_insights', {
+    permission: 'alerts:read', subjectType: 'report', build: buildWeekly,
+    task: 'Write the weekly security-operations insights for this organisation for the stated period, compared with the previous period of the same length, using only the metric records. Cover: what changed and by how much (quote the numbers from the records; do not compute new statistics beyond simple differences), the most important items for the SOC manager, case and vulnerability backlog and deadlines, and what to focus on next week. Mark every statement as platform_record or ai_assessment. Put every limitation and unhealthy pipeline in data_gaps — if a pipeline was down, say the related numbers may be low because of missing data, not because of less activity. Do not speculate about attackers or attribution.',
+    schema: z.object({
+        period: z.string(),
+        headline: z.string(),
+        statements: z.array(z.object({ statement: z.string(), basis: z.enum(['platform_record', 'ai_assessment']), evidence_refs: z.array(z.string()) })),
+        focus_next_week: z.array(z.object({ action: z.string(), owner_role: z.string(), evidence_refs: z.array(z.string()) })),
+        data_gaps: z.array(z.string()),
         confidence: Confidence,
     }),
 });

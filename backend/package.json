@@ -11,6 +11,7 @@
     "start": "tsx src/index.ts",
     "lint": "tsc --noEmit",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "verify:deployment": "tsx src/scripts/verifyDeployment.ts",
     "test:apis": "tsx src/scripts/testAPIs.ts",
     "test:new-apis": "tsx src/scripts/testNewAPIs.ts",
     "test:new-keys": "tsx src/scripts/testNewKeys.ts",
