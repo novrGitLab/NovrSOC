@@ -24,6 +24,7 @@ import { logAudit } from '../lib/audit';
 const router = Router();
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const MAX_OBSERVATIONS_PER_BATCH = 500;
+// The worker's job kinds. passive_osint is not among them: the backend runs it (jobs/cniiPassiveJob.ts).
 export const VMS_KINDS = ['discovery', 'ports', 'vuln_nuclei', 'vuln_openvas'] as const;
 
 router.use(rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false }));
@@ -60,7 +61,7 @@ router.post('/claim', async (req, res) => {
     const job = (Array.isArray(data) ? data[0] : data) as Job | undefined;
     if (!job) { res.json({ job: null }); return; }
     const scopes = await activeScopes(job.org_id);
-    res.json({ job, scopes: scopes.map((s) => ({ kind: s.kind, value: s.value, include_subdomains: s.include_subdomains, allow_port_scan: s.allow_port_scan, allow_vuln_scan: s.allow_vuln_scan, expires_at: s.expires_at, status: s.status })) });
+    res.json({ job, scopes: scopes.map((s) => ({ kind: s.kind, value: s.value, include_subdomains: s.include_subdomains, allow_discovery: s.allow_discovery !== false, allow_port_scan: s.allow_port_scan, allow_vuln_scan: s.allow_vuln_scan, expires_at: s.expires_at, status: s.status })) });
 });
 
 const Progress = z.object({ phase: z.string().max(60).optional(), done: z.number().int().min(0).optional(), total: z.number().int().min(0).optional(), message: z.string().max(300).optional() }).strict();

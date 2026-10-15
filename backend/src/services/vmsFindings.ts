@@ -14,11 +14,17 @@
 //   still recorded).
 // Verified means a verification scan that ran the same check on the same target finished
 // successfully without detecting it (or, for Wazuh, a newer Wazuh report no longer lists it).
+//
+// Evidence class (phase P9, lib/riskScore.ts): scanner_check (Nuclei/OpenVAS fired), package_inventory
+// (Wazuh), version_match (a third party saw a vulnerable-looking version: unconfirmed), exposure,
+// intelligence (a third-party claim: unconfirmed). Passive claims (ingestPassiveClaims) never
+// reopen a finding and never overwrite stronger evidence; a scanner detection upgrades a passive
+// finding to scanner_check.
 
 import { z } from 'zod';
 import { getSupabase } from './geoEnrichment';
 import { redactValue } from '../lib/redact';
-import { riskScore, DUE_DAYS, type Severity, type Priority } from '../lib/riskScore';
+import { riskScore, DUE_DAYS, type Severity, type Priority, type EvidenceClass } from '../lib/riskScore';
 import { coveringScope, parseTarget, type ScopeEntry } from '../lib/vmsScope';
 import { ensureCves, CVE_RE } from './cveIntel';
 
@@ -75,7 +81,7 @@ async function event(org: string, findingId: string, actor: string, action: stri
 }
 
 /** Risk for a finding from current intelligence and its asset. */
-export async function computeRisk(f: { cve_ids: string[]; scanner_severity: Severity; scanner_cvss: number | null; asset_id: string | null }) {
+export async function computeRisk(f: { cve_ids: string[]; scanner_severity: Severity; scanner_cvss: number | null; asset_id: string | null; evidence_class?: EvidenceClass | null }) {
     const supabase = getSupabase()!;
     let cvss = f.scanner_cvss, kev: boolean | null = null, epss: number | null = null;
     if (f.cve_ids.length) {
@@ -93,7 +99,7 @@ export async function computeRisk(f: { cve_ids: string[]; scanner_severity: Seve
         const { data: a } = await supabase.from('vms_assets').select('exposure, criticality').eq('id', f.asset_id).maybeSingle();
         if (a) { exposure = a.exposure; criticality = a.criticality; }
     }
-    return riskScore({ scanner_severity: f.scanner_severity, cvss, kev, epss, exposure, criticality });
+    return riskScore({ scanner_severity: f.scanner_severity, cvss, kev, epss, exposure, criticality, evidence_class: f.evidence_class ?? undefined });
 }
 
 const dueFrom = (firstSeen: string, p: Priority) => new Date(Date.parse(firstSeen) + DUE_DAYS[p] * 86_400_000).toISOString();
@@ -102,7 +108,8 @@ const dueFrom = (firstSeen: string, p: Priority) => new Date(Date.parse(firstSee
 export async function recomputeRisk(filter: { org?: string; ids?: string[]; cve?: string; assetId?: string }): Promise<number> {
     const supabase = getSupabase();
     if (!supabase) return 0;
-    let q = supabase.from('vms_findings').select('id, org_id, cve_ids, scanner_severity, scanner_cvss, asset_id, first_seen, priority, risk_score, due_manual');
+    // '*' rather than a column list: evidence_class exists only once sql/2026-10-17_p9_cnii.sql ran.
+    let q = supabase.from('vms_findings').select('*');
     if (filter.org) q = q.eq('org_id', filter.org);
     if (filter.ids) q = q.in('id', filter.ids);
     if (filter.cve) q = q.contains('cve_ids', [filter.cve]);
@@ -110,7 +117,7 @@ export async function recomputeRisk(filter: { org?: string; ids?: string[]; cve?
     const { data } = await q.limit(5000);
     let changed = 0;
     for (const f of data ?? []) {
-        const r = await computeRisk({ cve_ids: f.cve_ids ?? [], scanner_severity: f.scanner_severity, scanner_cvss: f.scanner_cvss !== null ? Number(f.scanner_cvss) : null, asset_id: f.asset_id });
+        const r = await computeRisk({ cve_ids: f.cve_ids ?? [], scanner_severity: f.scanner_severity, scanner_cvss: f.scanner_cvss !== null ? Number(f.scanner_cvss) : null, asset_id: f.asset_id, evidence_class: f.evidence_class });
         if (r.score === f.risk_score && r.priority === f.priority) continue;
         await supabase.from('vms_findings').update({ risk_score: r.score, priority: r.priority, risk_factors: r.factors, ...(f.due_manual ? {} : { due_at: dueFrom(f.first_seen, r.priority) }), updated_at: new Date().toISOString() }).eq('id', f.id);
         if (r.priority !== f.priority) await event(f.org_id, f.id, 'NovrSOC risk engine', 'risk', f.priority, r.priority, String(r.factors.rule));
@@ -164,15 +171,72 @@ export async function ingestFindings(job: { id: string; org_id: string }, raw: u
             findingId = existing.id;
             const reopen = existing.status === 'verified' || existing.status === 'fixed_pending_verification';
             const severity = SEV_RANK[o.severity] > SEV_RANK[existing.scanner_severity as Severity] ? o.severity : existing.scanner_severity;
+            // A scanner check now confirms what a passive source only claimed.
+            const confirms = existing.evidence_class === 'version_match' || existing.evidence_class === 'intelligence';
             await supabase.from('vms_findings').update({
                 last_seen: now, last_job_id: job.id, detected_by: [...new Set([...(existing.detected_by ?? []), o.scanner])], scanner_severity: severity,
                 cve_ids: [...new Set([...(existing.cve_ids ?? []), ...cves])].sort(), updated_at: now,
                 ...(reopen ? { status: 'reopened', verified_at: null, closed_at: null } : {}),
+                ...(confirms ? { evidence_class: 'scanner_check', source_class: 'active_scan' } : {}),
             }).eq('id', findingId);
             if (reopen) { out.reopened++; await event(job.org_id, findingId, `scanner:${o.scanner}`, 'reopened', existing.status, 'reopened', 'Detected again after being marked fixed'); }
+            if (confirms) {
+                await event(job.org_id, findingId, `scanner:${o.scanner}`, 'evidence', existing.evidence_class, 'scanner_check', `Confirmed by ${o.scanner} (${o.rule_id})`);
+                await recomputeRisk({ ids: [findingId] });
+            }
         }
         await supabase.from('vms_finding_evidence').insert({ org_id: job.org_id, finding_id: findingId, source: o.scanner, job_id: job.id, observed_at: now, matched_at: o.matched_at ?? null, evidence: capEvidence(o.evidence) });
         out.accepted++;
+    }
+    return out;
+}
+
+/** A CVE a passive source attributes to an asset (e.g. Shodan via SpiderFoot): unconfirmed. */
+export interface PassiveClaim { source: string; cve: string; cvss: number | null; severity: 'critical' | 'high' | 'medium' | 'low'; evidence?: unknown }
+export interface PassiveClaimResult { new_findings: number; sightings: number; rejected_invalid: number }
+
+/**
+ * Stores passive CVE claims for an asset already in this organisation's inventory (the caller has
+ * checked scope). Each claim becomes, or adds evidence to, a version_match finding. A claim never
+ * reopens a finding, never moves a scanner-confirmed finding's last_seen, and never changes a
+ * person's decision on it.
+ */
+export async function ingestPassiveClaims(org: string, jobId: string | null, asset: { id: string; type: string; value: string }, claims: PassiveClaim[]): Promise<PassiveClaimResult> {
+    const supabase = getSupabase();
+    if (!supabase) throw new Error('Database not configured');
+    const out: PassiveClaimResult = { new_findings: 0, sightings: 0, rejected_invalid: 0 };
+    const now = new Date().toISOString();
+    for (const c of claims) {
+        const cve = cleanCves([c.cve])[0];
+        if (!cve || !['critical', 'high', 'medium', 'low'].includes(c.severity)) { out.rejected_invalid++; continue; }
+        const cvss = typeof c.cvss === 'number' && c.cvss >= 0 && c.cvss <= 10 ? c.cvss : null;
+        await ensureCves([cve]);
+        const key = dedupeKey(asset, null, 'passive', cve, [cve]);
+        const { data: existing } = await supabase.from('vms_findings').select('*').eq('org_id', org).eq('dedupe_key', key).maybeSingle();
+        let findingId: string;
+        if (!existing) {
+            const r = await computeRisk({ cve_ids: [cve], scanner_severity: c.severity, scanner_cvss: cvss, asset_id: asset.id, evidence_class: 'version_match' });
+            const ins = await supabase.from('vms_findings').insert({
+                org_id: org, dedupe_key: key, asset_id: asset.id, asset_value: asset.value, port: null, protocol: null,
+                source_class: 'passive_intel', evidence_class: 'version_match', detected_by: [c.source], rule_id: cve,
+                title: `${cve} reported by ${c.source}: version match, not confirmed`,
+                description: 'A third-party source reports this CVE for the asset from the product version it observed. No scanner check has confirmed it; confirm it with an authorised scan before treating the system as vulnerable.',
+                finding_type: 'vulnerability', cve_ids: [cve], scanner_severity: c.severity, scanner_cvss: cvss,
+                risk_score: r.score, priority: r.priority, risk_factors: r.factors, status: 'open', first_seen: now, last_seen: now, last_job_id: jobId, due_at: dueFrom(now, r.priority),
+            }).select('id').single();
+            if (ins.error) throw new Error(`finding insert failed: ${ins.error.message}`);
+            findingId = ins.data.id;
+            out.new_findings++;
+            await event(org, findingId, `passive:${c.source}`, 'detected', null, 'open', `${cve} claimed by ${c.source} (unconfirmed)`);
+        } else {
+            findingId = existing.id;
+            out.sightings++;
+            const passiveOnly = existing.evidence_class === 'version_match' || existing.evidence_class === 'intelligence';
+            if (passiveOnly) {
+                await supabase.from('vms_findings').update({ last_seen: now, last_job_id: jobId, detected_by: [...new Set([...(existing.detected_by ?? []), c.source])], updated_at: now }).eq('id', findingId);
+            }
+        }
+        await supabase.from('vms_finding_evidence').insert({ org_id: org, finding_id: findingId, source: c.source, job_id: jobId, observed_at: now, matched_at: asset.value, evidence: capEvidence({ claim: 'version_match', cvss, severity: c.severity, ...(c.evidence !== undefined ? { detail: c.evidence } : {}) }) });
     }
     return out;
 }

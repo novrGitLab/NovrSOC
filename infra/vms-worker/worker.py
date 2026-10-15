@@ -91,7 +91,11 @@ def parse_target(s: str):
 
 
 def in_scope(target: str, scopes: list[dict], activity: str) -> bool:
-    """True when an active, unexpired scope entry covers target for activity (discovery|ports|vuln)."""
+    """True when an active, unexpired scope entry covers target for activity (discovery|ports|vuln).
+
+    An entry with allow_discovery false authorises passive monitoring only (the backend asks third
+    parties); this worker touches targets, so it treats such an entry as covering nothing. Entries
+    from a backend before P9 carry no allow_discovery and keep their old meaning (allowed)."""
     t = parse_target(target)
     if not t:
         return False
@@ -104,6 +108,8 @@ def in_scope(target: str, scopes: list[dict], activity: str) -> bool:
         except (KeyError, ValueError):
             continue
         if exp <= now:
+            continue
+        if not e.get('allow_discovery', True):
             continue
         if activity == 'ports' and not e.get('allow_port_scan'):
             continue
@@ -123,11 +129,20 @@ def in_scope(target: str, scopes: list[dict], activity: str) -> bool:
     return False
 
 
+def _unexpired(e: dict) -> bool:
+    try:
+        return datetime.fromisoformat(str(e['expires_at']).replace('Z', '+00:00')).timestamp() > time.time()
+    except (KeyError, ValueError):
+        return False
+
+
 def job_target_allowed(raw: str, scopes: list[dict], activity: str) -> bool:
     """A job target is a host/IP in scope, or exactly an approved CIDR entry."""
     if '/' in raw:
         return any(e.get('kind') == 'cidr' and e.get('status') == 'active' and str(e.get('value')) == raw
-                   and (activity != 'ports' or e.get('allow_port_scan')) for e in scopes)
+                   and _unexpired(e) and e.get('allow_discovery', True)
+                   and (activity != 'ports' or e.get('allow_port_scan'))
+                   and (activity != 'vuln' or e.get('allow_vuln_scan')) for e in scopes)
     return in_scope(raw, scopes, activity)
 
 

@@ -8,6 +8,7 @@ import { pushConfig } from '../jobs/stellarPush';
 import { autoCaseConfig } from '../jobs/autoCase';
 import { readAuditLog } from '../lib/audit';
 import { FEED_STALE_HOURS } from './threatInfo';
+import { PASSIVE_RUNNER_ID } from '../lib/vmsScope';
 
 const H = 3_600_000;
 
@@ -88,9 +89,10 @@ export async function pipelineChecks(): Promise<PipelineCheck[]> {
 export async function vmsChecks(): Promise<PipelineCheck[]> {
     const supabase = getSupabase()!;
     const out: PipelineCheck[] = [];
-    const beat = await supabase.from('vms_scan_jobs').select('heartbeat_at').not('heartbeat_at', 'is', null).order('heartbeat_at', { ascending: false }).limit(1).maybeSingle();
+    // The backend's passive runner also heartbeats its jobs; only the scanner worker counts here.
+    const beat = await supabase.from('vms_scan_jobs').select('heartbeat_at').not('heartbeat_at', 'is', null).neq('worker_id', PASSIVE_RUNNER_ID).order('heartbeat_at', { ascending: false }).limit(1).maybeSingle();
     if (beat.error) { out.push({ name: 'VMS scanner', status: 'off', detail: 'VMS tables not created yet' }); return out; }
-    const queued = await supabase.from('vms_scan_jobs').select('requested_at').eq('status', 'queued').order('requested_at', { ascending: true }).limit(1).maybeSingle();
+    const queued = await supabase.from('vms_scan_jobs').select('requested_at').eq('status', 'queued').neq('kind', 'passive_osint').order('requested_at', { ascending: true }).limit(1).maybeSingle();
     const last = beat.data?.heartbeat_at as string | undefined;
     const oldest = queued.data?.requested_at as string | undefined;
     out.push({

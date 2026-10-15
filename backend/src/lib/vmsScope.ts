@@ -5,19 +5,30 @@
 //   domain  example.com           → example.com itself, and its subdomains when include_subdomains
 //   ip      203.0.113.10          → that address
 //   cidr    203.0.113.0/28        → addresses inside the range (IPv4 /22 or smaller, IPv6 /120 or smaller)
-// Each activity needs its own permission on the entry: discovery (passive subdomains, DNS, HTTP
-// probing) is allowed by any active entry; port scans need allow_port_scan; vulnerability scans
-// need allow_vuln_scan. Wildcards, URLs, ports, credentials and malformed names are never targets.
+//   asn     AS37282               → registers an autonomous system for passive monitoring only; it
+//                                   covers no host or address
+// Each activity needs its own permission on the entry:
+//   passive    third parties are asked about the target (registries, CT logs, Shodan, OpenCTI);
+//              nothing connects to it — allowed by any active entry
+//   discovery  the worker resolves names and sends one HTTP request per host — allow_discovery
+//              (true unless the entry was registered for passive monitoring only)
+//   ports      allow_port_scan        vuln   allow_vuln_scan
+// Wildcards, URLs, ports, credentials and malformed names are never targets.
 
 import { isIP } from 'net';
 import { parseCidr, ipAllowed } from './cidr';
 
-export type ScopeKind = 'domain' | 'ip' | 'cidr';
-export type Activity = 'discovery' | 'ports' | 'vuln';
+export type ScopeKind = 'domain' | 'ip' | 'cidr' | 'asn';
+export type Activity = 'passive' | 'discovery' | 'ports' | 'vuln';
 export interface ScopeEntry {
     id: string; org_id: string; kind: ScopeKind; value: string; include_subdomains: boolean;
     allow_port_scan: boolean; allow_vuln_scan: boolean; status: 'active' | 'revoked'; expires_at: string;
+    /** Absent on rows written before P9: treated as true, the meaning those rows were approved with. */
+    allow_discovery?: boolean;
 }
+
+/** worker_id of the backend's own passive-collection runner (jobs/cniiPassiveJob.ts): its heartbeats say nothing about the scanner worker. */
+export const PASSIVE_RUNNER_ID = 'novrsoc-passive';
 
 const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
 export const MAX_IPV4_PREFIX = 22;
@@ -40,6 +51,11 @@ export function validateScopeValue(kind: ScopeKind, value: string): { ok: true; 
         const h = normalizeHostname(value);
         return h ? { ok: true, value: h } : { ok: false, error: 'Not a valid domain name (no wildcards, URLs or ports)' };
     }
+    if (kind === 'asn') {
+        const m = /^(?:AS)?(\d{1,10})$/i.exec(value.trim());
+        const n = m ? Number(m[1]) : NaN;
+        return m && n > 0 && n < 4_294_967_296 ? { ok: true, value: `AS${n}` } : { ok: false, error: 'Not a valid AS number (e.g. AS37282)' };
+    }
     if (kind === 'ip') {
         const v = value.trim();
         return isIP(v) ? { ok: true, value: v.toLowerCase() } : { ok: false, error: 'Not a valid IP address' };
@@ -61,7 +77,7 @@ export function parseTarget(input: string): Target | null {
 }
 
 const usable = (e: ScopeEntry, now: number) => e.status === 'active' && Date.parse(e.expires_at) > now;
-const allows = (e: ScopeEntry, a: Activity) => a === 'discovery' || (a === 'ports' && e.allow_port_scan) || (a === 'vuln' && e.allow_vuln_scan);
+const allows = (e: ScopeEntry, a: Activity) => a === 'passive' || (a === 'discovery' && e.allow_discovery !== false) || (a === 'ports' && e.allow_port_scan) || (a === 'vuln' && e.allow_vuln_scan);
 
 /** The scope entry that covers a target for an activity, or null. */
 export function coveringScope(target: Target, entries: ScopeEntry[], activity: Activity, now = Date.now()): ScopeEntry | null {

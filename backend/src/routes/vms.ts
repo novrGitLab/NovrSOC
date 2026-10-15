@@ -3,10 +3,10 @@
 //
 //   GET    /overview                     vms:read   counts, new / changed / gone in 7 days, recent scans, scanner health
 //   GET    /scopes                       vms:read
-//   POST   /scopes                       vms:scope  { kind, value, include_subdomains?, allow_port_scan?, allow_vuln_scan?, authorization_reference, expires_at, notes? }
+//   POST   /scopes                       vms:scope  { kind, value, include_subdomains?, allow_discovery?, allow_port_scan?, allow_vuln_scan?, authorization_reference, expires_at, notes? }
 //   POST   /scopes/:id/revoke            vms:scope  also cancels that scope's queued jobs
 //   GET    /scans                        vms:read
-//   POST   /scans                        vms:scan   { scope_id, kind: discovery|ports, targets?: string[], ports? }
+//   POST   /scans                        vms:scan   { scope_id, kind: passive_osint|discovery|ports|vuln_*, targets?: string[], ports? }
 //   POST   /scans/:id/cancel             vms:scan
 //   GET    /assets?q&type&status&exposure  vms:read
 //   GET    /assets/:id                   vms:read   with services, technologies, recent events
@@ -15,6 +15,8 @@
 //
 // Scans run only on targets inside an active, unexpired scope entry that allows the activity
 // (lib/vmsScope.ts). The scanners run in infra/vms-worker; nothing here executes a tool.
+// passive_osint jobs (phase P9) are run by the backend itself (jobs/cniiPassiveJob.ts): they only
+// ask third parties about the target.
 
 import { Router } from 'express';
 import { z } from 'zod';
@@ -23,7 +25,7 @@ import { requirePermission, requestOrg } from '../lib/permissions';
 import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid } from '../services/cases';
 import { logAudit } from '../lib/audit';
-import { validateScopeValue, parseTarget, coveringScope, type ScopeEntry } from '../lib/vmsScope';
+import { validateScopeValue, parseTarget, coveringScope, PASSIVE_RUNNER_ID, type ScopeEntry, type Activity } from '../lib/vmsScope';
 
 const router = Router();
 const MAX_SCOPE_DAYS = 400;
@@ -55,7 +57,7 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
         count(ev('asset_new')), count(ev('asset_changed')), count(ev('asset_gone')), count(ev('service_new')),
         supabase.from('vms_scan_jobs').select('id, kind, status, requested_at, finished_at, error, summary, progress').eq('org_id', org).order('requested_at', { ascending: false }).limit(10),
         supabase.from('vms_scopes').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('status', 'active').gt('expires_at', new Date().toISOString()),
-        supabase.from('vms_scan_jobs').select('heartbeat_at').not('heartbeat_at', 'is', null).order('heartbeat_at', { ascending: false }).limit(1).maybeSingle(),
+        supabase.from('vms_scan_jobs').select('heartbeat_at').not('heartbeat_at', 'is', null).neq('worker_id', PASSIVE_RUNNER_ID).order('heartbeat_at', { ascending: false }).limit(1).maybeSingle(),
     ]);
     if (active.error) { fail(res, active.error); return; }
     const lastBeat = lastWorker.data?.heartbeat_at ?? null;
@@ -76,9 +78,10 @@ router.get('/scopes', requirePermission('vms:read'), async (req: AuthRequest, re
 });
 
 const NewScope = z.object({
-    kind: z.enum(['domain', 'ip', 'cidr']),
+    kind: z.enum(['domain', 'ip', 'cidr', 'asn']),
     value: z.string().min(1).max(253),
     include_subdomains: z.boolean().default(true),
+    allow_discovery: z.boolean().default(true),
     allow_port_scan: z.boolean().default(false),
     allow_vuln_scan: z.boolean().default(false),
     authorization_reference: z.string().trim().min(3).max(300),
@@ -91,6 +94,9 @@ router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, 
     if (!p.success) { res.status(400).json({ error: `Invalid scope: ${p.error.issues[0]?.path.join('.') || ''} ${p.error.issues[0]?.message ?? ''}`.trim() }); return; }
     const v = validateScopeValue(p.data.kind, p.data.value);
     if (!v.ok) { res.status(400).json({ error: v.error }); return; }
+    // An AS number covers no host or address: it registers the network for passive monitoring.
+    const allowDiscovery = p.data.kind === 'asn' ? false : p.data.allow_discovery;
+    if (p.data.kind === 'asn' && (p.data.allow_port_scan || p.data.allow_vuln_scan)) { res.status(400).json({ error: 'An AS number is registered for passive monitoring only; add its ranges as CIDR entries to scan them' }); return; }
     const exp = Date.parse(p.data.expires_at);
     if (exp <= Date.now()) { res.status(400).json({ error: 'expires_at must be in the future' }); return; }
     if (exp > Date.now() + MAX_SCOPE_DAYS * 86_400_000) { res.status(400).json({ error: `Authorisation can last at most ${MAX_SCOPE_DAYS} days; renew it when it expires` }); return; }
@@ -98,6 +104,8 @@ router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, 
     const { data, error } = await getSupabase()!.from('vms_scopes').insert({
         org_id: org, kind: p.data.kind, value: v.value, include_subdomains: p.data.kind === 'domain' ? p.data.include_subdomains : false,
         allow_port_scan: p.data.allow_port_scan, allow_vuln_scan: p.data.allow_vuln_scan, authorization_reference: p.data.authorization_reference,
+        // Only written when false: rows without the column (before sql/2026-10-17_p9_cnii.sql) mean true.
+        ...(allowDiscovery ? {} : { allow_discovery: false }),
         notes: p.data.notes ?? null, approved_by: actor(req), expires_at: new Date(exp).toISOString(),
     }).select('*').single();
     if (error) {
@@ -105,7 +113,7 @@ router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, 
         fail(res, error); return;
     }
     logAudit({ user: actor(req), action: 'VMS_SCOPE_APPROVED', resource: 'vms_scope', resource_id: data.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', severity: 'warning',
-        details: `${p.data.kind} ${v.value} ports=${p.data.allow_port_scan} vuln=${p.data.allow_vuln_scan} ref=${p.data.authorization_reference}`.slice(0, 200) });
+        details: `${p.data.kind} ${v.value} discovery=${allowDiscovery} ports=${p.data.allow_port_scan} vuln=${p.data.allow_vuln_scan} ref=${p.data.authorization_reference}`.slice(0, 200) });
     res.status(201).json({ scope: data });
 });
 
@@ -134,11 +142,11 @@ router.get('/scans', requirePermission('vms:read'), async (req: AuthRequest, res
 const PORT_SPEC = /^(top-(100|1000)|(\d{1,5}(-\d{1,5})?)(,\d{1,5}(-\d{1,5})?){0,63})$/;
 export const NewScan = z.object({
     scope_id: z.string().uuid(),
-    kind: z.enum(['discovery', 'ports', 'vuln_nuclei', 'vuln_openvas']),
+    kind: z.enum(['passive_osint', 'discovery', 'ports', 'vuln_nuclei', 'vuln_openvas']),
     targets: z.array(z.string().max(253)).max(MAX_TARGETS).optional(),
     ports: z.string().regex(PORT_SPEC).optional(),
 }).strict();
-const activityOf = (kind: string) => (kind === 'ports' ? 'ports' : kind.startsWith('vuln_') ? 'vuln' : 'discovery') as 'ports' | 'vuln' | 'discovery';
+export const activityOf = (kind: string): Activity => (kind === 'passive_osint' ? 'passive' : kind === 'ports' ? 'ports' : kind.startsWith('vuln_') ? 'vuln' : 'discovery');
 
 /** Checks a scan request against its scope: active, unexpired, the activity authorised, every target inside. Shared with schedules. */
 export async function validateScan(org: string, input: z.infer<typeof NewScan>, extraOptions: Record<string, unknown> = {}):
@@ -149,6 +157,11 @@ export async function validateScan(org: string, input: z.infer<typeof NewScan>, 
     const entry = scope as ScopeEntry | null;
     if (!entry || entry.status !== 'active' || Date.parse(entry.expires_at) <= Date.now()) return { ok: false, status: 400, error: 'That scope is not active (revoked, expired or not found)' };
     const activity = activityOf(input.kind);
+    if (entry.kind === 'asn') {
+        if (activity !== 'passive') return { ok: false, status: 403, error: 'An AS number is registered for passive monitoring only' };
+        return { ok: true, scope: entry, targets: [entry.value], options: { ...extraOptions } };
+    }
+    if (activity === 'discovery' && entry.allow_discovery === false) return { ok: false, status: 403, error: 'This scope authorises passive monitoring only' };
     if (activity === 'ports' && !entry.allow_port_scan) return { ok: false, status: 403, error: 'This scope does not authorise port scanning' };
     if (activity === 'vuln' && !entry.allow_vuln_scan) return { ok: false, status: 403, error: 'This scope does not authorise vulnerability scanning' };
     const requested = input.targets?.length ? input.targets : [entry.value];
@@ -182,7 +195,7 @@ export async function queueScan(org: string, by: string, input: z.infer<typeof N
 
 router.post('/scans', requirePermission('vms:scan'), async (req: AuthRequest, res) => {
     const p = NewScan.safeParse(req.body);
-    if (!p.success) { res.status(400).json({ error: 'Body must be { scope_id, kind: discovery|ports|vuln_nuclei|vuln_openvas, targets?: [host or IP], ports?: "top-100" | "top-1000" | "22,80,8000-8100" }' }); return; }
+    if (!p.success) { res.status(400).json({ error: 'Body must be { scope_id, kind: passive_osint|discovery|ports|vuln_nuclei|vuln_openvas, targets?: [host or IP], ports?: "top-100" | "top-1000" | "22,80,8000-8100" }' }); return; }
     const r = await queueScan(requestOrg(req), actor(req), p.data);
     if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
     res.status(r.existing ? 200 : 201).json({ scan: r.job, existing: r.existing });
@@ -207,7 +220,7 @@ router.get('/assets', requirePermission('vms:read'), async (req: AuthRequest, re
     const text = typeof q.q === 'string' && q.q.trim() ? q.q.trim().toLowerCase() : null;
     if (text && !/^[\w.:-]{1,100}$/.test(text)) { res.status(400).json({ error: 'q may hold letters, digits and . : _ -' }); return; }
     let query = getSupabase()!.from('vms_assets').select('*').eq('org_id', requestOrg(req));
-    if (typeof q.type === 'string' && ['domain', 'host', 'ip', 'endpoint'].includes(q.type)) query = query.eq('asset_type', q.type);
+    if (typeof q.type === 'string' && ['domain', 'host', 'ip', 'endpoint', 'asn', 'cidr'].includes(q.type)) query = query.eq('asset_type', q.type);
     if (typeof q.status === 'string' && ['active', 'gone'].includes(q.status)) query = query.eq('status', q.status);
     if (typeof q.exposure === 'string' && ['internet', 'internal', 'unknown'].includes(q.exposure)) query = query.eq('exposure', q.exposure);
     if (text) query = query.ilike('value', `*${text}*`);

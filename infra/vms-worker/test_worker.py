@@ -35,6 +35,23 @@ class Scope(unittest.TestCase):
         self.assertTrue(worker.job_target_allowed('203.0.113.0/28', SCOPES, 'ports'), 'the approved range itself')
         self.assertFalse(worker.job_target_allowed('203.0.113.0/24', SCOPES, 'ports'), 'a wider range is not approved')
         self.assertFalse(worker.job_target_allowed('example.test', SCOPES, 'ports'))
+        self.assertFalse(worker.job_target_allowed('203.0.113.0/28', SCOPES, 'vuln'), 'the range does not allow vulnerability scans')
+
+    def test_passive_only_entries_cover_nothing_here(self):
+        passive = [
+            {'kind': 'domain', 'value': 'cnii.test', 'include_subdomains': True, 'allow_discovery': False, 'allow_port_scan': False, 'allow_vuln_scan': False, 'status': 'active', 'expires_at': FUTURE},
+            {'kind': 'cidr', 'value': '192.0.2.0/28', 'include_subdomains': False, 'allow_discovery': False, 'allow_port_scan': True, 'allow_vuln_scan': True, 'status': 'active', 'expires_at': FUTURE},
+            {'kind': 'asn', 'value': 'AS64500', 'include_subdomains': False, 'allow_discovery': False, 'allow_port_scan': False, 'allow_vuln_scan': False, 'status': 'active', 'expires_at': FUTURE},
+        ]
+        for activity in ('discovery', 'ports', 'vuln'):
+            self.assertFalse(worker.in_scope('www.cnii.test', passive, activity), activity)
+            self.assertFalse(worker.in_scope('192.0.2.3', passive, activity), activity)
+            self.assertFalse(worker.job_target_allowed('192.0.2.0/28', passive, activity), activity)
+            self.assertFalse(worker.job_target_allowed('AS64500', passive, activity), activity)
+
+    def test_expired_range_is_not_a_job_target(self):
+        expired = [{'kind': 'cidr', 'value': '192.0.2.0/28', 'include_subdomains': False, 'allow_port_scan': True, 'allow_vuln_scan': True, 'status': 'active', 'expires_at': PAST}]
+        self.assertFalse(worker.job_target_allowed('192.0.2.0/28', expired, 'ports'))
 
 
 class Parsers(unittest.TestCase):

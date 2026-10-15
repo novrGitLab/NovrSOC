@@ -38,7 +38,7 @@ export const ServiceObservation = z.object({
 export const Observation = z.discriminatedUnion('type', [HostObservation, ServiceObservation]);
 export type ObservationT = z.infer<typeof Observation>;
 
-export const activityForJob = (kind: string): Activity => (kind === 'ports' ? 'ports' : kind.startsWith('vuln') ? 'vuln' : 'discovery');
+export const activityForJob = (kind: string): Activity => (kind === 'passive_osint' ? 'passive' : kind === 'ports' ? 'ports' : kind.startsWith('vuln') ? 'vuln' : 'discovery');
 
 const isPublic = (ip: string): boolean => {
     if (isIP(ip) === 6) return !/^(::1|fc|fd|fe80)/i.test(ip);
