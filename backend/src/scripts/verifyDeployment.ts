@@ -48,7 +48,7 @@ async function main() {
     }
 
     // Protected routes refuse anonymous requests (P1)
-    for (const path of ['/api/alerts', '/api/cases', '/api/vms/overview', '/api/ti/overview', '/api/insights/weekly', '/api/platform/health', '/api/org-cti/stats', '/api/assets']) {
+    for (const path of ['/api/alerts', '/api/cases', '/api/vms/overview', '/api/ti/overview', '/api/insights/weekly', '/api/platform/health', '/api/org-cti/stats', '/api/assets', '/api/cnii/sectors', '/api/cnii/inventory']) {
         try {
             const { status } = await get(path, false);
             // 401/403 = refused (good); 2xx = answered without a token (bad); 404 = route not deployed.
@@ -80,6 +80,11 @@ async function main() {
     await probe('VMS schedules (P7)', '/api/vms/schedules', (b) => `${((b.schedules ?? []) as unknown[]).length} schedule(s)`);
     await probe('VMS trends (P7)', '/api/vms/trends?days=30', (b) => `${((b.snapshots ?? []) as unknown[]).length} snapshot(s)`);
     await probe('Weekly insights (P8)', '/api/insights/weekly', (b) => `${((b.limitations ?? []) as unknown[]).length} stated limitation(s)`);
+    await probe('CNII Watch sectors (P9)', '/api/cnii/sectors', (b) => {
+        const sec = (b.sectors ?? []) as { organisations: number; unmonitored: number }[];
+        return `${sec.reduce((n, x) => n + x.organisations, 0)} organisation(s) classified, ${sec.reduce((n, x) => n + x.unmonitored, 0)} without active scope`;
+    });
+    await probe('CNII Watch profile (P9)', '/api/cnii/profile', (b) => (b.profile ? 'this organisation is classified' : 'this organisation is not classified'));
 
     const w = Math.max(...results.map((r) => r.check.length));
     for (const r of results) console.log(`${r.outcome.padEnd(10)} ${r.check.padEnd(w)}  ${r.detail}`);
