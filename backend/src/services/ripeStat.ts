@@ -87,3 +87,10 @@ export async function lookupASN(asnInput: string): Promise<ASNInfo> {
         prefixes: prefixes.slice(0, 25),
     };
 }
+
+/** The announcing AS numbers and covering prefix for an IP address (RIPE Stat network-info), or null. */
+export async function ipNetworkInfo(ip: string): Promise<{ asns: string[]; prefix: string | null } | null> {
+    const d = await fetchRipeStat<{ asns?: string[]; prefix?: string }>('network-info', ip);
+    if (!d) return null;
+    return { asns: (d.asns ?? []).filter((a) => /^\d+$/.test(String(a))).map((a) => `AS${a}`), prefix: d.prefix ?? null };
+}

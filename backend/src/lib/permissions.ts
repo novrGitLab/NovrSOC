@@ -33,6 +33,11 @@ export const PERMISSIONS = [
     // promote to cases and run feeds.
     'intel:read',
     'intel:manage',
+    // CNII Watch (phase P9): read an organisation's CNII profile and monitoring; classify
+    // organisations and import legacy rows (managers); read across organisations by sector (staff).
+    'cnii:read',
+    'cnii:manage',
+    'cnii:sector',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -44,9 +49,10 @@ export type Permission = (typeof PERMISSIONS)[number];
 export const ROLE_PERMISSIONS: Readonly<Record<UserRole, readonly Permission[]>> = {
     super_admin: PERMISSIONS,
     soc_manager: PERMISSIONS,
-    analyst: ['alerts:read', 'alerts:triage', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write', 'vms:read', 'vms:scan', 'vms:manage', 'intel:read', 'intel:manage'],
-    // Executives see their organisation's attack surface and risk; they change nothing.
-    executive: ['vms:read', 'intel:read'],
+    analyst: ['alerts:read', 'alerts:triage', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write', 'vms:read', 'vms:scan', 'vms:manage', 'intel:read', 'intel:manage', 'cnii:read', 'cnii:sector'],
+    // Executives see their organisation's attack surface and risk; they change nothing. They never
+    // see other organisations, so no sector-wide view.
+    executive: ['vms:read', 'intel:read', 'cnii:read'],
     portal_user: [],
 };
 

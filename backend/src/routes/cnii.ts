@@ -1,329 +1,394 @@
-// CNII Watch — asset inventory, sector alerts, vulnerabilities and the IP scanner.
+// /api/cnii — CNII Watch (phase P9). A sector view over VMS (scope, inventory, findings) and the
+// Threat Information System (indicators, matches). CNII keeps no asset or findings store of its
+// own: an organisation is classified into a sector (cnii_org_profiles) and everything else is
+// that organisation's VMS and Threat Information records. Nothing here reads Wazuh.
+// Mounted behind requireAuth in index.ts; each route resolves its permission and organisation
+// (lib/permissions.ts). Staff act on another organisation with X-Org-Id, which is audited.
 //
-//   POST /scan  { ip }      SpiderFoot scan + OpenCTI lookup in parallel → ScanResult with a
-//                           suggested sector. Nothing is saved; the analyst confirms the sector.
-//   POST /assets            { ip, sectorId, subfield? } → upsert into cnii_assets, using the
-//                           server's cached scan for that IP (raw data, CVEs) when there is one.
-//   GET  /assets            cnii_assets rows (?sector=, ?ip=)
-//   GET  /alerts            not available: always 503 not_connected (?sector=, ?ip= still validated).
-//                           CNII Watch no longer reads Wazuh endpoint alerts (2026-10 cleanup) and no
-//                           other alert source is connected.
-//   GET  /vulns             CVEs stored from each asset's last SpiderFoot scan (?sector=, ?ip=).
-//                           Wazuh vulnerability state is no longer merged in.
-//
-// Response shapes: frontend/src/lib/cnii-types.ts. When a dependency is missing or down the route
-// says so (503 not_connected / 502) — it never substitutes sample data or reports a save that
-// didn't happen. Mounted behind requireAuth in index.ts; roles are checked per route.
-import { Router, Response } from 'express';
+// Across organisations (cnii:sector — super_admin, soc_manager, analyst; never client roles):
+//   GET  /sectors                    per sector: organisations, assets, open findings (confirmed vs
+//                                    unconfirmed), KEV, new indicator matches, scope and collection gaps
+//   GET  /sectors/:sector            the same per organisation in one sector
+//   GET  /organisations              every organisation with its CNII profile, to classify them
+//   POST /lookup { ip }              passive triage of one address: registry holder, a suggested
+//                                    sector, indicator matches, which organisation (if any) has it
+//                                    in authorised scope. Nothing is stored; the lookup is audited.
+//   GET  /legacy                     rows of the pre-P9 cnii_assets table and whether each was imported
+// One organisation (the caller's, or X-Org-Id for staff):
+//   GET  /profile                    cnii:read    sector profile + history, scope, summary
+//   PUT  /profile                    cnii:manage  { sector_id, subfield?, designation, designation_reference?, notes? }
+//   GET  /inventory                  cnii:read    assets with authorisation status, observations, findings, matches
+//   GET  /assets/:id                 cnii:read    one asset with all of that
+//   POST /collect { scope_id, targets? }  vms:scan  queues passive collection (VMS passive_osint)
+//   POST /legacy/:id/import          cnii:manage  moves a legacy row into this organisation's inventory —
+//                                    only when its address is inside the organisation's active scope
+// Scope approval, active scans, findings workflow and AI stay on /api/vms, /api/ti and /api/ai.
+
+import { Router, type Response } from 'express';
 import { isIP } from 'net';
-import { AuthRequest, requireRole } from '../middleware/auth';
+import { z } from 'zod';
+import type { AuthRequest } from '../middleware/auth';
+import { requirePermission, requestOrg } from '../lib/permissions';
 import { getSupabase } from '../services/geoEnrichment';
-import { scanIP, spiderfootConfigured, SpiderFootError, type SpiderFootVuln } from '../lib/spiderfoot';
+import { dbErrorMessage, isUuid } from '../services/cases';
+import { logAudit } from '../lib/audit';
+import { CNII_SECTORS, SECTOR_BY_ID } from '../lib/cnii-sectors';
+import { classifySector } from '../lib/cnii-classify';
+import { coveringScope, parseTarget, type ScopeEntry } from '../lib/vmsScope';
+import { queueScan } from './vms';
 import { lookupIP, openctiConfigured } from '../lib/opencti';
-import { classifySector, assessCnii, type CniiLikelihood } from '../lib/cnii-classify';
-import { SECTOR_BY_ID } from '../lib/cnii-sectors';
+import { asHolder, ipNetworkInfo } from '../services/ripeStat';
+import { storeObservations, type Obs } from '../services/cniiPassive';
+import { ingestPassiveClaims } from '../services/vmsFindings';
+import { cleanAsHolder } from '../lib/spiderfoot';
 
 const router = Router();
+const OPEN = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'];
+const P9_MISSING = 'CNII Watch is not set up yet (run sql/2026-10-17_p9_cnii.sql after the P4–P7 files)';
+const missing = (e: { message?: string; code?: string } | null) => !!e && (e.code === '42P01' || e.code === 'PGRST205' || /does not exist|Could not find|schema cache/i.test(e.message ?? ''));
+const fail = (res: Response, e: { message?: string; code?: string }) => res.status(missing(e) ? 503 : 502).json({ error: missing(e) ? P9_MISSING : dbErrorMessage(e) });
+const actor = (req: AuthRequest) => req.user?.email ?? 'unknown';
+const db = () => getSupabase()!;
 
-const canRead = requireRole('super_admin', 'soc_manager', 'analyst', 'executive');
-const canWrite = requireRole('super_admin', 'soc_manager', 'analyst');
-
-function notConnected(res: Response, feed: string, message: string) {
-    return res.status(503).json({ error: 'not_connected', feed, message });
+// ── Shared: per-organisation figures, measured from VMS and Threat Information records ───────
+export interface OrgStats {
+    assets: number; probable_assets: number; internet_facing: number;
+    open_findings: { P1: number; P2: number; P3: number; P4: number };
+    confirmed_p1_p2: number; unconfirmed_open: number; kev_open: number; new_matches: number;
+    active_scopes: number; passive_only_scopes: number; scope_expires_next: string | null;
+    last_collection: { at: string; status: string } | null;
 }
+const emptyStats = (): OrgStats => ({ assets: 0, probable_assets: 0, internet_facing: 0, open_findings: { P1: 0, P2: 0, P3: 0, P4: 0 }, confirmed_p1_p2: 0, unconfirmed_open: 0, kev_open: 0, new_matches: 0, active_scopes: 0, passive_only_scopes: 0, scope_expires_next: null, last_collection: null });
 
-// ── Filters ───────────────────────────────────────────────────────────────────────────────
-
-interface Filter { sector?: string; ip?: string }
-
-// Returns the parsed filter, or null after answering 400.
-function readFilter(req: AuthRequest, res: Response): Filter | null {
-    const { sector, ip } = req.query;
-    if (sector !== undefined && (typeof sector !== 'string' || !SECTOR_BY_ID[sector])) {
-        res.status(400).json({ error: 'Unknown sector' });
-        return null;
+export async function orgStats(orgIds: string[]): Promise<Record<string, OrgStats>> {
+    const out: Record<string, OrgStats> = Object.fromEntries(orgIds.map((o) => [o, emptyStats()]));
+    if (!orgIds.length) return out;
+    const now = new Date().toISOString();
+    const [assets, findings, matches, scopes, runs] = await Promise.all([
+        db().from('vms_assets').select('org_id, confidence, exposure').in('org_id', orgIds).eq('status', 'active').limit(50_000),
+        db().from('vms_findings').select('org_id, priority, evidence_class, cve_ids').in('org_id', orgIds).in('status', OPEN).limit(50_000),
+        db().from('ti_matches').select('org_id').in('org_id', orgIds).eq('status', 'new').limit(50_000),
+        db().from('vms_scopes').select('org_id, allow_discovery, expires_at').in('org_id', orgIds).eq('status', 'active').gt('expires_at', now),
+        db().from('vms_scan_jobs').select('org_id, finished_at, status').in('org_id', orgIds).eq('kind', 'passive_osint').not('finished_at', 'is', null).order('finished_at', { ascending: false }).limit(5000),
+    ]);
+    for (const e of [assets.error, findings.error, scopes.error]) if (e) throw e;
+    for (const a of assets.data ?? []) {
+        const s = out[a.org_id]; if (!s) continue;
+        s.assets++;
+        if (a.confidence === 'probable') s.probable_assets++;
+        if (a.exposure === 'internet') s.internet_facing++;
     }
-    if (ip !== undefined && (typeof ip !== 'string' || !isIP(ip))) {
-        res.status(400).json({ error: 'Invalid IP address' });
-        return null;
+    const cves = new Set<string>();
+    for (const f of findings.data ?? []) for (const c of f.cve_ids ?? []) cves.add(c);
+    const kev = new Set<string>();
+    const list = [...cves];
+    for (let i = 0; i < list.length; i += 200) {
+        const { data } = await db().from('cve_intel').select('cve_id').in('cve_id', list.slice(i, i + 200)).eq('kev', true);
+        for (const k of data ?? []) kev.add(k.cve_id);
     }
-    return { sector: sector as string | undefined, ip: ip as string | undefined };
+    for (const f of findings.data ?? []) {
+        const s = out[f.org_id]; if (!s) continue;
+        const p = (f.priority ?? 'P4') as keyof OrgStats['open_findings'];
+        if (p in s.open_findings) s.open_findings[p]++;
+        const unconfirmed = f.evidence_class === 'version_match' || f.evidence_class === 'intelligence';
+        if (unconfirmed) s.unconfirmed_open++;
+        else if (p === 'P1' || p === 'P2') s.confirmed_p1_p2++;
+        if ((f.cve_ids ?? []).some((c: string) => kev.has(c))) s.kev_open++;
+    }
+    for (const m of matches.data ?? []) if (out[m.org_id]) out[m.org_id].new_matches++;
+    for (const sc of scopes.data ?? []) {
+        const s = out[sc.org_id]; if (!s) continue;
+        s.active_scopes++;
+        if (sc.allow_discovery === false) s.passive_only_scopes++;
+        if (!s.scope_expires_next || sc.expires_at < s.scope_expires_next) s.scope_expires_next = sc.expires_at;
+    }
+    for (const r of runs.data ?? []) {
+        const s = out[r.org_id];
+        if (s && !s.last_collection) s.last_collection = { at: r.finished_at, status: r.status };
+    }
+    return out;
 }
 
-// ── cnii_assets ───────────────────────────────────────────────────────────────────────────
-
-interface AssetRow {
-    id: string; ip: string; hostname: string | null; owner: string | null; org: string | null; asn: string | null;
-    country: string | null; sector_id: string; subfield: string | null; domains: string[] | null; subdomains: string[] | null;
-    open_ports: number[] | null; alert_count: number | null; vuln_count: number | null; risk_score: number | null;
-    scan_status: string | null; last_seen: string; added_at: string; vulns: SpiderFootVuln[] | null;
+async function profiles(sector?: string) {
+    let q = db().from('cnii_org_profiles').select('*').order('org_id');
+    if (sector) q = q.eq('sector_id', sector);
+    return q;
 }
 
-const ASSET_COLUMNS = 'id, ip, hostname, owner, org, asn, country, sector_id, subfield, domains, subdomains, open_ports, alert_count, vuln_count, risk_score, scan_status, last_seen, added_at, vulns';
+/** Gaps an analyst must know before trusting the figures. */
+function gaps(s: OrgStats): string[] {
+    const g: string[] = [];
+    if (!s.active_scopes) g.push('no active authorised scope: nothing is monitored');
+    if (s.active_scopes && !s.last_collection) g.push('passive collection has never run');
+    else if (s.last_collection && Date.now() - Date.parse(s.last_collection.at) > 8 * 86_400_000) g.push('passive collection older than 8 days');
+    if (s.last_collection?.status === 'failed') g.push('last passive collection failed');
+    if (s.scope_expires_next && Date.parse(s.scope_expires_next) - Date.now() < 14 * 86_400_000) g.push('authorised scope expires within 14 days');
+    return g;
+}
 
-const toAsset = (r: AssetRow) => ({
-    id: r.id, ip: r.ip, hostname: r.hostname ?? undefined, owner: r.owner ?? undefined, org: r.org ?? undefined,
-    asn: r.asn ?? undefined, country: r.country ?? undefined, sectorId: r.sector_id, subfield: r.subfield ?? undefined,
-    domains: r.domains ?? [], subdomains: r.subdomains ?? [], openPorts: r.open_ports ?? [],
-    alertCount: r.alert_count ?? 0, vulnCount: r.vuln_count ?? 0, riskScore: r.risk_score ?? 0,
-    scanStatus: r.scan_status ?? 'pending', lastSeen: r.last_seen, addedAt: r.added_at,
+// ── Across organisations ────────────────────────────────────────────────────────────────────
+router.get('/sectors', requirePermission('cnii:sector'), async (_req: AuthRequest, res) => {
+    const { data: profs, error } = await profiles();
+    if (error) { fail(res, error); return; }
+    try {
+        const stats = await orgStats((profs ?? []).map((p) => p.org_id));
+        res.json({
+            sectors: CNII_SECTORS.map((sec) => {
+                const orgs = (profs ?? []).filter((p) => p.sector_id === sec.id);
+                const t = emptyStats();
+                for (const o of orgs) {
+                    const s = stats[o.org_id];
+                    t.assets += s.assets; t.probable_assets += s.probable_assets; t.internet_facing += s.internet_facing;
+                    for (const k of ['P1', 'P2', 'P3', 'P4'] as const) t.open_findings[k] += s.open_findings[k];
+                    t.confirmed_p1_p2 += s.confirmed_p1_p2; t.unconfirmed_open += s.unconfirmed_open; t.kev_open += s.kev_open; t.new_matches += s.new_matches;
+                }
+                return {
+                    id: sec.id, organisations: orgs.length, designated: orgs.filter((o) => o.designation === 'designated').length,
+                    unmonitored: orgs.filter((o) => !stats[o.org_id].active_scopes).length,
+                    with_gaps: orgs.filter((o) => gaps(stats[o.org_id]).length).length,
+                    assets: t.assets, probable_assets: t.probable_assets, internet_facing: t.internet_facing, open_findings: t.open_findings,
+                    confirmed_p1_p2: t.confirmed_p1_p2, unconfirmed_open: t.unconfirmed_open, kev_open: t.kev_open, new_matches: t.new_matches,
+                };
+            }),
+        });
+    } catch (e) { fail(res, e as { message?: string }); }
 });
 
-class FeedError extends Error {
-    constructor(public status: 503 | 500, public feed: string, message: string) { super(message); }
-}
+router.get('/sectors/:sector', requirePermission('cnii:sector'), async (req: AuthRequest, res) => {
+    if (!SECTOR_BY_ID[req.params.sector]) { res.status(404).json({ error: 'Unknown sector' }); return; }
+    const { data: profs, error } = await profiles(req.params.sector);
+    if (error) { fail(res, error); return; }
+    try {
+        const ids = (profs ?? []).map((p) => p.org_id);
+        const [stats, orgs] = await Promise.all([orgStats(ids), ids.length ? db().from('organisations').select('slug, name').in('slug', ids) : Promise.resolve({ data: [] as { slug: string; name: string }[] })]);
+        const names = new Map((orgs.data ?? []).map((o) => [o.slug, o.name]));
+        res.json({ sector: req.params.sector, organisations: (profs ?? []).map((p) => ({ profile: p, name: names.get(p.org_id) ?? p.org_id, stats: stats[p.org_id], gaps: gaps(stats[p.org_id]) })) });
+    } catch (e) { fail(res, e as { message?: string }); }
+});
 
-const isMissingTable = (e: { code?: string; message?: string }) =>
-    e.code === '42P01' || e.code === 'PGRST205' || /cnii_assets/.test(e.message ?? '') && /does not exist|schema cache/.test(e.message ?? '');
+router.get('/organisations', requirePermission('cnii:sector'), async (_req: AuthRequest, res) => {
+    const [orgs, profs] = await Promise.all([db().from('organisations').select('slug, name, industry').order('name').limit(2000), profiles()]);
+    if (orgs.error) { fail(res, orgs.error); return; }
+    if (profs.error) { fail(res, profs.error); return; }
+    const byOrg = new Map((profs.data ?? []).map((p) => [p.org_id, p]));
+    res.json({ organisations: (orgs.data ?? []).map((o) => ({ slug: o.slug, name: o.name, industry: o.industry ?? null, profile: byOrg.get(o.slug) ?? null })) });
+});
 
-async function loadAssets(filter: Filter): Promise<AssetRow[]> {
-    const db = getSupabase();
-    if (!db) throw new FeedError(503, 'assets', 'Supabase is not configured (SUPABASE_URL, SUPABASE_SERVICE_KEY).');
-    let q = db.from('cnii_assets').select(ASSET_COLUMNS).order('risk_score', { ascending: false });
-    if (filter.sector) q = q.eq('sector_id', filter.sector);
-    if (filter.ip) q = q.eq('ip', filter.ip);
-    const { data, error } = await q;
+router.post('/lookup', requirePermission('cnii:sector'), async (req: AuthRequest, res) => {
+    const ip = typeof req.body?.ip === 'string' ? req.body.ip.trim() : '';
+    if (!isIP(ip)) { res.status(400).json({ error: 'Provide one IP address' }); return; }
+    const sources: Record<string, string> = {};
+    const net = await ipNetworkInfo(ip).catch(() => null);
+    sources.ripestat = net ? 'ok' : 'no answer';
+    const asn = net?.asns[0] ?? null;
+    const holderRaw = asn ? await asHolder(asn).catch(() => null) : null;
+    const holder = holderRaw ? cleanAsHolder(holderRaw) : null;
+    // The raw holder keeps the AS handle (e.g. "NCC-AS"), which often names the operator.
+    const suggestion = classifySector(holder ?? undefined, holderRaw ?? undefined, asn ?? undefined, '');
+    const v = ip.toLowerCase();
+    const [ind, byValue, byIps] = await Promise.all([
+        db().from('ti_indicators').select('id, value, status, max_confidence, malware_families, threat_types, source_count, last_seen').eq('type', 'ip').eq('value', v).maybeSingle(),
+        db().from('vms_assets').select('id, org_id, asset_type, value, confidence, status').eq('value', v).limit(20),
+        db().from('vms_assets').select('id, org_id, asset_type, value, confidence, status').contains('ips', [v]).limit(20),
+    ]);
+    const inv = { data: [...new Map([...(byValue.data ?? []), ...(byIps.data ?? [])].map((a) => [a.id, a])).values()] };
+    let opencti: unknown = null;
+    if (openctiConfigured()) {
+        try { opencti = (await lookupIP(ip)).threatIntel; sources.opencti = 'ok'; } catch (e) { sources.opencti = `failed: ${(e as Error).message.slice(0, 120)}`; }
+    } else sources.opencti = 'not configured';
+    // Which organisation, if any, holds this address in authorised scope.
+    const holders: { org_id: string; asset_id: string; authorised: boolean }[] = [];
+    for (const a of inv.data ?? []) {
+        const { data: sc } = await db().from('vms_scopes').select('*').eq('org_id', a.org_id).eq('status', 'active');
+        holders.push({ org_id: a.org_id, asset_id: a.id, authorised: !!coveringScope({ type: 'ip', value: ip.toLowerCase() }, (sc ?? []) as ScopeEntry[], 'passive') });
+    }
+    logAudit({ user: actor(req), action: 'CNII_LOOKUP', resource: 'ip', resource_id: ip, org_id: requestOrg(req), ip: req.ip ?? 'unknown', result: 'success', details: 'passive triage lookup; nothing stored' });
+    res.json({
+        ip, network: net, holder, sector_suggestion: suggestion.sectorId ? suggestion : null,
+        indicator: ind.data ?? null, in_inventory_of: holders, opencti, sources,
+        note: 'A suggestion from public registry data. It does not show who owns the address, and it authorises nothing.',
+    });
+});
+
+router.get('/legacy', requirePermission('cnii:sector'), async (_req: AuthRequest, res) => {
+    const { data, error } = await db().from('cnii_assets').select('id, ip, hostname, owner, org, asn, sector_id, subfield, open_ports, vuln_count, last_seen, added_at, imported_org_id, imported_asset_id, imported_at, imported_by').order('added_at', { ascending: false }).limit(2000);
     if (error) {
-        if (isMissingTable(error)) throw new FeedError(503, 'assets', 'The cnii_assets table does not exist yet — run backend/sql/2026-10-cnii-assets.sql.');
-        throw new FeedError(500, 'assets', `Supabase error: ${error.message}`);
+        if (missing(error)) { res.json({ available: false, rows: [] }); return; }
+        fail(res, error); return;
     }
-    return (data ?? []) as AssetRow[];
-}
-
-function sendFeedError(res: Response, err: unknown) {
-    if (err instanceof FeedError) {
-        return err.status === 503 ? notConnected(res, err.feed, err.message) : res.status(500).json({ error: err.message });
-    }
-    console.error('[cnii]', err);
-    return res.status(500).json({ error: (err as Error).message ?? 'Internal error' });
-}
-
-router.get('/assets', canRead, async (req: AuthRequest, res) => {
-    const filter = readFilter(req, res);
-    if (!filter) return;
-    try {
-        res.json((await loadAssets(filter)).map(toAsset));
-    } catch (err) {
-        sendFeedError(res, err);
-    }
+    res.json({ available: true, rows: data ?? [] });
 });
 
-// ── Scan ──────────────────────────────────────────────────────────────────────────────────
-
-// Scan results kept briefly so POST /assets can store the raw data and CVEs without the browser
-// round-tripping them (SpiderFoot's raw output easily exceeds the JSON body limit).
-interface CachedScan { at: number; result: ScanResult }
-const SCAN_TTL_MS = 60 * 60 * 1000;
-const scanCache = new Map<string, CachedScan>();
-function cacheScan(result: ScanResult) {
-    for (const [k, v] of scanCache) if (Date.now() - v.at > SCAN_TTL_MS) scanCache.delete(k);
-    if (scanCache.size >= 50) scanCache.delete(scanCache.keys().next().value!);
-    scanCache.set(result.ip, { at: Date.now(), result });
-}
-const cachedScan = (ip: string) => {
-    const c = scanCache.get(ip);
-    return c && Date.now() - c.at <= SCAN_TTL_MS ? c.result : null;
-};
-
-interface ScanResult {
-    ip: string; hostname?: string; owner?: string; org?: string; asn?: string; country?: string; city?: string; region?: string;
-    domains: string[]; subdomains: string[]; openPorts: number[];
-    vulns: SpiderFootVuln[];
-    threatIntel: { source: string; description: string; severity: string }[];
-    affiliateIPs?: string[]; maliciousFlags?: string[]; linkedURLs?: string[]; emails?: string[]; phones?: string[]; sslCerts?: string[]; banners?: string[];
-    suggestedSectorId: string; suggestedSubfield: string; confidence: number;
-    cniiLikelihood: CniiLikelihood; cniiSignals: string[];
-    warnings: string[];
-    rawSpiderfoot: unknown; rawOpencti: unknown;
+// ── One organisation ────────────────────────────────────────────────────────────────────────
+async function scopesOf(org: string): Promise<ScopeEntry[]> {
+    const { data, error } = await db().from('vms_scopes').select('*').eq('org_id', org).order('approved_at', { ascending: false });
+    if (error) throw error;
+    return (data ?? []) as ScopeEntry[];
 }
 
-// SpiderFoot scans are heavy (sfp_portscan_tcp actively connects to the target), so a bulk
-// request does NOT fire every scan at once — at most MAX_CONCURRENT_SCANS run together, across
-// all callers. The slot is released as each scan finishes.
-const MAX_CONCURRENT_SCANS = 3;
-const MAX_BULK_IPS = 10;
-let runningScans = 0;
-const waiters: (() => void)[] = [];
-async function acquireScanSlot(): Promise<() => void> {
-    if (runningScans >= MAX_CONCURRENT_SCANS) await new Promise<void>((r) => waiters.push(r));
-    runningScans++;
-    return () => { runningScans--; waiters.shift()?.(); };
+export type AuthorisationStatus = 'authorised' | 'expired' | 'revoked' | 'not_authorised';
+/** How an asset is authorised: the scope entry covering it now, or why none does. */
+export function authorisation(asset: { asset_type: string; value: string }, scopes: ScopeEntry[], now = Date.now()) {
+    const exact = (s: ScopeEntry) => s.value === asset.value;
+    const t = asset.asset_type === 'asn' || asset.asset_type === 'cidr' ? null : parseTarget(asset.value);
+    const covers = (list: ScopeEntry[]) => (t ? coveringScope(t, list, 'passive', now) : list.find((s) => s.status === 'active' && Date.parse(s.expires_at) > now && exact(s)) ?? null);
+    const live = covers(scopes);
+    const view = (s: ScopeEntry, status: AuthorisationStatus) => ({
+        status, scope_id: s.id, scope: `${s.kind} ${s.value}`, expires_at: s.expires_at,
+        passive: status === 'authorised', discovery: status === 'authorised' && s.allow_discovery !== false, ports: status === 'authorised' && s.allow_port_scan, vuln: status === 'authorised' && s.allow_vuln_scan,
+    });
+    if (live) return view(live, 'authorised');
+    // Not covered now: was it ever? Report the entry that used to cover it.
+    const revived = scopes.map((s) => ({ ...s, status: 'active' as const, expires_at: new Date(now + 86_400_000).toISOString() }));
+    const past = covers(revived);
+    if (past) {
+        const real = scopes.find((s) => s.id === past.id)!;
+        return view(real, real.status === 'revoked' ? 'revoked' : 'expired');
+    }
+    return { status: 'not_authorised' as const, scope_id: null, scope: null, expires_at: null, passive: false, discovery: false, ports: false, vuln: false };
 }
 
-// One IP: SpiderFoot scan + OpenCTI lookup in parallel, classified and rated. Throws only when
-// the SpiderFoot scan itself failed (OpenCTI failure is a warning, not a failure).
-async function runScan(ip: string): Promise<ScanResult> {
-    const release = await acquireScanSlot();
+router.get('/profile', requirePermission('cnii:read'), async (req: AuthRequest, res) => {
+    const org = requestOrg(req);
+    const [p, h, o] = await Promise.all([
+        db().from('cnii_org_profiles').select('*').eq('org_id', org).maybeSingle(),
+        db().from('cnii_profile_events').select('*').eq('org_id', org).order('at', { ascending: false }).limit(20),
+        db().from('organisations').select('slug, name, industry').eq('slug', org).maybeSingle(),
+    ]);
+    if (p.error) { fail(res, p.error); return; }
     try {
-        const [sf, octi] = await Promise.allSettled([
-            scanIP(ip),
-            openctiConfigured() ? lookupIP(ip) : Promise.reject(new Error('OpenCTI is not configured (OPENCTI_URL, OPENCTI_TOKEN).')),
+        const [scopes, stats] = await Promise.all([scopesOf(org), orgStats([org])]);
+        res.json({ organisation: o.data ?? { slug: org }, profile: p.data ?? null, history: h.data ?? [], scopes, stats: stats[org], gaps: gaps(stats[org]) });
+    } catch (e) { fail(res, e as { message?: string }); }
+});
+
+const ProfileBody = z.object({
+    sector_id: z.string().refine((s) => !!SECTOR_BY_ID[s], 'unknown sector'),
+    subfield: z.string().trim().max(120).nullable().optional(),
+    designation: z.enum(['designated', 'candidate']),
+    designation_reference: z.string().trim().max(300).nullable().optional(),
+    notes: z.string().trim().max(2000).nullable().optional(),
+}).strict();
+
+router.put('/profile', requirePermission('cnii:manage'), async (req: AuthRequest, res) => {
+    const p = ProfileBody.safeParse(req.body);
+    if (!p.success) { res.status(400).json({ error: `Invalid profile: ${p.error.issues[0]?.path.join('.') || ''} ${p.error.issues[0]?.message ?? ''}`.trim() }); return; }
+    const b = p.data;
+    if (b.subfield && !SECTOR_BY_ID[b.sector_id].subfields.includes(b.subfield)) { res.status(400).json({ error: 'Unknown sub-entity for this sector' }); return; }
+    if (b.designation === 'designated' && !b.designation_reference) { res.status(400).json({ error: 'A designated CNII organisation needs the reference that designates it' }); return; }
+    const org = requestOrg(req);
+    const { data: prev, error: readErr } = await db().from('cnii_org_profiles').select('*').eq('org_id', org).maybeSingle();
+    if (readErr) { fail(res, readErr); return; }
+    const now = new Date().toISOString();
+    const row = { org_id: org, sector_id: b.sector_id, subfield: b.subfield ?? null, designation: b.designation, designation_reference: b.designation_reference ?? null, notes: b.notes ?? null, updated_by: actor(req), updated_at: now, ...(prev ? {} : { created_by: actor(req), created_at: now }) };
+    const { data, error } = prev
+        ? await db().from('cnii_org_profiles').update(row).eq('org_id', org).select('*').single()
+        : await db().from('cnii_org_profiles').insert(row).select('*').single();
+    if (error) { fail(res, error); return; }
+    const pick = (x: Record<string, unknown> | null) => (x ? { sector_id: x.sector_id, subfield: x.subfield, designation: x.designation, designation_reference: x.designation_reference } : null);
+    await db().from('cnii_profile_events').insert({ org_id: org, actor: actor(req), at: now, from_value: pick(prev), to_value: pick(data) });
+    logAudit({ user: actor(req), action: prev ? 'CNII_PROFILE_CHANGED' : 'CNII_PROFILE_CREATED', resource: 'cnii_org_profile', resource_id: org, org_id: org, ip: req.ip ?? 'unknown', result: 'success', severity: 'warning',
+        details: `${prev ? `${prev.sector_id}/${prev.designation} -> ` : ''}${b.sector_id}/${b.designation}${b.designation_reference ? ` ref=${b.designation_reference}` : ''}`.slice(0, 200) });
+    res.status(prev ? 200 : 201).json({ profile: data });
+});
+
+async function assetDetails(org: string, assetIds: string[]) {
+    if (!assetIds.length) return { obs: [], findings: [], matches: [] };
+    const [obs, findings, matches] = await Promise.all([
+        db().from('vms_observations').select('asset_id, kind, confidence').eq('org_id', org).in('asset_id', assetIds).limit(50_000),
+        db().from('vms_findings').select('asset_id, priority, evidence_class, status').eq('org_id', org).in('asset_id', assetIds).in('status', OPEN).limit(50_000),
+        db().from('ti_matches').select('entity_id, status').eq('org_id', org).eq('entity_type', 'asset').in('entity_id', assetIds).limit(50_000),
+    ]);
+    return { obs: obs.data ?? [], findings: findings.data ?? [], matches: matches.data ?? [] };
+}
+
+router.get('/inventory', requirePermission('cnii:read'), async (req: AuthRequest, res) => {
+    const org = requestOrg(req);
+    const { data: assets, error } = await db().from('vms_assets').select('*').eq('org_id', org).order('last_seen', { ascending: false }).limit(2000);
+    if (error) { fail(res, error); return; }
+    try {
+        const scopes = await scopesOf(org);
+        const d = await assetDetails(org, (assets ?? []).map((a) => a.id));
+        res.json({
+            assets: (assets ?? []).map((a) => {
+                const f = d.findings.filter((x) => x.asset_id === a.id);
+                return {
+                    ...a, authorisation: authorisation(a, scopes),
+                    observations: d.obs.filter((o) => o.asset_id === a.id).reduce<Record<string, number>>((m, o) => ({ ...m, [o.kind]: (m[o.kind] ?? 0) + 1 }), {}),
+                    findings: { open: f.length, confirmed: f.filter((x) => x.evidence_class !== 'version_match' && x.evidence_class !== 'intelligence').length, unconfirmed: f.filter((x) => x.evidence_class === 'version_match' || x.evidence_class === 'intelligence').length, p1_p2: f.filter((x) => x.priority === 'P1' || x.priority === 'P2').length },
+                    indicator_matches: d.matches.filter((m) => m.entity_id === a.id).length,
+                };
+            }),
+        });
+    } catch (e) { fail(res, e as { message?: string }); }
+});
+
+router.get('/assets/:id', requirePermission('cnii:read'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Asset not found' }); return; }
+    const org = requestOrg(req);
+    const { data: asset, error } = await db().from('vms_assets').select('*').eq('id', req.params.id).eq('org_id', org).maybeSingle();
+    if (error) { fail(res, error); return; }
+    if (!asset) { res.status(404).json({ error: 'Asset not found' }); return; }
+    try {
+        const [scopes, obs, findings, matches, services, events] = await Promise.all([
+            scopesOf(org),
+            db().from('vms_observations').select('*').eq('org_id', org).eq('asset_id', asset.id).order('last_seen', { ascending: false }).limit(500),
+            db().from('vms_findings').select('id, title, priority, risk_score, risk_factors, status, evidence_class, source_class, detected_by, cve_ids, port, first_seen, last_seen, due_at, case_id').eq('org_id', org).eq('asset_id', asset.id).order('risk_score', { ascending: false }).limit(500),
+            db().from('ti_matches').select('id, status, matched_field, matched_value, first_matched_at, last_matched_at, case_id, ti_indicators(id, type, value, max_confidence, malware_families, threat_types, source_count, status)').eq('org_id', org).eq('entity_type', 'asset').eq('entity_id', asset.id).limit(200),
+            db().from('vms_services').select('*').eq('asset_id', asset.id).order('port'),
+            db().from('vms_asset_events').select('*').eq('asset_id', asset.id).order('at', { ascending: false }).limit(100),
         ]);
-        if (sf.status === 'rejected') throw sf.reason;
-
-        const s = sf.value;
-        const warnings = [...s.warnings];
-        if (octi.status === 'rejected') {
-            console.error('[cnii] OpenCTI lookup failed:', (octi.reason as Error).message);
-            warnings.push(`OpenCTI lookup failed: ${(octi.reason as Error).message}`);
-        }
-
-        const cls = classifySector(s.owner, s.org, s.asn, [s.hostname, ...s.domains].filter(Boolean).join(' '));
-        if (!cls.sectorId) warnings.push('No CNII sector matched the owner, organisation, ASN or hostname — choose one before adding.');
-        const cnii = assessCnii(!!cls.sectorId, { asn: s.asn, hostname: s.hostname, org: s.org, owner: s.owner, openPorts: s.openPorts, maliciousFlags: s.maliciousFlags });
-
-        const result: ScanResult = {
-            ip, hostname: s.hostname, owner: s.owner, org: s.org, asn: s.asn, country: s.country, city: s.city, region: s.region,
-            domains: s.domains, subdomains: s.subdomains, openPorts: s.openPorts, vulns: s.vulns,
-            threatIntel: [...s.threatIntel, ...(octi.status === 'fulfilled' ? octi.value.threatIntel : [])],
-            affiliateIPs: s.affiliateIPs, maliciousFlags: s.maliciousFlags, linkedURLs: s.linkedURLs,
-            emails: s.emails, phones: s.phones, sslCerts: s.sslCerts, banners: s.banners,
-            suggestedSectorId: cls.sectorId, suggestedSubfield: cls.subfield, confidence: cls.confidence,
-            cniiLikelihood: cnii.likelihood, cniiSignals: cnii.signals,
-            warnings,
-            rawSpiderfoot: s.raw, rawOpencti: octi.status === 'fulfilled' ? octi.value.raw : null,
-        };
-        cacheScan(result);
-        return result;
-    } finally {
-        release();
-    }
-}
-
-const scanFailStatus = (e: unknown) => (e instanceof SpiderFootError && e.kind === 'timeout' ? 504 : 502);
-// Raw payloads stay server-side (POST /assets reads them from the cache); the browser gets the parsed result.
-const forClient = (r: ScanResult) => ({ ...r, rawSpiderfoot: {}, rawOpencti: {} });
-
-// Accepts { ip: "1.2.3.4" }, { ips: ["…", …] }, or { ip: "a, b, c" }. A single string ip stays
-// backward-compatible (one object back); any multi-IP form returns an array.
-router.post('/scan', canWrite, async (req: AuthRequest, res) => {
-    const body = req.body ?? {};
-    const raw: unknown[] = Array.isArray(body.ips) ? body.ips
-        : typeof body.ips === 'string' ? body.ips.split(',')
-        : typeof body.ip === 'string' ? body.ip.split(',')
-        : [];
-    const ips = [...new Set(raw.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean))];
-    const bulk = Array.isArray(body.ips) || ips.length > 1;
-
-    if (ips.length === 0) return res.status(400).json({ error: 'Provide an IP address (ip) or a list of IP addresses (ips).' });
-    if (ips.length > MAX_BULK_IPS) return res.status(400).json({ error: `At most ${MAX_BULK_IPS} IP addresses per request (got ${ips.length}).` });
-    const invalid = ips.filter((ip) => !isIP(ip));
-    if (invalid.length) return res.status(400).json({ error: `Invalid IP address${invalid.length > 1 ? 'es' : ''}: ${invalid.join(', ')}` });
-    if (!spiderfootConfigured()) return notConnected(res, 'scan', 'SpiderFoot is not configured (SPIDERFOOT_URL).');
-
-    if (!bulk) {
-        try {
-            res.json(forClient(await runScan(ips[0])));
-        } catch (e) {
-            res.status(scanFailStatus(e)).json({ error: (e as Error).message });
-        }
-        return;
-    }
-
-    // Bulk: one failed IP doesn't sink the batch — each entry reports ok or its error.
-    const settled = await Promise.all(ips.map(async (ip) => {
-        try {
-            return { ip, ok: true as const, result: forClient(await runScan(ip)) };
-        } catch (e) {
-            return { ip, ok: false as const, error: (e as Error).message };
-        }
-    }));
-    res.json({ results: settled });
+        res.json({ asset, authorisation: authorisation(asset, scopes), observations: obs.data ?? [], findings: findings.data ?? [], indicator_matches: matches.data ?? [], services: services.data ?? [], events: events.data ?? [] });
+    } catch (e) { fail(res, e as { message?: string }); }
 });
 
-// ── Assets: add / update ─────────────────────────────────────────────────────────────────
-
-const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 500) : null);
-const strList = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(0, 500) : []);
-const portList = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is number => Number.isInteger(x) && x > 0 && x < 65536).slice(0, 1000) : []);
-
-// 0-100 from the CVEs found: average CVSS × 10.
-const riskFrom = (vulns: SpiderFootVuln[]) => {
-    const scored = vulns.map((v) => v.cvss).filter((c): c is number => typeof c === 'number');
-    return scored.length ? Math.round((scored.reduce((a, b) => a + b, 0) / scored.length) * 10) : 0;
-};
-
-router.post('/assets', canWrite, async (req: AuthRequest, res) => {
-    const body = req.body ?? {};
-    const ip = typeof body.ip === 'string' ? body.ip.trim() : '';
-    if (!isIP(ip)) return res.status(400).json({ error: 'Invalid IP address' });
-    const sector = typeof body.sectorId === 'string' ? SECTOR_BY_ID[body.sectorId] : undefined;
-    if (!sector) return res.status(400).json({ error: 'Unknown sector' });
-    const subfield = str(body.subfield);
-    if (subfield && !sector.subfields.includes(subfield)) return res.status(400).json({ error: 'Unknown sub-entity for this sector' });
-
-    const db = getSupabase();
-    if (!db) return notConnected(res, 'assets', 'Supabase is not configured (SUPABASE_URL, SUPABASE_SERVICE_KEY).');
-
-    // Prefer the server's own scan of this IP; otherwise take the scan fields the client sent.
-    const scan = cachedScan(ip);
-    const vulns = scan?.vulns ?? [];
-    const row = {
-        ip,
-        sector_id: sector.id,
-        subfield,
-        hostname: scan ? scan.hostname ?? null : str(body.hostname),
-        owner: scan ? scan.owner ?? null : str(body.owner),
-        org: scan ? scan.org ?? null : str(body.org),
-        asn: scan ? scan.asn ?? null : str(body.asn),
-        country: scan ? scan.country ?? null : str(body.country),
-        domains: scan ? scan.domains : strList(body.domains),
-        subdomains: scan ? scan.subdomains : strList(body.subdomains),
-        open_ports: scan ? scan.openPorts : portList(body.openPorts),
-        vulns,
-        vuln_count: vulns.length,
-        risk_score: riskFrom(vulns),
-        scan_status: scan ? 'done' : 'pending',
-        last_seen: new Date().toISOString(),
-        ...(scan ? { raw_spiderfoot: scan.rawSpiderfoot, raw_opencti: scan.rawOpencti } : {}),
-    };
-
-    const { data, error } = await db.from('cnii_assets').upsert(row, { onConflict: 'ip' }).select(ASSET_COLUMNS).single();
-    if (error) {
-        if (isMissingTable(error)) return notConnected(res, 'assets', 'The cnii_assets table does not exist yet — run backend/sql/2026-10-cnii-assets.sql. The asset was not saved.');
-        return res.status(500).json({ error: `Could not save the asset: ${error.message}` });
-    }
-    res.json(toAsset(data as AssetRow));
+const Collect = z.object({ scope_id: z.string().uuid(), targets: z.array(z.string().max(253)).max(256).optional() }).strict();
+router.post('/collect', requirePermission('vms:scan'), async (req: AuthRequest, res) => {
+    const p = Collect.safeParse(req.body);
+    if (!p.success) { res.status(400).json({ error: 'Body must be { scope_id, targets?: [host, IP, CIDR or AS number inside that scope entry] }' }); return; }
+    const r = await queueScan(requestOrg(req), actor(req), { scope_id: p.data.scope_id, kind: 'passive_osint', targets: p.data.targets });
+    if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+    res.status(r.existing ? 200 : 201).json({ job: r.job, existing: r.existing });
 });
 
-// ── Alerts ────────────────────────────────────────────────────────────────────────────────
-//
-// No CNII alert source is connected. This used to match Wazuh endpoint alerts against monitored
-// IPs; Wazuh was decoupled from CNII Watch, so the feed now says it is not available.
+router.post('/legacy/:id/import', requirePermission('cnii:manage'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Legacy row not found' }); return; }
+    const org = requestOrg(req);
+    const { data: row, error } = await db().from('cnii_assets').select('*').eq('id', req.params.id).maybeSingle();
+    if (error) { fail(res, error); return; }
+    if (!row) { res.status(404).json({ error: 'Legacy row not found' }); return; }
+    if (row.imported_at) { res.status(409).json({ error: `Already imported into ${row.imported_org_id}` }); return; }
+    const { data: profile } = await db().from('cnii_org_profiles').select('sector_id').eq('org_id', org).maybeSingle();
+    if (!profile) { res.status(409).json({ error: 'Classify this organisation (CNII profile) before importing into it' }); return; }
+    let scopes: ScopeEntry[];
+    try { scopes = await scopesOf(org); } catch (e) { fail(res, e as { message?: string }); return; }
+    const ip = String(row.ip).toLowerCase();
+    const scope = coveringScope({ type: 'ip', value: ip }, scopes, 'passive');
+    if (!scope) { res.status(403).json({ error: `${ip} is not inside an active authorised scope of ${org}. Add the scope (with its authorisation reference) first.` }); return; }
 
-router.get('/alerts', canRead, async (req: AuthRequest, res) => {
-    if (!readFilter(req, res)) return;
-    return notConnected(res, 'alerts', 'CNII alerts are not available — no alert source is connected to CNII Watch.');
-});
-
-// ── Vulnerabilities ──────────────────────────────────────────────────────────────────────
-
-interface CniiVulnOut {
-    id: string; ip: string; sectorId: string; cve: string; title: string; cvss: number;
-    severity: 'critical' | 'high' | 'medium' | 'low'; affectedService?: string; complianceImpact: string[];
-    status: 'open'; discoveredAt: string; source: 'spiderfoot';
-}
-
-router.get('/vulns', canRead, async (req: AuthRequest, res) => {
-    const filter = readFilter(req, res);
-    if (!filter) return;
-    try {
-        const assets = await loadAssets(filter);
-        if (!assets.length) return res.json([]);
-        const byIp = new Map(assets.map((a) => [a.ip, a]));
-        const complianceFor = (ip: string) => SECTOR_BY_ID[byIp.get(ip)!.sector_id]?.compliance ?? [];
-
-        // CVEs stored from each asset's last scan.
-        const vulns: CniiVulnOut[] = assets.flatMap((a) => (a.vulns ?? []).map((v): CniiVulnOut => ({
-            id: `${a.ip}:${v.cve}`, ip: a.ip, sectorId: a.sector_id, cve: v.cve, title: v.cve,
-            cvss: v.cvss ?? 0, severity: v.severity, affectedService: v.service,
-            complianceImpact: complianceFor(a.ip), status: 'open', discoveredAt: a.last_seen, source: 'spiderfoot',
-        })));
-
-        res.json(vulns);
-    } catch (err) {
-        sendFeedError(res, err);
+    const now = new Date().toISOString();
+    const { data: existing } = await db().from('vms_assets').select('id, discovery_sources').eq('org_id', org).eq('asset_type', 'ip').eq('value', ip).maybeSingle();
+    let assetId: string;
+    if (existing) {
+        assetId = existing.id;
+        await db().from('vms_assets').update({ discovery_sources: [...new Set([...(existing.discovery_sources ?? []), 'legacy_cnii'])] }).eq('id', assetId);
+    } else {
+        const ins = await db().from('vms_assets').insert({ org_id: org, asset_type: 'ip', value: ip, ips: [ip], hostnames: row.hostname ? [row.hostname] : [], discovery_sources: ['legacy_cnii'], scope_id: scope.id, confidence: 'confirmed', first_seen: row.added_at ?? now, last_seen: row.last_seen ?? now }).select('id').single();
+        if (ins.error) { fail(res, ins.error); return; }
+        assetId = ins.data.id;
+        await db().from('vms_asset_events').insert({ org_id: org, asset_id: assetId, event: 'asset_new', details: { value: ip, source: 'legacy_cnii' } });
     }
+    // What the old scan recorded, as low-confidence observations dated when it was recorded.
+    const obs: Obs[] = [];
+    if (row.owner || row.org || row.asn) obs.push({ source: 'legacy_cnii', kind: 'registry', key: 'holder', value: { owner: row.owner, org: row.org, asn: row.asn }, confidence: 'low' });
+    if (row.hostname) obs.push({ source: 'legacy_cnii', kind: 'dns', key: `name:${row.hostname}`, value: { hostname: row.hostname }, confidence: 'low' });
+    for (const port of row.open_ports ?? []) obs.push({ source: 'legacy_cnii', kind: 'service', key: `tcp/${port}`, value: { port, protocol: 'tcp', note: 'from the pre-P9 SpiderFoot scan, which included an active port scan' }, confidence: 'low' });
+    const added = await storeObservations(org, assetId, null, obs, row.last_seen ?? now);
+    const claims = (Array.isArray(row.vulns) ? row.vulns : []).map((v: { cve: string; cvss: number | null; severity: 'critical' | 'high' | 'medium' | 'low' }) => ({ source: 'legacy_cnii:spiderfoot', cve: v.cve, cvss: v.cvss, severity: v.severity }));
+    const f = claims.length ? await ingestPassiveClaims(org, null, { id: assetId, type: 'ip', value: ip }, claims) : { new_findings: 0 };
+    await db().from('cnii_assets').update({ imported_org_id: org, imported_asset_id: assetId, imported_at: now, imported_by: actor(req) }).eq('id', row.id);
+    logAudit({ user: actor(req), action: 'CNII_LEGACY_IMPORTED', resource: 'cnii_asset', resource_id: row.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', details: `${ip} -> asset ${assetId}; ${added} observation(s), ${f.new_findings} unconfirmed finding(s)` });
+    res.json({ asset_id: assetId, observations_added: added, findings_new: f.new_findings, sector_mismatch: row.sector_id !== profile.sector_id ? { legacy: row.sector_id, organisation: profile.sector_id } : null });
 });
 
 export default router;
