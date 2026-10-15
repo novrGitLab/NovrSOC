@@ -9,6 +9,8 @@ import { autoCaseConfig } from '../jobs/autoCase';
 import { readAuditLog } from '../lib/audit';
 import { FEED_STALE_HOURS } from './threatInfo';
 
+const H = 3_600_000;
+
 export type PipelineStatus = 'up' | 'degraded' | 'down' | 'off';
 export interface PipelineCheck { name: string; status: PipelineStatus; detail: string }
 
@@ -77,6 +79,53 @@ export async function pipelineChecks(): Promise<PipelineCheck[]> {
             status: on.length === 0 ? 'off' : bad.length === 0 ? 'up' : bad.length === on.length ? 'down' : 'degraded',
             detail: on.length === 0 ? 'No feed enabled' : bad.length === 0 ? `${on.length} feed(s) current` : `Failing or stale: ${bad.map((f) => `${f.id}${f.last_error ? ` (${String(f.last_error).slice(0, 60)})` : ''}`).join(', ')}`,
         });
+    }
+    out.push(...await vmsChecks());
+    return out;
+}
+
+/** VMS scanner, queue, schedules, CVE intelligence and Wazuh sync (phases P4, P5, P7). */
+export async function vmsChecks(): Promise<PipelineCheck[]> {
+    const supabase = getSupabase()!;
+    const out: PipelineCheck[] = [];
+    const beat = await supabase.from('vms_scan_jobs').select('heartbeat_at').not('heartbeat_at', 'is', null).order('heartbeat_at', { ascending: false }).limit(1).maybeSingle();
+    if (beat.error) { out.push({ name: 'VMS scanner', status: 'off', detail: 'VMS tables not created yet' }); return out; }
+    const queued = await supabase.from('vms_scan_jobs').select('requested_at').eq('status', 'queued').order('requested_at', { ascending: true }).limit(1).maybeSingle();
+    const last = beat.data?.heartbeat_at as string | undefined;
+    const oldest = queued.data?.requested_at as string | undefined;
+    out.push({
+        name: 'VMS scanner',
+        status: !last ? (oldest ? 'down' : 'off') : Date.now() - Date.parse(last) < 15 * 60_000 ? 'up' : oldest ? 'down' : 'degraded',
+        detail: !last ? (oldest ? 'No worker has ever connected, and scans are waiting' : 'No worker installed yet') : `Last heartbeat ${ago(last)}`,
+    });
+    const failed = await supabase.from('vms_scan_jobs').select('id', { count: 'exact', head: true }).eq('status', 'failed').gte('finished_at', new Date(Date.now() - 24 * H).toISOString());
+    const waitH = oldest ? (Date.now() - Date.parse(oldest)) / H : 0;
+    out.push({
+        name: 'VMS scan queue',
+        status: waitH > 6 || (failed.count ?? 0) > 0 ? 'degraded' : 'up',
+        detail: `${oldest ? `Oldest queued scan waiting ${ago(oldest).replace(' ago', '')}` : 'Nothing waiting'}; ${failed.count ?? 0} failed in 24 h`,
+    });
+    const sched = await supabase.from('vms_scan_schedules').select('enabled, next_run_at, last_result');
+    if (sched.error) out.push({ name: 'VMS schedules', status: 'off', detail: 'Schedule table not created yet' });
+    else {
+        const on = (sched.data ?? []).filter((x) => x.enabled);
+        const late = on.filter((x) => Date.now() - Date.parse(x.next_run_at) > H);
+        const stopped = (sched.data ?? []).filter((x) => !x.enabled && String(x.last_result ?? '').startsWith('Disabled:'));
+        out.push({
+            name: 'VMS schedules',
+            status: (sched.data ?? []).length === 0 ? 'off' : late.length || stopped.length ? 'degraded' : 'up',
+            detail: (sched.data ?? []).length === 0 ? 'No schedules' : `${on.length} active; ${late.length} overdue by more than an hour; ${stopped.length} stopped because their scope ended`,
+        });
+    }
+    const intel = await supabase.from('cve_intel').select('kev_checked_at, epss_fetched_at').order('kev_checked_at', { ascending: false, nullsFirst: false }).limit(1).maybeSingle();
+    if (!intel.error) {
+        const k = intel.data?.kev_checked_at as string | undefined;
+        out.push({ name: 'CVE intelligence', status: !intel.data ? 'off' : k && Date.now() - Date.parse(k) < 26 * H ? 'up' : 'degraded', detail: !intel.data ? 'No CVE tracked yet' : k ? `KEV last checked ${ago(k)}` : 'KEV never checked' });
+    }
+    const wz = await supabase.from('vms_wazuh_sync').select('org_id, last_synced_at, last_result');
+    if (!wz.error && (wz.data ?? []).length) {
+        const stale = (wz.data ?? []).filter((x) => !x.last_synced_at || Date.now() - Date.parse(x.last_synced_at) > 3 * H);
+        out.push({ name: 'Wazuh vulnerability sync', status: stale.length ? 'degraded' : 'up', detail: stale.length ? `Not synced in 3 h: ${stale.map((x) => x.org_id).join(', ')}` : `${(wz.data ?? []).length} organisation(s) synced` });
     }
     return out;
 }

@@ -132,7 +132,7 @@ router.get('/scans', requirePermission('vms:read'), async (req: AuthRequest, res
 });
 
 const PORT_SPEC = /^(top-(100|1000)|(\d{1,5}(-\d{1,5})?)(,\d{1,5}(-\d{1,5})?){0,63})$/;
-const NewScan = z.object({
+export const NewScan = z.object({
     scope_id: z.string().uuid(),
     kind: z.enum(['discovery', 'ports', 'vuln_nuclei', 'vuln_openvas']),
     targets: z.array(z.string().max(253)).max(MAX_TARGETS).optional(),
@@ -140,9 +140,9 @@ const NewScan = z.object({
 }).strict();
 const activityOf = (kind: string) => (kind === 'ports' ? 'ports' : kind.startsWith('vuln_') ? 'vuln' : 'discovery') as 'ports' | 'vuln' | 'discovery';
 
-/** Queues a scan after checking every target against scope. Shared with the scheduler (Release 3). */
-export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification'; options?: Record<string, unknown> } = {}):
-    Promise<{ ok: true; job: Record<string, unknown>; existing: boolean } | { ok: false; status: number; error: string }> {
+/** Checks a scan request against its scope: active, unexpired, the activity authorised, every target inside. Shared with schedules. */
+export async function validateScan(org: string, input: z.infer<typeof NewScan>, extraOptions: Record<string, unknown> = {}):
+    Promise<{ ok: true; scope: ScopeEntry; targets: string[]; options: Record<string, unknown> } | { ok: false; status: number; error: string }> {
     const supabase = getSupabase()!;
     const { data: scope, error } = await supabase.from('vms_scopes').select('*').eq('id', input.scope_id).eq('org_id', org).maybeSingle();
     if (error) return { ok: false, status: missing(error) ? 503 : 502, error: missing(error) ? P4_MISSING : dbErrorMessage(error) };
@@ -151,7 +151,7 @@ export async function queueScan(org: string, by: string, input: z.infer<typeof N
     const activity = activityOf(input.kind);
     if (activity === 'ports' && !entry.allow_port_scan) return { ok: false, status: 403, error: 'This scope does not authorise port scanning' };
     if (activity === 'vuln' && !entry.allow_vuln_scan) return { ok: false, status: 403, error: 'This scope does not authorise vulnerability scanning' };
-    const requested = input.targets?.length ? input.targets : [entry.kind === 'cidr' ? entry.value : entry.value];
+    const requested = input.targets?.length ? input.targets : [entry.value];
     const targets: string[] = [];
     for (const raw of requested) {
         if (entry.kind === 'cidr' && raw === entry.value) { targets.push(raw); continue; } // a whole authorised range
@@ -159,8 +159,17 @@ export async function queueScan(org: string, by: string, input: z.infer<typeof N
         if (!t || !coveringScope(t, [entry], activity)) return { ok: false, status: 400, error: `Not in this scope: ${String(raw).slice(0, 80)}` };
         targets.push(t.value);
     }
-    const uniq = [...new Set(targets)].sort();
-    const options = { ...(input.kind === 'ports' ? { ports: input.ports ?? 'top-1000' } : {}), ...(extra.options ?? {}) };
+    const options = { ...(input.kind === 'ports' ? { ports: input.ports ?? 'top-1000' } : {}), ...extraOptions };
+    return { ok: true, scope: entry, targets: [...new Set(targets)].sort(), options };
+}
+
+/** Queues a scan after checking every target against scope. Shared with the scheduler (Release 3). */
+export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification'; options?: Record<string, unknown> } = {}):
+    Promise<{ ok: true; job: Record<string, unknown>; existing: boolean } | { ok: false; status: number; error: string }> {
+    const supabase = getSupabase()!;
+    const v = await validateScan(org, input, extra.options);
+    if (!v.ok) return v;
+    const { scope: entry, targets: uniq, options } = v;
     // The same scan already waiting or running: return it instead of queueing a duplicate.
     const { data: open } = await supabase.from('vms_scan_jobs').select('*').eq('org_id', org).eq('scope_id', entry.id).eq('kind', input.kind).in('status', ['queued', 'running']);
     const dup = (open ?? []).find((j) => JSON.stringify(j.targets) === JSON.stringify(uniq) && JSON.stringify(j.options ?? {}) === JSON.stringify(options));

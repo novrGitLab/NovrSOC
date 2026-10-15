@@ -792,6 +792,29 @@ export async function sendCaseNotificationEmail(params: {
     });
 }
 
+// VMS change digest (phase P7): new internet-facing assets and services, new P1/P2 findings and
+// reopened findings since the last run, to the SOC mailbox. One email per organisation per run.
+export async function sendVmsDigestEmail(params: { to: string[]; org: string; lines: string[] }): Promise<void> {
+    if (!isEmailEnabled()) throw new Error('Email not configured');
+    const url = appUrl('/admin/vms');
+    const shown = params.lines.slice(0, 40);
+    const body = `
+      <tr>
+        <td style="padding:32px;">
+          <p style="color:#7A8099;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin:0 0 8px;">Vulnerability Management · ${escapeHtml(params.org)}</p>
+          <h2 style="color:#1C1F2E;font-size:18px;margin:0 0 16px;">${params.lines.length} change(s) need attention</h2>
+          <ul style="color:#1C1F2E;font-size:13px;line-height:1.6;margin:0;padding-left:18px;">${shown.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>
+          ${params.lines.length > shown.length ? `<p style="color:#7A8099;font-size:12px;">…and ${params.lines.length - shown.length} more in NovrSOC.</p>` : ''}
+          ${url ? `<a href="${url}" style="display:inline-block;background:#520385;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;margin-top:20px;">View in NovrSOC →</a>` : ''}
+        </td>
+      </tr>`;
+    await sendEmail({
+        to: params.to,
+        subject: `[NovrSOC] VMS: ${params.lines.length} change(s) for ${params.org}`,
+        html: baseTemplate('Vulnerability Management changes', `${params.lines.length} change(s) for ${params.org}`, body),
+    });
+}
+
 /**
  * A free-form alert communication (Alert Communication page, playbook notification step).
  * Real send through the provider chain; throws with the provider's error on failure.

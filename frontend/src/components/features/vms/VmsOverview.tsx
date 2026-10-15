@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Radar, AlertTriangle } from 'lucide-react';
 import { loadJson } from '@/lib/alerts';
+import { VmsTrends } from './VmsTrends';
 import { fmtWat, SCAN_STATUS_STYLE, SCAN_KIND_LABEL, describeEvent, EVENT_LABEL, type VmsScan, type VmsEvent } from '@/lib/vms';
 
 interface Overview {
@@ -97,6 +98,7 @@ export function VmsOverview() {
                             ))}
                         </div>
                     </div>
+                    <VmsTrends />
                 </>
             )}
         </div>

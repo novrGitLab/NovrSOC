@@ -106,6 +106,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'vms-assets', label: 'Attack Surface', href: '/admin/vms/assets', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Globe },
             { id: 'vms-findings', label: 'Findings', href: '/admin/vms/findings', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Bug },
             { id: 'vms-remediation', label: 'Remediation', href: '/admin/vms/remediation', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Wrench },
+            { id: 'vms-report', label: 'Reports', href: '/admin/vms/report', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: FileBarChart },
             { id: 'digital-assets', label: 'Wazuh Endpoints', href: '/admin/infra/assets', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: Monitor },
             { id: 'vulnerabilities', label: 'Wazuh Vulnerabilities', href: '/admin/secops/vulnerabilities', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: Bug },
             { id: 'vms-scans', label: 'Scans', href: '/admin/vms/scans', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: ScanSearch },
