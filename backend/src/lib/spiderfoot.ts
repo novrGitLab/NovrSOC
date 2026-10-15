@@ -22,18 +22,32 @@
 
 import { asHolder } from '../services/ripeStat';
 
+// Passive modules only: each one asks a third party (registries, DNS resolvers, Shodan, Censys,
+// VirusTotal, certificate-transparency logs) about the target and never connects to it. NovrSOC
+// must not use SpiderFoot to probe a target — active checks belong to the VMS scanner worker,
+// inside a manager-approved scope (lib/vmsScope.ts). SPIDERFOOT_ACTIVE_MODULES lists modules that
+// do touch the target; a test and the guard below keep them out of this list.
 export const SPIDERFOOT_MODULES = [
-    'sfp_dnsresolve',   // reverse DNS → INTERNET_NAME, DOMAIN_NAME
+    'sfp_dnsresolve',   // reverse DNS → INTERNET_NAME, DOMAIN_NAME (public resolvers)
     'sfp_ripe',         // NETBLOCK_OWNER, BGP_AS_MEMBER, RAW_RIR_DATA (RIPEstat; covers AfriNIC space)
     'sfp_bgpview',      // BGP_AS_MEMBER, RAW_RIR_DATA
     'sfp_arin',         // RAW_RIR_DATA
     'sfp_whois',        // NETBLOCK_WHOIS
     'sfp_ipinfo',       // GEOINFO (needs an ipinfo key in SpiderFoot)
-    'sfp_shodan',       // TCP_PORT_OPEN, VULNERABILITY_CVE_* (needs a Shodan key in SpiderFoot)
-    'sfp_portscan_tcp', // TCP_PORT_OPEN — an active scan of the target
+    'sfp_shodan',       // TCP_PORT_OPEN, VULNERABILITY_CVE_* as Shodan reports them (needs a Shodan key in SpiderFoot)
     'sfp_censys',       // needs a Censys key in SpiderFoot
     'sfp_virustotal',   // MALICIOUS_IPADDR (needs a VirusTotal key in SpiderFoot)
+    'sfp_crt',          // certificate-transparency logs (crt.sh) → SSL_CERTIFICATE_*, INTERNET_NAME
 ];
+
+/** SpiderFoot modules that connect to the target itself (or brute-force its name servers). Never used. */
+export const SPIDERFOOT_ACTIVE_MODULES = [
+    'sfp_portscan_tcp', 'sfp_spider', 'sfp_sslcert', 'sfp_webserver', 'sfp_webframework', 'sfp_webanalytics', 'sfp_pageinfo',
+    'sfp_dnsbrute', 'sfp_dnszonexfer', 'sfp_dnscommonsrv', 'sfp_tldsearch', 'sfp_junkfiles', 'sfp_filemeta', 'sfp_hashes',
+    'sfp_strangeheaders', 'sfp_cookie', 'sfp_errors', 'sfp_crossref', 'sfp_snmp', 'sfp_ssl',
+];
+export const isActiveModule = (m: string) => SPIDERFOOT_ACTIVE_MODULES.includes(m) || m.startsWith('sfp_tool_');
+if (SPIDERFOOT_MODULES.some(isActiveModule)) throw new Error('spiderfoot: an active module is in the passive module list');
 
 export type SpiderFootErrorKind = 'not_configured' | 'unreachable' | 'failed' | 'timeout';
 
@@ -76,12 +90,20 @@ export interface SpiderFootResult {
 export const spiderfootConfigured = () => !!process.env.SPIDERFOOT_URL;
 const base = () => process.env.SPIDERFOOT_URL!.replace(/\/$/, '');
 
+// SpiderFoot's own web UI has no API token. Put it behind a TLS reverse proxy with basic
+// authentication and set SPIDERFOOT_USER / SPIDERFOOT_PASSWORD; they are sent on every call.
+function authHeader(): Record<string, string> {
+    const user = process.env.SPIDERFOOT_USER ?? '';
+    const pass = process.env.SPIDERFOOT_PASSWORD ?? '';
+    return user && pass ? { Authorization: `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}` } : {};
+}
+
 async function sfFetch(path: string, init: RequestInit = {}): Promise<unknown> {
     let r: Response;
     try {
         r = await fetch(`${base()}${path}`, {
             ...init,
-            headers: { Accept: 'application/json', ...(init.headers ?? {}) },
+            headers: { Accept: 'application/json', ...authHeader(), ...(init.headers ?? {}) },
             signal: AbortSignal.timeout(30_000),
         });
     } catch (err) {
@@ -101,8 +123,9 @@ export async function pingSpiderFoot(): Promise<string> {
 
 const TERMINAL = new Set(['FINISHED', 'ABORTED', 'ERROR-FAILED']);
 
-export async function scanIP(
-    ip: string,
+/** A passive SpiderFoot scan of an IP address or hostname (see SPIDERFOOT_MODULES). */
+export async function scanTarget(
+    target: string,
     opts: { pollMs?: number; timeoutMs?: number; holderOf?: (asn: string) => Promise<string | null> } = {},
 ): Promise<SpiderFootResult> {
     if (!spiderfootConfigured()) throw new SpiderFootError('not_configured', 'SPIDERFOOT_URL is not set.');
@@ -114,7 +137,7 @@ export async function scanIP(
     const started = await sfFetch('/startscan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ scanname: `NovrSOC CNII ${ip}`, scantarget: ip, modulelist: SPIDERFOOT_MODULES.join(','), typelist: '', usecase: '' }).toString(),
+        body: new URLSearchParams({ scanname: `NovrSOC passive ${target}`, scantarget: target, modulelist: SPIDERFOOT_MODULES.join(','), typelist: '', usecase: '' }).toString(),
     });
     if (!Array.isArray(started) || started[0] !== 'SUCCESS' || typeof started[1] !== 'string') {
         const why = Array.isArray(started) && started[0] === 'ERROR' ? String(started[1]) : 'unexpected response';
@@ -158,6 +181,9 @@ export async function scanIP(
     }
     return { scanId, status, ...parsed, warnings };
 }
+
+/** Earlier name, kept for callers that scan an IP address. */
+export const scanIP = scanTarget;
 
 /**
  * RIPE Stat holder strings carry the AS handle before the organisation:

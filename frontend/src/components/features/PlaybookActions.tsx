@@ -16,7 +16,7 @@ import { apiUrl, apiFetch } from '@/lib/api';
 // Results live in a module-level store, so they survive navigating away and back within the app
 // (not a full reload).
 
-type ExecState = 'idle' | 'executing' | 'success' | 'failed' | 'skipped';
+type ExecState = 'idle' | 'executing' | 'success' | 'failed' | 'skipped' | 'pending';
 interface ExecResult { state: ExecState; message?: string; at?: string }
 
 const results = new Map<string, ExecResult>();
@@ -44,6 +44,7 @@ function StatusIcon({ state }: { state: ExecState }) {
     if (state === 'success') return <CheckCircle2 size={15} className="text-green" aria-label="Succeeded" />;
     if (state === 'failed') return <XCircle size={15} className="text-red" aria-label="Failed" />;
     if (state === 'skipped') return <MinusCircle size={15} className="text-foreground-muted" aria-label="Not connected" />;
+    if (state === 'pending') return <MinusCircle size={15} className="text-amber" aria-label="Waiting for approval" />;
     return null;
 }
 
@@ -81,6 +82,7 @@ function StepRow({ playbookId, playbookName, stepId, info, agents }: {
             const at = new Date().toISOString();
             if (data?.success) store.set(key, { state: 'success', message: data.message, at });
             else if (data?.outcome === 'skipped') store.set(key, { state: 'skipped', message: data.message, at });
+            else if (data?.outcome === 'pending_approval') store.set(key, { state: 'pending', message: data.message, at });
             else store.set(key, { state: 'failed', message: data?.message ?? data?.error ?? `HTTP ${res.status}`, at });
         } catch {
             store.set(key, { state: 'failed', message: 'Could not reach the backend', at: new Date().toISOString() });
@@ -138,7 +140,7 @@ function StepRow({ playbookId, playbookName, stepId, info, agents }: {
                                 </button>
                                 {result.state !== 'idle' && result.state !== 'executing' && result.message && (
                                     <span role="status" className={`text-[11px] ${result.state === 'success' ? 'text-green' : result.state === 'failed' ? 'text-red' : 'text-foreground-muted'}`}>
-                                        {result.state === 'skipped' ? `Not connected — ${result.message}` : result.message}
+                                        {result.state === 'skipped' ? `Not connected — ${result.message}` : result.state === 'pending' ? `Waiting for approval — ${result.message}` : result.message}
                                         {result.at ? ` · ${wat(result.at)}` : ''}
                                     </span>
                                 )}

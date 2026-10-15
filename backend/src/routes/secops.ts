@@ -2,8 +2,7 @@ import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { createCase } from '../services/cases';
 import { sendBroadcastEmail } from '../services/email';
-import { blockAddress, isolateEndpoint, type LoggedResult } from '../services/responseActions';
-import { logAudit } from '../lib/audit';
+import { requestApproval } from '../services/responseApprovals';
 import { getSupabase } from '../services/geoEnrichment';
 import { enrichIOC, configuredSources, type IOCType } from '../services/iocEnrichment';
 import { isPrivateAddress } from '../services/emailsec/safeFetch';
@@ -135,17 +134,14 @@ router.post('/hunting/escalate', requirePermission('cases:write'), async (req: A
     res.json({ success: true, case_id: result.case.id, case_number: result.case.case_number, created: result.created, ioc_saved: iocSaved, ioc_note: iocNote, enrichment });
 });
 
-// Playbook step execution (Playbooks page → automated steps). These run the same real actions
-// as a case's Execute button, without a case. success is true only when the remote system
-// accepted the action; a "not connected" action comes back as outcome 'skipped' with the reason.
-function sendActionResult(req: AuthRequest, res: import('express').Response, action: string, target: string, r: LoggedResult) {
-    logAudit({
-        user: req.user?.email ?? 'unknown', action: 'PLAYBOOK_ACTION', resource: action, resource_id: target,
-        ip: req.ip ?? 'unknown', result: r.outcome === 'success' ? 'success' : 'failed',
-        details: `${action} ${target}: ${r.outcome} — ${r.message}`.slice(0, 200), severity: r.outcome === 'success' ? 'warning' : 'info',
-    });
-    res.status(r.outcome === 'failed' ? 502 : 200).json({
-        success: r.outcome === 'success', outcome: r.outcome, message: r.message, action_id: r.action_id,
+// Isolate and block are consequential: they are requested here and run only once a SOC manager
+// approves them (services/responseApprovals.ts, /api/response-approvals). 202 = waiting.
+async function sendApprovalRequest(req: AuthRequest, res: import('express').Response, action: 'isolate_agent' | 'block_ip', target: string, label: string | null, reason: string) {
+    const r = await requestApproval({ org_id: requestOrg(req), action, target, target_label: label, reason, source: 'playbook', requested_by: req.user?.email ?? 'unknown' });
+    if (!r.ok) { res.status(r.status).json({ success: false, outcome: 'failed', message: r.error }); return; }
+    res.status(202).json({
+        success: false, outcome: 'pending_approval', approval_id: r.value.approval.id,
+        message: r.value.existing ? 'Already waiting for approval' : 'Sent for approval — a SOC manager must approve it before it runs',
     });
 }
 
@@ -153,8 +149,8 @@ function sendActionResult(req: AuthRequest, res: import('express').Response, act
 router.post('/actions/isolate', requirePermission('response:contain'), async (req: AuthRequest, res) => {
     const endpointId = typeof req.body?.endpoint_id === 'string' ? req.body.endpoint_id.trim() : '';
     if (!endpointId) { res.status(400).json({ success: false, error: 'endpoint_id is required' }); return; }
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined;
-    sendActionResult(req, res, 'isolate', endpointId, await isolateEndpoint(endpointId, { reason, agentName: req.body?.endpoint_name ?? null }));
+    const reason = typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : `Isolate agent ${endpointId} (playbook)`;
+    await sendApprovalRequest(req, res, 'isolate_agent', endpointId, typeof req.body?.endpoint_name === 'string' ? req.body.endpoint_name : null, reason);
 });
 
 // POST /api/secops/actions/block-ip { ip, reason }
@@ -163,7 +159,7 @@ router.post('/actions/block-ip', requirePermission('response:contain'), async (r
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
     if (!ip) { res.status(400).json({ success: false, error: 'ip is required' }); return; }
     if (!reason) { res.status(400).json({ success: false, error: 'reason is required — it is recorded with the block' }); return; }
-    sendActionResult(req, res, 'block-ip', ip, await blockAddress(ip, { reason }));
+    await sendApprovalRequest(req, res, 'block_ip', ip, null, reason);
 });
 
 export default router;

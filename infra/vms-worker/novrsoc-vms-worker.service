@@ -1,0 +1,25 @@
+# NovrSOC VMS scanner worker (infra/vms-worker/worker.py).
+#   useradd --system --home /opt/novrsoc-vms --shell /usr/sbin/nologin novrsoc-vms
+#   cp novrsoc-vms-worker.service /etc/systemd/system/ && systemctl daemon-reload
+#   systemctl enable --now novrsoc-vms-worker
+[Unit]
+Description=NovrSOC VMS scanner worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=novrsoc-vms
+Group=novrsoc-vms
+EnvironmentFile=/opt/novrsoc-vms/worker.env
+ExecStart=/usr/bin/python3 /opt/novrsoc-vms/worker.py
+Restart=always
+RestartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/novrsoc-vms
+
+[Install]
+WantedBy=multi-user.target

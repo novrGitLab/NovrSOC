@@ -8,6 +8,7 @@ import {
 import { sendEscalationEmail, isEmailEnabled, sendCaseNotificationEmail, socNotificationRecipients, cisoEmail, warnNoRecipient } from '../services/email';
 import { logAudit } from '../lib/audit';
 import { executeStep, isExecutableStep, EXECUTABLE_STEPS } from '../services/responseActions';
+import { requestApproval, isConsequential } from '../services/responseApprovals';
 import { requirePermission, hasPermission, requestOrg } from '../lib/permissions';
 
 // Cases API — Supabase-backed.
@@ -270,6 +271,9 @@ router.patch('/:id', requirePermission('cases:write'), async (req: AuthRequest, 
     const status = body.status as unknown;
     const assignee = (body.assigned_to ?? body.assignee) as unknown;
     const severity = body.severity as unknown;
+    // due_at (phase P3): an ISO deadline, or null to clear it. Needs the P3 SQL.
+    const dueAt = body.due_at as unknown;
+    if (dueAt !== undefined && dueAt !== null && (typeof dueAt !== 'string' || Number.isNaN(Date.parse(dueAt)))) { res.status(400).json({ error: 'due_at must be an ISO date-time or null' }); return; }
 
     if (status !== undefined && !isCaseStatus(status)) { res.status(400).json({ error: `status must be one of open, investigating, contained, resolved` }); return; }
     if (severity !== undefined && !isCaseSeverity(severity)) { res.status(400).json({ error: 'invalid severity' }); return; }
@@ -290,7 +294,8 @@ router.patch('/:id', requirePermission('cases:write'), async (req: AuthRequest, 
     }
     if (typeof assignee === 'string') { updates.assigned_to = assignee || null; changes.push(assignee ? `Assigned to ${assignee}` : 'Unassigned'); }
     if (isCaseSeverity(severity)) { updates.severity = severity; changes.push(`Severity set to ${severity}`); }
-    if (changes.length === 0) { res.status(400).json({ error: 'Nothing to update — send status, assigned_to or severity' }); return; }
+    if (dueAt !== undefined) { updates.due_at = dueAt === null ? null : new Date(dueAt as string).toISOString(); changes.push(dueAt === null ? 'Deadline cleared' : `Deadline set to ${formatWAT(updates.due_at as string)}`); }
+    if (changes.length === 0) { res.status(400).json({ error: 'Nothing to update — send status, assigned_to, severity or due_at' }); return; }
 
     const { data, error } = await supabase.from('cases').update(updates).eq('id', id).eq('org_id', orgOf(req)).select().maybeSingle();
     if (error) { res.status(502).json({ error: dbErrorMessage(error) }); return; }
@@ -446,6 +451,28 @@ router.post('/:id/execute-step', requirePermission('response:contain'), async (r
     const { data } = await supabase.from('cases').select('*').eq('id', id).eq('org_id', orgOf(req)).maybeSingle();
     if (!data) { res.status(404).json({ error: 'Case not found' }); return; }
     const by = actorOf(req);
+    const taskIdIn = typeof req.body?.task_id === 'string' && isUuid(req.body.task_id) ? req.body.task_id : null;
+
+    // Blocking an IP and isolating a host need a manager's approval (services/responseApprovals.ts):
+    // record the request and leave the task pending; nothing runs until it is approved.
+    if (isConsequential(stepId)) {
+        const c = data as CaseRow;
+        const target = stepId === 'block_ip' ? c.source_ip ?? '' : c.agent_id ?? '';
+        const r = await requestApproval({
+            org_id: orgOf(req), action: stepId, target, target_label: stepId === 'isolate_agent' ? c.agent_name : null,
+            reason: typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : `Case ${c.case_number}: ${c.title}`,
+            case_id: id, task_id: taskIdIn, source: 'case', requested_by: by,
+        });
+        if (!r.ok) { res.status(r.status).json({ success: false, outcome: 'failed', message: r.error }); return; }
+        let pendingTask = supabase.from('case_tasks').update({ result: 'PENDING APPROVAL: waiting for a SOC manager' }).eq('case_id', id);
+        pendingTask = taskIdIn ? pendingTask.eq('id', taskIdIn) : pendingTask.eq('step_id', stepId);
+        await pendingTask;
+        res.status(202).json({
+            success: false, outcome: 'pending_approval', approval_id: r.value.approval.id,
+            message: r.value.existing ? 'Already waiting for approval' : 'Sent for approval — a SOC manager must approve it before it runs',
+        });
+        return;
+    }
 
     const result = await executeStep(stepId, data as CaseRow, by);
     const done = result.outcome === 'success';

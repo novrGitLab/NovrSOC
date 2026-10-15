@@ -4,7 +4,8 @@ import { search } from '../lib/wazuh-indexer';
 import { sendCriticalAlertEmail, socNotificationRecipients, warnNoRecipient } from '../services/email';
 import { createCase, type CaseSeverity } from '../services/cases';
 import { loadThreats, readTriage, writeTriage, applyTriage, type Threat, type Triage } from '../services/threatBoard';
-import { blockAddress } from '../services/responseActions';
+import { requestApproval, onApprovedSuccess } from '../services/responseApprovals';
+import { setRequestOrg } from '../lib/resolveOrg';
 import { getSupabase } from '../services/geoEnrichment';
 import { logAudit } from '../lib/audit';
 import { NIGERIAN_ACTORS, GLOBAL_ACTORS } from '../services/threatActors';
@@ -789,13 +790,24 @@ router.post('/:id/contain', requirePermission('response:contain'), async (req: A
         return;
     }
     const reason = typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : `Threat ${threat.id}: ${threat.name}`;
-    const result = await blockAddress(threat.source_ip, { reason });
-    if (result.outcome !== 'success') {
-        res.status(result.outcome === 'failed' ? 502 : 200).json({ success: false, outcome: result.outcome, message: result.message });
-        return;
-    }
-    const store = await decide(req, threat, { status: 'contained', note: reason });
-    res.json({ success: true, outcome: 'success', message: result.message, store });
+    // A firewall block needs a SOC manager's approval (services/responseApprovals.ts). The threat
+    // is marked contained only when the approved block actually succeeds (hook below).
+    const r = await requestApproval({ org_id: requestOrg(req), action: 'block_ip', target: threat.source_ip, reason, threat_id: threat.id, source: 'threat', requested_by: req.user?.email ?? 'unknown' });
+    if (!r.ok) { res.status(r.status).json({ success: false, outcome: 'failed', message: r.error }); return; }
+    res.status(202).json({
+        success: false, outcome: 'pending_approval', approval_id: r.value.approval.id,
+        message: r.value.existing ? 'Already waiting for approval' : 'Block sent for approval — a SOC manager must approve it before it runs',
+    });
+});
+
+// An approved, successful block from the threat board marks that threat contained.
+onApprovedSuccess('threat', async (approval) => {
+    if (!approval.threat_id) return;
+    const threat = await findThreat(approval.org_id, approval.threat_id).catch(() => null);
+    if (!threat) return;
+    const fakeReq = { user: { email: approval.decided_by ?? 'approver' }, ip: 'n/a' } as unknown as AuthRequest;
+    setRequestOrg(fakeReq as never, approval.org_id);
+    await decide(fakeReq, threat, { status: 'contained', note: `${approval.reason} (approved by ${approval.decided_by})` });
 });
 
 // POST /api/threats/:id/escalate — opens a case (real) for the threat; repeat calls return it.

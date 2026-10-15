@@ -12,6 +12,7 @@ import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage } from '../services/cases';
 import { logAudit } from '../lib/audit';
+import { quarantineSummary, replayQuarantine, type ReplayResult } from '../services/alertQuarantine';
 
 const router = Router();
 
@@ -72,9 +73,38 @@ router.put('/', async (req: AuthRequest, res) => {
         details: [...upserts.map((u) => `${u.wazuh_group}=>${u.org_id}`), ...removals.map((g) => `${g}=>removed`)].join(', ').slice(0, 200),
     });
 
+    // A newly mapped group releases its quarantined alerts. A replay failure doesn't undo the
+    // mapping; it is reported, and POST /quarantine/replay can be retried.
+    let replay: ReplayResult | { error: string } | null = null;
+    if (upserts.length > 0) {
+        try { replay = await replayQuarantine(); } catch (err) { replay = { error: err instanceof Error ? err.message : 'replay failed' }; }
+    }
+
     const { data, error } = await supabase.from('wazuh_group_org_map').select('wazuh_group, org_id, created_at').order('wazuh_group');
     if (error) { res.status(502).json({ error: dbErrorMessage(error) }); return; }
-    res.json({ success: true, mappings: data ?? [] });
+    res.json({ success: true, mappings: data ?? [], replay });
+});
+
+// GET /quarantine — per-group counts of alerts held because their group isn't mapped.
+router.get('/quarantine', async (_req, res) => {
+    const summary = await quarantineSummary();
+    if (!summary) { res.status(503).json({ error: 'Quarantine not available (run sql/2026-10-14_p1_quarantine.sql)' }); return; }
+    res.json(summary);
+});
+
+// POST /quarantine/replay — move quarantined alerts that now resolve to one org into alerts.
+router.post('/quarantine/replay', async (req: AuthRequest, res) => {
+    try {
+        const result = await replayQuarantine();
+        logAudit({
+            user: req.user?.email ?? 'unknown', action: 'ALERT_QUARANTINE_REPLAYED', resource: 'alert_quarantine',
+            ip: req.ip ?? 'unknown', result: 'success', severity: 'info',
+            details: `replayed ${result.replayed}, duplicates ${result.duplicates}, still quarantined ${result.still_quarantined}`,
+        });
+        res.json(result);
+    } catch (err) {
+        res.status(502).json({ error: err instanceof Error ? err.message : 'replay failed' });
+    }
 });
 
 export default router;

@@ -6,6 +6,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { botProtection, requireAuth, requireRole } from './middleware/auth';
+import { requirePermission, requireOrg } from './lib/permissions';
 
 import authRouter from './routes/auth';
 import portalRouter from './routes/portal';
@@ -29,6 +30,15 @@ import ingestRouter from './routes/ingest';
 import exportApiRouter from './routes/exportApi';
 import exportClientsRouter from './routes/exportClients';
 import pushStatusRouter from './routes/pushStatus';
+import usersRouter from './routes/users';
+import responseApprovalsRouter from './routes/responseApprovals';
+import aiRouter from './routes/ai';
+import vmsRouter from './routes/vms';
+import vmsWorkerRouter from './routes/vmsWorker';
+import vmsFindingsRouter from './routes/vmsFindings';
+import threatInfoRouter from './routes/threatInfo';
+import vmsContinuousRouter from './routes/vmsContinuous';
+import insightsRouter from './routes/insights';
 import wazuhGroupMapRouter from './routes/wazuhGroupMap';
 import threatManagementRouter from './routes/threatManagement';
 import publicRouter from './routes/public';
@@ -54,6 +64,12 @@ import { startNigerianIntelJob } from './jobs/nigerianIntelJob';
 import { startGlobalIntelJob } from './jobs/globalIntelJob';
 import { startEmailSecurityJob } from './jobs/emailSecurityJob';
 import { startStellarPushJob } from './jobs/stellarPush';
+import { startAutoCaseJob } from './jobs/autoCase';
+import { startVmsMaintenanceJob } from './jobs/vmsMaintenance';
+import { startVmsIntelJob } from './jobs/vmsIntelJob';
+import { startThreatInfoJob } from './jobs/threatInfoJob';
+import { startVmsContinuousJob } from './jobs/vmsContinuousJob';
+import { startCniiPassiveJob } from './jobs/cniiPassiveJob';
 import { announceJobPolicy } from './lib/runtimeEnv';
 import { announceVerificationSecret } from './services/emailsec/verification';
 import platformRouter from './routes/platform';
@@ -98,42 +114,14 @@ app.get('/', (_req, res) => {
     res.status(200).json({ ok: true, service: 'novrsoc-backend' });
 });
 
-// requireAuth is now mounted, but only on routes confirmed to have ZERO client-portal
-// exposure — see the per-route comment below. It is NOT mounted globally, and NOT mounted
-// on most feature routes, for a reason specific to this app's architecture:
-//
-// Shared feature components (ThreatManagement, CtiPlatform, DnsSuite,
-// BrandSuite, DomainSuite, UrlScanSuite, WebsiteScanning,
-// DataLossRecovery,
-// AlertCommunication, MobileAppSuite, SocialSuite, CopyIdSuite, ExecutiveMonitor,
-// ThreatAdvisory, DigitalAssets — cross-checked by diffing every component imported by any
-// /admin page against every component imported by any /client page) are rendered by BOTH the
-// admin app and the client portal, and call the same backend routes either way: /api/wazuh,
-// /api/threats, /api/threat, /api/brand, /api/dns, /api/urlscan,
-// /api/webscan, /api/org-cti, /api/recovery,
-// /api/alerts.
-//
-// Client-portal users only ever hold a `portal_token` (see frontend/src/lib/portal-auth.ts),
-// minted by the separate external backend at APP_API_BASE_URL with a secret this backend
-// does not have. requireAuth can only verify admin JWTs (JWT_SECRET/DEV_TOKEN_SECRET) — it
-// has no way to verify a portal_token's signature. Mounting requireAuth on any of the 15
-// routes above would 401 every client-portal user immediately, the same "platform
-// inaccessible" failure this whole rollout is trying to avoid, just for portal users instead
-// of admins. Fixing that needs requireAuth (or a sibling middleware) to accept both token
-// shapes — either a shared signing secret with the external backend, or a per-request
-// verification call to it — neither confirmed to exist. Until that's built, those 15 routes
-// stay open on purpose; don't "fix" this by mounting requireAuth on them blind.
-//
-// Exception (phase S1, 2026-10-08): /api/wazuh, /api/mitre, /api/threats, /api/alerts/status
-// and GET /api/notifications are now gated inside their routers with lib/permissions.ts
-// (SecOps token + permission + org). These are SecOps data, which portal_user tokens must not
-// read; client-portal pages that called them (PortalDashboard, DigitalAssets, the client
-// ThreatManagement page, the client layout's Header/RightRail) get 401 until portal auth exists.
-//
-// frontend/src/lib/api.ts's apiFetch() already attaches whichever token the browser holds
-// (portal_token or admin_token — see lib/account.ts's getAuthToken()) to every apiUrl() call,
-// admin and portal alike, so no further frontend work is needed once a route below starts
-// enforcing auth — the header is already there, just currently ignored by most routes.
+// Authentication is applied per mount below (or inside a router where a route has its own
+// machine credential). Every data route needs a login: the routes that used to stay open so
+// client-portal tokens could reach them were gated in phase P1 (2026-10-14), because portal
+// sign-in proxies to APP_API_BASE_URL, which is not configured — no portal token exists for
+// them to serve, while the open routes exposed the Wazuh agent list and paid lookups to anyone.
+// When portal sign-in is rebuilt on this backend, its tokens go through requireAuth like
+// any other. The few mounts that stay reachable without a login are listed, with their reason,
+// in routes/__tests__/routeGating.test.ts, which fails if a new mount is added without a gate.
 
 // Origins allowed to call this API with credentials. Known Vercel deployments (prod +
 // preview) and local dev ports are listed explicitly; FRONTEND_URL and the legacy
@@ -257,6 +245,8 @@ if (process.env.NODE_ENV === 'production') {
 app.use('/api/ingest', ingestRouter);
 // Vendor export (routes/exportApi.ts): machine credential, own kill switch and rate limits; GET only.
 app.use('/api/export/v1', exportApiRouter);
+// VMS scanner worker (routes/vmsWorker.ts): machine credential VMS_WORKER_TOKEN, own rate limit.
+app.use('/api/vms/worker', express.json({ limit: '2mb' }), vmsWorkerRouter);
 
 app.use(express.json());
 
@@ -295,25 +285,24 @@ app.use('/api/public', publicRouter);
 
 app.use('/api/auth', authRouter);
 app.use('/api/portal', portalRouter);
-// admin-only — no client-portal component calls these, confirmed safe to gate now (see the
-// block comment above for how that was checked and why most other routes aren't gated yet).
+// admin-only.
 // soc_manager gets access alongside super_admin here (and on /api/compliance below) — per the
 // soc_manager role's spec: "Access compliance data for their org," but analysts and below do
 // not get customer/compliance-admin access.
 app.use('/api/customers', requireAuth, requireRole('super_admin', 'soc_manager'), customersRouter);
 app.use('/api/compliance', requireAuth, requireRole('super_admin', 'soc_manager'), complianceRouter);
-app.use('/api/dns', dnsRouter);
+app.use('/api/dns', requireAuth, dnsRouter);
 // admin-only — no client-portal component calls this, confirmed safe to gate now.
 app.use('/api/novr-ai', requireAuth, novrAiRouter);
 app.use('/api/wazuh', wazuhRouter);
-app.use('/api/geo', geoRouter);
-app.use('/api/brand/domains', domainSuiteRouter);
-app.use('/api/brand', brandRouter);
+app.use('/api/geo', requireAuth, geoRouter);
+app.use('/api/brand/domains', requireAuth, domainSuiteRouter);
+app.use('/api/brand', requireAuth, brandRouter);
 app.use('/api/contact', contactRouter);
-app.use('/api/threat', threatRouter);
-app.use('/api/cti', ctiRouter);
-app.use('/api/urlscan', urlscanRouter);
-app.use('/api/webscan', webscanRouter);
+app.use('/api/threat', requireAuth, threatRouter);
+app.use('/api/cti', requireAuth, ctiRouter);
+app.use('/api/urlscan', requireAuth, urlscanRouter);
+app.use('/api/webscan', requireAuth, webscanRouter);
 // Email Security module (DMARC SaaS, Phish ID, Messaging Suite) — auth is per-route inside the
 // router because the Microsoft 365 admin-consent callback must be reachable without a token.
 app.use('/api/email-security', emailSecurityRouter);
@@ -322,7 +311,9 @@ app.use('/api/email-security', emailSecurityRouter);
 app.use('/api/email', emailRouter);
 app.use('/api/email-proxy', emailProxyRouter);
 app.use('/api/mitre', mitreRouter);
-app.use('/api/recovery', dataRecoveryRouter);
+// Backup agents report from cron with no user session, so POST /jobs/report stays reachable
+// without a login (it can only upsert a reporting row); every read needs a login.
+app.use('/api/recovery', (req, res, next) => (req.method === 'POST' && req.path === '/jobs/report' ? next() : requireAuth(req, res, next)), dataRecoveryRouter);
 app.use('/api/alerts', alertsRouter);
 app.use('/api/alerts', alertStoreRouter); // stored, org-scoped alerts (phase R2)
 app.use('/api/threats', threatManagementRouter);
@@ -344,15 +335,26 @@ app.use('/api/admin/team', requireAuth, teamRouter);
 app.use('/api/admin/wazuh-group-map', requireAuth, requireRole('super_admin'), wazuhGroupMapRouter);
 app.use('/api/admin/export-clients', requireAuth, requireRole('super_admin'), exportClientsRouter);
 app.use('/api/admin/push-status', requireAuth, requireRole('super_admin'), pushStatusRouter);
+app.use('/api/admin/users', requireAuth, requireRole('super_admin'), usersRouter);
+// Consequential response actions wait here for a manager's approval — services/responseApprovals.ts.
+app.use('/api/response-approvals', requireAuth, responseApprovalsRouter);
+// Claude-backed analysis (services/ai.ts). Advice only: never changes records or runs actions.
+app.use('/api/ai', requireAuth, aiRouter);
+// Vulnerability Management (routes/vms.ts) — attack surface, scope, scans.
+app.use('/api/vms', requireAuth, vmsRouter);
+app.use('/api/vms', requireAuth, vmsFindingsRouter); // findings, remediation (phase P5)
+app.use('/api/vms', requireAuth, vmsContinuousRouter); // schedules, trends, reports, notifications (phase P7)
+app.use('/api/ti', requireAuth, threatInfoRouter); // Threat Information System (phase P6)
+app.use('/api/insights', requireAuth, insightsRouter); // weekly insights (phase P8)
 // Security Assessment: posture from real case data.
 app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
 app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);
-app.use('/api/assets', assetsRouter);
-// admin-only — no client-portal component calls these, confirmed safe to gate now (see the
-// block comment above for how that was checked and why most other routes aren't gated yet).
+// Wazuh agent inventory (names, IPs, OS): same gate as /api/wazuh/agents.
+app.use('/api/assets', requirePermission('alerts:read'), assetsRouter);
+// admin-only.
 app.use('/api/dashboard', requireAuth, dashboardRouter);
 app.use('/api/handover', requireAuth, handoverRouter);
-app.use('/api/org-cti', orgCTIRouter);
+app.use('/api/org-cti', requireAuth, requireOrg, orgCTIRouter);
 // CNII Watch — admin-only (no client-portal page uses it). Role checks per route inside.
 app.use('/api/cnii', requireAuth, cniiRouter);
 // super_admin only — platform infra health is explicitly out of scope for soc_manager per that
@@ -424,4 +426,18 @@ if (announceJobPolicy()) {
     // Push stored alerts to Stellar Cyber's webhook — jobs/stellarPush.ts. Off unless
     // STELLAR_PUSH_ENABLED=true and its URL, key and org list are set.
     startStellarPushJob();
+    // Open cases from stored alerts by documented rules — jobs/autoCase.ts. Off unless
+    // AUTO_CASE_ENABLED=true.
+    startAutoCaseJob();
+    // VMS scan queue upkeep: dead workers' jobs requeued/failed, expired-scope jobs cancelled.
+    startVmsMaintenanceJob();
+    // CVE intelligence (KEV, EPSS, NVD) and the Wazuh vulnerability sync — jobs/vmsIntelJob.ts.
+    startVmsIntelJob();
+    // Threat feeds (abuse.ch, CISA KEV), expiry and correlation — jobs/threatInfoJob.ts.
+    startThreatInfoJob();
+    // Scan schedules, daily risk snapshots and change digests — jobs/vmsContinuousJob.ts.
+    startVmsContinuousJob();
+    // CNII passive collection (SpiderFoot passive modules, CT logs, DNS, RIPE Stat, OpenCTI) for
+    // passive_osint jobs in the VMS queue — jobs/cniiPassiveJob.ts. Off with CNII_PASSIVE_ENABLED=false.
+    startCniiPassiveJob();
 }

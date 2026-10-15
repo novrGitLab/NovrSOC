@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents } from '../services/wazuh';
-import { getAuditLog } from '../lib/audit';
+import { readAuditLog } from '../lib/audit';
+import { pipelineChecks, type PipelineCheck } from '../services/pipelineHealth';
 import { getMISPStats, isMISPConfigured, checkMISPBrowseRedirect } from '../services/misp';
 import { isConfigured as leakixConfigured } from '../services/leakix';
 import { isConfigured as fofaConfigured } from '../services/fofa';
@@ -146,27 +147,29 @@ function integrationConfig() {
 // Platform Health page stays mock until it has its own real check built — see
 // frontend/src/components/features/PlatformHealth.tsx.
 router.get('/health', async (_req, res) => {
-    const results = await Promise.all([checkWazuh(), checkDatabase(), checkClaudeAI(), checkMISP()]);
+    const [results, pipelines] = await Promise.all([
+        Promise.all([checkWazuh(), checkDatabase(), checkClaudeAI(), checkMISP()]),
+        pipelineChecks().catch((err): PipelineCheck[] => [{ name: 'Pipelines', status: 'down', detail: err instanceof Error ? err.message : 'check failed' }]),
+    ]);
 
-    const allUp = results.every((r) => r.status === 'up');
-    const anyDown = results.some((r) => r.status === 'down');
-    const overall = allUp ? 'operational' : anyDown ? 'outage' : 'degraded';
+    // A pipeline that is switched off doesn't count against the overall state.
+    const states = [...results.map((r) => r.status), ...pipelines.filter((p) => p.status !== 'off').map((p) => p.status)];
+    const overall = states.every((s) => s === 'up') ? 'operational' : states.some((s) => s === 'down') ? 'outage' : 'degraded';
 
     res.json({
         overall,
         services: results,
+        pipelines,
         integrations: integrationConfig(),
         checked_at: new Date().toISOString(),
     });
 });
 
-// GET /api/platform/audit-log — real entries for the 3 actions currently logged (LOGIN,
-// CREATE_INCIDENT, ADD_EXECUTIVE — see lib/audit.ts's call sites). These are the ONLY entries
-// the Audit Log page shows; its old hardcoded filler rows were removed, so an empty response
-// renders as "No audit events recorded yet." Instrument more routes with logAudit() to fill it.
-router.get('/audit-log', (req, res) => {
-    const limit = Number(req.query.limit) || 100;
-    res.json({ entries: getAuditLog(limit) });
+// GET /api/platform/audit-log — newest audit entries (lib/audit.ts): from the durable audit_log
+// table when it exists, else this process's memory; `source` says which.
+router.get('/audit-log', async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 1000);
+    res.json(await readAuditLog(limit));
 });
 
 export default router;

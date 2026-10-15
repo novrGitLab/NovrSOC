@@ -110,6 +110,27 @@ export function capRaw(raw: unknown): { raw: unknown; truncated: boolean } {
 
 interface Reject { reason: string; wazuh_alert_id: string | null; wazuh_groups: string[] | null }
 
+/** The alerts row for a validated alert, minus org_id (resolved separately from its groups). */
+function alertRowWithoutOrg(a: AlertIn, eventTime: string): Record<string, unknown> {
+    const { raw, truncated } = capRaw(a.raw);
+    return {
+        wazuh_alert_id: noNul(a.id),
+        rule_id: a.rule.id !== undefined ? noNul(String(a.rule.id)) : null,
+        rule_level: a.rule.level,
+        rule_description: opt(a.rule.description),
+        agent_id: opt(a.agent?.id),
+        agent_name: opt(a.agent?.name),
+        agent_ip: opt(a.agent?.ip),
+        severity: severityFromLevel(a.rule.level),
+        mitre_ids: a.rule.mitre?.id?.map(noNul) ?? null,
+        wazuh_groups: a.agent_groups.map(noNul),
+        location: opt(a.location),
+        raw,
+        raw_truncated: truncated,
+        event_time: eventTime,
+    };
+}
+
 router.post('/alerts', async (req: Request, res: Response) => {
     const batch = Batch.safeParse(req.body);
     if (!batch.success) {
@@ -147,35 +168,26 @@ router.post('/alerts', async (req: Request, res: Response) => {
     }
 
     const rows = new Map<string, Record<string, unknown>>();
+    // Unmapped / ambiguous alerts are kept without an org so they can be replayed once the group
+    // is mapped (services/alertQuarantine.ts). Keyed by Wazuh alert id: a retry overwrites.
+    const quarantine = new Map<string, Record<string, unknown>>();
     let mapped = 0; // alerts that resolved to exactly one org (in-batch repeats included)
     for (const { a, eventTime } of valid) {
         const agentGroups = a.agent_groups.map(noNul);
         const orgs = [...new Set(agentGroups.map((g) => groupOrg.get(g)).filter((o): o is string => !!o))];
         if (orgs.length !== 1) {
-            rejects.push({ reason: orgs.length === 0 ? 'unmapped_group' : 'ambiguous_org', wazuh_alert_id: noNul(a.id), wazuh_groups: agentGroups });
+            const reason = orgs.length === 0 ? 'unmapped_group' : 'ambiguous_org';
+            rejects.push({ reason, wazuh_alert_id: noNul(a.id), wazuh_groups: agentGroups });
+            quarantine.set(noNul(a.id), {
+                wazuh_alert_id: noNul(a.id), wazuh_groups: agentGroups, reason,
+                alert: alertRowWithoutOrg(a, eventTime), last_seen_at: new Date().toISOString(),
+            });
             continue;
         }
         mapped++;
-        const { raw, truncated } = capRaw(a.raw);
         const key = `${orgs[0]}\n${a.id}`;
         if (rows.has(key)) continue; // same alert twice in one batch: counted as a duplicate below
-        rows.set(key, {
-            org_id: orgs[0],
-            wazuh_alert_id: noNul(a.id),
-            rule_id: a.rule.id !== undefined ? noNul(String(a.rule.id)) : null,
-            rule_level: a.rule.level,
-            rule_description: opt(a.rule.description),
-            agent_id: opt(a.agent?.id),
-            agent_name: opt(a.agent?.name),
-            agent_ip: opt(a.agent?.ip),
-            severity: severityFromLevel(a.rule.level),
-            mitre_ids: a.rule.mitre?.id?.map(noNul) ?? null,
-            wazuh_groups: agentGroups,
-            location: opt(a.location),
-            raw,
-            raw_truncated: truncated,
-            event_time: eventTime,
-        });
+        rows.set(key, { org_id: orgs[0], ...alertRowWithoutOrg(a, eventTime) });
     }
 
     let accepted = 0;
@@ -198,8 +210,15 @@ router.post('/alerts', async (req: Request, res: Response) => {
         const { error } = await supabase.from('alert_ingest_rejects').insert(rejects);
         if (error) console.error(`[ingest] could not record ${rejects.length} rejected alert(s):`, error.message?.slice(0, 200));
     }
-    console.log(`[ingest] batch of ${batch.data.alerts.length}: accepted ${accepted}, duplicates ${duplicates}, rejected ${rejects.length}`);
-    res.json({ accepted, duplicates, rejected: rejects.length });
+    let quarantined = 0;
+    if (quarantine.size > 0) {
+        const { error } = await supabase.from('alert_quarantine').upsert([...quarantine.values()], { onConflict: 'wazuh_alert_id' });
+        // Without the table (SQL not applied yet) the alert is still recorded as a reject, as before.
+        if (error) console.error(`[ingest] could not quarantine ${quarantine.size} alert(s):`, error.message?.slice(0, 200));
+        else quarantined = quarantine.size;
+    }
+    console.log(`[ingest] batch of ${batch.data.alerts.length}: accepted ${accepted}, duplicates ${duplicates}, rejected ${rejects.length}, quarantined ${quarantined}`);
+    res.json({ accepted, duplicates, rejected: rejects.length, quarantined });
 });
 
 // GET /api/ingest/alerts/watermark — newest stored event per org (every org in the group map),

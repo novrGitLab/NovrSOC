@@ -5,38 +5,20 @@ import {
     type OrgIOC,
 } from '../lib/orgCtiStore';
 import { lookupASN } from '../services/ripeStat';
+import { requestOrg } from '../lib/resolveOrg';
 
 // Organisation CTI store — org-scoped threat intelligence (Wazuh-derived + analyst-added),
 // cross-client threat sharing, and RIPE Stat network intelligence. In-memory for now (see
 // lib/orgCtiStore.ts's header comment) — swap for Supabase once a schema exists.
 //
-// MUST FIX BEFORE FIRST CLIENT — every request here is treated as the single 'cybernovr' org.
-// This is NOT just "read org_id off the token" — investigated while wiring real tenancy in:
-//   1. requireAuth (middleware/auth.ts) is built but deliberately not mounted anywhere yet
-//      (see index.ts's comment) — the admin dev-bypass token now carries org_id (routes/auth.ts),
-//      but nothing currently verifies/reads it on incoming requests.
-//   2. The client portal already issues its OWN org-scoped JWT (lib/portal-auth.ts's
-//      PortalUser has a real orgId/orgName) — but that token is minted and verified by a
-//      SEPARATE external backend (APP_API_BASE_URL), not this one. requireAuth verifies
-//      against JWT_SECRET/DEV_TOKEN_SECRET, which will never match a portal-issued token's
-//      signature — mounting requireAuth here as-is would 401 every legitimate client-portal
-//      request while admin dev-bypass requests kept working, which is a worse and much
-//      harder-to-notice bug than the current single-tenant placeholder.
-//   3. So: this route needs to accept EITHER token shape and resolve org_id from whichever
-//      is present — verify the admin token locally (requireAuth's existing logic), but for a
-//      portal token, either introspect it against the external backend (see routes/portal.ts
-//      for the existing proxy pattern) or decode-without-verify and treat the external
-//      backend as already having done the verification at issuance. Once that's decided and
-//      built, replace the `|| 'cybernovr'` fallback below with a real 401 on missing org_id.
+// Mounted behind requireAuth + requireOrg (index.ts), so every request carries a resolved
+// organisation (lib/resolveOrg.ts): client roles get their own org, staff may select one with
+// X-Org-Id. There is no default org.
 const router = Router();
-
-function getOrgId(req: { user?: { org_id?: string } }): string {
-    return req.user?.org_id || 'cybernovr';
-}
 
 // GET /api/org-cti/iocs — org's own IOCs (Wazuh-derived + analyst-added)
 router.get('/iocs', async (req, res) => {
-    const orgId = getOrgId(req as never);
+    const orgId = requestOrg(req);
     const { type, verdict, source, limit = '100' } = req.query;
     const parsedLimit = parseInt(String(limit), 10) || 100;
 
@@ -84,7 +66,7 @@ interface AddIOCBody {
 
 // POST /api/org-cti/iocs — manually add an IOC
 router.post('/iocs', (req, res) => {
-    const orgId = getOrgId(req as never);
+    const orgId = requestOrg(req);
     const { value, type, verdict, tags, notes, shared }: AddIOCBody = req.body ?? {};
 
     if (!value || !type) {
@@ -118,7 +100,7 @@ router.post('/iocs', (req, res) => {
 // PATCH /api/org-cti/iocs/:id — update notes/verdict/shared on a manually-added IOC.
 // (Wazuh-derived IOCs are recomputed from the indexer each sync and aren't editable here.)
 router.patch('/iocs/:id', (req, res) => {
-    const orgId = getOrgId(req as never);
+    const orgId = requestOrg(req);
     const patch: Partial<OrgIOC> = {};
     const { verdict, notes, shared, tags } = req.body ?? {};
     if (verdict !== undefined) patch.verdict = verdict;
@@ -136,7 +118,7 @@ router.patch('/iocs/:id', (req, res) => {
 
 // DELETE /api/org-cti/iocs/:id — remove a manually-added IOC
 router.delete('/iocs/:id', (req, res) => {
-    const orgId = getOrgId(req as never);
+    const orgId = requestOrg(req);
     const removed = removeManualIOC(orgId, req.params.id);
     if (!removed) {
         res.status(404).json({ error: 'IOC not found (Wazuh-sourced IOCs are read-only)' });
@@ -168,7 +150,7 @@ router.get('/shared', (_req, res) => {
 
 // GET /api/org-cti/stats — org CTI statistics
 router.get('/stats', (req, res) => {
-    const orgId = getOrgId(req as never);
+    const orgId = requestOrg(req);
     const wazuhIOCs = wazuhIOCsForOrg(orgId);
     const manualIOCs = getManualIOCs(orgId);
     const combined = [...wazuhIOCs, ...manualIOCs];

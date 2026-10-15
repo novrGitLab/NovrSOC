@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, Building2, Siren, Server, ClipboardCheck, Users, Settings, Plus, ExternalLink } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
+import { getAdminUser } from '@/lib/admin-auth';
 
 interface Org {
     id: string;
@@ -239,6 +240,25 @@ function TeamTab({ org }: { org: Org }) {
     const [name, setName] = useState('');
     const [role, setRole] = useState<(typeof TEAM_ROLES)[number]>('analyst');
     const [saving, setSaving] = useState(false);
+    // Account controls (phase P2): one-time password links and enable/disable, super_admin only.
+    const isSuperAdmin = getAdminUser().role === 'super_admin';
+    const [link, setLink] = useState<{ email: string; url: string; expires_at: string } | null>(null);
+    const [acctMsg, setAcctMsg] = useState<string | null>(null);
+
+    const accountAction = async (u: PlatformUser, kind: 'link' | 'disable' | 'enable') => {
+        setAcctMsg(null);
+        try {
+            const r = kind === 'link'
+                ? await apiFetch(apiUrl(`/api/admin/users/${u.id}/password-link`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ purpose: u.status === 'invited' ? 'invite' : 'reset' }) })
+                : await apiFetch(apiUrl(`/api/admin/users/${u.id}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: kind === 'disable' ? 'disabled' : 'active' }) });
+            const d = await r.json().catch(() => null);
+            if (!r.ok) { setAcctMsg(d?.error ?? `HTTP ${r.status}`); return; }
+            if (kind === 'link') setLink({ email: u.email, url: d.url, expires_at: d.expires_at });
+            else load();
+        } catch {
+            setAcctMsg('Could not reach the backend');
+        }
+    };
 
     const load = () => {
         apiFetch(apiUrl(`/api/organisations/${org.id}/users`), { cache: 'no-store' })
@@ -281,6 +301,18 @@ function TeamTab({ org }: { org: Org }) {
                     <button onClick={addUser} disabled={saving} className="text-xs font-bold text-white bg-orange hover:bg-orange-hover rounded-lg px-3 py-2 disabled:opacity-50">{saving ? 'Adding…' : 'Add'}</button>
                 </div>
             )}
+            {acctMsg && <p role="alert" className="text-xs text-red-500 font-semibold">{acctMsg}</p>}
+            {link && (
+                <div className="bg-card border border-border rounded-xl p-4 space-y-2">
+                    <p className="text-xs font-bold text-foreground">Password link for {link.email} (shown once; expires {new Date(link.expires_at).toLocaleString()})</p>
+                    <code className="block bg-card-muted border border-border rounded-lg px-3 py-2 text-[11px] font-mono break-all select-all">{link.url}</code>
+                    <div className="flex gap-2">
+                        <button onClick={() => { void navigator.clipboard.writeText(link.url); }} className="text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1.5">Copy</button>
+                        <button onClick={() => setLink(null)} className="text-[11px] font-bold text-foreground border border-border rounded-lg px-3 py-1.5">Done</button>
+                    </div>
+                    <p className="text-[10px] text-foreground-muted">Send it to them directly. It works once; issuing a new link cancels this one.</p>
+                </div>
+            )}
             {users.length === 0 ? (
                 <p className="text-xs text-foreground-muted py-6 text-center">No team members yet.</p>
             ) : (
@@ -288,7 +320,18 @@ function TeamTab({ org }: { org: Org }) {
                     {users.map((u) => (
                         <div key={u.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
                             <div><p className="text-xs font-bold text-foreground">{u.name ?? u.email}</p><p className="text-[10px] text-foreground-muted">{u.email}</p></div>
-                            <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-purple/10 text-purple uppercase flex-shrink-0">{u.role}</span>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                                <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-purple/10 text-purple uppercase">{u.role}</span>
+                                <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${u.status === 'disabled' ? 'bg-red-500/10 text-red-500' : u.status === 'invited' ? 'bg-amber/10 text-amber' : 'bg-green-500/10 text-green-600'}`}>{u.status}</span>
+                                {isSuperAdmin && u.status !== 'disabled' && (
+                                    <button onClick={() => void accountAction(u, 'link')} className="text-[10px] font-bold text-foreground border border-border rounded-lg px-2 py-1">{u.status === 'invited' ? 'Invite link' : 'Reset link'}</button>
+                                )}
+                                {isSuperAdmin && (
+                                    <button onClick={() => { if (u.status !== 'disabled' && !window.confirm(`Disable ${u.email}? They will not be able to sign in.`)) return; void accountAction(u, u.status === 'disabled' ? 'enable' : 'disable'); }} className={`text-[10px] font-bold rounded-lg px-2 py-1 ${u.status === 'disabled' ? 'text-foreground border border-border' : 'text-red-500'}`}>
+                                        {u.status === 'disabled' ? 'Enable' : 'Disable'}
+                                    </button>
+                                )}
+                            </div>
                         </div>
                     ))}
                 </div>
