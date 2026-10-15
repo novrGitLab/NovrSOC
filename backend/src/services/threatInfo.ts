@@ -1,0 +1,307 @@
+// Threat Information System (phase P6): feed ingestion, normalisation, provenance, expiry and
+// correlation with an organisation's records.
+//
+// Feeds (real, authoritative, nothing invented):
+//   threatfox  abuse.ch ThreatFox — IOCs of the last day (needs THREATFOX_API_KEY, abuse.ch Auth-Key)
+//   urlhaus    abuse.ch URLhaus — recent malware distribution URLs (same key)
+//   feodo      abuse.ch Feodo Tracker — botnet C2 IP blocklist (public)
+//   cisa_kev   CISA Known Exploited Vulnerabilities catalogue (public), also feeding cve_intel
+// Each source record is kept as provenance (ti_indicator_sources) with exactly what that source
+// said: its own confidence (or none), its malware/threat labels, reporter and reference. An
+// indicator's ATT&CK techniques are only ids a source itself listed. Nothing is attributed to a
+// threat actor here: these feeds do not attribute, so neither does the platform.
+// Failures are surfaced: a run that cannot fetch or parse its feed is recorded as failed with the
+// reason, and the feed's health shows it.
+
+import { isIP } from 'net';
+import { getSupabase } from './geoEnrichment';
+import { parseKev, KEV_URL, CVE_RE } from './cveIntel';
+
+export type IndicatorType = 'ip' | 'domain' | 'url' | 'md5' | 'sha1' | 'sha256' | 'cve';
+export interface SourceRecord {
+    type: IndicatorType; value: string; source_ref: string; confidence: number | null; first_seen: string | null; last_seen: string | null;
+    tags: string[]; malware: string | null; threat_type: string | null; context: Record<string, unknown>;
+}
+
+const HEX = { md5: /^[a-f0-9]{32}$/, sha1: /^[a-f0-9]{40}$/, sha256: /^[a-f0-9]{64}$/ } as const;
+const DOMAIN = /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+const TECHNIQUE = /^T\d{4}(\.\d{3})?$/;
+
+/** The canonical form of an indicator, or null when the value isn't a valid indicator of that type. */
+export function normalizeIndicator(type: IndicatorType, raw: string): string | null {
+    const v = (raw ?? '').trim();
+    if (!v || v.length > 2048) return null;
+    switch (type) {
+        case 'ip': return isIP(v) ? v.toLowerCase() : null;
+        case 'domain': { const d = v.toLowerCase().replace(/\.$/, ''); return DOMAIN.test(d) ? d : null; }
+        case 'url': return /^(https?|ftp):\/\/[^\s]+$/i.test(v) ? v : null;
+        case 'cve': { const c = v.toUpperCase(); return CVE_RE.test(c) ? c : null; }
+        default: { const h = v.toLowerCase(); return HEX[type].test(h) ? h : null; }
+    }
+}
+const toIso = (v: unknown): string | null => {
+    if (typeof v !== 'string' || !v.trim()) return null;
+    const t = Date.parse(v.includes('T') || v.endsWith('Z') ? v : `${v.replace(' UTC', '').replace(' ', 'T')}Z`);
+    return Number.isNaN(t) ? null : new Date(t).toISOString();
+};
+const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').map((x) => x.slice(0, 80)).slice(0, 30) : []);
+
+// ── Adapters: each turns one feed's response into SourceRecords, or throws with the reason ────
+export function fromThreatFox(json: unknown): SourceRecord[] {
+    const j = json as { query_status?: string; data?: unknown };
+    if (j?.query_status === 'no_result') return [];
+    if (j?.query_status !== 'ok' || !Array.isArray(j.data)) throw new Error(`ThreatFox: ${j?.query_status ?? 'unexpected response'}`);
+    const map: Record<string, IndicatorType> = { 'ip:port': 'ip', domain: 'domain', url: 'url', md5_hash: 'md5', sha1_hash: 'sha1', sha256_hash: 'sha256' };
+    return (j.data as Record<string, unknown>[]).map((d) => {
+        const type = map[String(d.ioc_type)];
+        const value = type === 'ip' ? String(d.ioc ?? '').replace(/:\d+$/, '') : String(d.ioc ?? '');
+        const tags = strs(d.tags);
+        const conf = typeof d.confidence_level === 'number' && d.confidence_level >= 0 && d.confidence_level <= 100 ? d.confidence_level : null;
+        return {
+            type, value, source_ref: String(d.id ?? ''), confidence: conf, first_seen: toIso(d.first_seen), last_seen: toIso(d.last_seen) ?? toIso(d.first_seen),
+            tags, malware: typeof d.malware_printable === 'string' ? d.malware_printable.slice(0, 120) : null, threat_type: typeof d.threat_type === 'string' ? d.threat_type.slice(0, 60) : null,
+            context: { reporter: d.reporter ?? null, reference: d.reference ?? null, malware_alias: d.malware_alias ?? null, malpedia: d.malware_malpedia ?? null, port: type === 'ip' ? String(d.ioc ?? '').split(':')[1] ?? null : null, techniques: tags.filter((t) => TECHNIQUE.test(t)) },
+        } as SourceRecord;
+    }).filter((r) => r.type);
+}
+
+export function fromUrlhaus(json: unknown): SourceRecord[] {
+    const j = json as { query_status?: string; urls?: unknown };
+    if (j?.query_status === 'no_results') return [];
+    if (j?.query_status !== 'ok' || !Array.isArray(j.urls)) throw new Error(`URLhaus: ${j?.query_status ?? 'unexpected response'}`);
+    return (j.urls as Record<string, unknown>[]).map((u) => ({
+        type: 'url' as const, value: String(u.url ?? ''), source_ref: String(u.id ?? ''), confidence: null, first_seen: toIso(u.date_added), last_seen: toIso(u.date_added),
+        tags: strs(u.tags), malware: null, threat_type: typeof u.threat === 'string' ? u.threat.slice(0, 60) : null,
+        context: { url_status: u.url_status ?? null, host: u.host ?? null, reporter: u.reporter ?? null, reference: u.urlhaus_reference ?? null },
+    }));
+}
+
+export function fromFeodo(json: unknown): SourceRecord[] {
+    if (!Array.isArray(json)) throw new Error('Feodo Tracker: unexpected response');
+    return (json as Record<string, unknown>[]).map((e) => ({
+        type: 'ip' as const, value: String(e.ip_address ?? ''), source_ref: `${e.ip_address}:${e.port}`, confidence: null,
+        first_seen: toIso(e.first_seen), last_seen: toIso(e.last_online) ?? toIso(e.first_seen), tags: [], malware: typeof e.malware === 'string' ? e.malware.slice(0, 120) : null,
+        threat_type: 'botnet_cc', context: { port: e.port ?? null, status: e.status ?? null, as_name: e.as_name ?? null, country: e.country ?? null },
+    }));
+}
+
+export function fromKev(json: unknown): SourceRecord[] {
+    const kev = parseKev(json);
+    const items = (json as { vulnerabilities: Record<string, unknown>[] }).vulnerabilities;
+    const byId = new Map(items.map((v) => [String(v.cveID), v]));
+    return [...kev.entries()].map(([cve, k]) => {
+        const v = byId.get(cve) ?? {};
+        return {
+            type: 'cve' as const, value: cve, source_ref: cve, confidence: null, first_seen: k.date_added ? `${k.date_added}T00:00:00.000Z` : null, last_seen: k.date_added ? `${k.date_added}T00:00:00.000Z` : null,
+            tags: [], malware: null, threat_type: 'known_exploited_vulnerability',
+            context: { vendor: v.vendorProject ?? null, product: v.product ?? null, name: v.vulnerabilityName ?? null, required_action: k.required_action, due_date: k.due_date, ransomware: k.ransomware },
+        };
+    });
+}
+
+export const FEEDS: Record<string, { fetch: () => Promise<SourceRecord[]> }> = {
+    threatfox: { fetch: async () => {
+        const key = process.env.THREATFOX_API_KEY?.trim();
+        if (!key) throw new Error('THREATFOX_API_KEY is not set (abuse.ch Auth-Key)');
+        const r = await fetch('https://threatfox-api.abuse.ch/api/v1/', { method: 'POST', headers: { 'Auth-Key': key, 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'get_iocs', days: 1 }), signal: AbortSignal.timeout(60_000) });
+        if (!r.ok) throw new Error(`ThreatFox: HTTP ${r.status}`);
+        return fromThreatFox(await r.json());
+    } },
+    urlhaus: { fetch: async () => {
+        const key = process.env.THREATFOX_API_KEY?.trim();
+        if (!key) throw new Error('THREATFOX_API_KEY is not set (abuse.ch Auth-Key, shared by URLhaus)');
+        const r = await fetch('https://urlhaus-api.abuse.ch/v1/urls/recent/?limit=1000', { headers: { 'Auth-Key': key }, signal: AbortSignal.timeout(60_000) });
+        if (!r.ok) throw new Error(`URLhaus: HTTP ${r.status}`);
+        return fromUrlhaus(await r.json());
+    } },
+    feodo: { fetch: async () => {
+        const r = await fetch('https://feodotracker.abuse.ch/downloads/ipblocklist.json', { signal: AbortSignal.timeout(60_000) });
+        if (!r.ok) throw new Error(`Feodo Tracker: HTTP ${r.status}`);
+        return fromFeodo(await r.json());
+    } },
+    cisa_kev: { fetch: async () => {
+        const r = await fetch(KEV_URL, { signal: AbortSignal.timeout(60_000) });
+        if (!r.ok) throw new Error(`CISA KEV: HTTP ${r.status}`);
+        return fromKev(await r.json());
+    } },
+};
+
+/** A feed is stale when it has not succeeded for this long (runs every 6 h; KEV daily). */
+export const FEED_STALE_HOURS: Record<string, number> = { threatfox: 12, urlhaus: 12, feodo: 12, cisa_kev: 48 };
+
+export interface RunCounts { fetched: number; new: number; updated: number; duplicates: number; invalid: number }
+
+/** Stores one feed's records: new indicators, refreshed ones, and their provenance. */
+export async function storeRecords(feedId: string, records: SourceRecord[], validityDays: number | null): Promise<RunCounts> {
+    const supabase = getSupabase()!;
+    const counts: RunCounts = { fetched: records.length, new: 0, updated: 0, duplicates: 0, invalid: 0 };
+    const seen = new Set<string>();
+    const clean: (SourceRecord & { norm: string })[] = [];
+    for (const r of records) {
+        const norm = r.type ? normalizeIndicator(r.type, r.value) : null;
+        if (!norm || !r.source_ref) { counts.invalid++; continue; }
+        const k = `${r.type}|${norm}|${r.source_ref}`;
+        if (seen.has(k)) { counts.duplicates++; continue; }
+        seen.add(k);
+        clean.push({ ...r, norm });
+    }
+    const now = new Date().toISOString();
+    for (const type of [...new Set(clean.map((r) => r.type))]) {
+        const ofType = clean.filter((r) => r.type === type);
+        for (let i = 0; i < ofType.length; i += 200) {
+            const chunk = ofType.slice(i, i + 200);
+            const { data: existing, error } = await supabase.from('ti_indicators').select('id, value, max_confidence, tags, malware_families, threat_types, mitre_techniques, first_seen, last_seen, valid_until').eq('type', type).in('value', [...new Set(chunk.map((c) => c.norm))]);
+            if (error) throw new Error(`indicator read failed: ${error.message}`);
+            const byValue = new Map((existing ?? []).map((e) => [e.value as string, e]));
+            for (const r of chunk) {
+                const seenAt = r.last_seen ?? now;
+                const validUntil = validityDays ? new Date(Math.max(Date.parse(seenAt), Date.now()) + validityDays * 86_400_000).toISOString() : null;
+                const techniques = Array.isArray(r.context.techniques) ? (r.context.techniques as string[]) : [];
+                let ind = byValue.get(r.norm);
+                if (!ind) {
+                    const ins = await supabase.from('ti_indicators').insert({
+                        type, value: r.norm, first_seen: r.first_seen ?? now, last_seen: seenAt, valid_until: validUntil, status: 'active', max_confidence: r.confidence,
+                        tags: r.tags, malware_families: r.malware ? [r.malware] : [], threat_types: r.threat_type ? [r.threat_type] : [], mitre_techniques: techniques, source_count: 0,
+                    }).select('id, value, max_confidence, tags, malware_families, threat_types, mitre_techniques, first_seen, last_seen, valid_until').single();
+                    if (ins.error) throw new Error(`indicator insert failed: ${ins.error.message}`);
+                    ind = ins.data;
+                    byValue.set(r.norm, ind);
+                    counts.new++;
+                } else {
+                    const merge = (a: string[] | null, b: string[]) => [...new Set([...(a ?? []), ...b])].slice(0, 50);
+                    await supabase.from('ti_indicators').update({
+                        last_seen: Date.parse(seenAt) > Date.parse(ind.last_seen) ? seenAt : ind.last_seen, status: 'active',
+                        // the longest validity any source gives (none = no expiry)
+                        valid_until: validUntil === null || ind.valid_until === null ? null : (Date.parse(validUntil) > Date.parse(ind.valid_until) ? validUntil : ind.valid_until),
+                        max_confidence: r.confidence !== null ? Math.max(r.confidence, ind.max_confidence ?? 0) : ind.max_confidence,
+                        tags: merge(ind.tags, r.tags), malware_families: merge(ind.malware_families, r.malware ? [r.malware] : []),
+                        threat_types: merge(ind.threat_types, r.threat_type ? [r.threat_type] : []), mitre_techniques: merge(ind.mitre_techniques, techniques),
+                    }).eq('id', ind.id);
+                    counts.updated++;
+                }
+                const src = await supabase.from('ti_indicator_sources').upsert({
+                    indicator_id: ind!.id, feed_id: feedId, source_ref: r.source_ref.slice(0, 200), confidence: r.confidence, first_seen: r.first_seen, last_seen: seenAt,
+                    context: { ...r.context, tags: r.tags, malware: r.malware, threat_type: r.threat_type },
+                }, { onConflict: 'indicator_id,feed_id,source_ref' });
+                if (src.error) throw new Error(`provenance write failed: ${src.error.message}`);
+            }
+        }
+    }
+    // Recount sources for touched indicators.
+    const touched = [...new Set(clean.map((r) => r.norm))];
+    for (let i = 0; i < touched.length; i += 200) {
+        const { data: inds } = await supabase.from('ti_indicators').select('id').in('value', touched.slice(i, i + 200));
+        for (const ind of inds ?? []) {
+            const { count } = await supabase.from('ti_indicator_sources').select('id', { count: 'exact', head: true }).eq('indicator_id', ind.id);
+            await supabase.from('ti_indicators').update({ source_count: count ?? 0 }).eq('id', ind.id);
+        }
+    }
+    return counts;
+}
+
+/** Runs one feed end to end and records the outcome (ok or failed with the reason). */
+export async function runFeed(feedId: string, fetcher = FEEDS[feedId]?.fetch): Promise<{ status: 'ok' | 'failed'; counts?: RunCounts; error?: string }> {
+    const supabase = getSupabase();
+    if (!supabase) return { status: 'failed', error: 'database not configured' };
+    const { data: feed } = await supabase.from('ti_feeds').select('id, enabled, validity_days').eq('id', feedId).maybeSingle();
+    if (!feed || !fetcher) return { status: 'failed', error: 'unknown feed' };
+    const started = new Date().toISOString();
+    const run = await supabase.from('ti_feed_runs').insert({ feed_id: feedId, started_at: started, status: 'running' }).select('id').single();
+    try {
+        const counts = await storeRecords(feedId, await fetcher(), feed.validity_days);
+        if (feedId === 'cisa_kev') await syncKevToCveIntel();
+        const finished = new Date().toISOString();
+        await supabase.from('ti_feed_runs').update({ status: 'ok', finished_at: finished, ...counts }).eq('id', run.data?.id);
+        await supabase.from('ti_feeds').update({ last_run_at: finished, last_success_at: finished, last_error: null, last_counts: counts }).eq('id', feedId);
+        return { status: 'ok', counts };
+    } catch (err) {
+        const msg = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+        await supabase.from('ti_feed_runs').update({ status: 'failed', finished_at: new Date().toISOString(), error: msg }).eq('id', run.data?.id);
+        await supabase.from('ti_feeds').update({ last_run_at: new Date().toISOString(), last_error: msg }).eq('id', feedId);
+        return { status: 'failed', error: msg };
+    }
+}
+
+/** KEV indicators also mark the shared CVE intelligence used by VMS risk scoring. */
+async function syncKevToCveIntel(): Promise<void> {
+    const supabase = getSupabase()!;
+    const { data: tracked } = await supabase.from('cve_intel').select('cve_id').limit(20_000);
+    const ids = (tracked ?? []).map((t) => t.cve_id as string);
+    for (let i = 0; i < ids.length; i += 200) {
+        const { data: kev } = await supabase.from('ti_indicators').select('value').eq('type', 'cve').in('value', ids.slice(i, i + 200));
+        const set = new Set((kev ?? []).map((k) => k.value));
+        for (const id of ids.slice(i, i + 200)) await supabase.from('cve_intel').update({ kev: set.has(id), kev_checked_at: new Date().toISOString() }).eq('cve_id', id);
+    }
+}
+
+export async function expireIndicators(): Promise<number> {
+    const supabase = getSupabase();
+    if (!supabase) return 0;
+    const { data } = await supabase.from('ti_indicators').update({ status: 'expired' }).eq('status', 'active').lt('valid_until', new Date().toISOString()).select('id');
+    return (data ?? []).length;
+}
+
+// ── Correlation ──────────────────────────────────────────────────────────────────────────────
+type Candidate = { type: IndicatorType; value: string; entity_type: 'alert' | 'asset' | 'finding' | 'case'; entity_id: string; field: string };
+
+/** Indicator-shaped values in a stored alert (addresses, URLs, queried names, file hashes). */
+export function alertCandidates(a: { id: string; agent_ip?: string | null; raw?: unknown; raw_truncated?: boolean | null }): Candidate[] {
+    const out: Candidate[] = [];
+    const add = (type: IndicatorType, v: unknown, field: string) => {
+        const n = typeof v === 'string' ? normalizeIndicator(type, v) : null;
+        if (n) out.push({ type, value: n, entity_type: 'alert', entity_id: a.id, field });
+    };
+    if (a.raw_truncated || !a.raw || typeof a.raw !== 'object') return out;
+    const raw = a.raw as Record<string, unknown>;
+    const data = (raw.data ?? {}) as Record<string, unknown>;
+    const win = ((data.win as Record<string, unknown> | undefined)?.eventdata ?? {}) as Record<string, unknown>;
+    const sys = (raw.syscheck ?? {}) as Record<string, unknown>;
+    add('ip', data.srcip, 'data.srcip'); add('ip', data.dstip, 'data.dstip');
+    add('ip', win.sourceIp, 'sysmon.sourceIp'); add('ip', win.destinationIp, 'sysmon.destinationIp');
+    add('url', data.url, 'data.url'); add('domain', win.queryName, 'sysmon.queryName'); add('domain', data.hostname, 'data.hostname');
+    add('md5', sys.md5_after, 'syscheck.md5'); add('sha1', sys.sha1_after, 'syscheck.sha1'); add('sha256', sys.sha256_after, 'syscheck.sha256');
+    if (typeof win.hashes === 'string') for (const part of win.hashes.split(',')) {
+        const [k, v] = part.split('=');
+        if (k === 'MD5') add('md5', v, 'sysmon.hashes'); if (k === 'SHA1') add('sha1', v, 'sysmon.hashes'); if (k === 'SHA256') add('sha256', v, 'sysmon.hashes');
+    }
+    return out;
+}
+
+/** Finds active indicators in an organisation's new alerts and its assets, findings and cases. */
+export async function correlateOrg(org: string): Promise<{ candidates: number; matches_new: number; matches_seen: number }> {
+    const supabase = getSupabase()!;
+    const out = { candidates: 0, matches_new: 0, matches_seen: 0 };
+    const { data: st } = await supabase.from('ti_correlation_state').select('last_alert_seen').eq('org_id', org).maybeSingle();
+    const since = st?.last_alert_seen ?? new Date(Date.now() - 7 * 86_400_000).toISOString();
+    const cands: Candidate[] = [];
+    const { data: alerts } = await supabase.from('alerts').select('id, agent_ip, raw, raw_truncated, received_at').eq('org_id', org).gt('received_at', since).order('received_at', { ascending: true }).limit(5000);
+    for (const a of alerts ?? []) cands.push(...alertCandidates(a));
+    const lastAlert = alerts?.length ? alerts[alerts.length - 1].received_at : since;
+    const { data: assets } = await supabase.from('vms_assets').select('id, asset_type, value, ips').eq('org_id', org).eq('status', 'active').limit(5000);
+    for (const a of assets ?? []) {
+        for (const ip of a.ips ?? []) { const n = normalizeIndicator('ip', ip); if (n) cands.push({ type: 'ip', value: n, entity_type: 'asset', entity_id: a.id, field: 'ips' }); }
+        if (a.asset_type === 'host') { const n = normalizeIndicator('domain', a.value); if (n) cands.push({ type: 'domain', value: n, entity_type: 'asset', entity_id: a.id, field: 'hostname' }); }
+    }
+    const { data: findings } = await supabase.from('vms_findings').select('id, cve_ids').eq('org_id', org).in('status', ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened']).limit(10000);
+    for (const f of findings ?? []) for (const c of f.cve_ids ?? []) cands.push({ type: 'cve', value: c, entity_type: 'finding', entity_id: f.id, field: 'cve_ids' });
+    const { data: cases } = await supabase.from('cases').select('id, source_ip').eq('org_id', org).neq('status', 'resolved').limit(2000);
+    for (const c of cases ?? []) { const n = c.source_ip ? normalizeIndicator('ip', c.source_ip) : null; if (n) cands.push({ type: 'ip', value: n, entity_type: 'case', entity_id: c.id, field: 'source_ip' }); }
+    out.candidates = cands.length;
+
+    const now = new Date().toISOString();
+    for (const type of [...new Set(cands.map((c) => c.type))]) {
+        const values = [...new Set(cands.filter((c) => c.type === type).map((c) => c.value))];
+        for (let i = 0; i < values.length; i += 200) {
+            const { data: inds } = await supabase.from('ti_indicators').select('id, value').eq('type', type).eq('status', 'active').in('value', values.slice(i, i + 200));
+            const byVal = new Map((inds ?? []).map((x) => [x.value as string, x.id as string]));
+            for (const c of cands.filter((x) => x.type === type && byVal.has(x.value))) {
+                const indicatorId = byVal.get(c.value)!;
+                const { data: ex } = await supabase.from('ti_matches').select('id').eq('org_id', org).eq('indicator_id', indicatorId).eq('entity_type', c.entity_type).eq('entity_id', c.entity_id).maybeSingle();
+                if (ex) { await supabase.from('ti_matches').update({ last_matched_at: now }).eq('id', ex.id); out.matches_seen++; }
+                else { await supabase.from('ti_matches').insert({ org_id: org, indicator_id: indicatorId, entity_type: c.entity_type, entity_id: c.entity_id, matched_field: c.field, matched_value: c.value }); out.matches_new++; }
+            }
+        }
+    }
+    await supabase.from('ti_correlation_state').upsert({ org_id: org, last_alert_seen: lastAlert, last_run_at: now, last_result: out }, { onConflict: 'org_id' });
+    return out;
+}

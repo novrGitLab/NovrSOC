@@ -36,6 +36,7 @@ import aiRouter from './routes/ai';
 import vmsRouter from './routes/vms';
 import vmsWorkerRouter from './routes/vmsWorker';
 import vmsFindingsRouter from './routes/vmsFindings';
+import threatInfoRouter from './routes/threatInfo';
 import wazuhGroupMapRouter from './routes/wazuhGroupMap';
 import threatManagementRouter from './routes/threatManagement';
 import publicRouter from './routes/public';
@@ -64,6 +65,7 @@ import { startStellarPushJob } from './jobs/stellarPush';
 import { startAutoCaseJob } from './jobs/autoCase';
 import { startVmsMaintenanceJob } from './jobs/vmsMaintenance';
 import { startVmsIntelJob } from './jobs/vmsIntelJob';
+import { startThreatInfoJob } from './jobs/threatInfoJob';
 import { announceJobPolicy } from './lib/runtimeEnv';
 import { announceVerificationSecret } from './services/emailsec/verification';
 import platformRouter from './routes/platform';
@@ -337,6 +339,7 @@ app.use('/api/ai', requireAuth, aiRouter);
 // Vulnerability Management (routes/vms.ts) — attack surface, scope, scans.
 app.use('/api/vms', requireAuth, vmsRouter);
 app.use('/api/vms', requireAuth, vmsFindingsRouter); // findings, remediation (phase P5)
+app.use('/api/ti', requireAuth, threatInfoRouter); // Threat Information System (phase P6)
 // Security Assessment: posture from real case data.
 app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
 app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);
@@ -424,4 +427,6 @@ if (announceJobPolicy()) {
     startVmsMaintenanceJob();
     // CVE intelligence (KEV, EPSS, NVD) and the Wazuh vulnerability sync — jobs/vmsIntelJob.ts.
     startVmsIntelJob();
+    // Threat feeds (abuse.ch, CISA KEV), expiry and correlation — jobs/threatInfoJob.ts.
+    startThreatInfoJob();
 }

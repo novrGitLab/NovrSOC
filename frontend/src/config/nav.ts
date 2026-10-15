@@ -22,7 +22,7 @@ import {
     Mail, MessageSquare, ShieldAlert, Activity, Zap, Siren,
     HardDrive, BarChart, CreditCard, Settings, BookOpen, FileText, ScrollText,
     ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor,
-    Droplets, Wifi, HeartPulse, GraduationCap, Swords, Truck, Wheat, Factory, Mountain, KeyRound,
+    Target, Fingerprint, Droplets, Wifi, HeartPulse, GraduationCap, Swords, Truck, Wheat, Factory, Mountain, KeyRound,
     type LucideIcon,
 } from 'lucide-react';
 import type { NavGroup, NavItem, NavRole } from '@/components/layout/Sidebar';
@@ -55,6 +55,7 @@ const MANAGER_PLUS_EXEC: NavRole[] = ['super_admin', 'soc_manager', 'executive']
 const MANAGER_ONLY: NavRole[] = ['super_admin', 'soc_manager'];
 const SUPER_ADMIN: NavRole[] = ['super_admin'];
 // VMS is readable by executives too (their organisation's attack surface and risk).
+/** VMS_READ also gates the Threat Information System: the backend's vms:read and intel:read go to the same roles. */
 const VMS_READ: NavRole[] = ['super_admin', 'soc_manager', 'analyst', 'executive'];
 
 const CNII_SECTORS: [string, string, LucideIcon][] = [
@@ -112,8 +113,12 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         ],
     },
     {
-        section: 'Threat Intelligence', collapsible: true, icon: Crosshair, groupLabel: 'Threat Intelligence',
+        section: 'Threat Information System', collapsible: true, icon: Crosshair, groupLabel: 'Threat Information System',
         items: [
+            { id: 'ti-overview', label: 'Overview', href: '/admin/ti', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Crosshair },
+            { id: 'ti-matches', label: 'Matches', href: '/admin/ti/matches', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Target },
+            { id: 'ti-indicators', label: 'Indicators', href: '/admin/ti/indicators', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Fingerprint },
+            { id: 'ti-kev', label: 'Known Exploited CVEs', href: '/admin/ti/kev', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: ShieldAlert },
             { id: 'nigeria-threat-map', label: 'Nigeria Threat Map', href: '/admin/threat/nigeria', domain: 'threat-intel', status: 'PARTIAL', roles: NOT_EXEC, icon: Map },
             { id: 'ioc-lookup', label: 'IOC Lookup', href: '/admin/threat/cti', domain: 'threat-intel', status: 'PARTIAL', roles: NOT_EXEC, icon: Crosshair },
             { id: 'live-ioc', label: 'Live IOC Feed', href: '/admin/threat/live-ioc', domain: 'threat-intel', status: 'WORKING', roles: NOT_EXEC, icon: Radio },

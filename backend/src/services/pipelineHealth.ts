@@ -7,6 +7,7 @@ import { getSupabase } from './geoEnrichment';
 import { pushConfig } from '../jobs/stellarPush';
 import { autoCaseConfig } from '../jobs/autoCase';
 import { readAuditLog } from '../lib/audit';
+import { FEED_STALE_HOURS } from './threatInfo';
 
 export type PipelineStatus = 'up' | 'degraded' | 'down' | 'off';
 export interface PipelineCheck { name: string; status: PipelineStatus; detail: string }
@@ -64,5 +65,18 @@ export async function pipelineChecks(): Promise<PipelineCheck[]> {
 
     const audit = await readAuditLog(1);
     out.push({ name: 'Audit log', status: audit.source === 'database' ? 'up' : 'degraded', detail: audit.source === 'database' ? 'Stored durably' : 'In memory only: lost on restart' });
+
+    // Threat feeds (phase P6): each enabled feed's last success and last error.
+    const feeds = await supabase.from('ti_feeds').select('id, name, enabled, last_success_at, last_error');
+    if (feeds.error) out.push({ name: 'Threat feeds', status: 'off', detail: 'Threat Information System tables not created yet' });
+    else {
+        const on = (feeds.data ?? []).filter((f) => f.enabled);
+        const bad = on.filter((f) => f.last_error || !f.last_success_at || Date.now() - Date.parse(f.last_success_at) > (FEED_STALE_HOURS[f.id] ?? 24) * 3_600_000);
+        out.push({
+            name: 'Threat feeds',
+            status: on.length === 0 ? 'off' : bad.length === 0 ? 'up' : bad.length === on.length ? 'down' : 'degraded',
+            detail: on.length === 0 ? 'No feed enabled' : bad.length === 0 ? `${on.length} feed(s) current` : `Failing or stale: ${bad.map((f) => `${f.id}${f.last_error ? ` (${String(f.last_error).slice(0, 60)})` : ''}`).join(', ')}`,
+        });
+    }
     return out;
 }

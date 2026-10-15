@@ -29,6 +29,10 @@ export const PERMISSIONS = [
     'vms:scan',
     'vms:scope',
     'vms:manage',
+    // Threat Information System (phase P6): read intelligence and matches; review, give verdicts,
+    // promote to cases and run feeds.
+    'intel:read',
+    'intel:manage',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -40,9 +44,9 @@ export type Permission = (typeof PERMISSIONS)[number];
 export const ROLE_PERMISSIONS: Readonly<Record<UserRole, readonly Permission[]>> = {
     super_admin: PERMISSIONS,
     soc_manager: PERMISSIONS,
-    analyst: ['alerts:read', 'alerts:triage', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write', 'vms:read', 'vms:scan', 'vms:manage'],
+    analyst: ['alerts:read', 'alerts:triage', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write', 'vms:read', 'vms:scan', 'vms:manage', 'intel:read', 'intel:manage'],
     // Executives see their organisation's attack surface and risk; they change nothing.
-    executive: ['vms:read'],
+    executive: ['vms:read', 'intel:read'],
     portal_user: [],
 };
 

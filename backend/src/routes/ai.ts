@@ -19,6 +19,7 @@ import { dbErrorMessage, isUuid } from '../services/cases';
 import { aiHealth, generate } from '../services/ai';
 import { aiPurpose, aiPurposeNames } from '../services/aiPurposes';
 import '../services/aiPurposesVms'; // registers the VMS purposes
+import '../services/aiPurposesTi'; // registers the Threat Information System purposes
 import { logAudit } from '../lib/audit';
 
 const router = Router();

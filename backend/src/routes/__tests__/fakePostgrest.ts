@@ -84,6 +84,12 @@ function test(row: Row, col: string, opValue: string): boolean {
             r = Array.isArray(v) && want.every((w) => (v as unknown[]).map(String).includes(w));
             break;
         }
+        // Array overlap: col=ov.{a,b} — the row's array shares at least one element.
+        case 'ov': {
+            const want = val.replace(/^\{|\}$/g, '').split(',').map((x) => x.replace(/^"|"$/g, '')).filter(Boolean);
+            r = Array.isArray(v) && want.some((w) => (v as unknown[]).map(String).includes(w));
+            break;
+        }
         default: throw new Error(`fakePostgrest: unsupported operator ${op}`);
     }
     return neg ? !r : r;
