@@ -217,7 +217,7 @@ test('queue upkeep: a silent worker\'s job is requeued once, then failed; expire
     await worker('/claim', { worker_id: 'w1', kinds: ['discovery'] });
     job.heartbeat_at = '2000-01-01T00:00:00Z';
     assert.equal((await runVmsMaintenance()).failed, 1);
-    assert.match(String(job.error), /stopped responding/);
+    assert.match(String(job.error), /No heartbeat or completion from the scanner worker/);
     await http('POST', '/api/vms/scans', AN, { scope_id: dom.id, kind: 'discovery', targets: ['www.example.test'] });
     db.tables.vms_scopes[0].expires_at = '2000-01-01T00:00:00Z';
     assert.equal((await runVmsMaintenance()).cancelled, 1);
