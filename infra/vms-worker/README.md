@@ -43,6 +43,31 @@ journalctl -u novrsoc-vms-worker -f
 
 Set the **same** `VMS_WORKER_TOKEN` on Railway; it must be at least 32 characters (`openssl rand -hex 32`). While it is unset, the backend refuses every worker call.
 
+### Check the connection
+
+```bash
+sudo -u novrsoc-vms bash -c 'set -a; . /opt/novrsoc-vms/worker.env; set +a; python3 /opt/novrsoc-vms/worker.py --check'
+```
+
+This sends one heartbeat and claims nothing. It prints `OK: the backend accepted worker …` with the number of queued jobs and which tools are installed, or `FAIL:` with the reason:
+
+| Message | Meaning |
+|---|---|
+| `rejected the worker token (HTTP 401)` | `VMS_WORKER_TOKEN` here is not the value on Railway |
+| `endpoint not found (HTTP 404)` | `NOVRSOC_API_URL` is wrong, or the backend predates this worker version |
+| `not ready for workers (HTTP 503)` | Railway has no valid `VMS_WORKER_TOKEN`, or the presence SQL (`sql/2026-10-18_p10_vms_worker_presence.sql`) is not applied |
+| `cannot reach the backend` | DNS, firewall or outbound HTTPS from this host |
+
+### What "connected" means
+
+The worker sends its own heartbeat every `VMS_PRESENCE_SECONDS` (60) and polls for jobs every `VMS_POLL_SECONDS` (20). The backend records every request that carries the right token. The dashboard shows the worker as connected while one arrived in the last 3 minutes. A running process that cannot authenticate never shows as connected.
+
+The log says `connected: …` when the backend first accepts the worker. Each failure is explained once (and again every 10 minutes while it persists). Every `VMS_STATUS_LOG_SECONDS` (600) it writes a status line:
+
+```
+status: connected; 30 poll(s), 0 job(s) in the last 10 min; backend reports 0 queued job(s) for this worker's kinds
+```
+
 ## 4. What it runs
 
 | Job | Tools | What touches the target |

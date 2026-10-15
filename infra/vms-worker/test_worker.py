@@ -129,5 +129,89 @@ class SendFiltersScope(unittest.TestCase):
         self.assertEqual(r.summary['dropped_by_worker'], 1)
 
 
+class Presence(unittest.TestCase):
+    """Phase P10: failures explained once and without the token, connection state logged on change,
+    a periodic status line, and --check that claims nothing."""
+
+    SECRET = 's' * 40
+
+    def setUp(self):
+        self._token, self._api = worker.TOKEN, worker.API
+        worker.TOKEN, worker.API = self.SECRET, 'https://backend.example.test'
+
+    def tearDown(self):
+        worker.TOKEN, worker.API = self._token, self._api
+
+    def test_each_failure_is_explained_without_the_token(self):
+        cases = {
+            401: 'VMS_WORKER_TOKEN on this host is not the value set on Railway',
+            404: 'NOVRSOC_API_URL is wrong, or the backend is not running a version with this endpoint',
+            400: 'check VMS_WORKER_ID and VMS_WORKER_KINDS',
+            503: 'not ready for workers',
+            None: 'cannot reach the backend',
+        }
+        for status, phrase in cases.items():
+            msg = str(worker.ApiError('/claim', status, 'detail'))
+            self.assertIn(phrase, msg, status)
+            self.assertNotIn(self.SECRET, msg)
+        self.assertIn('https://backend.example.test/api/vms/worker/claim', str(worker.ApiError('/claim', 404, '')))
+
+    def test_state_changes_are_logged_once_and_repeats_are_throttled(self):
+        now = [0.0]
+        conn = worker.ConnectionLog(clock=lambda: now[0])
+        err = worker.ApiError('/claim', 401, 'Invalid or missing worker token')
+        with self.assertLogs('vms-worker', level='INFO') as cm:
+            conn.fail('job polling', err)
+            conn.fail('job polling', err)            # same error, same window: silent
+            now[0] += worker.ERROR_REPEAT_SECONDS
+            conn.fail('job polling', err)            # repeated after the window
+            conn.ok('job polling')
+            conn.ok('job polling')                   # already connected: silent
+        lines = [r.getMessage() for r in cm.records]
+        self.assertEqual(sum('job polling failed' in x for x in lines), 2)
+        self.assertEqual(sum(x.startswith('connected:') for x in lines), 1)
+        self.assertIn('again', lines[-1])
+        self.assertFalse(any(self.SECRET in x for x in lines))
+
+    def test_status_line_reports_polls_jobs_and_queue(self):
+        now = [0.0]
+        conn = worker.ConnectionLog(clock=lambda: now[0])
+        conn.ok('job polling')
+        for got in (False, False, True):
+            conn.poll(got)
+        conn.queued = 0
+        self.assertIsNone(conn.status_due(), 'not before the interval')
+        now[0] += worker.STATUS_LOG_SECONDS
+        line = conn.status_due()
+        self.assertIn('status: connected; 3 poll(s), 1 job(s)', line)
+        self.assertIn('0 queued job(s)', line)
+        self.assertEqual((conn.polls, conn.jobs), (0, 0), 'counters reset per window')
+
+    def test_check_sends_one_heartbeat_and_never_claims(self):
+        calls = []
+        real = worker.Api
+
+        class OkApi:
+            def post(self, path, body, timeout=60):
+                calls.append((path, body))
+                return {'ok': True, 'server_time': '2026-10-15T18:40:00Z', 'queued': 2}
+
+        class RejectedApi:
+            def post(self, path, body, timeout=60):
+                raise worker.ApiError(path, 401, 'Invalid or missing worker token')
+
+        try:
+            worker.Api = OkApi
+            self.assertEqual(worker.check(), 0)
+            self.assertEqual([c[0] for c in calls], ['/heartbeat'])
+            body = calls[0][1]
+            self.assertEqual((body['worker_id'], body['kinds'], body['version']), (worker.WORKER_ID, worker.KINDS, worker.VERSION))
+            self.assertEqual(set(body['tools']), {'subfinder', 'dnsx', 'httpx', 'nmap', 'nuclei', 'openvas'})
+            worker.Api = RejectedApi
+            self.assertEqual(worker.check(), 1)
+        finally:
+            worker.Api = real
+
+
 if __name__ == '__main__':
     unittest.main()

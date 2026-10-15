@@ -25,7 +25,9 @@ import { requirePermission, requestOrg } from '../lib/permissions';
 import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid } from '../services/cases';
 import { logAudit } from '../lib/audit';
-import { validateScopeValue, parseTarget, coveringScope, PASSIVE_RUNNER_ID, type ScopeEntry, type Activity } from '../lib/vmsScope';
+import { loadScannerStatus } from '../services/vmsWorkers';
+import { isStaffRole } from '../lib/resolveOrg';
+import { validateScopeValue, parseTarget, coveringScope, type ScopeEntry, type Activity } from '../lib/vmsScope';
 
 const router = Router();
 const MAX_SCOPE_DAYS = 400;
@@ -51,22 +53,26 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
     const count = (q: PromiseLike<{ count: number | null; error: { message: string } | null }>) => q;
     const assets = () => supabase.from('vms_assets').select('id', { count: 'exact', head: true }).eq('org_id', org);
     const ev = (e: string) => supabase.from('vms_asset_events').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('event', e).gte('at', days(7));
-    const [active, internet, gone, services, newA, changedA, goneA, newSvc, scans, scopes, lastWorker] = await Promise.all([
+    const [active, internet, gone, services, newA, changedA, goneA, newSvc, scans, scopes, scanner] = await Promise.all([
         count(assets().eq('status', 'active')), count(assets().eq('status', 'active').eq('exposure', 'internet')), count(assets().eq('status', 'gone')),
         count(supabase.from('vms_services').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('status', 'active')),
         count(ev('asset_new')), count(ev('asset_changed')), count(ev('asset_gone')), count(ev('service_new')),
         supabase.from('vms_scan_jobs').select('id, kind, status, requested_at, finished_at, error, summary, progress').eq('org_id', org).order('requested_at', { ascending: false }).limit(10),
         supabase.from('vms_scopes').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('status', 'active').gt('expires_at', new Date().toISOString()),
-        supabase.from('vms_scan_jobs').select('heartbeat_at').not('heartbeat_at', 'is', null).neq('worker_id', PASSIVE_RUNNER_ID).order('heartbeat_at', { ascending: false }).limit(1).maybeSingle(),
+        loadScannerStatus(),
     ]);
     if (active.error) { fail(res, active.error); return; }
-    const lastBeat = lastWorker.data?.heartbeat_at ?? null;
     res.json({
         assets: { active: active.count ?? 0, internet_facing: internet.count ?? 0, gone: gone.count ?? 0, open_services: services.count ?? 0 },
         last_7_days: { new_assets: newA.count ?? 0, changed_assets: changedA.count ?? 0, gone_assets: goneA.count ?? 0, new_services: newSvc.count ?? 0 },
         active_scopes: scopes.count ?? 0,
         recent_scans: scans.data ?? [],
-        worker: { last_heartbeat_at: lastBeat, seen_recently: !!lastBeat && Date.now() - Date.parse(lastBeat) < WORKER_STALE_MINUTES * 60_000 },
+        // Scanner workers are shared infrastructure, not tenant data: client roles get the state only.
+        worker: {
+            state: scanner.state, source: scanner.source, last_heartbeat_at: scanner.last_seen_at, seen_recently: scanner.state === 'online',
+            online_workers: scanner.online_workers, online_window_seconds: scanner.online_window_seconds,
+            ...(isStaffRole(req.user?.role) ? { workers: scanner.workers.map((w) => ({ worker_id: w.worker_id, online: w.online, kinds: w.kinds ?? [], tools: w.tools ?? {}, version: w.version, last_seen_at: w.last_seen_at, last_heartbeat_at: w.last_heartbeat_at, last_claim_at: w.last_claim_at, last_job_at: w.last_job_at })) } : {}),
+        },
     });
 });
 

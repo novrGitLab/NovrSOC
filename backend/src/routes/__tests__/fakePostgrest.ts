@@ -153,6 +153,8 @@ export async function startFakePostgrest(tables: Record<string, Row[]> = {}, rel
             if (!m) { send(404, { message: 'not found' }); return; }
             const table = m[1];
             log.push(`${req.method} ${table}?${decodeURIComponent(url.searchParams.toString())}`);
+            // A table set to null stands for one whose migration has not run: answer as PostgREST does.
+            if ((tables as Record<string, Row[] | null>)[table] === null) { send(404, { code: 'PGRST205', message: `Could not find the table 'public.${table}' in the schema cache` }); return; }
             const rows = (tables[table] ??= []);
             const prefer = String(req.headers.prefer ?? '');
             const wantsObject = String(req.headers.accept ?? '').includes('vnd.pgrst.object+json');
