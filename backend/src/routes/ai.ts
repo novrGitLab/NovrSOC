@@ -20,6 +20,7 @@ import { aiHealth, generate } from '../services/ai';
 import { aiPurpose, aiPurposeNames } from '../services/aiPurposes';
 import '../services/aiPurposesVms'; // registers the VMS purposes
 import '../services/aiPurposesTi'; // registers the Threat Information System purposes
+import '../services/aiPurposesCnii'; // registers the CNII sector briefing (phase P9)
 import { logAudit } from '../lib/audit';
 
 const router = Router();

@@ -54,11 +54,14 @@ async function buildAsset(org: string, id: string): Promise<BuiltContext | null>
     const [svcs, techs, findings] = await Promise.all([
         supabase.from('vms_services').select('id, port, protocol, service, product, version, status').eq('asset_id', a.id).limit(100),
         supabase.from('vms_technologies').select('id, name, version').eq('asset_id', a.id).limit(100),
-        supabase.from('vms_findings').select('id, title, cve_ids, scanner_severity, priority, risk_score, status, source_class').eq('asset_id', a.id).eq('org_id', org).in('status', ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened']).order('risk_score', { ascending: false }).limit(40),
+        supabase.from('vms_findings').select('id, title, cve_ids, scanner_severity, priority, risk_score, status, source_class, evidence_class').eq('asset_id', a.id).eq('org_id', org).in('status', ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened']).order('risk_score', { ascending: false }).limit(40),
     ]);
     for (const s of svcs.data ?? []) push(records, refs, 'service', s.id, s);
     for (const t of techs.data ?? []) push(records, refs, 'technology', t.id, t);
     for (const f of findings.data ?? []) push(records, refs, 'finding', f.id, f, f.title);
+    // Phase P9: what passive sources reported about the asset (third-party claims, with confidence).
+    const { data: obs } = await supabase.from('vms_observations').select('id, source, kind, key, confidence, first_seen, last_seen, seen_count').eq('asset_id', a.id).eq('org_id', org).order('last_seen', { ascending: false }).limit(60);
+    for (const o of obs ?? []) push(records, refs, 'observation', o.id, o);
     return { records, refs };
 }
 
@@ -75,7 +78,7 @@ const Step = z.object({
 
 registerAiPurpose('finding_explanation', {
     permission: 'vms:read', subjectType: 'finding', build: buildFinding,
-    task: 'Explain this vulnerability in plain language for the asset owner: what it is, what an attacker could do with it on THIS asset (use its exposure, services and criticality), whether there is evidence of exploitation in the wild (only from the CVE records: KEV and EPSS), and why it has its priority. Say clearly what is unknown.',
+    task: 'Explain this vulnerability in plain language for the asset owner: what it is, what an attacker could do with it on THIS asset (use its exposure, services and criticality), whether there is evidence of exploitation in the wild (only from the CVE records: KEV and EPSS), and why it has its priority. Say clearly what is unknown. Findings whose evidence_class is version_match or intelligence are unconfirmed third-party claims: say so, never state that the asset is vulnerable on that basis, and make confirming them with an authorised scan the first step.',
     schema: z.object({
         plain_summary: z.string(),
         what_an_attacker_could_do: z.string(),
@@ -90,7 +93,7 @@ registerAiPurpose('finding_explanation', {
 
 registerAiPurpose('remediation_plan', {
     permission: 'vms:read', subjectType: 'finding', build: buildFinding,
-    task: 'Propose a remediation plan for this finding: concrete patching or configuration steps for the software and version the evidence shows, compensating controls if a fix must wait, how to verify the fix (the platform verifies with a rescan), who should own each step (by role), and proposed deadlines consistent with the finding\'s priority. Mark steps that change production as needing change approval. These are proposals for people to accept; do not state that anything has been done.',
+    task: 'Propose a remediation plan for this finding: concrete patching or configuration steps for the software and version the evidence shows, compensating controls if a fix must wait, how to verify the fix (the platform verifies with a rescan), who should own each step (by role), and proposed deadlines consistent with the finding\'s priority. Mark steps that change production as needing change approval. These are proposals for people to accept; do not state that anything has been done. Findings whose evidence_class is version_match or intelligence are unconfirmed third-party claims: say so, never state that the asset is vulnerable on that basis, and make confirming them with an authorised scan the first step.',
     schema: z.object({
         summary: z.string(),
         priority_rationale: z.string(),
@@ -117,7 +120,7 @@ registerAiPurpose('rescan_interpretation', {
 
 registerAiPurpose('asset_assessment', {
     permission: 'vms:read', subjectType: 'asset', build: buildAsset,
-    task: 'Assess this asset\'s exposure for its owner: what it exposes (services, technologies), its most important open findings and why, likely attack paths using only what the records show, and the three to five actions that would reduce its risk most.',
+    task: 'Assess this asset\'s exposure for its owner: what it exposes (services, technologies), its most important open findings and why, likely attack paths using only what the records show, and the three to five actions that would reduce its risk most. Observations are what third-party sources reported, with their confidence; they are not our own scan results. Findings whose evidence_class is version_match or intelligence are unconfirmed third-party claims: say so, never state that the asset is vulnerable on that basis, and make confirming them with an authorised scan the first step.',
     schema: z.object({
         summary: z.string(),
         exposure: z.string(),
