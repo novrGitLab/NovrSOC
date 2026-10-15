@@ -9,6 +9,8 @@ import { autoCaseConfig } from '../jobs/autoCase';
 import { readAuditLog } from '../lib/audit';
 import { FEED_STALE_HOURS } from './threatInfo';
 import { PASSIVE_RUNNER_ID } from '../lib/vmsScope';
+import { spiderfootConfigured } from '../lib/spiderfoot';
+import { openctiConfigured } from '../lib/opencti';
 
 const H = 3_600_000;
 
@@ -82,6 +84,7 @@ export async function pipelineChecks(): Promise<PipelineCheck[]> {
         });
     }
     out.push(...await vmsChecks());
+    out.push(...await cniiChecks());
     return out;
 }
 
@@ -129,5 +132,52 @@ export async function vmsChecks(): Promise<PipelineCheck[]> {
         const stale = (wz.data ?? []).filter((x) => !x.last_synced_at || Date.now() - Date.parse(x.last_synced_at) > 3 * H);
         out.push({ name: 'Wazuh vulnerability sync', status: stale.length ? 'degraded' : 'up', detail: stale.length ? `Not synced in 3 h: ${stale.map((x) => x.org_id).join(', ')}` : `${(wz.data ?? []).length} organisation(s) synced` });
     }
+    return out;
+}
+
+/**
+ * True when a URL would carry credentials in clear text across a network: http:// to anything but
+ * loopback or a private (RFC 1918) address.
+ */
+export function plaintextTransport(url: string | undefined): boolean {
+    if (!url) return false;
+    let u: URL;
+    try { u = new URL(url); } catch { return false; }
+    if (u.protocol !== 'http:') return false;
+    const h = u.hostname;
+    return !(h === 'localhost' || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || h === '[::1]');
+}
+
+/** CNII passive collection and the connections it uses (phase P9). */
+export async function cniiChecks(): Promise<PipelineCheck[]> {
+    const supabase = getSupabase()!;
+    const out: PipelineCheck[] = [];
+    if (process.env.CNII_PASSIVE_ENABLED === 'false') out.push({ name: 'CNII passive collection', status: 'off', detail: 'Turned off (CNII_PASSIVE_ENABLED=false)' });
+    else {
+        const since = new Date(Date.now() - 24 * H).toISOString();
+        const [last, failed, waiting] = await Promise.all([
+            supabase.from('vms_scan_jobs').select('finished_at, status, error').eq('kind', 'passive_osint').not('finished_at', 'is', null).order('finished_at', { ascending: false }).limit(1).maybeSingle(),
+            supabase.from('vms_scan_jobs').select('id', { count: 'exact', head: true }).eq('kind', 'passive_osint').eq('status', 'failed').gte('finished_at', since),
+            supabase.from('vms_scan_jobs').select('requested_at').eq('kind', 'passive_osint').eq('status', 'queued').order('requested_at', { ascending: true }).limit(1).maybeSingle(),
+        ]);
+        if (last.error) out.push({ name: 'CNII passive collection', status: 'off', detail: 'CNII tables not created yet (sql/2026-10-17_p9_cnii.sql)' });
+        else {
+            const oldest = waiting.data?.requested_at as string | undefined;
+            const late = !!oldest && Date.now() - Date.parse(oldest) > 30 * 60_000;
+            const f = failed.count ?? 0;
+            out.push({
+                name: 'CNII passive collection',
+                status: late ? 'down' : f > 0 ? 'degraded' : last.data ? 'up' : 'off',
+                detail: late ? `A passive job has waited since ${ago(oldest!)}: the runner is not taking jobs`
+                    : `${last.data ? `Last run ${ago(String(last.data.finished_at))} (${last.data.status})` : 'Never run'}; ${f} failed in 24 h${f && last.data?.error ? `: ${String(last.data.error).slice(0, 80)}` : ''}`,
+            });
+        }
+    }
+    const conn = (name: string, configured: boolean, envNames: string, url: string | undefined): PipelineCheck =>
+        !configured ? { name, status: 'off', detail: `Not configured (${envNames})` }
+            : plaintextTransport(url) ? { name, status: 'degraded', detail: 'Configured over plain http across a network: credentials and results travel unencrypted. Put it behind TLS.' }
+                : { name, status: 'up', detail: 'Configured (reachability is checked when a job runs)' };
+    out.push(conn('SpiderFoot (passive)', spiderfootConfigured(), 'SPIDERFOOT_URL', process.env.SPIDERFOOT_URL));
+    out.push(conn('OpenCTI connection', openctiConfigured(), 'OPENCTI_URL, OPENCTI_TOKEN', process.env.OPENCTI_URL));
     return out;
 }

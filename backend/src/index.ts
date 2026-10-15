@@ -69,6 +69,7 @@ import { startVmsMaintenanceJob } from './jobs/vmsMaintenance';
 import { startVmsIntelJob } from './jobs/vmsIntelJob';
 import { startThreatInfoJob } from './jobs/threatInfoJob';
 import { startVmsContinuousJob } from './jobs/vmsContinuousJob';
+import { startCniiPassiveJob } from './jobs/cniiPassiveJob';
 import { announceJobPolicy } from './lib/runtimeEnv';
 import { announceVerificationSecret } from './services/emailsec/verification';
 import platformRouter from './routes/platform';
@@ -436,4 +437,7 @@ if (announceJobPolicy()) {
     startThreatInfoJob();
     // Scan schedules, daily risk snapshots and change digests — jobs/vmsContinuousJob.ts.
     startVmsContinuousJob();
+    // CNII passive collection (SpiderFoot passive modules, CT logs, DNS, RIPE Stat, OpenCTI) for
+    // passive_osint jobs in the VMS queue — jobs/cniiPassiveJob.ts. Off with CNII_PASSIVE_ENABLED=false.
+    startCniiPassiveJob();
 }
