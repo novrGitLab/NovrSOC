@@ -51,7 +51,8 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
-VERSION = '1.1.0'
+VERSION = '1.2.0'
+COMPLETE_RETRY_DELAYS = (5, 15, 45)   # seconds between attempts to report a finished job
 PRESENCE_SECONDS = max(15, int(os.environ.get('VMS_PRESENCE_SECONDS', '60')))
 STATUS_LOG_SECONDS = max(60, int(os.environ.get('VMS_STATUS_LOG_SECONDS', '600')))
 ERROR_REPEAT_SECONDS = 600   # the same failure is logged again at most this often
@@ -351,8 +352,11 @@ class ApiError(RuntimeError):
 
 
 def _server_error(text: str) -> str:
+    """The backend's error, with its reason and detail when it gives them (e.g. why the queue failed)."""
     try:
-        return str(json.loads(text).get('error', ''))[:200]
+        d = json.loads(text)
+        parts = [str(d.get('error', ''))] + [str(d[k]) for k in ('reason', 'detail') if d.get(k)]
+        return ' — '.join(x for x in parts if x)[:300]
     except (ValueError, AttributeError):
         return text.strip()[:200]
 
@@ -367,7 +371,10 @@ def explain(path: str, status: Optional[int], detail: str) -> str:
     if status == 404:
         return f'endpoint not found (HTTP 404 at {where}): NOVRSOC_API_URL is wrong, or the backend is not running a version with this endpoint'
     if status == 400:
-        return f'the backend rejected the request (HTTP 400 on {path}): {detail} — check VMS_WORKER_ID and VMS_WORKER_KINDS'
+        hint = ' — check VMS_WORKER_ID and VMS_WORKER_KINDS' if path in ('/claim', '/heartbeat') else ' — this worker and the backend disagree on the request format: install the worker version that matches the backend'
+        return f'the backend rejected the request (HTTP 400 on {path}): {detail}{hint}'
+    if status == 409:
+        return f'the backend refused this for the job (HTTP 409 on {path}): {detail}'
     if status == 429:
         return f'rate limited by the backend (HTTP 429 on {path})'
     if status == 503:
@@ -514,8 +521,10 @@ class JobRunner:
             raise RuntimeError(f'{args[0]} exceeded {TOOL_TIMEOUT}s')
         if self.cancel.is_set():
             raise Cancelled()
-        if self.proc.returncode not in (0,):
-            log.warning('%s exited %s: %s', args[0], self.proc.returncode, (err or '')[:300])
+        if self.proc.returncode != 0:
+            # A tool that failed must fail the job, with its reason, never pass as "found nothing".
+            reason = (err or '').strip().splitlines()[-1:] or ['no error output']
+            raise RuntimeError(f'{os.path.basename(args[0])} exited {self.proc.returncode}: {reason[0][:300]}')
         return out or ''
 
     def send(self, observations: list[dict], activity: str):
@@ -549,11 +558,17 @@ class JobRunner:
         self.send(obs, 'discovery')
         probe = host_list + ips_or_ranges
         self.progress = {'phase': 'httpx', 'done': 0, 'total': len(probe)}
+        answered: list[dict] = []
         if probe:
             out = self.run_tool([TOOLS['httpx'], '-silent', '-json', '-status-code', '-title', '-tech-detect', '-web-server', '-ip', '-cdn',
                                  '-timeout', '10', '-retries', '1', '-rate-limit', HTTPX_RATE, '-no-color'], '\n'.join(probe))
-            self.send(parse_httpx(out.splitlines()), 'discovery')
+            answered = parse_httpx(out.splitlines())
+        # An authorised IP target is inventory even when nothing answers on HTTP: record it (liveness unknown).
+        seen = {o['host'] for o in answered}
+        bare = [{'type': 'host', 'host': t, 'ips': [t], 'source': 'httpx'} for t in ips_or_ranges if '/' not in t and t not in seen and parse_target(t)]
+        self.send(answered + bare, 'discovery')
         self.summary['hosts'] = len(host_list)
+        self.summary['http_responses'] = len(answered)
 
     def ports(self):
         targets = [t for t in self.job['targets'] if job_target_allowed(t, self.scopes, 'ports')]
@@ -638,8 +653,27 @@ class JobRunner:
             log.exception('job %s failed', self.job['id'])
         finally:
             self._stop_hb.set()
-        self.api.post(f'/jobs/{self.job["id"]}/complete', {'worker_id': WORKER_ID, 'status': status, 'error': error, 'summary': self.summary})
+        self.complete(status, error)
         log.info('job %s %s: %s', self.job['id'], status, self.summary)
+
+    def complete(self, status: str, error: Optional[str], sleep=time.sleep) -> bool:
+        """Reports the outcome. Retries network/429/5xx failures (completion is idempotent on the
+        backend); a 400 or 409 is reported once and not retried. Returns True when recorded."""
+        body = {'worker_id': WORKER_ID, 'status': status, 'summary': self.summary}
+        if error:
+            body['error'] = error[:1000]
+        for attempt, delay in enumerate((*COMPLETE_RETRY_DELAYS, None)):
+            try:
+                self.api.post(f'/jobs/{self.job["id"]}/complete', body)
+                return True
+            except ApiError as e:
+                retryable = e.status is None or e.status == 429 or e.status >= 500
+                if not retryable or delay is None:
+                    log.error('could not report job %s as %s: %s', self.job['id'], status, e)
+                    return False
+                log.warning('reporting job %s failed (%s); retrying in %ss', self.job['id'], e, delay)
+                sleep(delay)
+        return False
 
 
 def check() -> int:
@@ -677,7 +711,7 @@ def main():
             conn.ok('job polling')
             conn.poll(bool(r.get('job')))
             if r.get('job'):
-                log.info('claimed job %s (%s)', r['job'].get('id'), r['job'].get('kind'))
+                log.info('%s job %s (%s)', 're-received unfinished' if r.get('redelivered') else 'claimed', r['job'].get('id'), r['job'].get('kind'))
                 JobRunner(api, r['job'], r.get('scopes') or []).run()
                 continue
         except Exception as e:  # noqa: BLE001 — keep polling

@@ -6,7 +6,7 @@
 //   POST /claim                { worker_id, kinds[] }          -> { job, scopes } | { job: null }
 //   POST /jobs/:id/heartbeat   { progress }                    -> { cancel }   (cancel = stop now)
 //   POST /jobs/:id/results     { observations: [...] }         -> accepted / rejected counts
-//   POST /jobs/:id/complete    { status: succeeded|failed|cancelled, error?, summary? }
+//   POST /jobs/:id/complete    { status: succeeded|failed|cancelled, error?, summary? }  (error/summary may be null)
 //
 // The worker receives the job's scope entries so it can re-check targets before running a tool,
 // but the backend re-checks every result it accepts (services/vmsIngest.ts).
@@ -14,6 +14,15 @@
 // Presence (phase P10, services/vmsWorkers.ts): every request that passes the token check —
 // heartbeat, claim (including an empty queue) and job heartbeats — records the worker in
 // vms_workers. That record, not a running process, is what the dashboard calls "connected".
+//
+// Job lifecycle (P11 repair): queued -> running (claim) -> succeeded | failed | cancelled (complete).
+//   • /complete is idempotent: the same worker completing a job it already finished gets 200, so a
+//     retry after a lost response is safe. It only moves a job that is still running and still this
+//     worker's; anything else (requeued, failed by upkeep, another worker) is 409.
+//   • A worker that asks for work while the backend still has a running job assigned to it lost
+//     that job (restart, or the claim response never arrived). The job is re-sent to it instead of
+//     waiting for queue upkeep to requeue it, so a lost response never loses or duplicates a job.
+//   • A failed claim says why in the log (database code and message) and, sanitised, in the reply.
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -81,21 +90,59 @@ router.post('/heartbeat', heartbeatLimiter, async (req, res) => {
     res.json({ ok: true, worker_id: p.data.worker_id, server_time: now, online_window_seconds: WORKER_ONLINE_SECONDS, queued: count ?? 0 });
 });
 
+/** Why a queue call failed, for the worker's log: a category, never a credential or a query. */
+export function queueFailure(e: { message?: string; code?: string; details?: string; hint?: string }): { reason: string; detail: string } {
+    const msg = `${e.message ?? ''} ${e.details ?? ''}`;
+    if (e.code === 'PGRST202' || /Could not find the function/i.test(msg)) return { reason: 'claim_function_missing', detail: 'vms_claim_job is not available to the API (run sql/2026-10-14_p4_vms_asm.sql, then reload the API schema)' };
+    if (e.code === '42501' || /permission denied/i.test(msg)) return { reason: 'permission_denied', detail: 'the backend database role may not execute vms_claim_job' };
+    if (e.code === '57014' || /statement timeout|canceling statement/i.test(msg)) return { reason: 'database_timeout', detail: 'the claim query timed out' };
+    if (/fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|socket|network|Connect Timeout/i.test(msg)) return { reason: 'database_unreachable', detail: 'the backend could not reach the database' };
+    return { reason: 'database_error', detail: `database error${e.code ? ` ${e.code}` : ''}` };
+}
+
+const scopesFor = async (orgId: string) => (await activeScopes(orgId)).map((s) => ({ kind: s.kind, value: s.value, include_subdomains: s.include_subdomains, allow_discovery: s.allow_discovery !== false, allow_port_scan: s.allow_port_scan, allow_vuln_scan: s.allow_vuln_scan, expires_at: s.expires_at, status: s.status }));
+
 router.post('/claim', async (req, res) => {
     const workerId = String(req.body?.worker_id ?? '');
     const kinds = Array.isArray(req.body?.kinds) ? req.body.kinds.filter((k: unknown) => (VMS_KINDS as readonly unknown[]).includes(k)) : [];
     if (!WORKER_ID.test(workerId) || !kinds.length) { res.status(400).json({ error: `Body must be { worker_id, kinds: [${VMS_KINDS.join(' | ')}] }` }); return; }
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Database not configured' }); return; }
+
+    // A job still running under this worker id was lost by the worker: send it again.
+    const { data: orphan, error: orphanErr } = await supabase.from('vms_scan_jobs').select('id, org_id, kind, status, started_at, targets, options, worker_id, cancel_requested, purpose, attempts')
+        .eq('status', 'running').eq('worker_id', workerId).in('kind', kinds).order('claimed_at', { ascending: true }).limit(1).maybeSingle();
+    if (orphanErr) {
+        const f = queueFailure(orphanErr);
+        console.error(`[vms] claim by ${workerId}: reading its running jobs failed (${f.reason}): ${orphanErr.code ?? ''} ${orphanErr.message}`);
+        res.status(503).json({ error: 'Queue unavailable', reason: f.reason, detail: f.detail }); return;
+    }
+    if (orphan) {
+        const now = new Date().toISOString();
+        if (orphan.cancel_requested) {
+            await supabase.from('vms_scan_jobs').update({ status: 'cancelled', finished_at: now, error: 'Cancelled while the worker was away' }).eq('id', orphan.id).eq('status', 'running');
+        } else {
+            await supabase.from('vms_scan_jobs').update({ heartbeat_at: now, progress: { message: 'Re-sent to the worker: it asked for work while this job was still assigned to it' } }).eq('id', orphan.id).eq('status', 'running');
+            await recordWorkerSeen(workerId, { kinds, last_claim_at: now, last_job_id: orphan.id, last_job_at: now });
+            console.warn(`[vms] job ${orphan.id} re-sent to ${workerId} (it was still assigned to it)`);
+            res.json({ job: orphan, scopes: await scopesFor(orphan.org_id), redelivered: true });
+            return;
+        }
+    }
+
     const { data, error } = await supabase.rpc('vms_claim_job', { p_worker: workerId, p_kinds: kinds });
-    if (error) { res.status(503).json({ error: 'Queue unavailable' }); return; }
+    if (error) {
+        const f = queueFailure(error);
+        console.error(`[vms] claim by ${workerId} failed (${f.reason}): ${error.code ?? ''} ${error.message}${error.hint ? ` — ${error.hint}` : ''}`);
+        res.status(503).json({ error: 'Queue unavailable', reason: f.reason, detail: f.detail });
+        return;
+    }
     const job = (Array.isArray(data) ? data[0] : data) as Job | undefined;
     const now = new Date().toISOString();
     // An authenticated poll is presence, even when the queue is empty.
     await recordWorkerSeen(workerId, { kinds, last_claim_at: now, ...(job ? { last_job_id: job.id, last_job_at: now } : {}) });
     if (!job) { res.json({ job: null }); return; }
-    const scopes = await activeScopes(job.org_id);
-    res.json({ job, scopes: scopes.map((s) => ({ kind: s.kind, value: s.value, include_subdomains: s.include_subdomains, allow_discovery: s.allow_discovery !== false, allow_port_scan: s.allow_port_scan, allow_vuln_scan: s.allow_vuln_scan, expires_at: s.expires_at, status: s.status })) });
+    res.json({ job, scopes: await scopesFor(job.org_id) });
 });
 
 const Progress = z.object({ phase: z.string().max(60).optional(), done: z.number().int().min(0).optional(), total: z.number().int().min(0).optional(), message: z.string().max(300).optional() }).strict();
@@ -125,18 +172,40 @@ router.post('/jobs/:id/results', async (req, res) => {
     }
 });
 
-const Complete = z.object({ worker_id: z.string(), status: z.enum(['succeeded', 'failed', 'cancelled']), error: z.string().max(1000).optional(), summary: z.record(z.string(), z.unknown()).optional() });
+// error and summary may be null: the Python worker sends None for "no error" (it always did; the
+// earlier schema rejected null, so every successful job's completion was refused with 400).
+export const Complete = z.object({
+    worker_id: z.string().regex(WORKER_ID),
+    status: z.enum(['succeeded', 'failed', 'cancelled']),
+    error: z.string().max(1000).nullish(),
+    summary: z.record(z.string(), z.unknown()).nullish(),
+}).strict();
 router.post('/jobs/:id/complete', async (req, res) => {
+    const p = Complete.safeParse(req.body);
+    if (!p.success) {
+        const issue = p.error.issues[0];
+        res.status(400).json({ error: `Invalid completion: ${issue?.path.join('.') || 'body'} ${issue?.message ?? ''}`.trim(), expected: '{ worker_id, status: succeeded|failed|cancelled, error?: string|null, summary?: object|null }' });
+        return;
+    }
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Job not found' }); return; }
+    const { data: current } = await getSupabase()!.from('vms_scan_jobs').select('id, status, worker_id, finished_at').eq('id', req.params.id).maybeSingle();
+    if (!current) { res.status(404).json({ error: 'Job not found' }); return; }
+    if (current.worker_id !== p.data.worker_id) { res.status(409).json({ error: 'This job belongs to another worker' }); return; }
+    // A retry of a completion that already landed: same answer, nothing changes.
+    if (current.status !== 'running' && current.finished_at) { res.json({ ok: true, already_completed: true, status: current.status }); return; }
     const job = await ownJob(req, res);
     if (!job) return;
-    const p = Complete.safeParse(req.body);
-    if (!p.success) { res.status(400).json({ error: 'Body must be { worker_id, status: succeeded|failed|cancelled, error?, summary? }' }); return; }
     let gone = 0;
     if (p.data.status === 'succeeded' && job.kind === 'ports') gone = await markGoneServices(job);
     // A verification scan concludes its findings: verified only when it succeeded without detecting them.
     const verification = job.purpose === 'verification' ? await concludeVerification(job, p.data.status) : null;
     const summary = { ...(p.data.summary ?? {}), ...(gone ? { services_gone: gone } : {}), ...(verification ? { verification } : {}) };
-    await getSupabase()!.from('vms_scan_jobs').update({ status: p.data.status, finished_at: new Date().toISOString(), error: p.data.error ?? null, summary }).eq('id', job.id);
+    // Only a job still running under this worker moves: queue upkeep may have requeued or failed it meanwhile.
+    const { data: moved, error } = await getSupabase()!.from('vms_scan_jobs')
+        .update({ status: p.data.status, finished_at: new Date().toISOString(), error: p.data.error ?? (p.data.status === 'succeeded' ? null : 'No reason given by the worker'), summary })
+        .eq('id', job.id).eq('status', 'running').eq('worker_id', p.data.worker_id).select('id');
+    if (error) { console.error(`[vms] completing job ${job.id} failed: ${error.code ?? ''} ${error.message}`); res.status(503).json({ error: 'Could not record the completion; retry' }); return; }
+    if (!moved?.length) { res.status(409).json({ error: 'The job is no longer running under this worker (requeued or failed by queue upkeep)' }); return; }
     res.json({ ok: true, services_gone: gone });
 });
 

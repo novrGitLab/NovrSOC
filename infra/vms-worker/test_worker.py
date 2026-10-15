@@ -213,5 +213,77 @@ class Presence(unittest.TestCase):
             worker.Api = real
 
 
+class Lifecycle(unittest.TestCase):
+    """Job completion matches the backend contract, retries only what is safe to retry, tool failures
+    fail the job, and an authorised IP with no web server is still recorded."""
+
+    def runner(self, api, job=None):
+        return worker.JobRunner(api, job or {'id': 'j1', 'kind': 'discovery', 'targets': ['203.0.113.9']}, SCOPES)
+
+    def test_completion_body_omits_null_fields(self):
+        sent = []
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                sent.append((path, body))
+                return {'ok': True}
+
+        r = self.runner(Api())
+        self.assertTrue(r.complete('succeeded', None, sleep=lambda s: None))
+        self.assertEqual(sent[0][0], '/jobs/j1/complete')
+        self.assertNotIn('error', sent[0][1], 'no "error": null')
+        self.assertEqual(set(sent[0][1]), {'worker_id', 'status', 'summary'})
+        r.complete('failed', 'nmap exited 1: boom', sleep=lambda s: None)
+        self.assertEqual(sent[1][1]['error'], 'nmap exited 1: boom')
+
+    def test_completion_retries_transient_failures_only(self):
+        calls, slept = [], []
+
+        class Flaky:
+            def __init__(self, statuses):
+                self.statuses = list(statuses)
+
+            def post(self, path, body, timeout=60):
+                calls.append(path)
+                st = self.statuses.pop(0)
+                if st != 200:
+                    raise worker.ApiError(path, st, 'x')
+                return {'ok': True}
+
+        self.assertTrue(self.runner(Flaky([503, None, 200])).complete('succeeded', None, sleep=slept.append))
+        self.assertEqual(slept, [5, 15])
+        calls.clear()
+        self.assertFalse(self.runner(Flaky([400])).complete('succeeded', None, sleep=slept.append))
+        self.assertEqual(len(calls), 1, '400 is not retried')
+        calls.clear()
+        self.assertFalse(self.runner(Flaky([409])).complete('succeeded', None, sleep=slept.append))
+        self.assertEqual(len(calls), 1, '409 is not retried')
+        calls.clear()
+        self.assertFalse(self.runner(Flaky([503, 503, 503, 503])).complete('succeeded', None, sleep=lambda s: None))
+        self.assertEqual(len(calls), 4, 'gives up after the last delay')
+
+    def test_a_failing_tool_fails_the_job_with_its_reason(self):
+        r = self.runner(object())
+        with self.assertRaises(RuntimeError) as cm:
+            r.run_tool([sys.executable, '-c', 'import sys; sys.stderr.write("first\\nfatal: bad flag\\n"); sys.exit(2)'])
+        self.assertIn('exited 2: fatal: bad flag', str(cm.exception))
+        self.assertEqual(r.run_tool([sys.executable, '-c', 'print("ok")']).strip(), 'ok')
+
+    def test_an_ip_without_a_web_server_is_still_recorded(self):
+        sent = []
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                sent.extend(body.get('observations', []))
+                return {'accepted': len(body.get('observations', []))}
+
+        r = self.runner(Api(), {'id': 'j2', 'kind': 'discovery', 'targets': ['203.0.113.9']})
+        r.run_tool = lambda args, stdin=None: ''   # httpx: nothing answered
+        r.discovery()
+        self.assertEqual([(o['host'], o['ips'], o['source']) for o in sent], [('203.0.113.9', ['203.0.113.9'], 'httpx')])
+        self.assertNotIn('alive', sent[0], 'no HTTP answer does not mean down')
+        self.assertEqual(r.summary['http_responses'], 0)
+
+
 if __name__ == '__main__':
     unittest.main()

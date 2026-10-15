@@ -147,7 +147,10 @@ export async function startFakePostgrest(tables: Record<string, Row[]> = {}, rel
                 const fn = rpcs[rpc[1]];
                 log.push(`RPC ${rpc[1]}`);
                 if (!fn) { send(404, { message: `Could not find the function public.${rpc[1]}` }); return; }
-                send(200, fn(body ? JSON.parse(body) : {}, tables));
+                const out = fn(body ? JSON.parse(body) : {}, tables) as { __status?: number; __error?: unknown } | unknown;
+                // An RPC may answer as Postgres would fail: { __status, __error: { code, message } }.
+                if (out && typeof out === 'object' && '__status' in (out as object)) { const o = out as { __status: number; __error?: unknown }; send(o.__status, o.__error ?? {}); return; }
+                send(200, out);
                 return;
             }
             if (!m) { send(404, { message: 'not found' }); return; }
