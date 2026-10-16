@@ -8,6 +8,7 @@ import { getComplianceImpact } from '../services/complianceMapping';
 import { isDemoMode, DEMO_AGENTS } from '../lib/demoMode';
 import { severityFromLevel, SEVERITY_MIN_LEVEL } from '../lib/severity';
 import { requirePermission } from '../lib/permissions';
+import { unusableReply } from '../services/wazuhVulnSync';
 
 const router = Router();
 
@@ -449,8 +450,12 @@ router.get('/vulnerabilities', async (req, res) => {
         };
 
         // index_available separates "no vulnerabilities found" from "couldn't read the index" —
-        // both would otherwise render as an empty list.
-        res.json({ vulnerabilities, summary, index_available: aggsRes !== null });
+        // both would otherwise render as an empty list. The indexer answers errors (bad
+        // credentials, no permission) and a wildcard matching no index with parsed JSON too, so a
+        // non-null reply is not enough (P16): the reason is returned instead of zeros.
+        const problem = unusableReply(aggsRes as never) ?? unusableReply(hitsRes as never);
+        if (problem) { res.status(502).json({ vulnerabilities: [], summary: null, index_available: false, problem }); return; }
+        res.json({ vulnerabilities, summary, index_available: true });
     } catch {
         res.status(502).json({ vulnerabilities: [], summary: { critical: 0, high: 0, medium: 0, low: 0, total: 0 }, index_available: false });
     }

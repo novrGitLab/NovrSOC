@@ -24,9 +24,17 @@ interface Detail {
     finding: Finding;
     evidence: { id: string; source: string; observed_at: string; matched_at: string | null; evidence: unknown; job_id: string | null }[];
     events: { id: string; at: string; actor: string; action: string; from_value: string | null; to_value: string | null; details: string | null }[];
-    cve_intel: { cve_id: string; description: string | null; cvss_score: number | null; cvss_vector: string | null; epss_score: number | null; epss_percentile: number | null; kev: boolean; kev_checked_at: string | null; kev_date_added: string | null; kev_required_action: string | null; kev_ransomware: string | null }[];
+    cve_intel: { cve_id: string; description: string | null; cvss_score: number | null; cvss_vector: string | null; epss_score: number | null; epss_percentile: number | null; kev: boolean; kev_checked_at: string | null; kev_date_added: string | null; kev_required_action: string | null; kev_ransomware: string | null;
+        /** OSV (P16; absent before sql/2026-10-22_p16_osv.sql). */
+        osv_status?: 'found' | 'not_found' | null; osv_ids?: string[] | null; osv_fetched_at?: string | null; osv_affected?: { ecosystem: string | null; name: string | null; repo: string | null; fixed: string[] }[] | null }[];
+    /** Same CVE on the same asset (confirmed) or on a Wazuh endpoint and its reported address (inferred), P16. */
+    correlated?: Correlated[]; correlation_error?: string | null;
     asset: { id: string; value: string; exposure: string; criticality: string; owner: string | null } | null;
     tasks: { id: string; title: string; status: string; owner: string | null; due_at: string | null }[];
+}
+export interface Correlated {
+    cves: string[]; relation: 'same_asset' | 'same_address'; basis: 'confirmed' | 'inferred'; explanation: string;
+    other: { id: string; asset_value: string; asset_type: string | null; source_class: string; detected_by: string[]; evidence_class: string | null; status: string; scanner_severity: string | null; priority: string | null; last_seen: string | null };
 }
 interface Summary { open: number; by_severity: Record<string, number>; by_priority: Record<string, number>; known_exploited_open: number; overdue: number; by_source: Record<string, number> }
 
@@ -50,7 +58,7 @@ export function VmsFindings() {
     const params = useSearchParams();
     const role = getAdminUser().role;
     const canManage = ['super_admin', 'soc_manager', 'analyst'].includes(role);
-    const [filter, setFilter] = useState({ status: 'open_all', priority: params.get('priority') ?? '', source: '', kev: false, overdue: params.get('overdue') === 'true' });
+    const [filter, setFilter] = useState({ status: 'open_all', priority: params.get('priority') ?? '', source: ['wazuh', 'active_scan'].includes(params.get('source') ?? '') ? params.get('source')! : '', kev: false, overdue: params.get('overdue') === 'true' });
     const [search, setSearch] = useState('');
     const [text, setText] = useState('');
     const [findings, setFindings] = useState<Finding[] | null>(null);
@@ -216,8 +224,29 @@ export function VmsFindings() {
                                     <p className="text-foreground-muted">CVSS {c.cvss_score ?? 'unknown'} · EPSS {c.epss_score !== null ? `${(c.epss_score * 100).toFixed(1)}% (percentile ${c.epss_percentile !== null ? (c.epss_percentile * 100).toFixed(0) : '?'})` : 'unknown'} · KEV {c.kev_checked_at ? (c.kev ? `yes, added ${c.kev_date_added}${c.kev_ransomware === 'Known' ? ', used in ransomware' : ''}` : 'no') : 'not checked yet'}</p>
                                     {c.kev_required_action && <p className="text-foreground">CISA required action: {c.kev_required_action}</p>}
                                     {c.description && <p className="text-foreground mt-1">{c.description}</p>}
+                                    {c.osv_status === 'found' && (
+                                        <div className="mt-1 text-foreground-muted">
+                                            <p>OSV ({fmtWat(c.osv_fetched_at ?? null)}): also known as {(c.osv_ids ?? []).filter((x) => x !== c.cve_id).slice(0, 6).join(', ') || 'no other id'}</p>
+                                            {(c.osv_affected ?? []).filter((a) => a.fixed.length).slice(0, 6).map((a, i) => <p key={i}>Fixed in {a.fixed.join(', ')} — {a.name ? `${a.name}${a.ecosystem ? ` (${a.ecosystem})` : ''}` : a.repo}</p>)}
+                                        </div>
+                                    )}
+                                    {c.osv_status === 'not_found' && <p className="mt-1 text-foreground-muted">OSV has no record for this CVE.</p>}
                                 </div>
                             ))}
+                            {(detail.correlated ?? []).length > 0 && (
+                                <div>
+                                    <p className="text-[10px] font-bold text-foreground-muted uppercase">Same CVE elsewhere</p>
+                                    {detail.correlated!.map((c) => (
+                                        <div key={c.other.id} className="border-t border-border py-1">
+                                            <p><span className={`text-[10px] font-bold uppercase px-1.5 rounded ${c.basis === 'confirmed' ? 'bg-green/10 text-green' : 'bg-amber/10 text-amber'}`}>{c.basis}</span>{' '}
+                                                <a href={`/admin/vms/findings?id=${c.other.id}`} className="font-semibold text-purple">{c.other.asset_value}</a>{' '}
+                                                <span className="text-foreground-muted">· {c.other.source_class === 'wazuh' ? 'Wazuh' : (c.other.detected_by.join(', ') || 'scanner')}{c.other.evidence_class ? ` (${c.other.evidence_class.replace(/_/g, ' ')})` : ''} · {STATUS_LABEL[c.other.status] ?? c.other.status} · {c.cves.join(', ')}</span></p>
+                                            <p className="text-foreground-muted">{c.explanation}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            {detail.correlation_error && <p className="text-amber">{detail.correlation_error}</p>}
                             {f.description && <div><p className="text-[10px] font-bold text-foreground-muted uppercase">Scanner description</p><p className="whitespace-pre-wrap">{f.description}</p></div>}
                             {f.remediation && <div><p className="text-[10px] font-bold text-foreground-muted uppercase">Scanner remediation</p><p className="whitespace-pre-wrap">{f.remediation}</p></div>}
                             <AiPanel key={f.id} purpose="finding_explanation" subjectId={f.id} title="AI analysis"

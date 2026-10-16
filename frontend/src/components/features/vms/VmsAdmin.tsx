@@ -18,7 +18,7 @@ interface Status {
     workers: { source: string; online: number; window_seconds: number; list: { worker_id: string; online: boolean; version: string | null; kinds: string[]; tools: Record<string, boolean>; tool_versions: Record<string, string>; networks: string[]; features: string[]; last_seen_at: string; last_job_at: string | null }[] };
     scheduler: { last_run_at: string | null; policies: { at?: string } | null };
     wazuh: { available: boolean; sync?: { last_synced_at?: string; last_result?: unknown } | null; freshness?: { last_attempt_at: string | null; last_complete_at: string | null; complete: boolean | null; problem: string | null }; note?: string | null };
-    cve_intel: { tracked: number; kev_checked_at: string | null; epss_fetched_at: string | null; nvd_fetched_at: string | null };
+    cve_intel: { tracked: number; kev_checked_at: string | null; epss_fetched_at: string | null; nvd_fetched_at: string | null; osv?: { available: boolean; fetched_at?: string | null; note?: string } };
     ai: { configured: boolean; model: string };
     evidence: { available: boolean; retention_days?: number; items?: number; next_expiry?: string | null };
     scopes: { active: number; expired_or_revoked: number; with_exclusions: number; passive_only: number; vuln_allowed: number };
@@ -103,7 +103,7 @@ export function VmsAdmin() {
                                     </div>
                                 )}
                             </div>
-                            <p>CVE intelligence: {s.cve_intel.tracked} CVEs · KEV {fmtWat(s.cve_intel.kev_checked_at)} · EPSS {fmtWat(s.cve_intel.epss_fetched_at)} · NVD {fmtWat(s.cve_intel.nvd_fetched_at)}</p>
+                            <p>CVE intelligence: {s.cve_intel.tracked} CVEs · KEV {fmtWat(s.cve_intel.kev_checked_at)} · EPSS {fmtWat(s.cve_intel.epss_fetched_at)} · NVD {fmtWat(s.cve_intel.nvd_fetched_at)} · OSV {!s.cve_intel.osv ? 'unknown' : s.cve_intel.osv.available ? fmtWat(s.cve_intel.osv.fetched_at ?? null) : 'not set up'}</p>
                             <p>Claude AI: {s.ai.configured ? `configured (${s.ai.model})` : 'not configured — deterministic rules and templates only'}</p>
                             <p>Raw evidence: {s.evidence.available ? `${s.evidence.items} item(s), kept ${s.evidence.retention_days} days; next expiry ${fmtWat(s.evidence.next_expiry ?? null)}` : 'not set up'}</p>
                             <p>Scheduler: last scan-schedule run {fmtWat(s.scheduler.last_run_at)}; last policy run {fmtWat(s.scheduler.policies?.at ?? null)}</p>

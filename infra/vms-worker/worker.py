@@ -58,6 +58,7 @@ from typing import Iterable, Optional
 
 import requests
 import signal
+import socket
 
 log = logging.getLogger('vms-worker')
 
@@ -67,7 +68,7 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
-VERSION = '1.5.0'
+VERSION = '1.6.0'
 # What this worker enforces itself; the backend only gives jobs that need a feature to workers announcing it.
 FEATURES = ['exclusions']
 # Networks this worker can actually reach besides the public internet (comma-separated CIDRs), e.g.
@@ -378,6 +379,42 @@ def target_route(target: str) -> tuple[bool, Optional[str]]:
     return False, (f'{target} is a private/non-public address and worker {WORKER_ID} declares no route to it '
                    f'(VMS_WORKER_NETWORKS: {declared}). Run a worker inside that network, or declare the network '
                    'on this worker if it really has a route (e.g. a VPN). Not attempted.')
+
+
+REACH_TIMEOUT = 5
+REACH_DEFAULT_PORTS = (443, 80)
+
+
+def reach_ports(spec) -> list[int]:
+    """The ports a reachability probe tries: a job's explicit port list (a verification rescan
+    names the finding's port), else 443 and 80. At most five; ranges and top-N lists fall back."""
+    out = []
+    for part in str(spec or '').split(','):
+        part = part.strip()
+        if part.isdigit() and 0 < int(part) < 65536 and int(part) not in out:
+            out.append(int(part))
+    return out[:5] or list(REACH_DEFAULT_PORTS)
+
+
+def tcp_reach(target: str, ports: list[int], connect=None) -> tuple[str, str]:
+    """One TCP connection attempt per port, stopping at the first that is accepted (version 1.6.0).
+    Says whether the target answered this scanner, so "the check found nothing" can be told apart
+    from "the check never got an answer". Nothing is sent over the connection."""
+    connect = connect or socket.create_connection
+    tried = []
+    for port in ports:
+        try:
+            conn = connect((target, port), REACH_TIMEOUT)
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return 'reachable_open', f'{target}:{port} accepted a TCP connection'
+        except socket.gaierror:
+            return 'unreachable', f'{target} does not resolve from this scanner'
+        except OSError as e:
+            tried.append(f'{port} ({type(e).__name__})')
+    return 'unreachable', f'no TCP answer from {target} on {", ".join(tried)}: unreachable from this scanner, or filtered'
 
 
 def job_outcome(target_outcomes: dict[str, dict]) -> str:
@@ -957,6 +994,23 @@ class JobRunner:
         if not targets:
             raise RuntimeError('No target of this job is in vulnerability-scan scope')
         opts = self.job.get('options') or {}
+        # Reachability first (1.6.0): Nuclei reports matches only, so without this a host that never
+        # answered would look like a clean result — and a verification rescan would close a finding.
+        ports = reach_ports(opts.get('ports'))
+        reachable = []
+        for t in targets:
+            ok, why = target_route(t)
+            if not ok:
+                self.record_outcome(t, 'no_route', why or '')
+                continue
+            outcome, reason = tcp_reach(t, ports, getattr(self, 'connect', None))
+            self.record_outcome(t, outcome, reason)
+            if outcome.startswith('reachable'):
+                reachable.append(t)
+        self.summary['targets'] = len(targets)
+        if not reachable:
+            return
+        targets = reachable
         templates = [x for x in (opts.get('templates') or []) if re.match(r'^[\w./-]{1,200}$', str(x))]
         args = [TOOLS['nuclei'], '-silent', '-jsonl', '-duc', '-no-color', '-rl', NUCLEI_RATE, '-c', '10', '-timeout', '10', '-retries', '1', '-etags', NUCLEI_EXCLUDE_TAGS]
         # A verification rescan runs exactly the check that found the issue (any severity).
@@ -964,7 +1018,6 @@ class JobRunner:
         self.progress = {'phase': 'nuclei', 'done': 0, 'total': len(targets)}
         out = self.run_tool(args, '\n'.join(targets))
         self.send(parse_nuclei(out.splitlines()), 'vuln')
-        self.summary['targets'] = len(targets)
 
     def vuln_openvas(self):
         targets = [t for t in self.job['targets'] if job_target_allowed(t, self.scopes, 'vuln')]

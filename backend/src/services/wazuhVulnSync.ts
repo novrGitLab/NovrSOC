@@ -138,10 +138,15 @@ export async function syncWazuhVulnerabilities(deps: { search?: SearchFn; agents
                 seenKeys.add(key);
                 const severity: Severity = SEV[(d.vulnerability?.severity ?? '').toLowerCase()] ?? 'info';
                 const cvss = typeof d.vulnerability?.score?.base === 'number' && d.vulnerability.score.base >= 0 && d.vulnerability.score.base <= 10 ? d.vulnerability.score.base : null;
-                const { data: ex } = await supabase.from('vms_findings').select('id, status').eq('org_id', org).eq('dedupe_key', key).maybeSingle();
+                const title = `${cve} in ${pkg}${d.package?.version ? ` ${d.package.version.slice(0, 60)}` : ''}`;
+                const { data: ex } = await supabase.from('vms_findings').select('id, status, title').eq('org_id', org).eq('dedupe_key', key).maybeSingle();
                 if (ex) {
                     const reopen = ex.status === 'verified' || ex.status === 'fixed_pending_verification';
-                    await supabase.from('vms_findings').update({ last_seen: started, ...(reopen ? { status: 'reopened', verified_at: null, closed_at: null } : {}), updated_at: started }).eq('id', ex.id);
+                    // The package version moved (an update that did not fix this CVE): keep the old
+                    // evidence, add the new sighting, and say what Wazuh reports now (P16).
+                    const moved = ex.title !== title;
+                    await supabase.from('vms_findings').update({ last_seen: started, ...(moved ? { title } : {}), ...(reopen ? { status: 'reopened', verified_at: null, closed_at: null } : {}), updated_at: started }).eq('id', ex.id);
+                    if (moved) await supabase.from('vms_finding_evidence').insert({ org_id: org, finding_id: ex.id, source: 'wazuh', observed_at: started, matched_at: `${pkg} ${d.package?.version ?? ''}`.trim(), evidence: { agent_id: d.agent?.id ?? null, package: d.package ?? null, severity: d.vulnerability?.severity ?? null } });
                     if (reopen) await supabase.from('vms_finding_events').insert({ org_id: org, finding_id: ex.id, actor: 'wazuh', action: 'reopened', from_value: ex.status, to_value: 'reopened', details: 'Wazuh still reports this vulnerability' });
                     continue;
                 }
@@ -149,7 +154,7 @@ export async function syncWazuhVulnerabilities(deps: { search?: SearchFn; agents
                 const risk = await computeRisk({ cve_ids: [cve], scanner_severity: severity, scanner_cvss: cvss, asset_id: assetId }).catch(() => riskScore({ scanner_severity: severity, cvss, kev: null, epss: null, exposure: 'unknown', criticality: 'medium' }));
                 const ins = await supabase.from('vms_findings').insert({
                     org_id: org, dedupe_key: key, asset_id: assetId, asset_value: agentName, source_class: 'wazuh', detected_by: ['wazuh'], rule_id: cve,
-                    title: `${cve} in ${pkg}${d.package?.version ? ` ${d.package.version.slice(0, 60)}` : ''}`, description: d.vulnerability?.description?.slice(0, 8000) ?? null,
+                    title, description: d.vulnerability?.description?.slice(0, 8000) ?? null,
                     cve_ids: [cve], scanner_severity: severity, scanner_cvss: cvss, references_urls: d.vulnerability?.reference && /^https?:\/\//.test(d.vulnerability.reference) ? [d.vulnerability.reference.slice(0, 1000)] : [],
                     risk_score: risk.score, priority: risk.priority, risk_factors: risk.factors, first_seen: started, last_seen: started,
                     due_at: new Date(Date.parse(started) + DUE_DAYS[risk.priority] * 86_400_000).toISOString(),

@@ -1,6 +1,6 @@
 // VMS Release 2 background work (phase P5), where mutating jobs run (lib/runtimeEnv.ts):
 //   • every hour: Wazuh endpoints and vulnerabilities into VMS (services/wazuhVulnSync.ts)
-//   • every 6 hours: CVE intelligence from CISA KEV, FIRST EPSS and NVD (services/cveIntel.ts),
+//   • every 6 hours: CVE intelligence from CISA KEV, FIRST EPSS, NVD and OSV (services/cveIntel.ts),
 //     then risk and priority recomputed for every finding (lib/riskScore.ts)
 // Each run's outcome is logged; a failed source is reported and retried on the next run.
 
@@ -22,7 +22,7 @@ export function startVmsIntelJob(): void {
             const changed = await recomputeRisk({});
             lastVmsIntelRun.intel = { ...r, risk_changed: changed };
             lastVmsIntelRun.at = new Date().toISOString();
-            console.log(`[vms-intel] ${r.tracked} CVEs: KEV ${r.kev_marked}, EPSS ${r.epss_updated}, NVD ${r.nvd_updated}; risk changed on ${changed} finding(s)${r.errors.length ? `; errors: ${r.errors.slice(0, 3).join(' | ')}` : ''}`);
+            console.log(`[vms-intel] ${r.tracked} CVEs: KEV ${r.kev_marked}, EPSS ${r.epss_updated}, NVD ${r.nvd_updated}, OSV ${r.osv ? `${r.osv.state} (${r.osv.found} found, ${r.osv.not_found} none)` : 'not run'}; risk changed on ${changed} finding(s)${r.errors.length ? `; errors: ${r.errors.slice(0, 3).join(' | ')}` : ''}${r.osv?.errors.length ? `; OSV: ${r.osv.errors.slice(0, 2).join(' | ')}` : ''}`);
         } catch (err) {
             console.error('[vms-intel] failed:', err instanceof Error ? err.message : err);
         } finally { intelRunning = false; }

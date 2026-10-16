@@ -641,5 +641,76 @@ class ReliabilityP1(unittest.TestCase):
             worker.WORKER_NETWORKS = saved
 
 
+
+class NucleiReach(unittest.TestCase):
+    """1.6.0: a Nuclei job records whether each target answered before trusting "nothing found"."""
+
+    SCOPES = [{'kind': 'ip', 'value': '203.0.113.9', 'allow_port_scan': True, 'allow_vuln_scan': True, 'status': 'active', 'expires_at': FUTURE},
+              {'kind': 'ip', 'value': '10.88.1.139', 'allow_port_scan': True, 'allow_vuln_scan': True, 'status': 'active', 'expires_at': FUTURE}]
+
+    def setUp(self):
+        self.posts = []
+        self._nets = worker.WORKER_NETWORKS
+        worker.WORKER_NETWORKS = ['203.0.113.0/24']   # the documentation range stands in for a routable network
+
+    def tearDown(self):
+        worker.WORKER_NETWORKS = self._nets
+
+    def run_job(self, target, connect, nuclei_out='', options=None, calls=None):
+        posts = self.posts
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                posts.append((path, body))
+                return {'accepted': len(body.get('observations', [])), 'ok': True}
+        r = worker.JobRunner(Api(), {'id': 'n1', 'kind': 'vuln_nuclei', 'targets': [target], 'options': options or {}}, self.SCOPES)
+        r.connect = connect
+
+        def fake_tool(args, stdin=None):
+            if calls is not None:
+                calls.append((args, stdin))
+            return nuclei_out
+        r.run_tool = fake_tool
+        r.run()
+        return [b for p, b in posts if p.endswith('/complete')][0]
+
+    def test_ports_for_the_probe(self):
+        self.assertEqual(worker.reach_ports('8443'), [8443])
+        self.assertEqual(worker.reach_ports('22,80,22'), [22, 80])
+        self.assertEqual(worker.reach_ports('top-1000'), [443, 80])
+        self.assertEqual(worker.reach_ports(None), [443, 80])
+
+    def test_unreachable_target_is_not_a_clean_result(self):
+        def refuse(addr, timeout):
+            raise TimeoutError('timed out')
+        calls = []
+        done = self.run_job('203.0.113.9', refuse, calls=calls)
+        self.assertEqual(calls, [], 'nuclei never ran against a target that did not answer')
+        self.assertEqual((done['status'], done['summary']['outcome']), ('succeeded', 'unreachable'))
+        self.assertIn('no TCP answer from 203.0.113.9 on 443 (TimeoutError), 80 (TimeoutError)', done['summary']['target_outcomes']['203.0.113.9']['reason'])
+
+    def test_reachable_target_is_assessed_and_scanned(self):
+        class Conn:
+            def close(self):
+                pass
+        seen = []
+
+        def accept(addr, timeout):
+            seen.append(addr)
+            return Conn()
+        calls = []
+        done = self.run_job('203.0.113.9', accept, options={'ports': '8443', 'templates': ['CVE-2023-12345']}, calls=calls)
+        self.assertEqual(seen, [('203.0.113.9', 8443)], 'the verification port is probed, once')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], '203.0.113.9')
+        self.assertEqual((done['status'], done['summary']['outcome']), ('succeeded', 'assessed'))
+        self.assertEqual(done['summary']['target_outcomes']['203.0.113.9']['outcome'], 'reachable_open')
+
+    def test_private_target_without_route_is_not_probed(self):
+        def boom(addr, timeout):
+            raise AssertionError('must not connect')
+        done = self.run_job('10.88.1.139', boom)
+        self.assertEqual((done['status'], done['summary']['outcome']), ('failed', 'no_route'))
+
 if __name__ == '__main__':
     unittest.main()

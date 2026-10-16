@@ -294,7 +294,7 @@ router.post('/jobs/:id/complete', async (req, res) => {
     let gone = 0;
     if (p.data.status === 'succeeded' && job.kind === 'ports') gone = await markGoneServices(job);
     // A verification scan concludes its findings: verified only when it succeeded without detecting them.
-    const verification = job.purpose === 'verification' ? await concludeVerification(job, p.data.status) : null;
+    const verification = job.purpose === 'verification' ? await concludeVerification(job, p.data.status, p.data.summary ?? null) : null;
     const summary = { ...(p.data.summary ?? {}), ...(gone ? { services_gone: gone } : {}), ...(verification ? { verification } : {}) };
     // Only a job still running under this worker moves: queue upkeep may have requeued or failed it meanwhile.
     const { data: moved, error } = await getSupabase()!.from('vms_scan_jobs')

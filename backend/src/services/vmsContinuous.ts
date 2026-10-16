@@ -13,6 +13,7 @@ import { getSupabase } from './geoEnrichment';
 import { queueScan } from '../routes/vms';
 import { isEmailEnabled, sendVmsDigestEmail, socNotificationRecipients } from './email';
 import { wazuhFreshness } from './wazuhVulnSync';
+import { describe, type AssessmentRow } from './vmsAssessments';
 
 export const OPEN_STATUSES = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'] as const;
 const PRIORITIES = ['P1', 'P2', 'P3', 'P4'] as const;
@@ -163,6 +164,67 @@ export async function riskTrends(org: string, days: number, now = new Date()) {
     };
 }
 
+// ── Closure and coverage (P16) ────────────────────────────────────────────────────────────────
+// Closure distinguishes what evidence shows from what people say. "Verified" is set only by
+// evidence: a verification rescan that reached the target and no longer detected the issue, or a
+// complete Wazuh sync that returned data for the endpoint and no longer lists it. A person marking
+// a finding fixed, or a remediation task done, is a claim awaiting verification, counted apart.
+const VERIFIER: Record<string, 'rescan' | 'wazuh'> = { 'NovrSOC verification': 'rescan', wazuh: 'wazuh' };
+export async function closureInPeriod(org: string, since: string, until: string) {
+    const supabase = getSupabase()!;
+    const [ev, tasks, pending] = await Promise.all([
+        supabase.from('vms_finding_events').select('finding_id, actor, action, from_value, to_value, details, at').eq('org_id', org).gte('at', since).lt('at', until)
+            .in('action', ['verified', 'verification', 'status', 'reopened']).order('at', { ascending: true }).limit(20_000),
+        supabase.from('vms_remediation_tasks').select('id, finding_id, status, completed_at').eq('org_id', org).eq('status', 'done').gte('completed_at', since).lt('completed_at', until).limit(5000),
+        supabase.from('vms_findings').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('status', 'fixed_pending_verification'),
+    ]);
+    if (ev.error) return { available: false as const, note: 'Finding history could not be read' };
+    const rows = ev.data ?? [];
+    const verified = rows.filter((e) => e.action === 'verified');
+    const by = (how: 'rescan' | 'wazuh') => verified.filter((e) => VERIFIER[e.actor] === how);
+    const doneTasks = tasks.data ?? [];
+    const taskFindings = [...new Set(doneTasks.map((t) => t.finding_id))];
+    const { data: tf } = taskFindings.length ? await supabase.from('vms_findings').select('id, status').eq('org_id', org).in('id', taskFindings) : { data: [] as { id: string; status: string }[] };
+    const ids = [...new Set(verified.map((e) => e.finding_id))].slice(0, 20);
+    const { data: vf } = ids.length ? await supabase.from('vms_findings').select('id, title, asset_value, priority, source_class').eq('org_id', org).in('id', ids) : { data: [] as { id: string; title: string; asset_value: string; priority: string | null; source_class: string }[] };
+    const vfById = new Map((vf ?? []).map((f) => [f.id, f]));
+    return {
+        available: true as const,
+        verified_by_rescan: by('rescan').length,
+        verified_by_wazuh: by('wazuh').length,
+        // Claims: a person marked it fixed; only verification closes it.
+        marked_fixed_by_people: rows.filter((e) => e.action === 'status' && e.to_value === 'fixed_pending_verification').length,
+        awaiting_verification_now: pending.error ? null : pending.count ?? 0,
+        verification_inconclusive: rows.filter((e) => e.action === 'verification').length,
+        closed_without_fix: { risk_accepted: rows.filter((e) => e.action === 'status' && e.to_value === 'risk_accepted').length, false_positive: rows.filter((e) => e.action === 'status' && e.to_value === 'false_positive').length },
+        reopened_after_verification: rows.filter((e) => e.action === 'reopened' && e.from_value === 'verified').length,
+        tasks_completed: { total: doneTasks.length, findings: taskFindings.length, findings_verified: (tf ?? []).filter((f) => f.status === 'verified').length, findings_not_verified: (tf ?? []).filter((f) => f.status !== 'verified').length },
+        verified_examples: verified.slice(-20).reverse().map((e) => ({ finding_id: e.finding_id, at: e.at, how: VERIFIER[e.actor] ?? 'other', evidence: e.details ?? null, title: vfById.get(e.finding_id)?.title ?? null, asset: vfById.get(e.finding_id)?.asset_value ?? null, priority: vfById.get(e.finding_id)?.priority ?? null })),
+    };
+}
+
+/** What was actually assessed in the period: Full Assessments by derived status, checks by status, and the inventory each source covers. */
+export async function coverageInPeriod(org: string, since: string, until: string) {
+    const supabase = getSupabase()!;
+    const [assess, endpoints, external, reached] = await Promise.all([
+        supabase.from('vms_assessments').select('*').eq('org_id', org).gte('requested_at', since).lt('requested_at', until).order('requested_at', { ascending: false }).limit(500),
+        supabase.from('vms_assets').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('status', 'active').eq('asset_type', 'endpoint'),
+        supabase.from('vms_assets').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('status', 'active').in('asset_type', ['host', 'ip', 'domain']),
+        supabase.from('vms_assets').select('id, last_assessment').eq('org_id', org).gte('last_assessed_at', since).lt('last_assessed_at', until).limit(5000),
+    ]);
+    const described = assess.error ? null : await describe((assess.data ?? []) as AssessmentRow[]);
+    const tally = (xs: string[]) => xs.reduce<Record<string, number>>((m, k) => ({ ...m, [k]: (m[k] ?? 0) + 1 }), {});
+    const outcomes = (reached.data ?? []).map((a) => String((a.last_assessment as { outcome?: string } | null)?.outcome ?? 'unknown'));
+    return {
+        inventory: { wazuh_endpoints: endpoints.count ?? 0, external_assets: external.count ?? 0 },
+        // Assets whose latest check fell in the period, by what that check learned (no route and unreachable are not assessments).
+        latest_checks: { total: outcomes.length, reached: outcomes.filter((o) => o.startsWith('reachable')).length, by_outcome: tally(outcomes) },
+        full_assessments: described === null
+            ? { available: false, note: 'Full Assessments are not set up (sql/2026-10-20_p13_vms_assessments.sql)' }
+            : { available: true, total: described.length, by_status: tally(described.map((a) => a.status)), checks_by_status: tally(described.flatMap((a) => a.steps.map((s) => s.status))), by_trigger: tally(described.map((a) => String((a as { trigger?: string }).trigger ?? 'manual'))) },
+    };
+}
+
 // ── Period report ─────────────────────────────────────────────────────────────────────────────
 export async function periodReport(org: string, days: number, now = new Date()) {
     const supabase = getSupabase()!;
@@ -198,8 +260,11 @@ export async function periodReport(org: string, days: number, now = new Date()) 
         attack_surface_changes: tally(assetEvents.data, (e) => e.event),
         top_open: open.filter((f) => f.priority === 'P1' || f.priority === 'P2').slice(0, 15).map((f) => ({ id: f.id, title: f.title, asset: f.asset_value, priority: f.priority, due_at: f.due_at, status: f.status })),
         recurring: await recurring(org, since, open),
+        closure: await closureInPeriod(org, since, until),
+        coverage: await coverageInPeriod(org, since, until),
         wazuh_sync: wazuh.data ?? null,
-        sources: ['vms_findings', 'vms_finding_events', 'vms_scan_jobs', 'vms_asset_events', 'vms_wazuh_sync'],
+        wazuh_freshness: wf,
+        sources: ['vms_findings', 'vms_finding_events', 'vms_remediation_tasks', 'vms_scan_jobs', 'vms_asset_events', 'vms_assets', 'vms_assessments', 'vms_wazuh_sync'],
         limitations,
     };
 }

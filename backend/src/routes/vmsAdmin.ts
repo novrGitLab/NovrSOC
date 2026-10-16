@@ -40,7 +40,7 @@ router.get('/admin/status', requirePermission('vms:scope'), async (req: AuthRequ
     const supabase = getSupabase()!;
     const org = requestOrg(req);
     const nowIso = new Date().toISOString();
-    const [scanner, scopes, wazuh, kev, epss, nvd, cveCount, evidence, policies, toolVersions, audit] = await Promise.all([
+    const [scanner, scopes, wazuh, kev, epss, nvd, cveCount, evidence, policies, toolVersions, audit, osv] = await Promise.all([
         loadScannerStatus(),
         supabase.from('vms_scopes').select('status, expires_at, exclusions, allow_discovery, allow_port_scan, allow_vuln_scan').eq('org_id', org),
         supabase.from('vms_wazuh_sync').select('*').eq('org_id', org).maybeSingle(),
@@ -52,6 +52,8 @@ router.get('/admin/status', requirePermission('vms:scope'), async (req: AuthRequ
         supabase.from('vms_assessment_policies').select('*').eq('org_id', org).order('created_at'),
         supabase.from('vms_workers').select('worker_id, tool_versions'),
         readAuditLog(500),
+        // OSV (P16): absent until sql/2026-10-22_p16_osv.sql — then "not set up", never "never fetched".
+        supabase.from('cve_intel').select('osv_fetched_at').not('osv_fetched_at', 'is', null).order('osv_fetched_at', { ascending: false }).limit(1).maybeSingle(),
     ]);
     const versions = new Map((toolVersions.error ? [] : toolVersions.data ?? []).map((w) => [w.worker_id as string, w.tool_versions as Record<string, string>]));
     const sc = scopes.data ?? [];
@@ -64,7 +66,8 @@ router.get('/admin/status', requirePermission('vms:scope'), async (req: AuthRequ
         // The hourly run covers every organisation: show only this one's policy results.
         scheduler: { last_run_at: lastVmsContinuousRun.at, policies: ownPolicyRuns(lastVmsContinuousRun.policies, org) },
         wazuh: wazuh.error ? { available: false } : { available: true, sync: wazuh.data ?? null, freshness: wazuhFreshness(wazuh.data), note: wazuh.data ? null : 'No Wazuh sync has run for this organisation (its Wazuh groups may not be mapped)' },
-        cve_intel: { tracked: cveCount.count ?? 0, kev_checked_at: kev.data?.kev_checked_at ?? null, epss_fetched_at: epss.data?.epss_fetched_at ?? null, nvd_fetched_at: nvd.data?.nvd_fetched_at ?? null },
+        cve_intel: { tracked: cveCount.count ?? 0, kev_checked_at: kev.data?.kev_checked_at ?? null, epss_fetched_at: epss.data?.epss_fetched_at ?? null, nvd_fetched_at: nvd.data?.nvd_fetched_at ?? null,
+            osv: osv.error ? { available: false, note: 'OSV is not set up (sql/2026-10-22_p16_osv.sql)' } : { available: true, fetched_at: osv.data?.osv_fetched_at ?? null } },
         ai: { configured: aiConfigured(), model: AI_MODEL() },
         evidence: evidence.error ? { available: false } : { available: true, retention_days: 30, items: (evidence.data ?? []).length, next_expiry: evidence.data?.[0]?.expires_at ?? null },
         scopes: { active: live.length, expired_or_revoked: sc.length - live.length, with_exclusions: live.filter((s) => (s.exclusions ?? []).length).length, passive_only: live.filter((s) => s.allow_discovery === false).length, vuln_allowed: live.filter((s) => s.allow_vuln_scan).length },

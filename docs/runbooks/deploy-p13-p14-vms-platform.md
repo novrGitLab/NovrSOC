@@ -113,7 +113,7 @@ chmod +x deploy.sh rollback.sh verify-tools.sh
 - Record the manager version. This is the first live confirmation of the Wazuh version.
 
 **Admin and Overview**
-- **VMS Admin** shows the worker at v1.5.0 with its tool versions and `exclusions` under "Enforces".
+- **VMS Admin** shows the worker at v1.5.0 (v1.6.0 if `main` already includes P16; see [deploy-p16-shared-findings.md](deploy-p16-shared-findings.md)) with its tool versions and `exclusions` under "Enforces".
 - **Overview** shows the coverage tiles.
 
 **Asset Inventory**

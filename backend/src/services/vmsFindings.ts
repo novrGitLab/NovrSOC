@@ -242,15 +242,31 @@ export async function ingestPassiveClaims(org: string, jobId: string | null, ass
 }
 
 /**
- * After a verification scan finishes: each finding it was asked to verify and did not detect is
- * verified — only if the job succeeded. A failed or cancelled job verifies nothing.
+ * Whether a finished scan shows that it reached a target (P16). "Not detected" only means something
+ * if the check got an answer: a scanner that could not reach the host also detects nothing. The
+ * worker reports per-target outcomes (reachable_open / reachable_no_open / unreachable / no_route /
+ * insufficient_evidence); a scan that reports none proves nothing about reachability.
  */
-export async function concludeVerification(job: { id: string; org_id: string; options: unknown }, status: 'succeeded' | 'failed' | 'cancelled'): Promise<{ verified: number; still_present: number; inconclusive: number }> {
+export function verificationReach(summary: unknown, target: string): { reached: boolean; detail: string } {
+    const s = (summary ?? {}) as { outcome?: unknown; target_outcomes?: Record<string, { outcome?: unknown }> };
+    const per = s.target_outcomes?.[target]?.outcome ?? s.target_outcomes?.[target.toLowerCase()]?.outcome;
+    if (typeof per === 'string') return { reached: per.startsWith('reachable'), detail: per.replace(/_/g, ' ') };
+    if (s.outcome === 'assessed') return { reached: true, detail: 'assessed' };
+    return { reached: false, detail: typeof s.outcome === 'string' ? `job outcome ${s.outcome.replace(/_/g, ' ')}` : 'the scan did not report whether it reached the target (worker before 1.6.0)' };
+}
+
+/**
+ * After a verification scan finishes: each finding it was asked to verify and did not detect is
+ * verified — only if the job succeeded AND it shows it reached the finding's target. A failed or
+ * cancelled job, or one that cannot show it reached the target, verifies nothing: the finding
+ * stays fixed-pending-verification and the history says why.
+ */
+export async function concludeVerification(job: { id: string; org_id: string; options: unknown }, status: 'succeeded' | 'failed' | 'cancelled', summary: unknown = null): Promise<{ verified: number; still_present: number; inconclusive: number }> {
     const supabase = getSupabase()!;
     const ids = ((job.options as { finding_ids?: unknown })?.finding_ids);
     const out = { verified: 0, still_present: 0, inconclusive: 0 };
     if (!Array.isArray(ids)) return out;
-    const { data } = await supabase.from('vms_findings').select('id, status, last_job_id').eq('org_id', job.org_id).in('id', ids.filter((x): x is string => typeof x === 'string'));
+    const { data } = await supabase.from('vms_findings').select('id, status, last_job_id, asset_value').eq('org_id', job.org_id).in('id', ids.filter((x): x is string => typeof x === 'string'));
     const now = new Date().toISOString();
     for (const f of data ?? []) {
         if (f.last_job_id === job.id) { out.still_present++; continue; } // ingest already reopened it
@@ -260,8 +276,14 @@ export async function concludeVerification(job: { id: string; org_id: string; op
             continue;
         }
         if (f.status !== 'fixed_pending_verification') { out.inconclusive++; continue; }
+        const reach = verificationReach(summary, String(f.asset_value ?? ''));
+        if (!reach.reached) {
+            out.inconclusive++;
+            await event(job.org_id, f.id, 'NovrSOC verification', 'verification', null, null, `Verification scan ${job.id} detected nothing but did not show it reached ${f.asset_value} (${reach.detail}); the finding stays fixed pending verification`);
+            continue;
+        }
         await supabase.from('vms_findings').update({ status: 'verified', verified_at: now, closed_at: now, verification_job_id: job.id, updated_at: now }).eq('id', f.id).eq('status', 'fixed_pending_verification');
-        await event(job.org_id, f.id, 'NovrSOC verification', 'verified', 'fixed_pending_verification', 'verified', `Not detected by verification scan ${job.id}`);
+        await event(job.org_id, f.id, 'NovrSOC verification', 'verified', 'fixed_pending_verification', 'verified', `Not detected by verification scan ${job.id}, which reached ${f.asset_value} (${reach.detail})`);
         out.verified++;
     }
     return out;
