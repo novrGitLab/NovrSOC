@@ -38,6 +38,7 @@ import vmsWorkerRouter from './routes/vmsWorker';
 import vmsFindingsRouter from './routes/vmsFindings';
 import threatInfoRouter from './routes/threatInfo';
 import vmsContinuousRouter from './routes/vmsContinuous';
+import vmsAssessmentsRouter from './routes/vmsAssessments';
 import insightsRouter from './routes/insights';
 import wazuhGroupMapRouter from './routes/wazuhGroupMap';
 import threatManagementRouter from './routes/threatManagement';
@@ -344,6 +345,7 @@ app.use('/api/ai', requireAuth, aiRouter);
 app.use('/api/vms', requireAuth, vmsRouter);
 app.use('/api/vms', requireAuth, vmsFindingsRouter); // findings, remediation (phase P5)
 app.use('/api/vms', requireAuth, vmsContinuousRouter); // schedules, trends, reports, notifications (phase P7)
+app.use('/api/vms', requireAuth, vmsAssessmentsRouter); // asset-centric Full Assessment (phase P13)
 app.use('/api/ti', requireAuth, threatInfoRouter); // Threat Information System (phase P6)
 app.use('/api/insights', requireAuth, insightsRouter); // weekly insights (phase P8)
 // Security Assessment: posture from real case data.

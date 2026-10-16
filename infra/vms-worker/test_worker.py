@@ -297,6 +297,40 @@ ONE_OPEN = nmap_xml('203.0.113.9', extra='<extraports state="closed" count="999"
 HOST_DOWN = nmap_xml('203.0.113.9', status='down', reason='no-response')
 
 
+class Exclusions(unittest.TestCase):
+    """P13: the worker enforces scope exclusions itself and says so in its heartbeat."""
+
+    SCOPES = [{'kind': 'domain', 'value': 'example.test', 'include_subdomains': True, 'allow_port_scan': True, 'allow_vuln_scan': True,
+               'status': 'active', 'expires_at': FUTURE, 'exclusions': ['.legacy.example.test', 'pay.example.test']},
+              {'kind': 'cidr', 'value': '203.0.113.0/28', 'allow_port_scan': True, 'allow_vuln_scan': True, 'status': 'active', 'expires_at': FUTURE,
+               'exclusions': ['203.0.113.5', '203.0.113.8/30']}]
+
+    def test_excluded_hosts_and_addresses_are_out_of_scope(self):
+        self.assertTrue(worker.in_scope('www.example.test', self.SCOPES, 'ports'))
+        for t in ('pay.example.test', 'legacy.example.test', 'a.legacy.example.test', '203.0.113.5', '203.0.113.9'):
+            for activity in ('discovery', 'ports', 'vuln'):
+                self.assertFalse(worker.in_scope(t, self.SCOPES, activity), f'{t} {activity}')
+        self.assertTrue(worker.in_scope('203.0.113.6', self.SCOPES, 'ports'))
+
+    def test_no_whole_range_sweep_over_exclusions(self):
+        self.assertFalse(worker.job_target_allowed('203.0.113.0/28', self.SCOPES, 'ports'))
+
+    def test_excluded_results_never_leave_the_worker(self):
+        sent = []
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                sent.extend(body.get('observations', []))
+                return {'accepted': len(body.get('observations', []))}
+        r = worker.JobRunner(Api(), {'id': 'x1', 'kind': 'discovery', 'targets': ['example.test']}, self.SCOPES)
+        r.send([{'type': 'host', 'host': 'www.example.test', 'source': 'subfinder'}, {'type': 'host', 'host': 'pay.example.test', 'source': 'subfinder'}], 'discovery')
+        self.assertEqual([o['host'] for o in sent], ['www.example.test'])
+
+    def test_heartbeat_announces_the_feature(self):
+        self.assertIn('exclusions', worker.heartbeat_body()['features'])
+        self.assertEqual(worker.VERSION, '1.4.0')
+
+
 class NmapOutcomes(unittest.TestCase):
     """P12: host status and <extraports> are read; each target gets an honest outcome."""
 

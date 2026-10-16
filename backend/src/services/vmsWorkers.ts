@@ -24,6 +24,8 @@ export interface WorkerRow {
     worker_id: string; kinds: string[] | null; version: string | null; tools: Record<string, boolean> | null;
     /** Private networks the worker declares it can reach (P12; absent before that SQL). */
     networks?: string[] | null;
+    /** What it enforces itself, e.g. 'exclusions' (P13). */
+    features?: string[] | null;
     first_seen_at: string; last_seen_at: string; last_heartbeat_at: string | null; last_claim_at: string | null;
     last_job_id: string | null; last_job_at: string | null;
 }
@@ -82,15 +84,17 @@ let warnedMissing = false;
  * Records an authenticated worker request. Never throws: presence must not break job claiming.
  * Returns 'missing' when the presence table does not exist yet.
  */
-export async function recordWorkerSeen(workerId: string, fields: Partial<Pick<WorkerRow, 'kinds' | 'version' | 'tools' | 'networks' | 'last_heartbeat_at' | 'last_claim_at' | 'last_job_id' | 'last_job_at'>>): Promise<'ok' | 'missing' | 'failed'> {
+export async function recordWorkerSeen(workerId: string, fields: Partial<Pick<WorkerRow, 'kinds' | 'version' | 'tools' | 'networks' | 'features' | 'last_heartbeat_at' | 'last_claim_at' | 'last_job_id' | 'last_job_at'>>): Promise<'ok' | 'missing' | 'failed'> {
     const supabase = getSupabase();
     if (!supabase) return 'failed';
     const now = new Date().toISOString();
     let { error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...fields }, { onConflict: 'worker_id' });
-    // Before the P12 SQL there is no networks column: record the rest.
-    if (error && 'networks' in fields && (error.code === 'PGRST204' || error.code === '42703') && /networks/.test(error.message)) {
-        const { networks: _n, ...rest } = fields;
-        ({ error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...rest }, { onConflict: 'worker_id' }));
+    // Before the P12/P13 SQL there is no networks/features column: record the rest.
+    for (const col of ['networks', 'features'] as const) {
+        if (error && col in fields && (error.code === 'PGRST204' || error.code === '42703') && new RegExp(col).test(error.message)) {
+            delete (fields as Record<string, unknown>)[col];
+            ({ error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...fields }, { onConflict: 'worker_id' }));
+        }
     }
     if (!error) return 'ok';
     if (isMissingTable(error)) {

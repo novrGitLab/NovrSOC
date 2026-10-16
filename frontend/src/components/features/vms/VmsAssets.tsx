@@ -9,7 +9,10 @@ import { useSearchParams } from 'next/navigation';
 import { Search, Globe } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
-import { OUTCOME_LABEL, OUTCOME_STYLE, portStates } from '@/lib/vms';
+import { OUTCOME_LABEL, OUTCOME_STYLE, portStates, ASSESSMENT_STATUS_LABEL, ASSESSMENT_STATUS_STYLE, type VmsAssessment } from '@/lib/vms';
+import Link from 'next/link';
+import { apiUrl as assessUrl, apiFetch as assessFetch } from '@/lib/api';
+import { getAdminUser } from '@/lib/admin-auth';
 import { AiPanel } from '@/components/shared/AiPanel';
 import { fmtWat, CRIT_STYLE, EVENT_LABEL, describeEvent, type VmsAsset, type VmsService, type VmsTech, type VmsEvent } from '@/lib/vms';
 
@@ -130,6 +133,7 @@ export function VmsAssets() {
                                 <p className="text-[10px] font-bold text-foreground-muted uppercase mb-1">Technologies</p>
                                 <p>{detail.technologies.length ? detail.technologies.map((t) => `${t.name}${t.version ? ` ${t.version}` : ''}`).join(', ') : '—'}</p>
                             </div>
+                            <AssetAssessments key={`as-${detail.asset.id}`} assetId={detail.asset.id} />
                             <AiPanel key={detail.asset.id} purpose="asset_assessment" subjectId={detail.asset.id} title="AI exposure assessment" />
                             <div>
                                 <p className="text-[10px] font-bold text-foreground-muted uppercase mb-1">History</p>
@@ -139,6 +143,42 @@ export function VmsAssets() {
                     )}
                 </div>
             </div>
+        </div>
+    );
+}
+
+/** Full assessments of one asset, and a button to start one (P13). */
+function AssetAssessments({ assetId }: { assetId: string }) {
+    const canRun = ['super_admin', 'soc_manager', 'analyst'].includes(getAdminUser().role);
+    const [items, setItems] = useState<VmsAssessment[] | null>(null);
+    const [msg, setMsg] = useState<string | null>(null);
+    const [tick, setTick] = useState(0);
+    useEffect(() => {
+        let active = true;
+        void loadJson<{ assessments: VmsAssessment[] }>(`/api/vms/assessments?asset_id=${assetId}`).then((r) => { if (active) { setItems(r.ok ? r.data.assessments : []); if (!r.ok) setMsg(r.error); } });
+        return () => { active = false; };
+    }, [assetId, tick]);
+    async function start() {
+        setMsg(null);
+        const r = await assessFetch(assessUrl('/api/vms/assessments'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ asset_id: assetId }) });
+        const d = await r.json().catch(() => null);
+        setMsg(r.ok ? (d.existing ? 'An assessment of this asset is already in progress.' : 'Full assessment planned.') : d?.error ?? `HTTP ${r.status}`);
+        setTick((t) => t + 1);
+    }
+    return (
+        <div>
+            <div className="flex items-center justify-between mb-1">
+                <p className="text-[10px] font-bold text-foreground-muted uppercase">Assessments</p>
+                {canRun && <button onClick={() => void start()} className="text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1">Run full assessment</button>}
+            </div>
+            {msg && <p className="text-foreground mb-1">{msg}</p>}
+            {items && items.length === 0 && <p className="text-foreground-muted">None yet.</p>}
+            {(items ?? []).slice(0, 5).map((a) => (
+                <Link key={a.id} href={`/admin/vms/assessments?id=${a.id}`} className="flex items-center justify-between gap-2 border-t border-border py-1">
+                    <span className="text-foreground">{fmtWat(a.requested_at)} · {a.progress.finished}/{a.progress.total} checks</span>
+                    <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${ASSESSMENT_STATUS_STYLE[a.status]}`}>{ASSESSMENT_STATUS_LABEL[a.status]}</span>
+                </Link>
+            ))}
         </div>
     );
 }

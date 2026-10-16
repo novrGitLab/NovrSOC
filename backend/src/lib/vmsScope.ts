@@ -14,6 +14,8 @@
 //              (true unless the entry was registered for passive monitoring only)
 //   ports      allow_port_scan        vuln   allow_vuln_scan
 // Wildcards, URLs, ports, credentials and malformed names are never targets.
+// Exclusions (phase P13) carve targets out of an entry: a host, ".example.com" (every name under
+// it), an IP or a CIDR. An excluded target is not covered by that entry for any activity.
 
 import { isIP } from 'net';
 import { parseCidr, ipAllowed } from './cidr';
@@ -25,6 +27,29 @@ export interface ScopeEntry {
     allow_port_scan: boolean; allow_vuln_scan: boolean; status: 'active' | 'revoked'; expires_at: string;
     /** Absent on rows written before P9: treated as true, the meaning those rows were approved with. */
     allow_discovery?: boolean;
+    /** Never touched even though the entry covers them (P13; absent before that SQL). */
+    exclusions?: string[] | null;
+}
+
+/** Canonical form of one exclusion, or null when it is not a host, .suffix, IP or CIDR. */
+export function normalizeExclusion(input: string): string | null {
+    const s = typeof input === 'string' ? input.trim().toLowerCase() : '';
+    if (!s) return null;
+    if (s.startsWith('.')) { const h = normalizeHostname(s.slice(1)); return h ? `.${h}` : null; }
+    if (s.includes('/')) { const c = parseCidr(s); return c ? `${c.address.toLowerCase()}/${c.prefix}` : null; }
+    if (isIP(s)) return s;
+    return normalizeHostname(s);
+}
+
+/** Whether a target is carved out by an entry's exclusions. */
+export function isExcluded(target: Target, exclusions: readonly string[] | null | undefined): boolean {
+    for (const x of exclusions ?? []) {
+        if (target.type === 'host') {
+            if (x === target.value) return true;
+            if (x.startsWith('.') && (target.value === x.slice(1) || target.value.endsWith(x))) return true;
+        } else if (x === target.value || (x.includes('/') && ipAllowed(target.value, [x]))) return true;
+    }
+    return false;
 }
 
 /** worker_id of the backend's own passive-collection runner (jobs/cniiPassiveJob.ts): its heartbeats say nothing about the scanner worker. */
@@ -83,6 +108,7 @@ const allows = (e: ScopeEntry, a: Activity) => a === 'passive' || (a === 'discov
 export function coveringScope(target: Target, entries: ScopeEntry[], activity: Activity, now = Date.now()): ScopeEntry | null {
     for (const e of entries) {
         if (!usable(e, now) || !allows(e, activity)) continue;
+        if (isExcluded(target, e.exclusions)) continue;
         if (target.type === 'host' && e.kind === 'domain' && (target.value === e.value || (e.include_subdomains && target.value.endsWith(`.${e.value}`)))) return e;
         if (target.type === 'ip' && e.kind === 'ip' && target.value === e.value) return e;
         if (target.type === 'ip' && e.kind === 'cidr' && ipAllowed(target.value, [e.value])) return e;

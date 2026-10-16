@@ -3,6 +3,8 @@
 export interface VmsScope {
     id: string; kind: 'domain' | 'ip' | 'cidr'; value: string; include_subdomains: boolean; allow_port_scan: boolean; allow_vuln_scan: boolean;
     authorization_reference: string; notes: string | null; status: 'active' | 'revoked'; approved_by: string; approved_at: string; expires_at: string;
+    /** Hosts, .subdomains, IPs or CIDRs never touched (P13). */
+    exclusions?: string[];
     revoked_by: string | null; revoked_at: string | null;
 }
 export interface VmsScan {
@@ -81,3 +83,32 @@ export const OUTCOME_STYLE: Record<string, string> = {
 };
 /** "997 filtered · 3 closed" from nmap port-state counts. */
 export const portStates = (c: Record<string, number> | undefined) => Object.entries(c ?? {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v} ${k}`).join(' · ');
+
+/** Full Assessment (P13). Status is derived by the backend from the scan jobs. */
+export type StepStatus = 'pending' | 'running' | 'completed' | 'findings_detected' | 'failed' | 'not_attempted' | 'unsupported';
+export type AssessmentStatus = 'in_progress' | 'completed' | 'partial' | 'failed' | 'not_attempted' | 'cancelled';
+export interface VmsAssessmentStep {
+    kind: string; label: string; decision: 'queued' | 'not_attempted' | 'unsupported'; reason: string; status: StepStatus; detail: string;
+    job_id: string | null; previous_job_ids: string[]; finding_ids: string[];
+    job: { id: string; status: string; started_at: string | null; finished_at: string | null; outcome: string | null; target_outcomes: Record<string, { outcome: string; reason: string }> | null } | null;
+}
+export interface VmsAssessment {
+    id: string; asset_id: string | null; scope_id: string; target: string; profile: string; requested_by: string; requested_at: string;
+    retried_at: string | null; cancelled_at: string | null; status: AssessmentStatus; steps: VmsAssessmentStep[];
+    step_counts: Record<string, number>; progress: { finished: number; total: number };
+}
+export const STEP_STATUS_LABEL: Record<StepStatus, string> = {
+    pending: 'Pending', running: 'Running', completed: 'Completed', findings_detected: 'Findings detected',
+    failed: 'Failed', not_attempted: 'Not attempted', unsupported: 'Unsupported',
+};
+export const STEP_STATUS_STYLE: Record<StepStatus, string> = {
+    pending: 'bg-card-muted text-foreground-muted', running: 'bg-blue/10 text-blue', completed: 'bg-green/10 text-green',
+    findings_detected: 'bg-orange/10 text-orange', failed: 'bg-red/10 text-red', not_attempted: 'bg-amber/10 text-amber', unsupported: 'bg-amber/10 text-amber',
+};
+export const ASSESSMENT_STATUS_LABEL: Record<AssessmentStatus, string> = {
+    in_progress: 'In progress', completed: 'Completed', partial: 'Partly completed', failed: 'Failed', not_attempted: 'Not attempted', cancelled: 'Cancelled',
+};
+export const ASSESSMENT_STATUS_STYLE: Record<AssessmentStatus, string> = {
+    in_progress: 'bg-blue/10 text-blue', completed: 'bg-green/10 text-green', partial: 'bg-amber/10 text-amber',
+    failed: 'bg-red/10 text-red', not_attempted: 'bg-amber/10 text-amber', cancelled: 'bg-card-muted text-foreground-muted',
+};

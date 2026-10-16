@@ -104,6 +104,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         section: 'Vulnerability Management', collapsible: true, icon: Radar, groupLabel: 'Vulnerability Management',
         items: [
             { id: 'vms-overview', label: 'Overview', href: '/admin/vms', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Radar },
+            { id: 'vms-assessments', label: 'Assessments', href: '/admin/vms/assessments', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: ScanSearch },
             { id: 'vms-assets', label: 'Attack Surface', href: '/admin/vms/assets', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Globe },
             { id: 'vms-findings', label: 'Findings', href: '/admin/vms/findings', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Bug },
             { id: 'vms-remediation', label: 'Remediation', href: '/admin/vms/remediation', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Wrench },

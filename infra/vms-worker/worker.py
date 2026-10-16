@@ -65,7 +65,9 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
-VERSION = '1.3.0'
+VERSION = '1.4.0'
+# What this worker enforces itself; the backend only gives jobs that need a feature to workers announcing it.
+FEATURES = ['exclusions']
 # Networks this worker can actually reach besides the public internet (comma-separated CIDRs), e.g.
 # a VPN into a client LAN. Private, link-local and CGNAT addresses outside them are not scanned.
 WORKER_NETWORKS = [n.strip() for n in os.environ.get('VMS_WORKER_NETWORKS', '').split(',') if n.strip()]
@@ -124,6 +126,27 @@ def parse_target(s: str):
         return ('host', h) if h else None
 
 
+def is_excluded(t: tuple, exclusions) -> bool:
+    """Same rules as the backend (lib/vmsScope.ts isExcluded): host, '.suffix', IP or CIDR."""
+    for x in exclusions or []:
+        x = str(x).strip().lower()
+        if not x:
+            continue
+        if t[0] == 'host':
+            if x == t[1] or (x.startswith('.') and (t[1] == x[1:] or t[1].endswith(x))):
+                return True
+        else:
+            if x == t[1]:
+                return True
+            if '/' in x:
+                try:
+                    if ipaddress.ip_address(t[1]) in ipaddress.ip_network(x, strict=False):
+                        return True
+                except ValueError:
+                    pass
+    return False
+
+
 def in_scope(target: str, scopes: list[dict], activity: str) -> bool:
     """True when an active, unexpired scope entry covers target for activity (discovery|ports|vuln).
 
@@ -142,6 +165,8 @@ def in_scope(target: str, scopes: list[dict], activity: str) -> bool:
         except (KeyError, ValueError):
             continue
         if exp <= now:
+            continue
+        if is_excluded(t, e.get('exclusions')):
             continue
         if not e.get('allow_discovery', True):
             continue
@@ -174,7 +199,7 @@ def job_target_allowed(raw: str, scopes: list[dict], activity: str) -> bool:
     """A job target is a host/IP in scope, or exactly an approved CIDR entry."""
     if '/' in raw:
         return any(e.get('kind') == 'cidr' and e.get('status') == 'active' and str(e.get('value')) == raw
-                   and _unexpired(e) and e.get('allow_discovery', True)
+                   and _unexpired(e) and e.get('allow_discovery', True) and not e.get('exclusions')
                    and (activity != 'ports' or e.get('allow_port_scan'))
                    and (activity != 'vuln' or e.get('allow_vuln_scan')) for e in scopes)
     return in_scope(raw, scopes, activity)
@@ -613,7 +638,7 @@ def tool_inventory() -> dict:
 
 
 def heartbeat_body() -> dict:
-    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory(), 'networks': WORKER_NETWORKS}
+    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory(), 'networks': WORKER_NETWORKS, 'features': FEATURES}
 
 
 def send_heartbeat(api: 'Api', body: dict, sleep=time.sleep) -> dict:

@@ -27,7 +27,7 @@ import { dbErrorMessage, isUuid } from '../services/cases';
 import { logAudit } from '../lib/audit';
 import { loadScannerStatus, jobAttention } from '../services/vmsWorkers';
 import { isStaffRole } from '../lib/resolveOrg';
-import { validateScopeValue, parseTarget, coveringScope, type ScopeEntry, type Activity } from '../lib/vmsScope';
+import { validateScopeValue, parseTarget, coveringScope, normalizeExclusion, type ScopeEntry, type Activity } from '../lib/vmsScope';
 
 const router = Router();
 const MAX_SCOPE_DAYS = 400;
@@ -88,6 +88,8 @@ const NewScope = z.object({
     value: z.string().min(1).max(253),
     include_subdomains: z.boolean().default(true),
     allow_discovery: z.boolean().default(true),
+    // Hosts, .subdomains, IPs or CIDRs inside the entry that must never be touched (P13).
+    exclusions: z.array(z.string().max(253)).max(200).default([]),
     allow_port_scan: z.boolean().default(false),
     allow_vuln_scan: z.boolean().default(false),
     authorization_reference: z.string().trim().min(3).max(300),
@@ -100,6 +102,12 @@ router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, 
     if (!p.success) { res.status(400).json({ error: `Invalid scope: ${p.error.issues[0]?.path.join('.') || ''} ${p.error.issues[0]?.message ?? ''}`.trim() }); return; }
     const v = validateScopeValue(p.data.kind, p.data.value);
     if (!v.ok) { res.status(400).json({ error: v.error }); return; }
+    const exclusions: string[] = [];
+    for (const raw of p.data.exclusions) {
+        const x = normalizeExclusion(raw);
+        if (!x) { res.status(400).json({ error: `Not a valid exclusion (host, .subdomain, IP or CIDR): ${String(raw).slice(0, 80)}` }); return; }
+        exclusions.push(x);
+    }
     // An AS number covers no host or address: it registers the network for passive monitoring.
     const allowDiscovery = p.data.kind === 'asn' ? false : p.data.allow_discovery;
     if (p.data.kind === 'asn' && (p.data.allow_port_scan || p.data.allow_vuln_scan)) { res.status(400).json({ error: 'An AS number is registered for passive monitoring only; add its ranges as CIDR entries to scan them' }); return; }
@@ -112,6 +120,7 @@ router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, 
         allow_port_scan: p.data.allow_port_scan, allow_vuln_scan: p.data.allow_vuln_scan, authorization_reference: p.data.authorization_reference,
         // Only written when false: rows without the column (before sql/2026-10-17_p9_cnii.sql) mean true.
         ...(allowDiscovery ? {} : { allow_discovery: false }),
+        ...(exclusions.length ? { exclusions: [...new Set(exclusions)] } : {}),
         notes: p.data.notes ?? null, approved_by: actor(req), expires_at: new Date(exp).toISOString(),
     }).select('*').single();
     if (error) {
@@ -119,7 +128,7 @@ router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, 
         fail(res, error); return;
     }
     logAudit({ user: actor(req), action: 'VMS_SCOPE_APPROVED', resource: 'vms_scope', resource_id: data.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', severity: 'warning',
-        details: `${p.data.kind} ${v.value} discovery=${allowDiscovery} ports=${p.data.allow_port_scan} vuln=${p.data.allow_vuln_scan} ref=${p.data.authorization_reference}`.slice(0, 200) });
+        details: `${p.data.kind} ${v.value} discovery=${allowDiscovery} ports=${p.data.allow_port_scan} vuln=${p.data.allow_vuln_scan}${exclusions.length ? ` excl=${exclusions.length}` : ''} ref=${p.data.authorization_reference}`.slice(0, 200) });
     res.status(201).json({ scope: data });
 });
 
@@ -188,7 +197,11 @@ export async function validateScan(org: string, input: z.infer<typeof NewScan>, 
     const requested = input.targets?.length ? input.targets : [entry.value];
     const targets: string[] = [];
     for (const raw of requested) {
-        if (entry.kind === 'cidr' && raw === entry.value) { targets.push(raw); continue; } // a whole authorised range
+        if (entry.kind === 'cidr' && raw === entry.value) {
+            // A whole range would sweep its excluded addresses too: queue individual addresses instead.
+            if ((entry.exclusions ?? []).length) return { ok: false, status: 400, error: 'This range has exclusions: queue the addresses to assess individually' };
+            targets.push(raw); continue;
+        }
         const t = parseTarget(raw);
         if (!t || !coveringScope(t, [entry], activity)) return { ok: false, status: 400, error: `Not in this scope: ${String(raw).slice(0, 80)}` };
         targets.push(t.value);
@@ -198,7 +211,7 @@ export async function validateScan(org: string, input: z.infer<typeof NewScan>, 
 }
 
 /** Queues a scan after checking every target against scope. Shared with the scheduler (Release 3). */
-export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification'; options?: Record<string, unknown> } = {}):
+export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification'; options?: Record<string, unknown>; assessment_id?: string } = {}):
     Promise<{ ok: true; job: Record<string, unknown>; existing: boolean } | { ok: false; status: number; error: string }> {
     const supabase = getSupabase()!;
     const v = await validateScan(org, input, extra.options);
@@ -208,7 +221,7 @@ export async function queueScan(org: string, by: string, input: z.infer<typeof N
     const { data: open } = await supabase.from('vms_scan_jobs').select('*').eq('org_id', org).eq('scope_id', entry.id).eq('kind', input.kind).in('status', ['queued', 'running']);
     const dup = (open ?? []).find((j) => JSON.stringify(j.targets) === JSON.stringify(uniq) && JSON.stringify(j.options ?? {}) === JSON.stringify(options));
     if (dup) return { ok: true, job: dup, existing: true };
-    const ins = await supabase.from('vms_scan_jobs').insert({ org_id: org, scope_id: entry.id, kind: input.kind, targets: uniq, options, requested_by: by, schedule_id: extra.schedule_id ?? null, purpose: extra.purpose ?? 'assessment' }).select('*').single();
+    const ins = await supabase.from('vms_scan_jobs').insert({ org_id: org, scope_id: entry.id, kind: input.kind, targets: uniq, options, requested_by: by, schedule_id: extra.schedule_id ?? null, purpose: extra.purpose ?? 'assessment', ...(extra.assessment_id ? { assessment_id: extra.assessment_id } : {}) }).select('*').single();
     if (ins.error) return { ok: false, status: 502, error: dbErrorMessage(ins.error) };
     logAudit({ user: by, action: 'VMS_SCAN_QUEUED', resource: 'vms_scan_job', resource_id: ins.data.id, org_id: org, ip: 'n/a', result: 'success', details: `${input.kind} ${uniq.slice(0, 5).join(', ')}${uniq.length > 5 ? ` +${uniq.length - 5}` : ''}` });
     return { ok: true, job: ins.data, existing: false };
