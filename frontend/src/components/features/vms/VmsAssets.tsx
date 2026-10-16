@@ -9,6 +9,7 @@ import { useSearchParams } from 'next/navigation';
 import { Search, Globe } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
+import { OUTCOME_LABEL, OUTCOME_STYLE, portStates } from '@/lib/vms';
 import { AiPanel } from '@/components/shared/AiPanel';
 import { fmtWat, CRIT_STYLE, EVENT_LABEL, describeEvent, type VmsAsset, type VmsService, type VmsTech, type VmsEvent } from '@/lib/vms';
 
@@ -93,6 +94,14 @@ export function VmsAssets() {
                                 <h2 className="text-sm font-black font-mono text-foreground break-all">{detail.asset.value}</h2>
                                 <p className="text-foreground-muted">{detail.asset.asset_type} · {detail.asset.exposure} · first seen {fmtWat(detail.asset.first_seen)} · last seen {fmtWat(detail.asset.last_seen)} · found by {detail.asset.discovery_sources.join(', ')}</p>
                             </div>
+                            {detail.asset.last_assessment && (
+                                <div className="border border-border rounded-lg p-2 space-y-1">
+                                    <p className="text-[10px] font-bold text-foreground-muted uppercase">Last assessment · {detail.asset.last_assessment.method} · {fmtWat(detail.asset.last_assessed_at ?? null)}</p>
+                                    <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${OUTCOME_STYLE[detail.asset.last_assessment.outcome] ?? ''}`}>{OUTCOME_LABEL[detail.asset.last_assessment.outcome] ?? detail.asset.last_assessment.outcome}</span>
+                                    <p className="text-foreground">{detail.asset.last_assessment.reason}</p>
+                                    {detail.asset.last_assessment.ports_scanned ? <p className="text-foreground-muted">{detail.asset.last_assessment.ports_scanned} port(s) scanned: {portStates(detail.asset.last_assessment.port_states)}{detail.asset.last_assessment.host_status ? ` · nmap host status ${detail.asset.last_assessment.host_status}${detail.asset.last_assessment.host_status_reason ? ` (${detail.asset.last_assessment.host_status_reason})` : ''}` : ''}</p> : null}
+                                </div>
+                            )}
                             <div className="flex flex-wrap gap-3 items-end">
                                 <label className="text-[11px] font-bold text-foreground-muted">Owner
                                     <input key={detail.asset.id} defaultValue={detail.asset.owner ?? ''} onBlur={(e) => { if (e.target.value !== (detail.asset.owner ?? '')) void patch({ owner: e.target.value.trim() || null }); }} className="block bg-card-muted border border-border rounded px-2 py-1 text-xs" placeholder="team or person" />

@@ -3,6 +3,8 @@
 //     in the queue once; after that it is failed with the reason. Scan status therefore always
 //     reflects a worker that is actually alive.
 //   • queued jobs whose scope has expired or been revoked are cancelled, never run.
+//   • hourly: raw tool evidence past its 30-day expiry is deleted (vms_job_evidence only — never
+//     assets, services, findings or job records). Reads already hide expired rows.
 
 import { getSupabase } from '../services/geoEnrichment';
 import { WORKER_STALE_MINUTES } from '../routes/vms';
@@ -39,12 +41,18 @@ export async function runVmsMaintenance(now = Date.now()): Promise<{ requeued: n
 
 export function startVmsMaintenanceJob(): void {
     let running = false;
+    let lastPurge = 0;
     const tick = async () => {
         if (running) return;
         running = true;
         try {
             const r = await runVmsMaintenance();
             if (r.requeued || r.failed || r.cancelled) console.log(`[vms] requeued ${r.requeued}, failed ${r.failed}, cancelled ${r.cancelled}`);
+            if (Date.now() - lastPurge >= 60 * 60_000) {
+                lastPurge = Date.now();
+                const n = await purgeExpiredEvidence();
+                if (n) console.log(`[vms] ${n} expired raw-evidence item(s) deleted`);
+            }
         } catch (err) {
             console.error('[vms] maintenance failed:', err instanceof Error ? err.message : err);
         } finally {
@@ -53,4 +61,16 @@ export function startVmsMaintenanceJob(): void {
     };
     void tick();
     setInterval(() => { void tick(); }, TICK_MS).unref();
+}
+
+/** Deletes raw evidence past expires_at. Touches vms_job_evidence only. Returns rows removed (0 before the P12 SQL). */
+export async function purgeExpiredEvidence(now = Date.now()): Promise<number> {
+    const supabase = getSupabase();
+    if (!supabase) return 0;
+    const { data, error } = await supabase.from('vms_job_evidence').delete().lt('expires_at', new Date(now).toISOString()).select('id');
+    if (error) {
+        if (!/vms_job_evidence/.test(error.message) && error.code !== 'PGRST205') console.error('[vms] evidence purge failed:', error.message.slice(0, 160));
+        return 0;
+    }
+    return (data ?? []).length;
 }

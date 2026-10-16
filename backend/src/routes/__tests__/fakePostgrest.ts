@@ -19,6 +19,8 @@ export interface FakePostgrest {
     tables: Record<string, Row[]>;
     /** Every request seen, as "METHOD table?query" — for asserting what a route asked for. */
     log: string[];
+    /** Columns a table does not have yet (a migration not applied): writes naming them fail as PostgREST does. */
+    missingColumns: Record<string, string[]>;
     close(): Promise<void>;
 }
 
@@ -131,6 +133,7 @@ export type FakeRpc = (args: Record<string, unknown>, tables: Record<string, Row
 export async function startFakePostgrest(tables: Record<string, Row[]> = {}, relations: Record<string, string> = {}, defaults: Record<string, Row> = {}, rpcs: Record<string, FakeRpc> = {}): Promise<FakePostgrest> {
     const rel = { ...DEFAULT_RELATIONS, ...relations };
     const log: string[] = [];
+    const missingColumns: Record<string, string[]> = {};
 
     const server = http.createServer((req, res) => {
         let body = '';
@@ -225,6 +228,8 @@ export async function startFakePostgrest(tables: Record<string, Row[]> = {}, rel
                     return;
                 }
                 const payload = body ? JSON.parse(body) : null;
+                const absent = (missingColumns[table] ?? []).find((c) => (Array.isArray(payload) ? payload : [payload]).some((r) => r && typeof r === 'object' && c in r));
+                if (absent && (req.method === 'POST' || req.method === 'PATCH')) { send(400, { code: 'PGRST204', message: `Could not find the '${absent}' column of '${table}' in the schema cache` }); return; }
                 const returning = /return=representation/.test(prefer);
                 if (req.method === 'POST') {
                     const conflict = url.searchParams.get('on_conflict')?.split(',');
@@ -267,6 +272,7 @@ export async function startFakePostgrest(tables: Record<string, Row[]> = {}, rel
         url: `http://127.0.0.1:${port}`,
         tables,
         log,
+        missingColumns,
         close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     };
 }

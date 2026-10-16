@@ -5,6 +5,12 @@
 // organisation's ACTIVE scope for the job's activity. Anything outside scope is dropped and
 // counted, never stored. Changes are recorded in vms_asset_events so the attack-surface view can
 // show what is new, what changed and what disappeared.
+//
+// Assessments (phase P12): a host observation may carry what the scan learned about reaching the
+// target (outcome, reason, nmap host status, port-state counts). It is stored on the asset
+// (last_assessment) so the inventory says "unreachable from this scanner" instead of looking empty.
+// Only evidence that something answered marks a host alive or moves last_seen; "no answer" never
+// marks it offline or gone.
 
 import { z } from 'zod';
 import { isIP } from 'net';
@@ -13,6 +19,18 @@ import { coveringScope, parseTarget, type Activity, type ScopeEntry } from '../l
 
 const str = (max: number) => z.string().trim().min(1).max(max);
 const Tech = z.object({ name: str(80), version: z.string().trim().max(60).optional().nullable() });
+export const ASSESSMENT_OUTCOMES = ['reachable_open', 'reachable_no_open', 'unreachable', 'no_route', 'insufficient_evidence'] as const;
+export const Assessment = z.object({
+    outcome: z.enum(ASSESSMENT_OUTCOMES),
+    reason: z.string().trim().max(400),
+    method: z.enum(['nmap', 'httpx']),
+    host_status: z.string().max(20).nullish(),
+    host_status_reason: z.string().max(40).nullish(),
+    port_states: z.record(z.string().max(30), z.number().int().min(0).max(1_000_000)).optional(),
+    ports_scanned: z.number().int().min(0).max(1_000_000).optional(),
+}).strict();
+export type AssessmentT = z.infer<typeof Assessment>;
+const answered = (a: AssessmentT | undefined) => !a || a.outcome === 'reachable_open' || a.outcome === 'reachable_no_open';
 export const HostObservation = z.object({
     type: z.literal('host'),
     host: str(253),                                  // hostname or IP
@@ -22,6 +40,7 @@ export const HostObservation = z.object({
     http: z.object({ url: z.string().max(2048), status: z.number().int().min(100).max(599).nullable().optional(), title: z.string().max(300).nullable().optional(), webserver: z.string().max(200).nullable().optional(), cdn: z.string().max(80).nullable().optional() }).optional(),
     technologies: z.array(Tech).max(100).default([]),
     source: z.enum(['subfinder', 'amass', 'dnsx', 'httpx', 'nmap', 'naabu', 'manual', 'wazuh']),
+    assessment: Assessment.optional(),
 });
 export const ServiceObservation = z.object({
     type: z.literal('service'),
@@ -46,7 +65,20 @@ const isPublic = (ip: string): boolean => {
     return !(a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) || a === 0);
 };
 
-export interface IngestResult { accepted: number; rejected_out_of_scope: number; rejected_invalid: number; events: number }
+export interface IngestResult { accepted: number; rejected_out_of_scope: number; rejected_invalid: number; events: number; assessments_not_stored?: number }
+
+// Before sql/2026-10-19_p12_vms_outcomes_evidence.sql the assessment columns do not exist: write
+// without them (the job summary still carries the outcome) and say so once.
+const missingAssessmentColumns = (e: { message?: string; code?: string } | null) => !!e && (e.code === 'PGRST204' || e.code === '42703') && /last_assess/.test(e.message ?? '');
+let warnedAssessment = false;
+async function writeAsset<T>(op: (fields: Record<string, unknown>) => PromiseLike<{ data?: T | null; error: { message: string; code?: string } | null }>, fields: Record<string, unknown>): Promise<{ data?: T | null; error: { message: string; code?: string } | null; dropped: boolean }> {
+    const r = await op(fields);
+    if (!missingAssessmentColumns(r.error)) return { ...r, dropped: false };
+    if (!warnedAssessment) console.warn('[vms] scan assessments are not stored on assets yet (run sql/2026-10-19_p12_vms_outcomes_evidence.sql)');
+    warnedAssessment = true;
+    const { last_assessment: _a, last_assessed_at: _b, ...rest } = fields;
+    return { ...(await op(rest)), dropped: true };
+}
 
 /** Validates, scope-checks and stores one batch of observations for a running job. */
 export async function ingestObservations(job: { id: string; org_id: string; kind: string; started_at: string | null }, raw: unknown[], scopes: ScopeEntry[]): Promise<IngestResult> {
@@ -76,8 +108,11 @@ export async function ingestObservations(job: { id: string; org_id: string; kind
         if (o.type === 'host') {
             const ips = [...new Set(o.ips.filter((ip) => isIP(ip)).map((ip) => ip.toLowerCase()))].sort();
             const exposure = ips.length ? (ips.some(isPublic) ? 'internet' : 'internal') : target.type === 'ip' ? (isPublic(target.value) ? 'internet' : 'internal') : 'unknown';
+            const seen = answered(o.assessment);
+            const assessment = o.assessment ? { last_assessment: { ...o.assessment, job_id: job.id }, last_assessed_at: now } : {};
             const fields: Record<string, unknown> = {
-                last_seen: now, status: 'active', scope_id: scope.id,
+                // Only an answer is a sighting: an unreachable target keeps its last_seen and status.
+                ...(seen || !existing ? { last_seen: now, status: 'active' } : {}), scope_id: scope.id, ...assessment,
                 ...(ips.length ? { ips } : {}),
                 ...(o.dns ? { dns: o.dns } : {}),
                 ...(o.alive !== undefined ? { alive: o.alive } : {}),
@@ -85,20 +120,23 @@ export async function ingestObservations(job: { id: string; org_id: string; kind
                 ...(exposure !== 'unknown' ? { exposure } : {}),
             };
             if (!existing) {
-                const ins = await supabase.from('vms_assets').insert({ org_id: job.org_id, asset_type: assetType, value: target.value, hostnames: target.type === 'host' ? [target.value] : [], discovery_sources: [o.source], first_seen: now, ...fields }).select('id').single();
-                if (ins.error) throw new Error(`asset insert failed: ${ins.error.message}`);
+                const ins = await writeAsset<{ id: string }>((f) => supabase.from('vms_assets').insert({ org_id: job.org_id, asset_type: assetType, value: target.value, hostnames: target.type === 'host' ? [target.value] : [], discovery_sources: [o.source], first_seen: now, last_seen: now, ...f }).select('id').single(), fields);
+                if (ins.error || !ins.data) throw new Error(`asset insert failed: ${ins.error?.message ?? 'no row'}`);
+                if (ins.dropped) out.assessments_not_stored = (out.assessments_not_stored ?? 0) + 1;
                 assetId = ins.data.id;
-                events.push({ org_id: job.org_id, asset_id: assetId, job_id: job.id, event: 'asset_new', details: { value: target.value, source: o.source } });
+                events.push({ org_id: job.org_id, asset_id: assetId, job_id: job.id, event: 'asset_new', details: { value: target.value, source: o.source, ...(o.assessment ? { assessment: o.assessment.outcome } : {}) } });
             } else {
                 assetId = existing.id;
                 const changes: Record<string, unknown> = {};
                 if (ips.length && JSON.stringify([...(existing.ips ?? [])].sort()) !== JSON.stringify(ips)) changes.ips = { from: existing.ips, to: ips };
                 if (o.http && (existing.http?.status ?? null) !== (o.http.status ?? null)) changes.http_status = { from: existing.http?.status ?? null, to: o.http.status ?? null };
                 if (o.http && (existing.http?.title ?? null) !== (o.http.title ?? null)) changes.http_title = { from: existing.http?.title ?? null, to: o.http.title ?? null };
-                if (existing.status === 'gone') changes.status = { from: 'gone', to: 'active' };
+                if (existing.status === 'gone' && seen) changes.status = { from: 'gone', to: 'active' };
+                if (o.assessment && (existing.last_assessment?.outcome ?? null) !== o.assessment.outcome) changes.reachability = { from: existing.last_assessment?.outcome ?? null, to: o.assessment.outcome };
                 const sources = [...new Set([...(existing.discovery_sources ?? []), o.source])];
-                const upd = await supabase.from('vms_assets').update({ ...fields, discovery_sources: sources }).eq('id', assetId);
+                const upd = await writeAsset((f) => supabase.from('vms_assets').update({ ...f, discovery_sources: sources }).eq('id', assetId), fields);
                 if (upd.error) throw new Error(`asset update failed: ${upd.error.message}`);
+                if (upd.dropped) out.assessments_not_stored = (out.assessments_not_stored ?? 0) + 1;
                 if (Object.keys(changes).length) events.push({ org_id: job.org_id, asset_id: assetId, job_id: job.id, event: 'asset_changed', details: changes });
             }
             for (const t of o.technologies) {

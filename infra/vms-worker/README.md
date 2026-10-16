@@ -58,6 +58,33 @@ This sends one heartbeat and claims nothing. It prints `OK: the backend accepted
 | `not ready for workers (HTTP 503)` | Railway has no valid `VMS_WORKER_TOKEN`, or the presence SQL (`sql/2026-10-18_p10_vms_worker_presence.sql`) is not applied |
 | `cannot reach the backend` | DNS, firewall or outbound HTTPS from this host |
 
+### Scan outcomes (worker 1.3.0)
+
+Every target of a ports or discovery job gets a host result, stored on its IP asset and shown on the Scans and Attack Surface pages:
+
+| Outcome | Meaning |
+|---|---|
+| Reachable — open ports found | Something answered, and at least one port is open |
+| Reachable — no open ports | Something answered (closed ports reply), and nothing is open in the ports scanned |
+| Unreachable from this scanner | Nothing answered this scanner. The device may still be online; a firewall dropping every probe looks the same |
+| Not attempted — no route | A private, link-local or CGNAT address outside `VMS_WORKER_NETWORKS`. The job fails with the reason |
+| Insufficient evidence | The tool reported nothing usable for the target (e.g. no HTTP answer during discovery) |
+
+A tool error or unreadable output fails the job.
+
+Private targets (for example a Wazuh endpoint's `10.x` address) are reachable only by a worker inside that network. Run the same `worker.py` there with its own `VMS_WORKER_ID`, and declare the network in `VMS_WORKER_NETWORKS`. Only declare a network on a host that really has a route to it.
+
+### Raw output
+
+The worker sends each tool's raw output, capped at 64 KB and with the worker token and bearer credentials removed. The backend redacts it again and keeps it 30 days (`vms_job_evidence`). If the backend cannot store it, the scan carries on.
+
+### Stopping and restarting
+
+`systemctl stop` or `restart` sends SIGTERM to the worker (`KillMode=mixed`). The worker then:
+1. stops the running tool;
+2. hands the job back to the queue, so another run picks it up (after three hand-backs the job fails, with the reason);
+3. exits within `TimeoutStopSec`.
+
 ### What "connected" means
 
 The worker sends its own heartbeat every `VMS_PRESENCE_SECONDS` (60) and polls for jobs every `VMS_POLL_SECONDS` (20). The backend records every request that carries the right token. The dashboard shows the worker as connected while one arrived in the last 3 minutes. A running process that cannot authenticate never shows as connected.

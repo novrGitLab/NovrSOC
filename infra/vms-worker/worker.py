@@ -24,6 +24,19 @@ rejected request, backend not ready) instead of repeating it every poll, and wri
 line every VMS_STATUS_LOG_SECONDS (default 600) so a quiet log is never ambiguous.
 
   python3 worker.py --check   one heartbeat to the backend and a plain-language result; claims nothing
+
+Outcomes (1.3.0): every target of a ports or discovery job gets a host-level result with an
+assessment, so "nothing found" is never confused with "could not look":
+  reachable_open      something answered and at least one port is open
+  reachable_no_open   something answered (closed ports reply), nothing open in the ports scanned
+  unreachable         nothing answered from this scanner — the device may still be online (a
+                      firewall dropping every probe looks the same)
+  no_route            a private address outside the networks this worker declares
+                      (VMS_WORKER_NETWORKS): not attempted, with the reason
+  insufficient_evidence  the tool reported nothing usable for the target
+A tool error or unreadable output fails the job. Raw tool output (bounded, redacted) is sent as
+evidence; the backend keeps it 30 days. SIGTERM stops the running tool and hands the job back to
+the queue instead of leaving it to time out.
 """
 from __future__ import annotations
 
@@ -42,6 +55,7 @@ from datetime import datetime
 from typing import Iterable, Optional
 
 import requests
+import signal
 
 log = logging.getLogger('vms-worker')
 
@@ -51,7 +65,13 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
-VERSION = '1.2.0'
+VERSION = '1.3.0'
+# Networks this worker can actually reach besides the public internet (comma-separated CIDRs), e.g.
+# a VPN into a client LAN. Private, link-local and CGNAT addresses outside them are not scanned.
+WORKER_NETWORKS = [n.strip() for n in os.environ.get('VMS_WORKER_NETWORKS', '').split(',') if n.strip()]
+EVIDENCE_MAX_BYTES = 64 * 1024         # per tool run; the rest is cut and marked truncated
+HEARTBEAT_RETRY_DELAY = 2              # seconds before the single retry on a fresh connection
+HEARTBEAT_MAX_BACKOFF = 600            # seconds between heartbeats while the backend stays unreachable
 COMPLETE_RETRY_DELAYS = (5, 15, 45)   # seconds between attempts to report a finished job
 PRESENCE_SECONDS = max(15, int(os.environ.get('VMS_PRESENCE_SECONDS', '60')))
 STATUS_LOG_SECONDS = max(60, int(os.environ.get('VMS_STATUS_LOG_SECONDS', '600')))
@@ -258,6 +278,97 @@ def parse_nmap_xml(xml_text: str) -> list[dict]:
     return out
 
 
+def parse_nmap_hosts(xml_text: str) -> dict[str, dict]:
+    """Per host in `nmap -oX -` output: its reported status and how every scanned port answered,
+    including ports nmap summarises as <extraports> (e.g. 997 filtered). Keyed by address.
+    Raises ET.ParseError on unreadable XML (the caller fails the job)."""
+    root = ET.fromstring(xml_text)
+    hosts: dict[str, dict] = {}
+    for host in root.findall('host'):
+        addr = next((a.get('addr') for a in host.findall('address') if a.get('addrtype') in ('ipv4', 'ipv6')), None)
+        if not addr:
+            continue
+        st = host.find('status')
+        counts: dict[str, int] = {}
+        for prt in host.findall('ports/port'):
+            state = prt.find('state')
+            k = state.get('state') if state is not None else 'unknown'
+            counts[k] = counts.get(k, 0) + 1
+        for ex in host.findall('ports/extraports'):
+            try:
+                n = int(ex.get('count', '0'))
+            except ValueError:
+                n = 0
+            k = ex.get('state') or 'unknown'
+            counts[k] = counts.get(k, 0) + n
+        hosts[addr] = {
+            'address': addr,
+            'host_status': st.get('state') if st is not None else 'unknown',
+            'host_status_reason': st.get('reason') if st is not None else None,
+            'port_states': counts,
+            'ports_scanned': sum(counts.values()),
+        }
+    return hosts
+
+
+def classify_nmap(target: str, host: Optional[dict]) -> tuple[str, str]:
+    """An outcome and a plain reason for one target, from what nmap reported. Never claims a device
+    is offline: no answer only means nothing answered this scanner."""
+    if host is None:
+        return 'insufficient_evidence', 'nmap reported no result for this target (host timeout, or it was skipped)'
+    c = host['port_states']
+    n = host['ports_scanned']
+    if host['host_status'] == 'down':
+        return 'unreachable', 'nmap reported the host down: nothing answered this scanner. The device may still be online; a firewall dropping every probe looks the same'
+    open_n = c.get('open', 0)
+    answered = open_n + c.get('closed', 0) + c.get('unfiltered', 0)
+    if open_n:
+        return 'reachable_open', f'{open_n} open of {n} port(s) scanned'
+    if answered:
+        return 'reachable_no_open', f'the host answered (closed ports replied) but none of the {n} port(s) scanned is open'
+    if n:
+        return 'unreachable', (f'none of the {n} port(s) scanned answered this scanner (all {"/".join(sorted(c))}). '
+                               'Unreachable from this scanner, or every port is filtered; the device may still be online')
+    return 'insufficient_evidence', 'nmap reported the host but no port results'
+
+
+def target_route(target: str) -> tuple[bool, Optional[str]]:
+    """Whether this worker has a path to the target: any public address, or a non-public one inside
+    VMS_WORKER_NETWORKS. Hostnames are resolved by the tool, so they are not judged here."""
+    try:
+        ip = ipaddress.ip_address(target)
+    except ValueError:
+        return True, None
+    if ip.is_global:
+        return True, None
+    for n in WORKER_NETWORKS:
+        try:
+            if ip in ipaddress.ip_network(n, strict=False):
+                return True, None
+        except ValueError:
+            continue
+    declared = ', '.join(WORKER_NETWORKS) or 'none'
+    return False, (f'{target} is a private/non-public address and worker {WORKER_ID} declares no route to it '
+                   f'(VMS_WORKER_NETWORKS: {declared}). Run a worker inside that network, or declare the network '
+                   'on this worker if it really has a route (e.g. a VPN). Not attempted.')
+
+
+def job_outcome(target_outcomes: dict[str, dict]) -> str:
+    """One word for the job from its targets' outcomes."""
+    vals = [v['outcome'] for v in target_outcomes.values()]
+    if not vals:
+        return 'insufficient_evidence'
+    if all(v.startswith('reachable') for v in vals):
+        return 'assessed'
+    if all(v == 'no_route' for v in vals):
+        return 'no_route'
+    if all(v == 'unreachable' for v in vals):
+        return 'unreachable'
+    if all(v == 'insufficient_evidence' for v in vals):
+        return 'insufficient_evidence'
+    return 'partial'
+
+
 def _sev_from_score(score: Optional[float]) -> str:
     if score is None:
         return 'info'
@@ -343,6 +454,38 @@ def parse_openvas_report(xml_text: str) -> list[dict]:
 
 
 # ── Backend API ───────────────────────────────────────────────────────────────────────────────
+_URL_QUERY = re.compile(r'(https?://[^\s?\'"]+)\?[^\s\'"]*')
+_BEARER = re.compile(r'(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*')
+
+
+def redact_text(text: str, limit: int = 300) -> str:
+    """Removes the worker token, bearer credentials and URL query strings, and caps the length."""
+    t = str(text)
+    if TOKEN:
+        t = t.replace(TOKEN, '[REDACTED]')
+    t = _BEARER.sub('Bearer [REDACTED]', t)
+    t = _URL_QUERY.sub(r'\1?[REDACTED]', t)
+    return t[:limit]
+
+
+def root_cause(e: BaseException) -> str:
+    """'ConnectionError <- RemoteDisconnected: Remote end closed connection without response':
+    the outer exception class and the deepest cause requests/urllib3 wrapped, redacted."""
+    cur: BaseException = e
+    for _ in range(8):
+        nxt = getattr(cur, 'reason', None)
+        if not isinstance(nxt, BaseException):
+            nxt = cur.__cause__ or cur.__context__
+        if not isinstance(nxt, BaseException) and cur.args and isinstance(cur.args[0], BaseException):
+            nxt = cur.args[0]
+        if not isinstance(nxt, BaseException) or nxt is cur:
+            break
+        cur = nxt
+    if cur is e:
+        return f'{type(e).__name__}: {redact_text(str(e), 200)}'
+    return f'{type(e).__name__} <- {type(cur).__name__}: {redact_text(str(cur), 200)}'
+
+
 class ApiError(RuntimeError):
     """A backend answer other than success, with what it means for the operator."""
 
@@ -383,15 +526,29 @@ def explain(path: str, status: Optional[int], detail: str) -> str:
 
 
 class Api:
+    """One HTTP session. Not shared between threads: each thread that talks to the backend has its own."""
+
     def __init__(self):
-        self.s = requests.Session()
-        self.s.headers.update({'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'})
+        self.s = self._session()
+
+    @staticmethod
+    def _session() -> requests.Session:
+        s = requests.Session()
+        s.headers.update({'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'})
+        return s
+
+    def reset(self) -> None:
+        """Drops pooled connections (e.g. one the far end closed while idle)."""
+        try:
+            self.s.close()
+        finally:
+            self.s = self._session()
 
     def post(self, path: str, body: dict, timeout: int = 60) -> dict:
         try:
             r = self.s.post(f'{API}/api/vms/worker{path}', json=body, timeout=timeout)
         except requests.RequestException as e:
-            raise ApiError(path, None, type(e).__name__) from None
+            raise ApiError(path, None, root_cause(e)) from None
         if r.status_code >= 400:
             raise ApiError(path, r.status_code, _server_error(r.text))
         return r.json()
@@ -456,18 +613,40 @@ def tool_inventory() -> dict:
 
 
 def heartbeat_body() -> dict:
-    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory()}
+    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory(), 'networks': WORKER_NETWORKS}
+
+
+def send_heartbeat(api: 'Api', body: dict, sleep=time.sleep) -> dict:
+    """One heartbeat. A network failure is retried once, after HEARTBEAT_RETRY_DELAY seconds, on a
+    fresh connection (a pooled one may have been closed while idle). HTTP errors are not retried."""
+    try:
+        return api.post('/heartbeat', body, timeout=30)
+    except ApiError as e:
+        if e.status is not None:
+            raise
+        api.reset()
+        sleep(HEARTBEAT_RETRY_DELAY)
+        return api.post('/heartbeat', body, timeout=30)
+
+
+def next_presence_delay(consecutive_failures: int) -> int:
+    """Normal cadence while healthy; doubling, capped, while the backend stays unreachable."""
+    if consecutive_failures <= 0:
+        return PRESENCE_SECONDS
+    return min(PRESENCE_SECONDS * (2 ** consecutive_failures), HEARTBEAT_MAX_BACKOFF)
 
 
 def presence_loop(conn: ConnectionLog, stop: threading.Event) -> None:
     """The worker's own heartbeat, separate from jobs (its own session: requests sessions are not thread-safe)."""
     api = Api()
     unsupported = False
+    failures = 0
     while True:
         try:
-            r = api.post('/heartbeat', heartbeat_body(), timeout=30)
+            r = send_heartbeat(api, heartbeat_body())
             conn.queued = int(r.get('queued', 0))
             conn.ok('heartbeat')
+            failures = 0
         except ApiError as e:
             if e.status == 404 and not unsupported:
                 # An older backend has /claim but no /heartbeat; claims still count as presence there.
@@ -475,9 +654,10 @@ def presence_loop(conn: ConnectionLog, stop: threading.Event) -> None:
                 unsupported = True
             elif e.status != 404:
                 conn.fail('heartbeat', e)
+                failures += 1 if e.status is None else 0
         except Exception as e:  # noqa: BLE001 — keep the presence thread alive
             conn.fail('heartbeat', e)
-        if stop.wait(PRESENCE_SECONDS):
+        if stop.wait(next_presence_delay(failures)):
             return
 
 
@@ -488,16 +668,45 @@ class Cancelled(Exception):
 class JobRunner:
     def __init__(self, api: Api, job: dict, scopes: list[dict]):
         self.api, self.job, self.scopes = api, job, scopes
+        # The job heartbeat runs in its own thread, so it gets its own session.
+        self.hb_api = Api() if isinstance(api, Api) else api
         self.cancel = threading.Event()
+        self.stopping = False          # set on SIGTERM: hand the job back instead of reporting it
         self.proc: Optional[subprocess.Popen] = None
         self.progress = {'phase': 'starting'}
         self.summary = {'observations': 0, 'accepted': 0, 'rejected_out_of_scope': 0, 'rejected_invalid': 0}
+        self.target_outcomes: dict[str, dict] = {}
+        self.evidence_enabled = True
         self._stop_hb = threading.Event()
+
+    def stop_for_shutdown(self) -> None:
+        """Called from the SIGTERM handler: stop the running tool; run() releases the job."""
+        self.stopping = True
+        self.cancel.set()
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+
+    def record_outcome(self, target: str, outcome: str, reason: str) -> None:
+        self.target_outcomes[target] = {'outcome': outcome, 'reason': reason[:300]}
+
+    def send_evidence(self, target: str, tool: str, text: str) -> None:
+        """Bounded, redacted raw tool output, kept by the backend for 30 days. Optional: if the
+        backend cannot take it, the job carries on and the log says so once."""
+        if not self.evidence_enabled or not text:
+            return
+        raw = text.encode('utf-8', 'replace')
+        truncated = len(raw) > EVIDENCE_MAX_BYTES
+        content = redact_text(raw[:EVIDENCE_MAX_BYTES].decode('utf-8', 'ignore'), EVIDENCE_MAX_BYTES)
+        try:
+            self.api.post(f'/jobs/{self.job["id"]}/evidence', {'worker_id': WORKER_ID, 'target': target, 'tool': tool, 'content': content, 'truncated': truncated}, timeout=60)
+        except ApiError as e:
+            log.warning('raw output not kept for job %s: %s', self.job['id'], e)
+            self.evidence_enabled = False
 
     def heartbeat_loop(self):
         while not self._stop_hb.wait(HEARTBEAT_SECONDS):
             try:
-                r = self.api.post(f'/jobs/{self.job["id"]}/heartbeat', {'worker_id': WORKER_ID, 'progress': self.progress})
+                r = self.hb_api.post(f'/jobs/{self.job["id"]}/heartbeat', {'worker_id': WORKER_ID, 'progress': self.progress})
                 if r.get('cancel'):
                     self.cancel.set()
                     if self.proc and self.proc.poll() is None:
@@ -558,14 +767,39 @@ class JobRunner:
         self.send(obs, 'discovery')
         probe = host_list + ips_or_ranges
         self.progress = {'phase': 'httpx', 'done': 0, 'total': len(probe)}
+        # Private addresses this worker has no route to are not probed.
+        routable = []
+        for t in ips_or_ranges:
+            ok, why = target_route(t) if '/' not in t else (True, None)
+            if ok:
+                routable.append(t)
+            else:
+                self.record_outcome(t, 'no_route', why or '')
+        probe = host_list + routable
         answered: list[dict] = []
         if probe:
             out = self.run_tool([TOOLS['httpx'], '-silent', '-json', '-status-code', '-title', '-tech-detect', '-web-server', '-ip', '-cdn',
                                  '-timeout', '10', '-retries', '1', '-rate-limit', HTTPX_RATE, '-no-color'], '\n'.join(probe))
             answered = parse_httpx(out.splitlines())
-        # An authorised IP target is inventory even when nothing answers on HTTP: record it (liveness unknown).
+            self.send_evidence(','.join(probe)[:253], 'httpx', out)
+        # An authorised IP target is inventory even when nothing answers on HTTP: record it with what
+        # was (and was not) learned. No HTTP answer says nothing about whether the host is up.
         seen = {o['host'] for o in answered}
-        bare = [{'type': 'host', 'host': t, 'ips': [t], 'source': 'httpx'} for t in ips_or_ranges if '/' not in t and t not in seen and parse_target(t)]
+        for o in answered:
+            if parse_target(o['host']) and parse_target(o['host'])[0] == 'ip':
+                o['assessment'] = {'outcome': 'reachable_open', 'reason': f'HTTP answered ({(o.get("http") or {}).get("status")})', 'method': 'httpx'}
+                self.record_outcome(o['host'], 'reachable_open', 'HTTP answered')
+        bare = []
+        for t in ips_or_ranges:
+            if '/' in t or t in seen or not parse_target(t):
+                continue
+            if t in self.target_outcomes:   # no_route
+                why = self.target_outcomes[t]['reason']
+                bare.append({'type': 'host', 'host': t, 'ips': [t], 'source': 'httpx', 'assessment': {'outcome': 'no_route', 'reason': why, 'method': 'httpx'}})
+                continue
+            why = 'no HTTP answer on the default ports; this is not evidence the host is unreachable — a port scan says more'
+            self.record_outcome(t, 'insufficient_evidence', why)
+            bare.append({'type': 'host', 'host': t, 'ips': [t], 'source': 'httpx', 'assessment': {'outcome': 'insufficient_evidence', 'reason': why, 'method': 'httpx'}})
         self.send(answered + bare, 'discovery')
         self.summary['hosts'] = len(host_list)
         self.summary['http_responses'] = len(answered)
@@ -578,10 +812,46 @@ class JobRunner:
         port_args = ['--top-ports', spec.split('-', 1)[1]] if spec.startswith('top-') else ['-p', spec]
         for i, t in enumerate(targets):
             self.progress = {'phase': 'nmap', 'done': i, 'total': len(targets), 'message': t}
+            ok, why = target_route(t) if '/' not in t else (True, None)
+            if not ok:
+                self.record_outcome(t, 'no_route', why or '')
+                self.send([{'type': 'host', 'host': t, 'ips': [t], 'source': 'nmap', 'assessment': {'outcome': 'no_route', 'reason': why, 'method': 'nmap'}}], 'ports')
+                continue
             xml = self.run_tool([TOOLS['nmap'], '-sT', '-sV', '-Pn', '-T3', '--max-retries', '2', '--max-rate', NMAP_MAX_RATE,
                                  '--host-timeout', '45m', *port_args, '-oX', '-', '--', t])
-            self.send(parse_nmap_xml(xml) if xml.strip() else [], 'ports')
+            if not xml.strip():
+                raise RuntimeError(f'nmap produced no output for {t}')
+            self.send_evidence(t, 'nmap', xml)
+            try:
+                services = parse_nmap_xml(xml)
+                hosts = parse_nmap_hosts(xml)
+            except ET.ParseError as e:
+                raise RuntimeError(f'nmap output for {t} could not be read: {e}') from None
+            if '/' in t:
+                # A whole range: one host result per address nmap reported.
+                for addr, h in hosts.items():
+                    outcome, reason = classify_nmap(addr, h)
+                    self.record_outcome(addr, outcome, reason)
+                host_obs = [self.host_observation(addr, h) for addr, h in hosts.items()]
+            else:
+                h = hosts.get(t) or (next(iter(hosts.values())) if len(hosts) == 1 else None)
+                outcome, reason = classify_nmap(t, h)
+                self.record_outcome(t, outcome, reason)
+                host_obs = [self.host_observation(t, h, outcome, reason)] if parse_target(t) and parse_target(t)[0] == 'ip' else []
+            self.send(host_obs + services, 'ports')
         self.summary['targets'] = len(targets)
+
+    @staticmethod
+    def host_observation(addr: str, h: Optional[dict], outcome: Optional[str] = None, reason: Optional[str] = None) -> dict:
+        if outcome is None:
+            outcome, reason = classify_nmap(addr, h)
+        a = {'outcome': outcome, 'reason': reason, 'method': 'nmap'}
+        if h:
+            a.update({'host_status': h['host_status'], 'host_status_reason': h['host_status_reason'], 'port_states': h['port_states'], 'ports_scanned': h['ports_scanned']})
+        obs = {'type': 'host', 'host': addr, 'ips': [addr], 'source': 'nmap', 'assessment': a}
+        if outcome.startswith('reachable'):
+            obs['alive'] = True   # something answered; "no answer" never sets alive=false
+        return obs
 
     def vuln_nuclei(self):
         targets = [t for t in self.job['targets'] if job_target_allowed(t, self.scopes, 'vuln')]
@@ -653,8 +923,31 @@ class JobRunner:
             log.exception('job %s failed', self.job['id'])
         finally:
             self._stop_hb.set()
+        if self.stopping:
+            self.release('the worker is stopping (service stop or restart)')
+            return
+        if self.target_outcomes:
+            self.summary['outcome'] = job_outcome(self.target_outcomes) if status == 'succeeded' else 'failed'
+            self.summary['target_outcomes'] = dict(list(self.target_outcomes.items())[:50])
+            # Nothing could even be attempted: that is a failed scan, with the reason, not a success.
+            if status == 'succeeded' and self.summary['outcome'] == 'no_route':
+                status, error = 'failed', next(iter(self.target_outcomes.values()))['reason']
         self.complete(status, error)
-        log.info('job %s %s: %s', self.job['id'], status, self.summary)
+        log.info('job %s %s: %s', self.job['id'], status, {k: v for k, v in self.summary.items() if k != 'target_outcomes'})
+
+    def release(self, reason: str) -> None:
+        """Hands an unfinished job back to the queue (the backend requeues it or, after repeated
+        releases, fails it). Results already sent stay stored."""
+        for delay in (None, 2):
+            if delay:
+                time.sleep(delay)
+            try:
+                self.api.post(f'/jobs/{self.job["id"]}/release', {'worker_id': WORKER_ID, 'reason': reason}, timeout=10)
+                log.info('job %s handed back to the queue: %s', self.job['id'], reason)
+                return
+            except ApiError as e:
+                log.warning('could not hand job %s back: %s', self.job['id'], e)
+        log.warning('job %s stays assigned to this worker; it is re-sent when the worker asks for work again', self.job['id'])
 
     def complete(self, status: str, error: Optional[str], sleep=time.sleep) -> bool:
         """Reports the outcome. Retries network/429/5xx failures (completion is idempotent on the
@@ -700,26 +993,51 @@ def main():
     missing = [n for n in ('subfinder', 'dnsx', 'httpx', 'nmap') if not shutil.which(TOOLS[n])]
     if missing:
         log.warning('not installed: %s — jobs needing them will fail with that reason', ', '.join(missing))
-    log.info('started as %s (version %s) for %s against %s', WORKER_ID, VERSION, ','.join(KINDS), API)
+    log.info('started as %s (version %s) for %s against %s; private networks reachable: %s', WORKER_ID, VERSION, ','.join(KINDS), API, ', '.join(WORKER_NETWORKS) or 'none declared')
     conn = ConnectionLog()
     stop = threading.Event()
+    install_signal_handlers(stop)
     threading.Thread(target=presence_loop, args=(conn, stop), daemon=True).start()
-    api = Api()
-    while True:
+    run_loop(Api(), conn, stop)
+    log.info('stopped')
+
+
+CURRENT: dict[str, Optional[JobRunner]] = {'runner': None}
+
+
+def install_signal_handlers(stop: threading.Event) -> None:
+    """SIGTERM/SIGINT: stop polling, stop the running tool and hand its job back to the queue."""
+    def handle(signum, _frame):
+        log.info('received %s: finishing up', signal.Signals(signum).name)
+        stop.set()
+        runner = CURRENT['runner']
+        if runner is not None:
+            runner.stop_for_shutdown()
+    signal.signal(signal.SIGTERM, handle)
+    signal.signal(signal.SIGINT, handle)
+
+
+def run_loop(api: Api, conn: ConnectionLog, stop: threading.Event) -> None:
+    while not stop.is_set():
         try:
             r = api.post('/claim', {'worker_id': WORKER_ID, 'kinds': KINDS})
             conn.ok('job polling')
             conn.poll(bool(r.get('job')))
             if r.get('job'):
                 log.info('%s job %s (%s)', 're-received unfinished' if r.get('redelivered') else 'claimed', r['job'].get('id'), r['job'].get('kind'))
-                JobRunner(api, r['job'], r.get('scopes') or []).run()
+                runner = JobRunner(api, r['job'], r.get('scopes') or [])
+                CURRENT['runner'] = runner
+                try:
+                    runner.run()
+                finally:
+                    CURRENT['runner'] = None
                 continue
         except Exception as e:  # noqa: BLE001 — keep polling
             conn.fail('job polling', e)
         line = conn.status_due()
         if line:
             log.info(line)
-        time.sleep(POLL_SECONDS)
+        stop.wait(POLL_SECONDS)
 
 
 if __name__ == '__main__':

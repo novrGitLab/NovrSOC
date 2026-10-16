@@ -285,5 +285,290 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(r.summary['http_responses'], 0)
 
 
+def nmap_xml(addr: str, status: str = 'up', reason: str = 'user-set', ports: str = '', extra: str = '') -> str:
+    return (f'<?xml version="1.0"?><nmaprun scanner="nmap" args="nmap -Pn {addr}"><host><status state="{status}" reason="{reason}"/>'
+            f'<address addr="{addr}" addrtype="ipv4"/><ports>{extra}{ports}</ports></host><runstats><finished exit="success"/></runstats></nmaprun>')
+
+
+ALL_FILTERED = nmap_xml('203.0.113.9', extra='<extraports state="filtered" count="1000"><extrareasons reason="no-response" count="1000"/></extraports>')
+ALL_CLOSED = nmap_xml('203.0.113.9', extra='<extraports state="closed" count="1000"><extrareasons reason="conn-refused" count="1000"/></extraports>')
+ONE_OPEN = nmap_xml('203.0.113.9', extra='<extraports state="closed" count="999"/>',
+                    ports='<port protocol="tcp" portid="22"><state state="open" reason="syn-ack"/><service name="ssh" product="OpenSSH" version="9.6"/></port>')
+HOST_DOWN = nmap_xml('203.0.113.9', status='down', reason='no-response')
+
+
+class NmapOutcomes(unittest.TestCase):
+    """P12: host status and <extraports> are read; each target gets an honest outcome."""
+
+    def test_host_status_and_extraports_are_counted(self):
+        h = worker.parse_nmap_hosts(ALL_FILTERED)['203.0.113.9']
+        self.assertEqual((h['host_status'], h['host_status_reason'], h['port_states'], h['ports_scanned']), ('up', 'user-set', {'filtered': 1000}, 1000))
+        self.assertEqual(worker.parse_nmap_xml(ALL_FILTERED), [], 'no individual ports: the old parser saw nothing')
+        h = worker.parse_nmap_hosts(ONE_OPEN)['203.0.113.9']
+        self.assertEqual(h['port_states'], {'closed': 999, 'open': 1})
+        self.assertEqual(worker.parse_nmap_hosts(HOST_DOWN)['203.0.113.9']['host_status'], 'down')
+
+    def test_outcomes(self):
+        cases = [
+            (ALL_FILTERED, 'unreachable', 'none of the 1000 port(s) scanned answered'),
+            (ALL_CLOSED, 'reachable_no_open', 'none of the 1000 port(s) scanned is open'),
+            (ONE_OPEN, 'reachable_open', '1 open of 1000'),
+            (HOST_DOWN, 'unreachable', 'may still be online'),
+        ]
+        for xml, outcome, phrase in cases:
+            o, reason = worker.classify_nmap('203.0.113.9', worker.parse_nmap_hosts(xml).get('203.0.113.9'))
+            self.assertEqual(o, outcome, xml[:80])
+            self.assertIn(phrase, reason)
+            self.assertNotIn('offline', reason.lower())
+        self.assertEqual(worker.classify_nmap('203.0.113.9', None)[0], 'insufficient_evidence')
+        self.assertEqual(worker.job_outcome({'a': {'outcome': 'reachable_open'}, 'b': {'outcome': 'reachable_no_open'}}), 'assessed')
+        self.assertEqual(worker.job_outcome({'a': {'outcome': 'reachable_open'}, 'b': {'outcome': 'unreachable'}}), 'partial')
+        self.assertEqual(worker.job_outcome({'a': {'outcome': 'unreachable'}}), 'unreachable')
+        self.assertEqual(worker.job_outcome({'a': {'outcome': 'no_route'}}), 'no_route')
+        self.assertEqual(worker.job_outcome({}), 'insufficient_evidence')
+
+
+class PortsJob(unittest.TestCase):
+    """The ports job end to end with mocked nmap output (nothing is scanned)."""
+
+    SCOPES = [{'kind': 'cidr', 'value': '203.0.113.0/28', 'allow_port_scan': True, 'allow_vuln_scan': False, 'status': 'active', 'expires_at': FUTURE},
+              {'kind': 'ip', 'value': '10.88.1.139', 'allow_port_scan': True, 'allow_vuln_scan': False, 'status': 'active', 'expires_at': FUTURE}]
+
+    def setUp(self):
+        self._nets = worker.WORKER_NETWORKS
+        worker.WORKER_NETWORKS = ['203.0.113.0/24']   # the documentation range stands in for a routable network
+        self.posts = []
+
+    def tearDown(self):
+        worker.WORKER_NETWORKS = self._nets
+
+    def api(self):
+        posts = self.posts
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                posts.append((path, body))
+                return {'accepted': len(body.get('observations', [])), 'ok': True}
+        return Api()
+
+    def run_job(self, target: str, xml: Optional_str = None, nmap_calls=None):
+        r = worker.JobRunner(self.api(), {'id': 'p1', 'kind': 'ports', 'targets': [target], 'options': {'ports': 'top-1000'}}, self.SCOPES)
+
+        def fake_tool(args, stdin=None):
+            if nmap_calls is not None:
+                nmap_calls.append(args)
+            if isinstance(xml, Exception):
+                raise xml
+            return xml or ''
+        r.run_tool = fake_tool
+        r.run()
+        return r
+
+    def sent(self, path_end):
+        return [b for p, b in self.posts if p.endswith(path_end)]
+
+    def test_filtered_target_is_recorded_as_unreachable_not_success_with_nothing(self):
+        self.run_job('203.0.113.9', ALL_FILTERED)
+        obs = [o for b in self.sent('/results') for o in b['observations']]
+        self.assertEqual(len(obs), 1)
+        h = obs[0]
+        self.assertEqual((h['type'], h['host'], h['assessment']['outcome'], h['assessment']['port_states']), ('host', '203.0.113.9', 'unreachable', {'filtered': 1000}))
+        self.assertNotIn('alive', h, 'no answer never says offline')
+        done = self.sent('/complete')[0]
+        self.assertEqual(done['status'], 'succeeded')
+        self.assertEqual(done['summary']['outcome'], 'unreachable')
+        self.assertEqual(done['summary']['target_outcomes']['203.0.113.9']['outcome'], 'unreachable')
+        ev = self.sent('/evidence')[0]
+        self.assertEqual((ev['tool'], ev['target'], ev['truncated']), ('nmap', '203.0.113.9', False))
+        self.assertIn('<extraports state="filtered"', ev['content'])
+
+    def test_open_port_gives_host_and_service(self):
+        self.run_job('203.0.113.9', ONE_OPEN)
+        obs = [o for b in self.sent('/results') for o in b['observations']]
+        self.assertEqual([o['type'] for o in obs], ['host', 'service'])
+        self.assertEqual((obs[0]['assessment']['outcome'], obs[0]['alive']), ('reachable_open', True))
+        self.assertEqual((obs[1]['port'], obs[1]['state']), (22, 'open'))
+        self.assertEqual(self.sent('/complete')[0]['summary']['outcome'], 'assessed')
+
+    def test_closed_ports_mean_reachable_with_nothing_open(self):
+        self.run_job('203.0.113.9', ALL_CLOSED)
+        self.assertEqual(self.sent('/complete')[0]['summary']['outcome'], 'assessed')
+        self.assertEqual(self.sent('/results')[0]['observations'][0]['assessment']['outcome'], 'reachable_no_open')
+
+    def test_private_target_without_route_is_not_scanned_and_fails_with_the_reason(self):
+        calls = []
+        self.run_job('10.88.1.139', ALL_FILTERED, nmap_calls=calls)
+        self.assertEqual(calls, [], 'nmap never ran')
+        h = self.sent('/results')[0]['observations'][0]
+        self.assertEqual(h['assessment']['outcome'], 'no_route')
+        done = self.sent('/complete')[0]
+        self.assertEqual((done['status'], done['summary']['outcome']), ('failed', 'no_route'))
+        self.assertIn('VMS_WORKER_NETWORKS', done['error'])
+        self.assertIn('Run a worker inside that network', done['error'])
+
+    def test_declared_network_allows_a_private_target(self):
+        worker.WORKER_NETWORKS = ['10.88.0.0/16']
+        calls = []
+        self.run_job('10.88.1.139', nmap_xml('10.88.1.139', extra='<extraports state="closed" count="1000"/>'), nmap_calls=calls)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.sent('/complete')[0]['summary']['outcome'], 'assessed')
+
+    def test_empty_or_unreadable_output_fails_the_job(self):
+        self.run_job('203.0.113.9', '')
+        self.assertEqual(self.sent('/complete')[-1]['status'], 'failed')
+        self.assertIn('produced no output', self.sent('/complete')[-1]['error'])
+        self.posts.clear()
+        self.run_job('203.0.113.9', '<nmaprun><host><status')
+        done = self.sent('/complete')[-1]
+        self.assertEqual(done['status'], 'failed')
+        self.assertIn('could not be read', done['error'])
+        self.assertEqual(done['summary'].get('outcome'), None, 'a failed scan carries no reachability claim')
+
+    def test_missing_host_is_insufficient_evidence(self):
+        self.run_job('203.0.113.9', '<?xml version="1.0"?><nmaprun><runstats><finished exit="success"/></runstats></nmaprun>')
+        done = self.sent('/complete')[0]
+        self.assertEqual(done['summary']['outcome'], 'insufficient_evidence')
+
+    def test_evidence_is_bounded_and_redacted(self):
+        worker.TOKEN, saved = 'T' * 40, worker.TOKEN
+        try:
+            big = 'Authorization: Bearer abc.def ' + worker.TOKEN + ' ' + 'x' * (worker.EVIDENCE_MAX_BYTES + 10)
+            r = worker.JobRunner(self.api(), {'id': 'e1', 'kind': 'ports', 'targets': []}, [])
+            r.send_evidence('203.0.113.9', 'nmap', big)
+            ev = self.sent('/evidence')[0]
+            self.assertTrue(ev['truncated'])
+            self.assertLessEqual(len(ev['content'].encode()), worker.EVIDENCE_MAX_BYTES)
+            self.assertNotIn(worker.TOKEN, ev['content'])
+            self.assertNotIn('abc.def', ev['content'])
+        finally:
+            worker.TOKEN = saved
+
+    def test_evidence_failure_does_not_fail_the_job(self):
+        posts = []
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                posts.append(path)
+                if path.endswith('/evidence'):
+                    raise worker.ApiError(path, 503, 'Raw evidence is not set up yet')
+                return {'accepted': 1, 'ok': True}
+        r = worker.JobRunner(Api(), {'id': 'p2', 'kind': 'ports', 'targets': ['203.0.113.9'], 'options': {}}, self.SCOPES)
+        r.run_tool = lambda args, stdin=None: ALL_CLOSED
+        r.run()
+        self.assertTrue(any(p.endswith('/complete') for p in posts))
+        self.assertFalse(r.evidence_enabled)
+
+
+Optional_str = str
+
+
+class ReliabilityP1(unittest.TestCase):
+    def test_root_cause_is_kept_and_redacted(self):
+        import requests
+        worker.TOKEN, saved = 'S' * 40, worker.TOKEN
+        try:
+            inner = ConnectionResetError(f'reset by peer while sending Bearer abc.def to https://x.test/api?token={worker.TOKEN}')
+            mid = RuntimeError('pool')
+            mid.__cause__ = inner
+            outer = requests.ConnectionError(mid)
+            msg = worker.root_cause(outer)
+            self.assertTrue(msg.startswith('ConnectionError <- ConnectionResetError: reset by peer'))
+            self.assertNotIn(worker.TOKEN, msg)
+            self.assertNotIn('abc.def', msg)
+            self.assertIn('?[REDACTED]', msg)
+        finally:
+            worker.TOKEN = saved
+
+    def test_heartbeat_retries_once_on_a_fresh_connection_and_no_more(self):
+        class Flaky:
+            def __init__(self, fails):
+                self.fails, self.calls, self.resets = fails, 0, 0
+
+            def post(self, path, body, timeout=60):
+                self.calls += 1
+                if self.calls <= self.fails:
+                    raise worker.ApiError(path, None, 'ConnectionError <- RemoteDisconnected: closed')
+                return {'ok': True}
+
+            def reset(self):
+                self.resets += 1
+
+        slept = []
+        a = Flaky(1)
+        self.assertEqual(worker.send_heartbeat(a, {}, sleep=slept.append), {'ok': True})
+        self.assertEqual((a.calls, a.resets, slept), (2, 1, [worker.HEARTBEAT_RETRY_DELAY]))
+        b = Flaky(5)
+        with self.assertRaises(worker.ApiError):
+            worker.send_heartbeat(b, {}, sleep=lambda s: None)
+        self.assertEqual(b.calls, 2, 'exactly one retry')
+
+        class Rejected(Flaky):
+            def post(self, path, body, timeout=60):
+                self.calls += 1
+                raise worker.ApiError(path, 401, 'Invalid or missing worker token')
+        c = Rejected(0)
+        with self.assertRaises(worker.ApiError):
+            worker.send_heartbeat(c, {}, sleep=lambda s: None)
+        self.assertEqual(c.calls, 1, 'HTTP errors are not retried')
+
+    def test_presence_backoff_is_bounded(self):
+        self.assertEqual(worker.next_presence_delay(0), worker.PRESENCE_SECONDS)
+        self.assertEqual(worker.next_presence_delay(1), worker.PRESENCE_SECONDS * 2)
+        self.assertEqual(worker.next_presence_delay(50), worker.HEARTBEAT_MAX_BACKOFF)
+
+    def test_job_heartbeat_has_its_own_session(self):
+        r = worker.JobRunner(worker.Api(), {'id': 'j', 'kind': 'ports', 'targets': []}, [])
+        self.assertIsNot(r.hb_api, r.api)
+        self.assertIsNot(r.hb_api.s, r.api.s)
+
+    def test_shutdown_hands_the_job_back_instead_of_completing_it(self):
+        posts = []
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                posts.append((path, body))
+                return {'ok': True, 'accepted': 0}
+        r = worker.JobRunner(Api(), {'id': 's1', 'kind': 'ports', 'targets': ['203.0.113.9'], 'options': {}}, PortsJob.SCOPES)
+
+        def tool(args, stdin=None):
+            r.stop_for_shutdown()          # SIGTERM arrives while nmap runs
+            raise worker.Cancelled()
+        r.run_tool = tool
+        saved = worker.WORKER_NETWORKS
+        worker.WORKER_NETWORKS = ['203.0.113.0/24']
+        try:
+            r.run()
+        finally:
+            worker.WORKER_NETWORKS = saved
+        paths = [p for p, _ in posts]
+        self.assertIn('/jobs/s1/release', paths)
+        self.assertNotIn('/jobs/s1/complete', paths)
+        self.assertIn('stopping', dict(posts)['/jobs/s1/release']['reason'])
+
+    def test_run_loop_stops_without_claiming_once_stop_is_set(self):
+        calls = []
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                calls.append(path)
+                return {'job': None}
+        stop = __import__('threading').Event()
+        stop.set()
+        worker.run_loop(Api(), worker.ConnectionLog(), stop)
+        self.assertEqual(calls, [])
+
+    def test_heartbeat_announces_declared_networks(self):
+        saved = worker.WORKER_NETWORKS
+        worker.WORKER_NETWORKS = ['10.88.0.0/16']
+        try:
+            self.assertEqual(worker.heartbeat_body()['networks'], ['10.88.0.0/16'])
+            self.assertEqual(worker.target_route('10.88.1.139'), (True, None))
+            self.assertFalse(worker.target_route('192.168.1.5')[0])
+            self.assertTrue(worker.target_route('8.8.8.8')[0])
+            self.assertTrue(worker.target_route('scanme.example.test')[0], 'hostnames are judged by the tool')
+        finally:
+            worker.WORKER_NETWORKS = saved
+
+
 if __name__ == '__main__':
     unittest.main()

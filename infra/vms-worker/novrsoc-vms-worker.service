@@ -15,6 +15,10 @@ EnvironmentFile=/opt/novrsoc-vms/worker.env
 ExecStart=/usr/bin/python3 /opt/novrsoc-vms/worker.py
 Restart=always
 RestartSec=30
+# SIGTERM goes to worker.py only: it stops the running tool itself and hands the job back to the
+# queue (POST /jobs/:id/release) before exiting. Anything still running after 30 s is killed.
+KillMode=mixed
+TimeoutStopSec=30
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
