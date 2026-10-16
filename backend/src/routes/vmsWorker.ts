@@ -7,6 +7,8 @@
 //   POST /jobs/:id/heartbeat   { progress }                    -> { cancel }   (cancel = stop now)
 //   POST /jobs/:id/results     { observations: [...] }         -> accepted / rejected counts
 //   POST /jobs/:id/complete    { status: succeeded|failed|cancelled, error?, summary? }  (error/summary may be null)
+//   POST /jobs/:id/evidence    { target, tool, content, truncated }   raw tool output, redacted, kept 30 days (P12)
+//   POST /jobs/:id/release     { reason }   the worker is stopping: back to the queue (P12)
 //
 // The worker receives the job's scope entries so it can re-check targets before running a tool,
 // but the backend re-checks every result it accepts (services/vmsIngest.ts).
@@ -35,6 +37,9 @@ import { ingestFindings, concludeVerification } from '../services/vmsFindings';
 import { activeScopes } from './vms';
 import { logAudit } from '../lib/audit';
 import { recordWorkerSeen, WORKER_ONLINE_SECONDS, PRESENCE_MISSING_MESSAGE } from '../services/vmsWorkers';
+import { parseCidr } from '../lib/cidr';
+import { parseTarget } from '../lib/vmsScope';
+import { redactString } from '../lib/redact';
 
 const router = Router();
 const digest = (s: string) => createHash('sha256').update(s).digest();
@@ -73,6 +78,8 @@ const WorkerHeartbeat = z.object({
     kinds: z.array(z.enum(VMS_KINDS)).min(1).max(VMS_KINDS.length),
     version: z.string().trim().max(40).regex(/^[\w.+-]*$/).optional(),
     tools: z.record(z.enum(TOOL_NAMES), z.boolean()).optional(),
+    // Private networks this worker can reach (VMS_WORKER_NETWORKS). Each must be a valid CIDR.
+    networks: z.array(z.string().max(50).refine((n) => !!parseCidr(n), 'not a CIDR')).max(32).optional(),
 }).strict();
 const heartbeatLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many worker heartbeats: at most 30 a minute' } });
 
@@ -82,7 +89,7 @@ router.post('/heartbeat', heartbeatLimiter, async (req, res) => {
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Database not configured' }); return; }
     const now = new Date().toISOString();
-    const r = await recordWorkerSeen(p.data.worker_id, { kinds: [...new Set(p.data.kinds)], version: p.data.version ?? null, tools: p.data.tools ?? {}, last_heartbeat_at: now });
+    const r = await recordWorkerSeen(p.data.worker_id, { kinds: [...new Set(p.data.kinds)], version: p.data.version ?? null, tools: p.data.tools ?? {}, ...(p.data.networks ? { networks: p.data.networks } : {}), last_heartbeat_at: now });
     if (r === 'missing') { res.status(503).json({ error: PRESENCE_MISSING_MESSAGE }); return; }
     if (r === 'failed') { res.status(503).json({ error: 'Could not record the heartbeat' }); return; }
     // How many jobs are waiting for this worker's kinds: lets the worker say "idle" vs "work waiting".
@@ -168,8 +175,70 @@ router.post('/jobs/:id/results', async (req, res) => {
         if (r.rejected_out_of_scope) logAudit({ user: `worker:${job.worker_id}`, action: 'VMS_RESULT_OUT_OF_SCOPE', resource: 'vms_scan_job', resource_id: job.id, org_id: job.org_id, ip: req.ip ?? 'unknown', result: 'failed', severity: 'warning', details: `${r.rejected_out_of_scope} observation(s) outside authorised scope dropped` });
         res.json(r);
     } catch (err) {
-        res.status(502).json({ error: err instanceof Error ? err.message : 'ingest failed' });
+        // The worker gets a category, not the database's own words; the log keeps those.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[vms] storing results for job ${job.id} failed: ${msg.slice(0, 500)}`);
+        res.status(502).json({ error: 'Could not store results; retry or check the backend log', reason: queueFailure({ message: msg }).reason });
     }
+});
+
+// Raw tool output for one target (or a tool run over several), redacted again here and capped.
+// Evidence only: it never creates assets or findings. Kept 30 days (vms_job_evidence.expires_at).
+export const EVIDENCE_MAX_CHARS = 70_000;
+export const EVIDENCE_PER_JOB = 50;
+const Evidence = z.object({
+    worker_id: z.string().regex(WORKER_ID),
+    target: z.string().trim().min(1).max(253).refine((t) => t.split(',').every((x) => !!parseTarget(x) || !!parseCidr(x)), 'not a host, IP or CIDR'),
+    tool: z.enum(['nmap', 'httpx', 'dnsx', 'subfinder', 'nuclei', 'openvas']),
+    content: z.string().min(1).max(EVIDENCE_MAX_CHARS),
+    truncated: z.boolean().default(false),
+}).strict();
+router.post('/jobs/:id/evidence', async (req, res) => {
+    const p = Evidence.safeParse(req.body);
+    if (!p.success) { const i = p.error.issues[0]; res.status(400).json({ error: `Invalid evidence: ${i?.path.join('.') || 'body'} ${i?.message ?? ''}`.trim() }); return; }
+    const job = await ownJob(req, res);
+    if (!job) return;
+    const content = redactString(p.data.content);
+    if (content === null) { res.status(400).json({ error: 'Evidence could not be redacted, so it is not stored' }); return; }
+    const supabase = getSupabase()!;
+    // A plain read, not a HEAD count: a HEAD reply has no body, so a missing table could not be told apart.
+    const { data: existing, error: cErr } = await supabase.from('vms_job_evidence').select('id').eq('job_id', job.id).limit(EVIDENCE_PER_JOB);
+    const count = existing?.length ?? 0;
+    if (cErr) {
+        const missing = /vms_job_evidence/.test(cErr.message) || cErr.code === 'PGRST205' || cErr.code === '42P01';
+        if (!missing) console.error(`[vms] evidence count for job ${job.id} failed: ${cErr.message}`);
+        res.status(503).json({ error: missing ? 'Raw evidence is not set up yet (run sql/2026-10-19_p12_vms_outcomes_evidence.sql)' : 'Could not store evidence' });
+        return;
+    }
+    if (count >= EVIDENCE_PER_JOB) { res.status(409).json({ error: `At most ${EVIDENCE_PER_JOB} evidence items per job` }); return; }
+    const { error } = await supabase.from('vms_job_evidence').insert({
+        org_id: job.org_id, job_id: job.id, target: p.data.target, tool: p.data.tool, content, truncated: p.data.truncated,
+        sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content),
+    });
+    if (error) { console.error(`[vms] evidence for job ${job.id} not stored: ${error.message}`); res.status(503).json({ error: 'Could not store evidence' }); return; }
+    res.status(201).json({ ok: true });
+});
+
+// The worker is stopping (SIGTERM): the job goes back to the queue, or fails after repeated hand-backs.
+export const MAX_RELEASES = 3;
+const Release = z.object({ worker_id: z.string().regex(WORKER_ID), reason: z.string().trim().min(1).max(300) }).strict();
+router.post('/jobs/:id/release', async (req, res) => {
+    const p = Release.safeParse(req.body);
+    if (!p.success) { res.status(400).json({ error: 'Body must be { worker_id, reason }' }); return; }
+    const job = await ownJob(req, res);
+    if (!job) return;
+    const supabase = getSupabase()!;
+    const { data: cur } = await supabase.from('vms_scan_jobs').select('attempts').eq('id', job.id).maybeSingle();
+    const attempts = Number(cur?.attempts ?? 0);
+    const now = new Date().toISOString();
+    const update = attempts >= MAX_RELEASES
+        ? { status: 'failed', finished_at: now, error: `The worker stopped ${attempts} times before finishing (${p.data.reason}); queue it again when the worker is stable` }
+        : { status: 'queued', worker_id: null, claimed_at: null, heartbeat_at: null, started_at: null, progress: { message: `Handed back by ${p.data.worker_id}: ${p.data.reason}` } };
+    const { data: moved, error } = await supabase.from('vms_scan_jobs').update(update).eq('id', job.id).eq('status', 'running').eq('worker_id', p.data.worker_id).select('id');
+    if (error) { console.error(`[vms] releasing job ${job.id} failed: ${error.message}`); res.status(503).json({ error: 'Could not release the job; retry' }); return; }
+    if (!moved?.length) { res.status(409).json({ error: 'The job is no longer running under this worker' }); return; }
+    logAudit({ user: `worker:${p.data.worker_id}`, action: 'VMS_JOB_RELEASED', resource: 'vms_scan_job', resource_id: job.id, org_id: job.org_id, ip: req.ip ?? 'unknown', result: 'success', details: `${update.status}: ${p.data.reason}`.slice(0, 200) });
+    res.json({ ok: true, status: update.status });
 });
 
 // error and summary may be null: the Python worker sends None for "no error" (it always did; the

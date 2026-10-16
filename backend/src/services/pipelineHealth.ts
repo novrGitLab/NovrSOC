@@ -108,10 +108,13 @@ export async function vmsChecks(): Promise<PipelineCheck[]> {
     });
     const failed = await supabase.from('vms_scan_jobs').select('id', { count: 'exact', head: true }).eq('status', 'failed').gte('finished_at', new Date(Date.now() - 24 * H).toISOString());
     const waitH = oldest ? (Date.now() - Date.parse(oldest)) / H : 0;
+    // Queued kinds no connected worker runs (P12): they wait forever unless someone acts.
+    const { data: waiting } = await supabase.from('vms_scan_jobs').select('kind').eq('status', 'queued').neq('kind', 'passive_osint').limit(1000);
+    const orphanKinds = s.source === 'presence' ? [...new Set((waiting ?? []).map((j) => String(j.kind)))].filter((k) => !s.workers.some((w) => w.online && (w.kinds ?? []).includes(k))) : [];
     out.push({
         name: 'VMS scan queue',
-        status: waitH > 6 || (failed.count ?? 0) > 0 ? 'degraded' : 'up',
-        detail: `${oldest ? `Oldest queued scan waiting ${ago(oldest).replace(' ago', '')}` : 'Nothing waiting'}; ${failed.count ?? 0} failed in 24 h`,
+        status: waitH > 6 || (failed.count ?? 0) > 0 || orphanKinds.length ? 'degraded' : 'up',
+        detail: `${oldest ? `Oldest queued scan waiting ${ago(oldest).replace(' ago', '')}` : 'Nothing waiting'}; ${failed.count ?? 0} failed in 24 h${orphanKinds.length ? `; queued with no connected worker for: ${orphanKinds.join(', ')}` : ''}`,
     });
     const sched = await supabase.from('vms_scan_schedules').select('enabled, next_run_at, last_result');
     if (sched.error) out.push({ name: 'VMS schedules', status: 'off', detail: 'Schedule table not created yet' });

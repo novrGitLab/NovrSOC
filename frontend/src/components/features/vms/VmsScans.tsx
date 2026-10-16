@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Play, RefreshCw } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
-import { fmtWat, SCAN_KIND_LABEL, SCAN_STATUS_STYLE, type VmsScan, type VmsScope } from '@/lib/vms';
+import { fmtWat, SCAN_KIND_LABEL, SCAN_STATUS_STYLE, OUTCOME_LABEL, OUTCOME_STYLE, type VmsScan, type VmsScope, type VmsEvidence } from '@/lib/vms';
 
 export function VmsScans() {
     const [scans, setScans] = useState<VmsScan[] | null>(null);
@@ -17,6 +17,13 @@ export function VmsScans() {
     const [msg, setMsg] = useState<string | null>(null);
     const [form, setForm] = useState({ scope_id: '', kind: 'discovery' as VmsScan['kind'], targets: '', ports: 'top-1000' });
     const [reloadKey, setReloadKey] = useState(0);
+    const [evidence, setEvidence] = useState<Record<string, { items: VmsEvidence[]; note?: string } | undefined>>({});
+
+    async function toggleEvidence(id: string) {
+        if (evidence[id]) { setEvidence({ ...evidence, [id]: undefined }); return; }
+        const r = await loadJson<{ available: boolean; evidence: VmsEvidence[]; note?: string }>(`/api/vms/scans/${id}/evidence`);
+        setEvidence({ ...evidence, [id]: r.ok ? { items: r.data.evidence, note: r.data.available ? undefined : r.data.note } : { items: [], note: r.error } });
+    }
     const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
     useEffect(() => {
@@ -46,7 +53,7 @@ export function VmsScans() {
             body: JSON.stringify({ scope_id: form.scope_id, kind: form.kind, ...(targets.length ? { targets } : {}), ...(form.kind === 'ports' ? { ports: form.ports } : {}) }),
         });
         const d = await r.json().catch(() => null);
-        setMsg(r.ok ? (d.existing ? 'That scan is already queued or running.' : 'Scan queued.') : d?.error ?? `HTTP ${r.status}`);
+        setMsg(r.ok ? `${d.existing ? 'That scan is already queued or running.' : 'Scan queued.'}${d.warning ? ` Note: ${d.warning}` : ''}` : d?.error ?? `HTTP ${r.status}`);
         reload();
     }
     async function cancel(s: VmsScan) {
@@ -110,8 +117,30 @@ export function VmsScans() {
                                 <p className="text-blue">{s.progress?.phase ?? 'running'}{s.progress?.total ? ` ${s.progress.done ?? 0}/${s.progress.total}` : ''}{s.progress?.message ? ` · ${s.progress.message}` : ''} · last heartbeat {fmtWat(s.heartbeat_at)}</p>
                             )}
                             {s.status === 'queued' && s.progress?.message && <p className="text-amber">{s.progress.message}</p>}
+                            {s.attention && <p className="text-amber font-semibold">{s.attention}</p>}
                             {s.error && <p className="text-red">{s.error}</p>}
-                            {s.summary && Object.keys(s.summary).length > 0 && <p className="text-foreground-muted">{Object.entries(s.summary).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${String(v)}`).join(' · ')}</p>}
+                            {typeof s.summary?.outcome === 'string' && (
+                                <div className="space-y-0.5">
+                                    <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${OUTCOME_STYLE[s.summary.outcome] ?? ''}`}>{OUTCOME_LABEL[s.summary.outcome] ?? s.summary.outcome}</span>
+                                    {Object.entries((s.summary.target_outcomes ?? {}) as Record<string, { outcome: string; reason: string }>).map(([t, o]) => (
+                                        <p key={t} className="text-foreground-muted"><span className="font-mono">{t}</span>: {OUTCOME_LABEL[o.outcome] ?? o.outcome} — {o.reason}</p>
+                                    ))}
+                                </div>
+                            )}
+                            {s.summary && Object.keys(s.summary).length > 0 && <p className="text-foreground-muted">{Object.entries(s.summary).filter(([k]) => k !== 'outcome' && k !== 'target_outcomes').map(([k, v]) => `${k.replace(/_/g, ' ')}: ${String(v)}`).join(' · ')}</p>}
+                            {(s.status === 'succeeded' || s.status === 'failed') && <button onClick={() => void toggleEvidence(s.id)} className="text-[11px] font-bold text-purple">{evidence[s.id] ? 'Hide raw output' : 'Raw tool output'}</button>}
+                            {evidence[s.id] && (
+                                <div className="space-y-1">
+                                    {evidence[s.id]!.note && <p className="text-foreground-muted">{evidence[s.id]!.note}</p>}
+                                    {!evidence[s.id]!.note && evidence[s.id]!.items.length === 0 && <p className="text-foreground-muted">No raw output kept for this scan (kept 30 days; older scans and scans before this feature have none).</p>}
+                                    {evidence[s.id]!.items.map((e) => (
+                                        <details key={e.id} className="border border-border rounded-lg p-2">
+                                            <summary className="cursor-pointer text-foreground">{e.tool} · <span className="font-mono">{e.target}</span> · {Math.round(e.bytes / 1024)} KB{e.truncated ? ' (cut to the limit)' : ''} · kept until {fmtWat(e.expires_at)}</summary>
+                                            <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all text-[10px] text-foreground-muted">{e.content}</pre>
+                                        </details>
+                                    ))}
+                                </div>
+                            )}
                             {(s.status === 'queued' || s.status === 'running') && !s.cancel_requested && <button onClick={() => void cancel(s)} className="text-[11px] font-bold text-red">Cancel</button>}
                         </div>
                     ))}

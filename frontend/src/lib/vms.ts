@@ -10,13 +10,23 @@ export interface VmsScan {
     status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; requested_by: string; requested_at: string; started_at: string | null; finished_at: string | null;
     progress: { phase?: string; done?: number; total?: number; message?: string }; error: string | null; summary: Record<string, unknown> | null;
     worker_id: string | null; heartbeat_at: string | null; cancel_requested: boolean; purpose?: string;
+    /** Why a queued scan cannot run as things stand (P12); null when nothing stands in its way. */
+    attention?: string | null;
 }
 export interface VmsAsset {
     id: string; asset_type: 'domain' | 'host' | 'ip' | 'endpoint'; value: string; hostnames: string[]; ips: string[];
     dns: { a?: string[]; aaaa?: string[]; cname?: string[] }; http: { url?: string; status?: number | null; title?: string | null; webserver?: string | null; cdn?: string | null } | null;
     exposure: 'internet' | 'internal' | 'unknown'; alive: boolean | null; owner: string | null; criticality: 'low' | 'medium' | 'high' | 'critical';
     wazuh_agent_id: string | null; discovery_sources: string[]; first_seen: string; last_seen: string; status: 'active' | 'gone';
+    /** What the last scan learned about reaching this host (P12; absent before that SQL). */
+    last_assessment?: VmsAssessment | null; last_assessed_at?: string | null;
 }
+export type AssessmentOutcome = 'reachable_open' | 'reachable_no_open' | 'unreachable' | 'no_route' | 'insufficient_evidence';
+export interface VmsAssessment {
+    outcome: AssessmentOutcome; reason: string; method: 'nmap' | 'httpx';
+    host_status?: string | null; host_status_reason?: string | null; port_states?: Record<string, number>; ports_scanned?: number; job_id?: string;
+}
+export interface VmsEvidence { id: string; target: string; tool: string; content: string; truncated: boolean; bytes: number; sha256: string; created_at: string; expires_at: string }
 export interface VmsService { id: string; port: number; protocol: string; service: string | null; product: string | null; version: string | null; source: string; first_seen: string; last_seen: string; status: string }
 export interface VmsTech { id: string; name: string; version: string; source: string; first_seen: string; last_seen: string }
 export interface VmsEvent { id: string; at: string; event: string; details: Record<string, unknown>; asset_id: string | null; vms_assets?: { value: string; asset_type: string } | null }
@@ -52,3 +62,22 @@ export function describeEvent(e: VmsEvent): string {
         default: return String(d.value ?? '');
     }
 }
+
+/** Per-target and per-job scan outcomes (P12). "Unreachable" is from this scanner; never "offline". */
+export const OUTCOME_LABEL: Record<string, string> = {
+    reachable_open: 'Reachable — open ports found',
+    reachable_no_open: 'Reachable — no open ports in the ports scanned',
+    unreachable: 'Unreachable from this scanner',
+    no_route: 'Not attempted — no route from this worker',
+    insufficient_evidence: 'Insufficient evidence',
+    assessed: 'Assessed',
+    partial: 'Partly assessed',
+    failed: 'Scan failed',
+};
+export const OUTCOME_STYLE: Record<string, string> = {
+    reachable_open: 'bg-green/10 text-green', reachable_no_open: 'bg-green/10 text-green', assessed: 'bg-green/10 text-green',
+    unreachable: 'bg-amber/10 text-amber', no_route: 'bg-amber/10 text-amber', insufficient_evidence: 'bg-amber/10 text-amber', partial: 'bg-amber/10 text-amber',
+    failed: 'bg-red/10 text-red',
+};
+/** "997 filtered · 3 closed" from nmap port-state counts. */
+export const portStates = (c: Record<string, number> | undefined) => Object.entries(c ?? {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v} ${k}`).join(' · ');

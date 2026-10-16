@@ -12,6 +12,7 @@
 
 import { getSupabase } from './geoEnrichment';
 import { PASSIVE_RUNNER_ID } from '../lib/vmsScope';
+import { isNonPublicIp, workerCanReach } from '../lib/netClass';
 
 /** A worker polls every 20 s and heartbeats every 60 s; three minutes of silence means it is gone. */
 export const WORKER_ONLINE_SECONDS = 180;
@@ -21,6 +22,8 @@ const P10_MISSING = 'Worker presence is not set up yet (run sql/2026-10-18_p10_v
 
 export interface WorkerRow {
     worker_id: string; kinds: string[] | null; version: string | null; tools: Record<string, boolean> | null;
+    /** Private networks the worker declares it can reach (P12; absent before that SQL). */
+    networks?: string[] | null;
     first_seen_at: string; last_seen_at: string; last_heartbeat_at: string | null; last_claim_at: string | null;
     last_job_id: string | null; last_job_at: string | null;
 }
@@ -79,11 +82,16 @@ let warnedMissing = false;
  * Records an authenticated worker request. Never throws: presence must not break job claiming.
  * Returns 'missing' when the presence table does not exist yet.
  */
-export async function recordWorkerSeen(workerId: string, fields: Partial<Pick<WorkerRow, 'kinds' | 'version' | 'tools' | 'last_heartbeat_at' | 'last_claim_at' | 'last_job_id' | 'last_job_at'>>): Promise<'ok' | 'missing' | 'failed'> {
+export async function recordWorkerSeen(workerId: string, fields: Partial<Pick<WorkerRow, 'kinds' | 'version' | 'tools' | 'networks' | 'last_heartbeat_at' | 'last_claim_at' | 'last_job_id' | 'last_job_at'>>): Promise<'ok' | 'missing' | 'failed'> {
     const supabase = getSupabase();
     if (!supabase) return 'failed';
     const now = new Date().toISOString();
-    const { error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...fields }, { onConflict: 'worker_id' });
+    let { error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...fields }, { onConflict: 'worker_id' });
+    // Before the P12 SQL there is no networks column: record the rest.
+    if (error && 'networks' in fields && (error.code === 'PGRST204' || error.code === '42703') && /networks/.test(error.message)) {
+        const { networks: _n, ...rest } = fields;
+        ({ error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...rest }, { onConflict: 'worker_id' }));
+    }
     if (!error) return 'ok';
     if (isMissingTable(error)) {
         if (!warnedMissing) console.warn(`[vms] ${P10_MISSING}; the dashboard falls back to job heartbeats`);
@@ -94,3 +102,26 @@ export async function recordWorkerSeen(workerId: string, fields: Partial<Pick<Wo
     return 'failed';
 }
 export const PRESENCE_MISSING_MESSAGE = P10_MISSING;
+
+/**
+ * Why a queued job cannot run as things stand, in words an operator can act on; null when nothing
+ * stands in its way (or when presence is not recorded, so nothing can be judged). Advisory only:
+ * the job stays queued, and the worker re-checks scope and routes itself.
+ */
+export function jobAttention(job: { kind: string; status: string; targets: unknown }, status: ScannerStatus): string | null {
+    if (job.status !== 'queued' || job.kind === 'passive_osint' || status.source !== 'presence') return null;
+    const capable = status.workers.filter((w) => w.online && (w.kinds ?? []).includes(job.kind));
+    if (!capable.length) {
+        const known = status.workers.some((w) => (w.kinds ?? []).includes(job.kind));
+        return known
+            ? `No connected scanner worker runs ${job.kind} right now; it will wait until one that does is back.`
+            : `No scanner worker runs ${job.kind}. Add it to VMS_WORKER_KINDS on a worker that has the tools, or cancel this scan.`;
+    }
+    const targets = Array.isArray(job.targets) ? job.targets.map(String) : [];
+    const noRoute = targets.filter((t) => isNonPublicIp(t.split('/')[0]) && !capable.some((w) => workerCanReach(t, w.networks ?? [])));
+    if (noRoute.length) {
+        return `${noRoute.slice(0, 3).join(', ')}${noRoute.length > 3 ? ` (+${noRoute.length - 3})` : ''}: private address that no connected ${job.kind} worker declares a route to. `
+            + 'The scan will report "no route" unless it runs on a worker inside that network (or one declaring it in VMS_WORKER_NETWORKS).';
+    }
+    return null;
+}

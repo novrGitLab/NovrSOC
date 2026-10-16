@@ -25,7 +25,7 @@ import { requirePermission, requestOrg } from '../lib/permissions';
 import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid } from '../services/cases';
 import { logAudit } from '../lib/audit';
-import { loadScannerStatus } from '../services/vmsWorkers';
+import { loadScannerStatus, jobAttention } from '../services/vmsWorkers';
 import { isStaffRole } from '../lib/resolveOrg';
 import { validateScopeValue, parseTarget, coveringScope, type ScopeEntry, type Activity } from '../lib/vmsScope';
 
@@ -142,7 +142,22 @@ router.post('/scopes/:id/revoke', requirePermission('vms:scope'), async (req: Au
 router.get('/scans', requirePermission('vms:read'), async (req: AuthRequest, res) => {
     const { data, error } = await getSupabase()!.from('vms_scan_jobs').select('*').eq('org_id', requestOrg(req)).order('requested_at', { ascending: false }).limit(100);
     if (error) { fail(res, error); return; }
-    res.json({ scans: data ?? [] });
+    // Queued scans that no connected worker can take (kind, or a private target with no route) say why.
+    const scanner = (data ?? []).some((j) => j.status === 'queued') ? await loadScannerStatus() : null;
+    res.json({ scans: (data ?? []).map((j) => ({ ...j, attention: scanner ? jobAttention(j, scanner) : null })) });
+});
+
+// Raw tool output kept for a scan (redacted, at most 30 days old).
+router.get('/scans/:id/evidence', requirePermission('vms:read'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Scan not found' }); return; }
+    const supabase = getSupabase()!;
+    const org = requestOrg(req);
+    const { data: job } = await supabase.from('vms_scan_jobs').select('id').eq('id', req.params.id).eq('org_id', org).maybeSingle();
+    if (!job) { res.status(404).json({ error: 'Scan not found' }); return; }
+    const { data, error } = await supabase.from('vms_job_evidence').select('id, target, tool, content, truncated, bytes, sha256, created_at, expires_at')
+        .eq('job_id', job.id).eq('org_id', org).gt('expires_at', new Date().toISOString()).order('created_at').limit(50);
+    if (error) { res.json({ available: false, evidence: [], note: 'Raw evidence is not set up yet' }); return; }
+    res.json({ available: true, evidence: data ?? [], retention_days: 30 });
 });
 
 const PORT_SPEC = /^(top-(100|1000)|(\d{1,5}(-\d{1,5})?)(,\d{1,5}(-\d{1,5})?){0,63})$/;
@@ -204,7 +219,9 @@ router.post('/scans', requirePermission('vms:scan'), async (req: AuthRequest, re
     if (!p.success) { res.status(400).json({ error: 'Body must be { scope_id, kind: passive_osint|discovery|ports|vuln_nuclei|vuln_openvas, targets?: [host or IP], ports?: "top-100" | "top-1000" | "22,80,8000-8100" }' }); return; }
     const r = await queueScan(requestOrg(req), actor(req), p.data);
     if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
-    res.status(r.existing ? 200 : 201).json({ scan: r.job, existing: r.existing });
+    // Queued either way; the warning says up front if no connected worker can take it.
+    const warning = jobAttention(r.job as { kind: string; status: string; targets: unknown }, await loadScannerStatus());
+    res.status(r.existing ? 200 : 201).json({ scan: r.job, existing: r.existing, warning });
 });
 
 router.post('/scans/:id/cancel', requirePermission('vms:scan'), async (req: AuthRequest, res) => {
