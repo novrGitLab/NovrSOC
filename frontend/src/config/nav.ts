@@ -109,10 +109,10 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'vms-findings', label: 'Findings', href: '/admin/vms/findings', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Bug },
             { id: 'vms-remediation', label: 'Remediation', href: '/admin/vms/remediation', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Wrench },
             { id: 'vms-report', label: 'Reports', href: '/admin/vms/report', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: FileBarChart },
-            { id: 'digital-assets', label: 'Wazuh Endpoints', href: '/admin/infra/assets', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: Monitor },
             { id: 'vulnerabilities', label: 'Wazuh Vulnerabilities', href: '/admin/secops/vulnerabilities', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: Bug },
             { id: 'vms-scans', label: 'Scans', href: '/admin/vms/scans', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: ScanSearch },
             { id: 'vms-scope', label: 'Authorised Scope', href: '/admin/vms/scope', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: ShieldCheck },
+            { id: 'vms-admin', label: 'VMS Admin', href: '/admin/vms/admin', domain: 'vms', status: 'WORKING', roles: ['super_admin', 'soc_manager'], icon: ShieldCheck },
         ],
     },
     {
@@ -157,6 +157,9 @@ export const ADMIN_NAV: NavSectionConfig[] = [
     {
         section: 'Infrastructure & Assets', collapsible: true, icon: Server, groupLabel: 'Infrastructure & Assets',
         items: [
+            // Unified inventory (P14): Wazuh-managed and external assets, one record set (VMS Attack Surface).
+            { id: 'infra-inventory', label: 'Asset Inventory', href: '/admin/vms/assets', domain: 'infra', status: 'WORKING', roles: VMS_READ, icon: Server },
+            { id: 'digital-assets', label: 'Wazuh Endpoints', href: '/admin/infra/assets', domain: 'infra', status: 'WORKING', roles: NOT_EXEC, icon: Monitor },
             { id: 'cloud-assets', label: 'Cloud Assets', href: '/admin/infra/cloud', domain: 'infra', status: 'PARTIAL', roles: NOT_EXEC, icon: Cloud },
         ],
     },

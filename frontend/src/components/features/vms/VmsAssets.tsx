@@ -14,13 +14,17 @@ import Link from 'next/link';
 import { apiUrl as assessUrl, apiFetch as assessFetch } from '@/lib/api';
 import { getAdminUser } from '@/lib/admin-auth';
 import { AiPanel } from '@/components/shared/AiPanel';
+import { AttackSurfaceMap } from './AttackSurfaceMap';
 import { fmtWat, CRIT_STYLE, EVENT_LABEL, describeEvent, type VmsAsset, type VmsService, type VmsTech, type VmsEvent } from '@/lib/vms';
 
-interface Detail { asset: VmsAsset; services: VmsService[]; technologies: VmsTech[]; events: VmsEvent[] }
+interface Linked { id: string; asset_type: string; value: string; exposure: string; last_seen: string; relation: string; services: VmsService[] }
+interface Detail { asset: VmsAsset; services: VmsService[]; technologies: VmsTech[]; events: VmsEvent[]; linked?: Linked[] }
 
 export function VmsAssets() {
     const params = useSearchParams();
     const [exposure, setExposure] = useState(params.get('exposure') ?? 'all');
+    // Wazuh-managed endpoints vs assets VMS found or registered (P14); filtered here, same records.
+    const [source, setSource] = useState<'all' | 'wazuh' | 'external'>((params.get('source') as 'wazuh' | 'external' | null) ?? 'all');
     const [status, setStatus] = useState('active');
     const [search, setSearch] = useState('');
     const [text, setText] = useState('');
@@ -43,11 +47,12 @@ export function VmsAssets() {
         return () => { active = false; };
     }, [exposure, status, text]);
 
-    async function open(a: VmsAsset) {
+    async function open(a: { id: string }) {
         setMsg(null);
         const r = await loadJson<Detail>(`/api/vms/assets/${a.id}`);
         setDetail(r.ok ? r.data : null);
     }
+    const shown = assets?.filter((a) => source === 'all' || (source === 'wazuh' ? a.asset_type === 'endpoint' : a.asset_type !== 'endpoint')) ?? null;
     async function patch(body: Record<string, unknown>) {
         if (!detail) return;
         const r = await apiFetch(apiUrl(`/api/vms/assets/${detail.asset.id}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -68,6 +73,7 @@ export function VmsAssets() {
             <div className="flex flex-wrap gap-2 items-center">
                 <div className="flex gap-1 bg-card border border-border rounded-lg p-1">{['all', 'internet', 'internal', 'unknown'].map((x) => <button key={x} onClick={() => setExposure(x)} className={chip(exposure === x)}>{x === 'all' ? 'Any exposure' : x}</button>)}</div>
                 <div className="flex gap-1 bg-card border border-border rounded-lg p-1">{['active', 'gone', 'all'].map((x) => <button key={x} onClick={() => setStatus(x)} className={chip(status === x)}>{x}</button>)}</div>
+                <div className="flex gap-1 bg-card border border-border rounded-lg p-1">{(['all', 'wazuh', 'external'] as const).map((x) => <button key={x} onClick={() => setSource(x)} className={chip(source === x)}>{x === 'all' ? 'Any source' : x === 'wazuh' ? 'Wazuh-managed' : 'External'}</button>)}</div>
                 <form onSubmit={(e) => { e.preventDefault(); setText(search.trim()); }} className="flex items-center gap-1 bg-card border border-border rounded-lg px-2 py-1">
                     <Search className="w-3.5 h-3.5 text-foreground-muted" />
                     <input aria-label="Search assets" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="hostname or IP" className="bg-transparent text-[11px] outline-none w-40" />
@@ -79,13 +85,13 @@ export function VmsAssets() {
                     {assets === null && !error && <div className="h-24 bg-card-muted animate-pulse" />}
                     {assets && assets.length === 0 && <p className="text-sm text-foreground-muted text-center py-10">No data — no assets{text || exposure !== 'all' ? ' for these filters' : ' found yet; run a discovery scan'}.</p>}
                     <div className="max-h-[640px] overflow-y-auto divide-y divide-border">
-                        {assets?.map((a) => (
+                        {shown?.map((a) => (
                             <button key={a.id} onClick={() => void open(a)} className={`w-full text-left p-3 hover:bg-card-muted ${detail?.asset.id === a.id ? 'bg-card-muted' : ''}`}>
                                 <div className="flex items-center justify-between gap-2">
                                     <span className="text-xs font-bold font-mono text-foreground break-all">{a.value}</span>
                                     <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${CRIT_STYLE[a.criticality]}`}>{a.criticality}</span>
                                 </div>
-                                <p className="text-[10px] text-foreground-muted mt-1">{a.exposure} · {a.ips.join(', ') || 'no IP'} · {a.http?.status ? `HTTP ${a.http.status}` : 'no HTTP'} · seen {fmtWat(a.last_seen)}{a.status === 'gone' ? ' · gone' : ''}</p>
+                                <p className="text-[10px] text-foreground-muted mt-1">{a.exposure} · {a.ips.join(', ') || 'no IP'} · {a.http?.status ? `HTTP ${a.http.status}` : 'no HTTP'} · seen {fmtWat(a.last_seen)}{a.status === 'gone' ? ' · gone' : ''}{a.asset_type === 'endpoint' ? ' · Wazuh' : ''}{a.last_assessed_at ? ` · assessed ${fmtWat(a.last_assessed_at)}` : ' · not assessed'}</p>
                             </button>
                         ))}
                     </div>
@@ -132,6 +138,21 @@ export function VmsAssets() {
                             <div>
                                 <p className="text-[10px] font-bold text-foreground-muted uppercase mb-1">Technologies</p>
                                 <p>{detail.technologies.length ? detail.technologies.map((t) => `${t.name}${t.version ? ` ${t.version}` : ''}`).join(', ') : '—'}</p>
+                            </div>
+                            {(detail.linked ?? []).length > 0 && (
+                                <div>
+                                    <p className="text-[10px] font-bold text-foreground-muted uppercase mb-1">Linked records</p>
+                                    {detail.linked!.map((l) => (
+                                        <div key={l.id} className="border-t border-border py-1">
+                                            <button onClick={() => void open(l)} className="font-mono font-semibold text-purple">{l.value}</button> <span className="text-foreground-muted">({l.asset_type === 'endpoint' ? 'Wazuh endpoint' : 'scanned address'} · {l.relation})</span>
+                                            {l.services.length > 0 && <p className="text-foreground-muted">Services seen there: {l.services.map((s) => `${s.port}/${s.protocol}${s.service ? ` ${s.service}` : ''}`).join(', ')}</p>}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            <div>
+                                <p className="text-[10px] font-bold text-foreground-muted uppercase mb-1">Attack-surface map</p>
+                                <AttackSurfaceMap key={`map-${detail.asset.id}`} assetId={detail.asset.id} onOpenAsset={(id) => void open({ id })} />
                             </div>
                             <AssetAssessments key={`as-${detail.asset.id}`} assetId={detail.asset.id} />
                             <AiPanel key={detail.asset.id} purpose="asset_assessment" subjectId={detail.asset.id} title="AI exposure assessment" />
