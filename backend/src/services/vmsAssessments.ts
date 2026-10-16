@@ -148,7 +148,7 @@ async function queueStep(org: string, by: string, assessmentId: string, kind: Pr
 export type CreateResult = { ok: true; assessment: Awaited<ReturnType<typeof describe>>[number]; existing: boolean } | { ok: false; status: number; error: string };
 
 /** Creates a Full Assessment, or returns the one already in progress for the same target (idempotent). */
-export async function createAssessment(org: string, by: string, input: { asset_id?: string; target?: string; scope_id?: string }, ip = 'unknown'): Promise<CreateResult> {
+export async function createAssessment(org: string, by: string, input: { asset_id?: string; target?: string; scope_id?: string }, ip = 'unknown', origin: { trigger?: 'manual' | 'policy' | 'schedule'; policy_id?: string } = {}): Promise<CreateResult> {
     const supabase = getSupabase()!;
     const t = await resolveTarget(org, input);
     if (!t.ok) return t;
@@ -166,7 +166,11 @@ export async function createAssessment(org: string, by: string, input: { asset_i
     const inProgress = described.find((a) => a.status === 'in_progress');
     if (inProgress) return { ok: true, assessment: inProgress, existing: true };
 
-    const ins = await supabase.from('vms_assessments').insert({ org_id: org, asset_id: t.asset_id, scope_id: scope.id, target: t.target.value, profile: 'full', steps: [], requested_by: by }).select('*').single();
+    const row = { org_id: org, asset_id: t.asset_id, scope_id: scope.id, target: t.target.value, profile: 'full', steps: [], requested_by: by };
+    const withOrigin = origin.trigger && origin.trigger !== 'manual' ? { ...row, trigger: origin.trigger, ...(origin.policy_id ? { policy_id: origin.policy_id } : {}) } : row;
+    let ins = await supabase.from('vms_assessments').insert(withOrigin).select('*').single();
+    // Before the P14 SQL there is no trigger/policy_id column: record the assessment without them.
+    if (ins.error && withOrigin !== row && (ins.error.code === 'PGRST204' || ins.error.code === '42703')) ins = await supabase.from('vms_assessments').insert(row).select('*').single();
     if (ins.error) return { ok: false, status: isMissingP13(ins.error) ? 503 : 502, error: isMissingP13(ins.error) ? P13_MISSING : 'Could not create the assessment' };
     const scanner = await loadScannerStatus();
     const steps: Step[] = [];

@@ -26,6 +26,7 @@ import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid } from '../services/cases';
 import { logAudit } from '../lib/audit';
 import { loadScannerStatus, jobAttention } from '../services/vmsWorkers';
+import { assetGraph } from '../services/vmsGraph';
 import { isStaffRole } from '../lib/resolveOrg';
 import { validateScopeValue, parseTarget, coveringScope, normalizeExclusion, type ScopeEntry, type Activity } from '../lib/vmsScope';
 
@@ -62,10 +63,27 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
         loadScannerStatus(),
     ]);
     if (active.error) { fail(res, active.error); return; }
+    // Coverage (P14): Wazuh-managed vs external, and what was actually assessed — never counting a
+    // check that did not run as an assessment.
+    const since30 = days(30);
+    const [endpoints, external, assessed30, assessments30] = await Promise.all([
+        count(assets().eq('status', 'active').eq('asset_type', 'endpoint')),
+        count(assets().eq('status', 'active').in('asset_type', ['host', 'ip', 'domain'])),
+        count(assets().eq('status', 'active').gte('last_assessed_at', since30)),
+        supabase.from('vms_assessments').select('id, steps, cancelled_at').eq('org_id', org).gte('requested_at', since30).limit(2000),
+    ]);
     res.json({
         assets: { active: active.count ?? 0, internet_facing: internet.count ?? 0, gone: gone.count ?? 0, open_services: services.count ?? 0 },
         last_7_days: { new_assets: newA.count ?? 0, changed_assets: changedA.count ?? 0, gone_assets: goneA.count ?? 0, new_services: newSvc.count ?? 0 },
         active_scopes: scopes.count ?? 0,
+        coverage: {
+            wazuh_endpoints: endpoints.count ?? 0,
+            external_assets: external.count ?? 0,
+            // null when the P12 column is missing: unknown, not zero.
+            assessed_last_30_days: assessed30.error ? null : assessed30.count ?? 0,
+            assessments_last_30_days: assessments30.error ? null : (assessments30.data ?? []).length,
+            checks_not_run_last_30_days: assessments30.error ? null : (assessments30.data ?? []).reduce((n, a) => n + ((a.steps ?? []) as { decision?: string }[]).filter((s) => s.decision !== 'queued').length, 0),
+        },
         recent_scans: scans.data ?? [],
         // Scanner workers are shared infrastructure, not tenant data: client roles get the state only.
         worker: {
@@ -265,6 +283,14 @@ router.get('/assets', requirePermission('vms:read'), async (req: AuthRequest, re
     res.json({ assets: data ?? [] });
 });
 
+// Relationships around an asset, from stored records only, each labelled confirmed/observed/inferred.
+router.get('/assets/:id/graph', requirePermission('vms:read'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Asset not found' }); return; }
+    const g = await assetGraph(requestOrg(req), req.params.id);
+    if (!g) { res.status(404).json({ error: 'Asset not found' }); return; }
+    res.json(g);
+});
+
 router.get('/assets/:id', requirePermission('vms:read'), async (req: AuthRequest, res) => {
     if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Asset not found' }); return; }
     const supabase = getSupabase()!;
@@ -272,12 +298,24 @@ router.get('/assets/:id', requirePermission('vms:read'), async (req: AuthRequest
     const { data: asset, error } = await supabase.from('vms_assets').select('*').eq('id', req.params.id).eq('org_id', org).maybeSingle();
     if (error) { fail(res, error); return; }
     if (!asset) { res.status(404).json({ error: 'Asset not found' }); return; }
-    const [services, techs, events] = await Promise.all([
+    // A Wazuh endpoint and a scanned address are separate records; show each from the other (P14).
+    const addrs: string[] = asset.asset_type === 'endpoint' ? (asset.ips ?? []) : asset.asset_type === 'ip' ? [asset.value] : [];
+    const [services, techs, events, linked] = await Promise.all([
         supabase.from('vms_services').select('*').eq('asset_id', asset.id).order('port'),
         supabase.from('vms_technologies').select('*').eq('asset_id', asset.id).order('name'),
         supabase.from('vms_asset_events').select('*').eq('asset_id', asset.id).order('at', { ascending: false }).limit(100),
+        addrs.length
+            ? (asset.asset_type === 'endpoint'
+                ? supabase.from('vms_assets').select('id, asset_type, value, exposure, last_seen').eq('org_id', org).eq('asset_type', 'ip').in('value', addrs)
+                : supabase.from('vms_assets').select('id, asset_type, value, exposure, last_seen').eq('org_id', org).eq('asset_type', 'endpoint').overlaps('ips', addrs))
+            : Promise.resolve({ data: [] }),
     ]);
-    res.json({ asset, services: services.data ?? [], technologies: techs.data ?? [], events: events.data ?? [] });
+    const linkedIds = (linked.data ?? []).map((l) => l.id);
+    const linkedServices = linkedIds.length ? (await supabase.from('vms_services').select('*').in('asset_id', linkedIds).eq('status', 'active').order('port')).data ?? [] : [];
+    res.json({
+        asset, services: services.data ?? [], technologies: techs.data ?? [], events: events.data ?? [],
+        linked: (linked.data ?? []).map((l) => ({ ...l, relation: 'same address (inferred: an address can be shared or reassigned)', services: linkedServices.filter((s) => s.asset_id === l.id) })),
+    });
 });
 
 const AssetPatch = z.object({ owner: z.string().trim().max(200).nullable().optional(), criticality: z.enum(['low', 'medium', 'high', 'critical']).optional() }).strict();

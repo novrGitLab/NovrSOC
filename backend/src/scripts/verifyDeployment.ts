@@ -41,8 +41,8 @@ async function main() {
 
     // Public health
     try {
-        const { status } = await get('/health', false);
-        results.push({ check: 'Backend /health', outcome: status === 200 ? 'PASS' : 'FAIL', detail: `HTTP ${status}` });
+        const { status, body } = await get('/health', false);
+        results.push({ check: 'Backend /health', outcome: status === 200 ? 'PASS' : 'FAIL', detail: `HTTP ${status}${(body as { version?: string } | null)?.version ? ` · deployed ${(body as { version: string }).version}` : ' · deployed version not reported'}` });
     } catch (err) {
         results.push({ check: 'Backend /health', outcome: 'FAIL', detail: err instanceof Error ? err.message : String(err) });
     }

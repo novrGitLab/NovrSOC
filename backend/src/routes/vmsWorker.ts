@@ -79,11 +79,14 @@ const WorkerHeartbeat = z.object({
     worker_id: z.string().regex(WORKER_ID),
     kinds: z.array(z.enum(VMS_KINDS)).min(1).max(VMS_KINDS.length),
     version: z.string().trim().max(40).regex(/^[\w.+-]*$/).optional(),
-    tools: z.record(z.enum(TOOL_NAMES), z.boolean()).optional(),
+    // partialRecord: an enum-keyed z.record requires every key (zod 4); a worker may report a subset.
+    tools: z.partialRecord(z.enum(TOOL_NAMES), z.boolean()).optional(),
     // Private networks this worker can reach (VMS_WORKER_NETWORKS). Each must be a valid CIDR.
     networks: z.array(z.string().max(50).refine((n) => !!parseCidr(n), 'not a CIDR')).max(32).optional(),
     // What it enforces itself (P13), e.g. 'exclusions'.
     features: z.array(z.enum(WORKER_FEATURES)).max(WORKER_FEATURES.length).optional(),
+    // Versions as each tool reports them (P14), e.g. { nmap: "7.94SVN" }.
+    tool_versions: z.partialRecord(z.enum(TOOL_NAMES), z.string().max(80)).optional(),
 }).strict();
 const heartbeatLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many worker heartbeats: at most 30 a minute' } });
 
@@ -93,7 +96,7 @@ router.post('/heartbeat', heartbeatLimiter, async (req, res) => {
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Database not configured' }); return; }
     const now = new Date().toISOString();
-    const r = await recordWorkerSeen(p.data.worker_id, { kinds: [...new Set(p.data.kinds)], version: p.data.version ?? null, tools: p.data.tools ?? {}, ...(p.data.networks ? { networks: p.data.networks } : {}), ...(p.data.features ? { features: p.data.features } : {}), last_heartbeat_at: now });
+    const r = await recordWorkerSeen(p.data.worker_id, { kinds: [...new Set(p.data.kinds)], version: p.data.version ?? null, tools: p.data.tools ?? {}, ...(p.data.networks ? { networks: p.data.networks } : {}), ...(p.data.features ? { features: p.data.features } : {}), ...(p.data.tool_versions ? { tool_versions: p.data.tool_versions } : {}), last_heartbeat_at: now });
     if (r === 'missing') { res.status(503).json({ error: PRESENCE_MISSING_MESSAGE }); return; }
     if (r === 'failed') { res.status(503).json({ error: 'Could not record the heartbeat' }); return; }
     // How many jobs are waiting for this worker's kinds: lets the worker say "idle" vs "work waiting".

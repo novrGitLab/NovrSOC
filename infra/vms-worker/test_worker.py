@@ -328,7 +328,44 @@ class Exclusions(unittest.TestCase):
 
     def test_heartbeat_announces_the_feature(self):
         self.assertIn('exclusions', worker.heartbeat_body()['features'])
-        self.assertEqual(worker.VERSION, '1.4.0')
+
+
+class SelfTest(unittest.TestCase):
+    """P14: tool versions as the tools report them; a preflight that never prints secrets."""
+
+    def test_tool_versions_are_parsed(self):
+        self.assertEqual(worker.parse_tool_version('Nmap version 7.94SVN ( https://nmap.org )'), '7.94SVN')
+        self.assertEqual(worker.parse_tool_version('[INF] Current Version: v1.6.8'), '1.6.8')
+        self.assertEqual(worker.parse_tool_version('Current Version: v3.3.2\n'), '3.3.2')
+        self.assertIsNone(worker.parse_tool_version('usage: httpx [-h]'))
+
+    def test_heartbeat_carries_versions(self):
+        self.assertIn('tool_versions', worker.heartbeat_body())
+
+    def test_preflight_finds_bad_configuration_without_printing_secrets(self):
+        saved = (worker.API, worker.TOKEN, worker.WORKER_ID, worker.KINDS, worker.WORKER_NETWORKS)
+        try:
+            worker.API, worker.TOKEN, worker.WORKER_ID, worker.KINDS, worker.WORKER_NETWORKS = 'http://example.test', 'short-secret', 'bad id!', ['discovery', 'scan_everything'], ['10.0.0.0/33']
+            problems = worker.preflight()
+            text = ' | '.join(problems)
+            for phrase in ('https URL', 'shorter than 32', 'VMS_WORKER_ID', 'scan_everything', 'invalid CIDR'):
+                self.assertIn(phrase, text)
+            self.assertNotIn('short-secret', text)
+            worker.API, worker.TOKEN, worker.WORKER_ID, worker.KINDS, worker.WORKER_NETWORKS = 'https://backend.example.test', 'x' * 40, 'vps3-demo-worker', ['discovery'], []
+            self.assertTrue(all('not installed' in p for p in worker.preflight()), 'only missing tools remain on a host without them')
+        finally:
+            worker.API, worker.TOKEN, worker.WORKER_ID, worker.KINDS, worker.WORKER_NETWORKS = saved
+
+    def test_self_test_fails_before_contacting_the_backend_on_bad_config(self):
+        saved, saved_check = worker.TOKEN, worker.check
+        called = []
+        try:
+            worker.TOKEN = ''
+            worker.check = lambda: called.append(1) or 0
+            self.assertEqual(worker.self_test(), 1)
+            self.assertEqual(called, [])
+        finally:
+            worker.TOKEN, worker.check = saved, saved_check
 
 
 class NmapOutcomes(unittest.TestCase):

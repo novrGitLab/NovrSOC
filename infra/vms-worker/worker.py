@@ -23,7 +23,9 @@ when the worker connects, explains each kind of failure once (wrong token, wrong
 rejected request, backend not ready) instead of repeating it every poll, and writes a short status
 line every VMS_STATUS_LOG_SECONDS (default 600) so a quiet log is never ambiguous.
 
-  python3 worker.py --check   one heartbeat to the backend and a plain-language result; claims nothing
+  python3 worker.py --check       one heartbeat to the backend and a plain-language result; claims nothing
+  python3 worker.py --self-test   preflight for deployment: configuration (no secret printed), tools and
+                                  their versions, then the heartbeat; exit 0 only when all pass
 
 Outcomes (1.3.0): every target of a ports or discovery job gets a host-level result with an
 assessment, so "nothing found" is never confused with "could not look":
@@ -65,7 +67,7 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
-VERSION = '1.4.0'
+VERSION = '1.5.0'
 # What this worker enforces itself; the backend only gives jobs that need a feature to workers announcing it.
 FEATURES = ['exclusions']
 # Networks this worker can actually reach besides the public internet (comma-separated CIDRs), e.g.
@@ -637,8 +639,80 @@ def tool_inventory() -> dict:
     return tools
 
 
+_VERSION_RE = re.compile(r'(?:version|v)\s*:?\s*v?(\d+\.\d+(?:\.\d+)?[\w.+-]*)', re.I)
+_TOOL_VERSIONS: dict = {}
+
+
+def parse_tool_version(output: str) -> Optional[str]:
+    """'Nmap version 7.94SVN ...' -> '7.94SVN'; 'Current Version: v1.6.8' -> '1.6.8'."""
+    m = _VERSION_RE.search(output or '')
+    return m.group(1)[:80] if m else None
+
+
+def tool_versions(refresh: bool = False) -> dict:
+    """Each installed tool's version, as it reports it (asked once, cached)."""
+    if _TOOL_VERSIONS and not refresh:
+        return dict(_TOOL_VERSIONS)
+    flags = {'nmap': ['--version'], 'subfinder': ['-version'], 'dnsx': ['-version'], 'httpx': ['-version'], 'nuclei': ['-version']}
+    out = {}
+    for name, args in flags.items():
+        exe = shutil.which(TOOLS[name])
+        if not exe:
+            continue
+        try:
+            r = subprocess.run([exe, *args], capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
+            out[name] = parse_tool_version((r.stdout or '') + '\n' + (r.stderr or '')) or 'unknown'
+        except (OSError, subprocess.TimeoutExpired):
+            out[name] = 'unknown'
+    _TOOL_VERSIONS.clear()
+    _TOOL_VERSIONS.update(out)
+    return dict(out)
+
+
 def heartbeat_body() -> dict:
-    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory(), 'networks': WORKER_NETWORKS, 'features': FEATURES}
+    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory(), 'networks': WORKER_NETWORKS, 'features': FEATURES, 'tool_versions': tool_versions()}
+
+
+VALID_KINDS = ('discovery', 'ports', 'vuln_nuclei', 'vuln_openvas')
+KIND_TOOLS = {'discovery': ['subfinder', 'dnsx', 'httpx'], 'ports': ['nmap'], 'vuln_nuclei': ['nuclei'], 'vuln_openvas': ['openvas']}
+
+
+def preflight() -> list[str]:
+    """Problems that should stop a deployment. Never includes the token or other secret values."""
+    problems = []
+    if not (API.startswith('https://') or API.startswith('http://127.0.0.1')):
+        problems.append('NOVRSOC_API_URL must be the backend https URL')
+    if len(TOKEN) < 32:
+        problems.append('VMS_WORKER_TOKEN is not set or shorter than 32 characters')
+    if not re.match(r'^[\w.-]{1,64}$', WORKER_ID):
+        problems.append('VMS_WORKER_ID may hold letters, digits, _ . - (at most 64)')
+    bad = [k for k in KINDS if k not in VALID_KINDS]
+    if bad or not KINDS:
+        problems.append(f'VMS_WORKER_KINDS has unknown kinds: {", ".join(bad) or "(empty)"}')
+    for n in WORKER_NETWORKS:
+        try:
+            ipaddress.ip_network(n, strict=False)
+        except ValueError:
+            problems.append(f'VMS_WORKER_NETWORKS has an invalid CIDR: {n}')
+    tools = tool_inventory()
+    for k in KINDS:
+        missing = [t for t in KIND_TOOLS.get(k, []) if not tools.get(t)]
+        if missing:
+            problems.append(f'{k} is in VMS_WORKER_KINDS but {", ".join(missing)} is not installed')
+    return problems
+
+
+def self_test() -> int:
+    print(f'worker {WORKER_ID} version {VERSION}; kinds {",".join(KINDS)}; private networks: {", ".join(WORKER_NETWORKS) or "none declared"}')
+    tools, versions = tool_inventory(), tool_versions()
+    for t, ok in tools.items():
+        print(f'  {t:10} {"installed " + versions.get(t, "") if ok else "not installed"}')
+    problems = preflight()
+    for p_ in problems:
+        print(f'FAIL: {p_}')
+    if problems:
+        return 1
+    return check()
 
 
 def send_heartbeat(api: 'Api', body: dict, sleep=time.sleep) -> dict:
@@ -1009,6 +1083,8 @@ def check() -> int:
 
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [vms-worker] %(levelname)s: %(message)s')
+    if '--self-test' in sys.argv[1:]:
+        sys.exit(self_test())
     if not API.startswith('https://') and not API.startswith('http://127.0.0.1'):
         sys.exit('NOVRSOC_API_URL must be the backend https URL')
     if len(TOKEN) < 32:
