@@ -6,7 +6,8 @@
 //                                          returns the one in progress for the same target (200) instead of a duplicate
 //   GET  /assessments/:id                 vms:read   steps (status, reason, outcome), findings, evidence list
 //   POST /assessments/:id/retry           vms:scan   re-plans steps that did not complete; completed ones stay
-//   POST /assessments/:id/cancel          vms:scan   cancels its queued scans, asks running ones to stop
+//   POST /assessments/:id/cancel          vms:scan   cancels its queued scans, asks running ones to stop (409 when
+//                                          it is no longer in progress; a scan shared with another request is left alone)
 //   GET  /assessments/:id/report          vms:read   management report, Markdown download
 //
 // Planning and scope live in services/vmsAssessments.ts; jobs go through routes/vms.ts queueScan.
@@ -76,12 +77,16 @@ router.post('/assessments/:id/retry', requirePermission('vms:scan'), async (req:
 router.post('/assessments/:id/cancel', requirePermission('vms:scan'), async (req: AuthRequest, res) => {
     const a = await load(req, res);
     if (!a) return;
+    // A finished assessment keeps its result: "cancelled" would hide checks that completed.
+    if (a.status !== 'in_progress') { res.status(409).json({ error: `This assessment is ${a.status.replace(/_/g, ' ')}; there is nothing to cancel` }); return; }
     const supabase = getSupabase()!;
     const now = new Date().toISOString();
     const ids = a.steps.map((s) => s.job_id).filter((x): x is string => !!x);
+    // Only scans this assessment queued: a step may point at an identical scan someone else had
+    // already queued (queueScan deduplicates), and cancelling the assessment must not cancel that.
     if (ids.length) {
-        await supabase.from('vms_scan_jobs').update({ status: 'cancelled', finished_at: now, error: `Assessment cancelled by ${actor(req)}` }).in('id', ids).eq('status', 'queued');
-        await supabase.from('vms_scan_jobs').update({ cancel_requested: true }).in('id', ids).eq('status', 'running');
+        await supabase.from('vms_scan_jobs').update({ status: 'cancelled', finished_at: now, error: `Assessment cancelled by ${actor(req)}` }).in('id', ids).eq('assessment_id', a.id).eq('status', 'queued');
+        await supabase.from('vms_scan_jobs').update({ cancel_requested: true }).in('id', ids).eq('assessment_id', a.id).eq('status', 'running');
     }
     await supabase.from('vms_assessments').update({ cancelled_at: now }).eq('id', a.id);
     logAudit({ user: actor(req), action: 'VMS_ASSESSMENT_CANCELLED', resource: 'vms_assessment', resource_id: a.id, org_id: requestOrg(req), ip: req.ip ?? 'unknown', result: 'success', details: a.target });

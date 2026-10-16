@@ -12,12 +12,12 @@ import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
 import { fmtWat } from '@/lib/vms';
 
-interface Policy { id: string; name: string; enabled: boolean; asset_source: 'wazuh' | 'external' | 'any'; cooldown_hours: number; max_per_run: number; last_run_at: string | null; last_result: { queued?: number; existing?: number; skipped_cooldown?: number; blocked?: { asset: string; reason: string }[] } | null }
+interface Policy { id: string; name: string; enabled: boolean; asset_source: 'wazuh' | 'external' | 'any'; cooldown_hours: number; max_per_run: number; last_run_at: string | null; last_result: { queued?: number; existing?: number; skipped_cooldown?: number; blocked?: { asset: string; reason: string }[]; blocked_total?: number; not_evaluated?: number } | null }
 interface Status {
     deployed_version: string | null;
     workers: { source: string; online: number; window_seconds: number; list: { worker_id: string; online: boolean; version: string | null; kinds: string[]; tools: Record<string, boolean>; tool_versions: Record<string, string>; networks: string[]; features: string[]; last_seen_at: string; last_job_at: string | null }[] };
     scheduler: { last_run_at: string | null; policies: { at?: string } | null };
-    wazuh: { available: boolean; sync?: { last_synced_at?: string; last_result?: unknown } | null; note?: string | null };
+    wazuh: { available: boolean; sync?: { last_synced_at?: string; last_result?: unknown } | null; freshness?: { last_attempt_at: string | null; last_complete_at: string | null; complete: boolean | null; problem: string | null }; note?: string | null };
     cve_intel: { tracked: number; kev_checked_at: string | null; epss_fetched_at: string | null; nvd_fetched_at: string | null };
     ai: { configured: boolean; model: string };
     evidence: { available: boolean; retention_days?: number; items?: number; next_expiry?: string | null };
@@ -25,6 +25,9 @@ interface Status {
     policies: { available: boolean; note?: string; list?: Policy[] };
     audit: { source: string; entries: { id: string; timestamp: string; user: string; action: string; details?: string }[] };
 }
+type Part = { ok: boolean; error?: string } & Record<string, unknown>;
+interface WazuhCheck { checked_at: string; verdict: 'working' | 'reachable_not_synced' | 'not_working' | 'not_configured'; configured: { manager_api: boolean; indexer: boolean }; manager: Part & { api_version?: string | null }; agents: Part & { count?: number; active?: number; groups?: string[] }; vulnerabilities: Part & { records_for_org?: number; by_severity?: Record<string, number> } }
+const VERDICT: Record<WazuhCheck['verdict'], string> = { working: 'Working', reachable_not_synced: 'Reachable, not yet synced completely', not_working: 'Not working', not_configured: 'Not configured' };
 const SOURCE_LABEL = { wazuh: 'Wazuh endpoints', external: 'External hosts and IPs', any: 'All assets' } as const;
 
 export function VmsAdmin() {
@@ -33,6 +36,8 @@ export function VmsAdmin() {
     const [msg, setMsg] = useState<string | null>(null);
     const [form, setForm] = useState({ name: '', asset_source: 'external' as Policy['asset_source'], cooldown_hours: 168, max_per_run: 5 });
     const [tick, setTick] = useState(0);
+    const [check, setCheck] = useState<WazuhCheck | null>(null);
+    const [checking, setChecking] = useState(false);
     const reload = useCallback(() => setTick((t) => t + 1), []);
 
     useEffect(() => {
@@ -57,9 +62,15 @@ export function VmsAdmin() {
         setMsg(r.ok ? `Policy ${!p.enabled ? 'enabled' : 'disabled'}` : r.error);
         reload();
     }
+    async function checkWazuh() {
+        setChecking(true);
+        const r = await send('POST', '/api/vms/admin/wazuh/check');
+        setChecking(false);
+        if (r.ok) setCheck(r.data as WazuhCheck); else setMsg(r.error);
+    }
     async function runNow(p: Policy) {
         const r = await send('POST', `/api/vms/admin/policies/${p.id}/run`);
-        setMsg(r.ok ? `Run: ${r.data.run.queued} queued, ${r.data.run.existing} already in progress, ${r.data.run.skipped_cooldown} in cooldown, ${r.data.run.blocked.length} blocked` : r.error);
+        setMsg(r.ok ? `Run: ${r.data.run.queued} queued, ${r.data.run.existing} already in progress, ${r.data.run.skipped_cooldown} in cooldown, ${r.data.run.blocked_total ?? r.data.run.blocked.length} blocked${r.data.run.not_evaluated ? `, ${r.data.run.not_evaluated} left for the next run` : ''}` : r.error);
         reload();
     }
 
@@ -79,7 +90,19 @@ export function VmsAdmin() {
                         <div className={card}>
                             <h2 className="text-sm font-black text-foreground">Integrations</h2>
                             <p>Backend version: {s.deployed_version ?? 'not reported'}</p>
-                            <p>Wazuh sync: {!s.wazuh.available ? 'not set up' : s.wazuh.sync?.last_synced_at ? `last ${fmtWat(s.wazuh.sync.last_synced_at)}` : s.wazuh.note}</p>
+                            <p>Wazuh sync: {!s.wazuh.available ? 'not set up' : !s.wazuh.freshness?.last_attempt_at ? s.wazuh.note
+                                : `last complete ${s.wazuh.freshness.last_complete_at ? fmtWat(s.wazuh.freshness.last_complete_at) : 'never'}${s.wazuh.freshness.complete === false ? ` · last run ${fmtWat(s.wazuh.freshness.last_attempt_at)} incomplete: ${s.wazuh.freshness.problem}` : ''}`}</p>
+                            <div>
+                                <button onClick={() => void checkWazuh()} disabled={checking} className="text-[11px] font-bold text-purple disabled:opacity-50">{checking ? 'Checking Wazuh…' : 'Check Wazuh integration'}</button>
+                                {check && (
+                                    <div className="mt-1 border border-border rounded-lg p-2 space-y-0.5">
+                                        <p className="font-bold">{VERDICT[check.verdict]} <span className="font-normal text-foreground-muted">· checked {fmtWat(check.checked_at)}</span></p>
+                                        <p>Manager API: {check.manager.ok ? `Wazuh ${check.manager.api_version ?? 'version not reported'}` : check.manager.error}</p>
+                                        <p>Agents: {check.agents.ok ? `${check.agents.count} in ${(check.agents.groups ?? []).join(', ')} (${check.agents.active} active)` : check.agents.error}</p>
+                                        <p>Vulnerability index: {check.vulnerabilities.ok ? `${check.vulnerabilities.records_for_org} record(s) for this organisation${Object.keys(check.vulnerabilities.by_severity ?? {}).length ? ` — ${Object.entries(check.vulnerabilities.by_severity ?? {}).map(([k, v]) => `${v} ${k}`).join(', ')}` : ''}` : check.vulnerabilities.error}</p>
+                                    </div>
+                                )}
+                            </div>
                             <p>CVE intelligence: {s.cve_intel.tracked} CVEs · KEV {fmtWat(s.cve_intel.kev_checked_at)} · EPSS {fmtWat(s.cve_intel.epss_fetched_at)} · NVD {fmtWat(s.cve_intel.nvd_fetched_at)}</p>
                             <p>Claude AI: {s.ai.configured ? `configured (${s.ai.model})` : 'not configured — deterministic rules and templates only'}</p>
                             <p>Raw evidence: {s.evidence.available ? `${s.evidence.items} item(s), kept ${s.evidence.retention_days} days; next expiry ${fmtWat(s.evidence.next_expiry ?? null)}` : 'not set up'}</p>
@@ -134,7 +157,7 @@ export function VmsAdmin() {
                                                 <button onClick={() => void runNow(p)} className="flex items-center gap-1 text-[11px] font-bold border border-border rounded-lg px-3 py-1"><Play className="w-3 h-3" /> Run now</button>
                                             </div>
                                         </div>
-                                        <p className="text-foreground-muted">Last run {fmtWat(p.last_run_at)}{p.last_result ? `: ${p.last_result.queued ?? 0} queued, ${p.last_result.skipped_cooldown ?? 0} in cooldown, ${(p.last_result.blocked ?? []).length} blocked` : ''}</p>
+                                        <p className="text-foreground-muted">Last run {fmtWat(p.last_run_at)}{p.last_result ? `: ${p.last_result.queued ?? 0} queued, ${p.last_result.skipped_cooldown ?? 0} in cooldown, ${p.last_result.blocked_total ?? (p.last_result.blocked ?? []).length} blocked${p.last_result.not_evaluated ? `, ${p.last_result.not_evaluated} left for the next run` : ''}` : ''}</p>
                                         {(p.last_result?.blocked ?? []).slice(0, 5).map((b, i) => <p key={i} className="text-amber">{b.asset}: {b.reason}</p>)}
                                     </div>
                                 ))}

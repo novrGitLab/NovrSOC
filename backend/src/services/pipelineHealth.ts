@@ -11,6 +11,7 @@ import { FEED_STALE_HOURS, feedConfigured } from './threatInfo';
 import { loadScannerStatus } from './vmsWorkers';
 import { spiderfootConfigured } from '../lib/spiderfoot';
 import { openctiConfigured } from '../lib/opencti';
+import { wazuhFreshness } from './wazuhVulnSync';
 
 const H = 3_600_000;
 
@@ -135,8 +136,10 @@ export async function vmsChecks(): Promise<PipelineCheck[]> {
     }
     const wz = await supabase.from('vms_wazuh_sync').select('org_id, last_synced_at, last_result');
     if (!wz.error && (wz.data ?? []).length) {
-        const stale = (wz.data ?? []).filter((x) => !x.last_synced_at || Date.now() - Date.parse(x.last_synced_at) > 3 * H);
-        out.push({ name: 'Wazuh vulnerability sync', status: stale.length ? 'degraded' : 'up', detail: stale.length ? `Not synced in 3 h: ${stale.map((x) => x.org_id).join(', ')}` : `${(wz.data ?? []).length} organisation(s) synced` });
+        // Judged on the last COMPLETE sync: a run whose indexer queries failed is not fresh data.
+        const stale = (wz.data ?? []).filter((x) => { const f = wazuhFreshness(x); return !f.last_complete_at || Date.now() - Date.parse(f.last_complete_at) > 3 * H; });
+        const problem = (wz.data ?? []).map((x) => wazuhFreshness(x).problem).find(Boolean);
+        out.push({ name: 'Wazuh vulnerability sync', status: stale.length ? 'degraded' : 'up', detail: stale.length ? `No complete sync in 3 h: ${stale.map((x) => x.org_id).join(', ')}${problem ? ` (last problem: ${problem.slice(0, 160)})` : ''}` : `${(wz.data ?? []).length} organisation(s) synced` });
     }
     return out;
 }

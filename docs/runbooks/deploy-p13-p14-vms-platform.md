@@ -1,6 +1,6 @@
-# Deploying P13–P14: Full Assessment, policies, attack-surface map, VMS Admin, worker 1.5.0
+# Deploying P13–P15: Full Assessment, policies, attack-surface map, VMS Admin, Wazuh check, worker 1.5.0
 
-Branch `feat/vms-platform`. **Nothing here has been deployed.** Migrations P13 and P14 have **not** been applied.
+Branch `feat/vms-platform`. **Nothing here has been deployed.** Migrations P13 and P14 have **not** been applied. P15 (review fixes and the Wazuh integration check) needs no SQL.
 
 ## What it adds
 
@@ -20,6 +20,37 @@ Branch `feat/vms-platform`. **Nothing here has been deployed.** Migrations P13 a
 - **Overview:** coverage metrics.
 - **`/health`:** reports the deployed commit.
 - **Worker 1.5.0:** tool versions, `--self-test`, and deploy, rollback and tool-verification scripts.
+
+**P15 — review fixes, no SQL**
+- **Inconclusive checks:** a check that ran but could not reach the target (the worker reports `unreachable` or `insufficient_evidence`) is **inconclusive**. It is not counted as completed, it is retried, and the report says so.
+- **Coverage:** "assessed" counts only targets the last scan actually reached.
+- **No duplicates:** concurrent requests for one target create one assessment.
+- **Cancel:** refused for a finished assessment. It never cancels an identical scan another request had already queued.
+- **Policy runs:** each run tries at most 4 × the per-run cap of blocked assets and reports how many it left for later.
+- **VMS Admin:** shows only the caller's organisation's policy results and audit entries. Before this fix, the hourly run's results for every organisation were visible.
+- **Wazuh sync:**
+  - An indexer error reply, or a missing `wazuh-states-vulnerabilities-*` index, is an **incomplete** sync, never "no vulnerabilities".
+  - Freshness (VMS Admin, Platform Health, period report) is judged on the last **complete** sync.
+- **Wazuh integration check:** VMS Admin → "Check Wazuh integration" (managers only, read-only, audited) reports:
+  - the manager API version (`GET /` → `api_version`);
+  - the agents in the organisation's mapped groups (`wazuh-monitoring-*`);
+  - the presence of `wazuh-states-vulnerabilities-*` and the organisation's record count by severity;
+  - sync freshness.
+
+  Only counts are returned, never documents or credentials.
+
+## Migration review (done before applying anything)
+
+| | P13 `2026-10-20_p13_vms_assessments.sql` | P14 `2026-10-21_p14_vms_policies.sql` |
+|---|---|---|
+| Depends on | `vms_assets`, `vms_scopes`, `vms_scan_jobs` (P4), `vms_workers` (P10): all present in production | `vms_assessments` (P13): **P13 must be applied first** |
+| Changes to existing tables | add columns only: `vms_scan_jobs.assessment_id` (nullable), `vms_scopes.exclusions` (default `{}`), `vms_workers.features` (default `{}`) | add columns only: `vms_assessments.trigger` (default `manual`) and `policy_id`, `vms_workers.tool_versions` (default `{}`) |
+| New tables | `vms_assessments` (RLS on, service role only) | `vms_assessment_policies` (RLS on, service role only; `enabled` defaults to **false**) |
+| Re-runnable | yes (`IF NOT EXISTS`, policy guarded) | yes (constraint dropped and re-added, policy guarded) |
+| Effect on the running P12 backend | none (it neither reads nor writes the new columns) | none |
+| Destructive statements | none | `DROP CONSTRAINT IF EXISTS vms_assessments_trigger_check` (its own constraint only) |
+
+Foreign keys follow the existing pattern. `scope_id` has no `ON DELETE`, like `vms_scan_jobs.scope_id`; scopes are revoked, never deleted.
 
 ## Order
 
@@ -75,6 +106,12 @@ chmod +x deploy.sh rollback.sh verify-tools.sh
 
 ### 4. Check it works
 
+**Wazuh**
+- In VMS Admin → Integrations, press **Check Wazuh integration**.
+  - **"Working":** the manager version is shown, and the organisation's vulnerability records are counted.
+  - **Anything else:** the result names the failing part (not configured, refused, no index, timeout).
+- Record the manager version. This is the first live confirmation of the Wazuh version.
+
 **Admin and Overview**
 - **VMS Admin** shows the worker at v1.5.0 with its tool versions and `exclusions` under "Enforces".
 - **Overview** shows the coverage tiles.
@@ -126,7 +163,7 @@ Read-only, on the backend:
 
 **Freshness:** `vms_wazuh_sync` holds the last sync per organisation. VMS Admin and Platform Health show it.
 
-**Not verified here:** the live Wazuh version, and whether the vulnerability index is populated. This needs the credentials and network path the backend has; it was not tested from this workstation.
+**Not verified here:** the live Wazuh version, and whether the vulnerability index is populated. This needs the credentials and network path the backend has; it was not tested from this workstation. After deployment, VMS Admin → **Check Wazuh integration** answers both from the backend.
 
 ## Recommended initial policy settings
 
@@ -149,7 +186,7 @@ Existing schedules (VMS → schedules) keep working. They remain the place for p
 
 - **Wazuh live test:** needs the backend's Wazuh indexer credentials and network path; not tested from here.
 - **Private endpoints** (all six Wazuh agents have private addresses): need a worker inside each client network with a tested route. No change to configuration alone solves this.
-- **Nuclei:** a test against an authorised target, then adding `vuln_nuclei` to the worker's kinds.
+- **Nuclei:** a test against an authorised target, then adding `vuln_nuclei` to the worker's kinds. The procedure is in [vms-nuclei-validation.md](vms-nuclei-validation.md).
 - **OpenVAS:** not installed. It needs its own host (about 4 vCPU and 8 GB), Greenbone, credentials and an ingestion test.
 - **Not built in this change set:**
   - OSV enrichment;

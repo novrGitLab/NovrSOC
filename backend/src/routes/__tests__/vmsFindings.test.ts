@@ -236,6 +236,18 @@ test('Wazuh sync: endpoints and findings per org; ambiguous agents skipped; abse
     r = await syncWazuhVulnerabilities(failing);
     assert.equal(r.find((x) => x.org === A)!.complete, false);
     assert.equal(byCve('CVE-2024-3333').status, 'open');
+    const lastComplete = (db.tables.vms_wazuh_sync.find((x) => x.org_id === A)!.last_result as Row).last_complete_at;
+    assert.ok(lastComplete, 'the last complete sync time is kept across an incomplete run');
+
+    // P15: error replies and a missing index are incomplete syncs, not "no vulnerabilities".
+    for (const reply of [{ error: { type: 'security_exception' }, status: 403 }, { _shards: { total: 0, failed: 0 }, hits: { total: { value: 0 }, hits: [] } }]) {
+        r = await syncWazuhVulnerabilities({ ...deps, search: async () => reply as never });
+        const x = r.find((y) => y.org === A)!;
+        assert.equal(x.complete, false);
+        assert.match(x.errors[0], /refused the query|no index matches/);
+        assert.equal(x.last_complete_at, lastComplete);
+        assert.equal(byCve('CVE-2024-3333').status, 'open', 'nothing concluded');
+    }
 });
 
 // ── API ──────────────────────────────────────────────────────────────────────────────────────

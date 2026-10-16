@@ -12,7 +12,7 @@ import { ClipboardCheck, Download, RefreshCw } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
 import { getAdminUser } from '@/lib/admin-auth';
-import { fmtWat, OUTCOME_LABEL, STEP_STATUS_LABEL, STEP_STATUS_STYLE, ASSESSMENT_STATUS_LABEL, ASSESSMENT_STATUS_STYLE, type VmsAssessment, type VmsEvidence } from '@/lib/vms';
+import { fmtWat, OUTCOME_LABEL, STEP_STATUS_LABEL, STEP_STATUS_STYLE, ASSESSMENT_STATUS_LABEL, ASSESSMENT_STATUS_STYLE, type VmsAssessment, type VmsEvidence, RETRYABLE_STEPS } from '@/lib/vms';
 
 interface Finding { id: string; title: string; priority: string | null; status: string; evidence_class: string; port: number | null; cve_ids: string[] }
 interface Detail { assessment: VmsAssessment; findings: Finding[]; evidence: (Omit<VmsEvidence, 'content'> & { job_id: string })[] }
@@ -142,7 +142,7 @@ export function VmsAssessments() {
                                 </div>
                                 <div className="flex gap-2">
                                     <button onClick={() => void download()} className="flex items-center gap-1 text-[11px] font-bold border border-border rounded-lg px-3 py-1.5"><Download className="w-3.5 h-3.5" /> Report</button>
-                                    {canRun && a.steps.some((s) => ['failed', 'not_attempted', 'unsupported'].includes(s.status)) && a.status !== 'cancelled' && <button onClick={() => void act('retry')} className="flex items-center gap-1 text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1.5"><RefreshCw className="w-3.5 h-3.5" /> Retry incomplete</button>}
+                                    {canRun && a.steps.some((s) => RETRYABLE_STEPS.includes(s.status)) && a.status !== 'cancelled' && <button onClick={() => void act('retry')} className="flex items-center gap-1 text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1.5"><RefreshCw className="w-3.5 h-3.5" /> Retry incomplete</button>}
                                     {canRun && a.status === 'in_progress' && <button onClick={() => void act('cancel')} className="text-[11px] font-bold text-red border border-border rounded-lg px-3 py-1.5">Cancel</button>}
                                 </div>
                             </div>

@@ -176,11 +176,24 @@ test('admin status: workers with tool versions, integrations as configured/not, 
 });
 
 test('overview coverage counts Wazuh and external assets separately and never counts unrun checks as assessed', async () => {
-    db.tables.vms_assessments.push({ id: randomUUID(), org_id: ORG, target: '10.88.1.139', steps: [{ kind: 'ports', decision: 'not_attempted' }, { kind: 'discovery', decision: 'queued' }], requested_at: now() });
-    const o = (await http('GET', '/api/vms/overview', AN)).data;
-    const c = o.coverage as Row;
-    assert.deepEqual([c.wazuh_endpoints, c.external_assets, c.assessments_last_30_days, c.checks_not_run_last_30_days], [1, 3, 1, 1]);
-    assert.equal(c.assessed_last_30_days, 0);
+    const [jOk, jUnreach] = [randomUUID(), randomUUID()];
+    db.tables.vms_scan_jobs.push(
+        { id: jOk, org_id: ORG, kind: 'discovery', status: 'succeeded', started_at: now(), finished_at: now(), summary: { outcome: 'assessed' } },
+        { id: jUnreach, org_id: ORG, kind: 'ports', status: 'succeeded', started_at: now(), finished_at: now(), summary: { outcome: 'unreachable' } },
+    );
+    db.tables.vms_assessments.push({ id: randomUUID(), org_id: ORG, target: '10.88.1.139', requested_at: now(), steps: [
+        { kind: 'discovery', decision: 'queued', job_id: jOk, previous_job_ids: [] },
+        { kind: 'ports', decision: 'queued', job_id: jUnreach, previous_job_ids: [] },   // ran, target did not answer: inconclusive
+        { kind: 'vuln_nuclei', decision: 'not_attempted', reason: 'scope', job_id: null, previous_job_ids: [] },
+    ] });
+    // last_assessed_at is stamped for every outcome: only a reached target counts as assessed (P15 fix).
+    Object.assign(db.tables.vms_assets.find((a) => a.id === ids.ip)!, { last_assessed_at: now(), last_assessment: { outcome: 'no_route' } });
+    let c = (await http('GET', '/api/vms/overview', AN)).data.coverage as Row;
+    assert.deepEqual([c.wazuh_endpoints, c.external_assets, c.assessments_last_30_days, c.checks_not_run_last_30_days], [1, 3, 1, 2]);
+    assert.equal(c.assessed_last_30_days, 0, 'a no-route result is not an assessment');
+    Object.assign(db.tables.vms_assets.find((a) => a.id === ids.domain)!, { last_assessed_at: now(), last_assessment: { outcome: 'reachable_no_open' } });
+    c = (await http('GET', '/api/vms/overview', AN)).data.coverage as Row;
+    assert.equal(c.assessed_last_30_days, 1);
 });
 
 test('worker heartbeat carries tool versions; before the P14 SQL it still lands', async () => {
@@ -191,5 +204,19 @@ test('worker heartbeat carries tool versions; before the P14 SQL it still lands'
     assert.equal((await hb({ ...body, tool_versions: { metasploit: '6' } })).status, 400, 'only known tools');
     db.missingColumns.vms_workers = ['tool_versions'];
     assert.equal((await hb(body)).status, 200);
+    delete db.missingColumns.vms_workers;
+
+    // P15: a rollback to an older worker (no features/tool_versions in its heartbeat) must not keep
+    // the newer worker's announced features — the claim gate trusts them.
+    const old = { worker_id: 'vps3-demo-worker', kinds: ['discovery', 'ports'], version: '1.3.0', tools: { nmap: true } };
+    assert.equal((await hb(old)).status, 200);
+    const w = db.tables.vms_workers.find((x) => x.worker_id === 'vps3-demo-worker')!;
+    assert.deepEqual([w.version, w.features, w.tool_versions, w.networks], ['1.3.0', [], {}, []]);
+
+    // Before P13/P14 SQL both columns are missing: whichever the database names first, the heartbeat lands.
+    for (const order of [['tool_versions', 'features'], ['features', 'tool_versions']]) {
+        db.missingColumns.vms_workers = order;
+        assert.equal((await hb(body)).status, 200, `missing ${order.join(', ')}`);
+    }
     delete db.missingColumns.vms_workers;
 });

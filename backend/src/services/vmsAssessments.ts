@@ -7,9 +7,11 @@
 //                  route to a private target — with the reason
 //   unsupported    no connected worker runs that kind, has the tool, or enforces the scope's exclusions
 // Step and assessment status are DERIVED from the jobs whenever read, so they cannot drift:
-//   pending, running, completed, findings_detected, failed, not_attempted, unsupported
+//   pending, running, completed, findings_detected, inconclusive, failed, not_attempted, unsupported
 // A job that ended because it could not be attempted (worker "no route", or cancelled before it
-// started) is not_attempted — never completed. Retrying re-plans only steps that did not complete;
+// started) is not_attempted — never completed. A job that ran but could not assess the target
+// (unreachable from the scanner, or too little evidence) is inconclusive: it says nothing about
+// the target, so it is not counted as a completed check either. Retrying re-plans only steps that did not complete;
 // completed steps, their findings and their evidence stay.
 
 import { getSupabase } from './geoEnrichment';
@@ -22,8 +24,14 @@ import { logAudit } from '../lib/audit';
 export const FULL_PROFILE = ['discovery', 'ports', 'vuln_nuclei', 'vuln_openvas'] as const;
 export type ProfileKind = (typeof FULL_PROFILE)[number];
 export type StepDecision = 'queued' | 'not_attempted' | 'unsupported';
-export type StepStatus = 'pending' | 'running' | 'completed' | 'findings_detected' | 'failed' | 'not_attempted' | 'unsupported';
-export type AssessmentStatus = 'in_progress' | 'completed' | 'partial' | 'failed' | 'not_attempted' | 'cancelled';
+export type StepStatus = 'pending' | 'running' | 'completed' | 'findings_detected' | 'inconclusive' | 'failed' | 'not_attempted' | 'unsupported';
+/** Steps a retry re-plans: everything that did not give an answer about the target. */
+export const RETRYABLE: ReadonlySet<StepStatus> = new Set(['inconclusive', 'failed', 'not_attempted', 'unsupported']);
+/** Job outcomes (worker job_outcome) under which a finished scan assessed nothing. */
+const NO_ASSESSMENT: Record<string, string> = { unreachable: 'the target did not answer this scanner', insufficient_evidence: 'the scanner got too little evidence to assess the target' };
+/** An assessment saved but not yet planned (steps still empty) is treated as in progress this long. */
+export const PLANNING_GRACE_MS = 10 * 60_000;
+export type AssessmentStatus = 'in_progress' | 'completed' | 'partial' | 'inconclusive' | 'failed' | 'not_attempted' | 'cancelled';
 export interface Step { kind: ProfileKind; decision: StepDecision; reason: string; job_id: string | null; previous_job_ids: string[] }
 export const P13_MISSING = 'Assessments are not set up yet (run sql/2026-10-20_p13_vms_assessments.sql)';
 export const isMissingP13 = (e: { message?: string; code?: string } | null) => !!e && (e.code === 'PGRST205' || e.code === '42P01' || e.code === 'PGRST204' || /vms_assessments|assessment_id/.test(e.message ?? '') && /does not exist|Could not find|schema cache/i.test(e.message ?? ''));
@@ -65,6 +73,7 @@ export function stepStatus(step: Step, job: JobRow | undefined, findings: number
         case 'running': return { status: 'running', detail: String(job.progress?.phase ?? 'Running') };
         case 'succeeded':
             if (findings > 0) return { status: 'findings_detected', detail: `${findings} finding(s)` };
+            if (outcome && NO_ASSESSMENT[outcome]) return { status: 'inconclusive', detail: `Ran, but ${NO_ASSESSMENT[outcome]} — no assurance either way` };
             return { status: 'completed', detail: outcome ? `Completed — outcome: ${outcome.replace(/_/g, ' ')}` : 'Completed — nothing found' };
         case 'failed':
             if (outcome === 'no_route') return { status: 'not_attempted', detail: job.error ?? 'No route from the worker' };
@@ -82,7 +91,9 @@ export function assessmentStatus(statuses: StepStatus[], cancelled: boolean): As
     const done = statuses.filter((s) => s === 'completed' || s === 'findings_detected').length;
     if (statuses.length && done === statuses.length) return 'completed';
     if (done > 0) return 'partial';
-    return statuses.some((s) => s === 'failed') ? 'failed' : 'not_attempted';
+    if (statuses.some((s) => s === 'failed')) return 'failed';
+    // Something ran but could not assess the target: not the same as never attempted.
+    return statuses.some((s) => s === 'inconclusive') ? 'inconclusive' : 'not_attempted';
 }
 
 export interface AssessmentRow { id: string; org_id: string; asset_id: string | null; scope_id: string; target: string; profile: string; steps: Step[]; requested_by: string; requested_at: string; retried_at: string | null; cancelled_at: string | null }
@@ -112,7 +123,9 @@ export async function describe(rows: AssessmentRow[]) {
                 finding_ids: s.job_id ? [...(findingsByJob.get(s.job_id) ?? [])] : [],
             };
         });
-        const status = assessmentStatus(steps.map((s) => s.status), !!r.cancelled_at);
+        // Saved but not yet planned (a concurrent request is planning it): in progress, so it is not duplicated.
+        const planning = !steps.length && !r.cancelled_at && Date.now() - Date.parse(r.requested_at) < PLANNING_GRACE_MS;
+        const status = planning ? 'in_progress' as const : assessmentStatus(steps.map((s) => s.status), !!r.cancelled_at);
         const counts = steps.reduce<Record<string, number>>((m, s) => ({ ...m, [s.status]: (m[s.status] ?? 0) + 1 }), {});
         const finished = steps.filter((s) => !['pending', 'running'].includes(s.status)).length;
         return { ...r, steps, status, step_counts: counts, progress: { finished, total: steps.length }, all_job_ids: [...new Set((r.steps ?? []).flatMap((s) => [s.job_id, ...(s.previous_job_ids ?? [])]).filter((x): x is string => !!x))] };
@@ -147,6 +160,17 @@ async function queueStep(org: string, by: string, assessmentId: string, kind: Pr
 
 export type CreateResult = { ok: true; assessment: Awaited<ReturnType<typeof describe>>[number]; existing: boolean } | { ok: false; status: number; error: string };
 
+// Requests for the same target in this process are serialised, so two clicks cannot both pass the
+// "already in progress?" check before either has saved. (Across processes the saved-but-unplanned
+// row counts as in progress: see PLANNING_GRACE_MS.)
+const inFlight = new Map<string, Promise<unknown>>();
+async function serialised<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = inFlight.get(key) ?? Promise.resolve();
+    const run = prev.catch(() => undefined).then(fn);
+    inFlight.set(key, run);
+    try { return await run; } finally { if (inFlight.get(key) === run) inFlight.delete(key); }
+}
+
 /** Creates a Full Assessment, or returns the one already in progress for the same target (idempotent). */
 export async function createAssessment(org: string, by: string, input: { asset_id?: string; target?: string; scope_id?: string }, ip = 'unknown', origin: { trigger?: 'manual' | 'policy' | 'schedule'; policy_id?: string } = {}): Promise<CreateResult> {
     const supabase = getSupabase()!;
@@ -158,7 +182,11 @@ export async function createAssessment(org: string, by: string, input: { asset_i
     const scope = input.scope_id ? live.find((s) => s.id === input.scope_id) : live.find((s) => coveringScope(t.target, [s], 'passive'));
     if (!scope) return { ok: false, status: 403, error: `${t.target.value} is not inside an active authorised scope entry of this organisation` };
     if (!coveringScope(t.target, [scope], 'passive')) return { ok: false, status: 403, error: `${t.target.value} is excluded from, or not covered by, that scope entry` };
+    return serialised(`${org}|${t.target.value}`, () => planAssessment(org, by, t, scope, ip, origin));
+}
 
+async function planAssessment(org: string, by: string, t: { target: Target; asset_id: string | null }, scope: ScopeEntry, ip: string, origin: { trigger?: 'manual' | 'policy' | 'schedule'; policy_id?: string }): Promise<CreateResult> {
+    const supabase = getSupabase()!;
     // Idempotent: an assessment of the same target still in progress is returned, not duplicated.
     const { data: open, error: oErr } = await supabase.from('vms_assessments').select('*').eq('org_id', org).eq('target', t.target.value).eq('profile', 'full').is('cancelled_at', null).order('requested_at', { ascending: false }).limit(5);
     if (oErr) return { ok: false, status: isMissingP13(oErr) ? 503 : 502, error: isMissingP13(oErr) ? P13_MISSING : 'Could not read assessments' };
@@ -190,7 +218,7 @@ export async function retryAssessment(org: string, id: string, by: string, ip = 
     if (!row) return { ok: false, status: 404, error: 'Assessment not found' };
     if (row.cancelled_at) return { ok: false, status: 409, error: 'This assessment was cancelled; start a new one' };
     const [current] = await describe([row as AssessmentRow]);
-    const retryable = new Set<StepStatus>(['failed', 'not_attempted', 'unsupported']);
+    const retryable = RETRYABLE;
     if (!current.steps.some((s) => retryable.has(s.status))) return { ok: true, assessment: current, existing: true };
     const { data: scope } = await supabase.from('vms_scopes').select('*').eq('id', row.scope_id).eq('org_id', org).maybeSingle();
     const t = parseTarget(row.target);
@@ -228,7 +256,7 @@ export function managementReport(a: Awaited<ReturnType<typeof describe>>[number]
     if ((scope.exclusions ?? []).length) L.push(`- **Excluded from testing:** ${(scope.exclusions ?? []).join(', ')}`);
     L.push('', '## Summary', '');
     L.push(`- Findings: ${findings.length} (P1 ${by('P1')}, P2 ${by('P2')}, P3 ${by('P3')}, P4 ${by('P4')})${unconfirmed ? `, of which ${unconfirmed} unconfirmed (version match or third-party claim)` : ''}`);
-    const notRun = a.steps.filter((s) => s.status === 'not_attempted' || s.status === 'unsupported' || s.status === 'failed');
+    const notRun = a.steps.filter((s) => RETRYABLE.has(s.status));
     L.push(`- Checks completed: ${a.steps.filter((s) => s.status === 'completed' || s.status === 'findings_detected').length} of ${a.steps.length}${notRun.length ? `; not completed: ${notRun.map((s) => s.label).join(', ')}` : ''}`);
     L.push('', '## Checks', '', '| Check | Status | Detail |', '|---|---|---|');
     for (const s of a.steps) L.push(`| ${s.label} | ${s.status.replace(/_/g, ' ')} | ${String(s.detail).replace(/\|/g, '/').replace(/\n/g, ' ')} |`);
@@ -244,6 +272,6 @@ export function managementReport(a: Awaited<ReturnType<typeof describe>>[number]
     L.push('', '## Limitations', '');
     L.push('- Results reflect what this platform\'s scanners could reach and test at the time; "unreachable from this scanner" does not mean the system is offline or secure.');
     L.push('- Unconfirmed findings (version matches, third-party claims) need confirmation by an authorised scan before remediation is prioritised on them.');
-    L.push('- Checks marked not attempted or unsupported did not run; this report gives no assurance about what they would have found.');
+    L.push('- Checks marked not attempted or unsupported did not run, and checks marked inconclusive ran without being able to assess the target; this report gives no assurance about what they would have found.');
     return L.join('\n') + '\n';
 }

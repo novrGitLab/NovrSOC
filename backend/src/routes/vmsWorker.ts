@@ -96,7 +96,11 @@ router.post('/heartbeat', heartbeatLimiter, async (req, res) => {
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Database not configured' }); return; }
     const now = new Date().toISOString();
-    const r = await recordWorkerSeen(p.data.worker_id, { kinds: [...new Set(p.data.kinds)], version: p.data.version ?? null, tools: p.data.tools ?? {}, ...(p.data.networks ? { networks: p.data.networks } : {}), ...(p.data.features ? { features: p.data.features } : {}), ...(p.data.tool_versions ? { tool_versions: p.data.tool_versions } : {}), last_heartbeat_at: now });
+    // A heartbeat states the worker's whole capability: what it does not announce, it does not have.
+    // (Absent fields used to keep their old values, so after a rollback from 1.5.0 to an older
+    // worker — whose --self-test had announced 'exclusions' — the old worker kept that feature and
+    // could be given jobs whose exclusions it does not enforce.)
+    const r = await recordWorkerSeen(p.data.worker_id, { kinds: [...new Set(p.data.kinds)], version: p.data.version ?? null, tools: p.data.tools ?? {}, networks: p.data.networks ?? [], features: p.data.features ?? [], tool_versions: p.data.tool_versions ?? {}, last_heartbeat_at: now });
     if (r === 'missing') { res.status(503).json({ error: PRESENCE_MISSING_MESSAGE }); return; }
     if (r === 'failed') { res.status(503).json({ error: 'Could not record the heartbeat' }); return; }
     // How many jobs are waiting for this worker's kinds: lets the worker say "idle" vs "work waiting".

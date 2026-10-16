@@ -91,12 +91,14 @@ export async function recordWorkerSeen(workerId: string, fields: Partial<Pick<Wo
     if (!supabase) return 'failed';
     const now = new Date().toISOString();
     let { error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...fields }, { onConflict: 'worker_id' });
-    // Before the P12/P13 SQL there is no networks/features column: record the rest.
-    for (const col of ['networks', 'features', 'tool_versions'] as const) {
-        if (error && col in fields && (error.code === 'PGRST204' || error.code === '42703') && new RegExp(col).test(error.message)) {
-            delete (fields as Record<string, unknown>)[col];
-            ({ error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...fields }, { onConflict: 'worker_id' }));
-        }
+    // Before the P12/P13/P14 SQL there is no networks/features/tool_versions column: drop whichever
+    // column the database names and record the rest — in any order, at most once per column.
+    const optional = ['networks', 'features', 'tool_versions'] as const;
+    for (let i = 0; i < optional.length && error && (error.code === 'PGRST204' || error.code === '42703'); i++) {
+        const col = optional.find((c) => c in fields && (error!.message.includes(`'${c}'`) || error!.message.includes(`"${c}"`)));
+        if (!col) break;
+        delete (fields as Record<string, unknown>)[col];
+        ({ error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...fields }, { onConflict: 'worker_id' }));
     }
     if (!error) return 'ok';
     if (isMissingTable(error)) {

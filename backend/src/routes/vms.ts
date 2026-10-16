@@ -29,6 +29,7 @@ import { loadScannerStatus, jobAttention } from '../services/vmsWorkers';
 import { assetGraph } from '../services/vmsGraph';
 import { isStaffRole } from '../lib/resolveOrg';
 import { validateScopeValue, parseTarget, coveringScope, normalizeExclusion, type ScopeEntry, type Activity } from '../lib/vmsScope';
+import { describe, RETRYABLE, type AssessmentRow } from '../services/vmsAssessments';
 
 const router = Router();
 const MAX_SCOPE_DAYS = 400;
@@ -64,14 +65,18 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
     ]);
     if (active.error) { fail(res, active.error); return; }
     // Coverage (P14): Wazuh-managed vs external, and what was actually assessed — never counting a
-    // check that did not run as an assessment.
+    // check that did not run as an assessment. last_assessed_at is stamped for every outcome
+    // (no route and unreachable too), so "assessed" means the last outcome reached the target; a
+    // check that did not run or was inconclusive is counted from the derived step status.
     const since30 = days(30);
     const [endpoints, external, assessed30, assessments30] = await Promise.all([
         count(assets().eq('status', 'active').eq('asset_type', 'endpoint')),
         count(assets().eq('status', 'active').in('asset_type', ['host', 'ip', 'domain'])),
-        count(assets().eq('status', 'active').gte('last_assessed_at', since30)),
-        supabase.from('vms_assessments').select('id, steps, cancelled_at').eq('org_id', org).gte('requested_at', since30).limit(2000),
+        supabase.from('vms_assets').select('id, last_assessment').eq('org_id', org).eq('status', 'active').gte('last_assessed_at', since30).limit(5000),
+        supabase.from('vms_assessments').select('*').eq('org_id', org).gte('requested_at', since30).order('requested_at', { ascending: false }).limit(500),
     ]);
+    const reached = (assessed30.data ?? []).filter((a) => /^reachable/.test(String((a.last_assessment as { outcome?: string } | null)?.outcome ?? ''))).length;
+    const described = assessments30.error ? [] : await describe((assessments30.data ?? []) as AssessmentRow[]);
     res.json({
         assets: { active: active.count ?? 0, internet_facing: internet.count ?? 0, gone: gone.count ?? 0, open_services: services.count ?? 0 },
         last_7_days: { new_assets: newA.count ?? 0, changed_assets: changedA.count ?? 0, gone_assets: goneA.count ?? 0, new_services: newSvc.count ?? 0 },
@@ -80,9 +85,9 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
             wazuh_endpoints: endpoints.count ?? 0,
             external_assets: external.count ?? 0,
             // null when the P12 column is missing: unknown, not zero.
-            assessed_last_30_days: assessed30.error ? null : assessed30.count ?? 0,
-            assessments_last_30_days: assessments30.error ? null : (assessments30.data ?? []).length,
-            checks_not_run_last_30_days: assessments30.error ? null : (assessments30.data ?? []).reduce((n, a) => n + ((a.steps ?? []) as { decision?: string }[]).filter((s) => s.decision !== 'queued').length, 0),
+            assessed_last_30_days: assessed30.error ? null : reached,
+            assessments_last_30_days: assessments30.error ? null : described.length,
+            checks_not_run_last_30_days: assessments30.error ? null : described.reduce((n, a) => n + a.steps.filter((s) => RETRYABLE.has(s.status)).length, 0),
         },
         recent_scans: scans.data ?? [],
         // Scanner workers are shared infrastructure, not tenant data: client roles get the state only.

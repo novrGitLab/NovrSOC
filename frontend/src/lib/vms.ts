@@ -21,10 +21,11 @@ export interface VmsAsset {
     exposure: 'internet' | 'internal' | 'unknown'; alive: boolean | null; owner: string | null; criticality: 'low' | 'medium' | 'high' | 'critical';
     wazuh_agent_id: string | null; discovery_sources: string[]; first_seen: string; last_seen: string; status: 'active' | 'gone';
     /** What the last scan learned about reaching this host (P12; absent before that SQL). */
-    last_assessment?: VmsAssessment | null; last_assessed_at?: string | null;
+    last_assessment?: VmsReachAssessment | null; last_assessed_at?: string | null;
 }
 export type AssessmentOutcome = 'reachable_open' | 'reachable_no_open' | 'unreachable' | 'no_route' | 'insufficient_evidence';
-export interface VmsAssessment {
+/** What one scan learned about reaching a host (P12). Not the Full Assessment (VmsAssessment, P13). */
+export interface VmsReachAssessment {
     outcome: AssessmentOutcome; reason: string; method: 'nmap' | 'httpx';
     host_status?: string | null; host_status_reason?: string | null; port_states?: Record<string, number>; ports_scanned?: number; job_id?: string;
 }
@@ -85,8 +86,10 @@ export const OUTCOME_STYLE: Record<string, string> = {
 export const portStates = (c: Record<string, number> | undefined) => Object.entries(c ?? {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v} ${k}`).join(' · ');
 
 /** Full Assessment (P13). Status is derived by the backend from the scan jobs. */
-export type StepStatus = 'pending' | 'running' | 'completed' | 'findings_detected' | 'failed' | 'not_attempted' | 'unsupported';
-export type AssessmentStatus = 'in_progress' | 'completed' | 'partial' | 'failed' | 'not_attempted' | 'cancelled';
+export type StepStatus = 'pending' | 'running' | 'completed' | 'findings_detected' | 'inconclusive' | 'failed' | 'not_attempted' | 'unsupported';
+/** Steps a retry re-plans (same set as the backend's RETRYABLE). */
+export const RETRYABLE_STEPS: StepStatus[] = ['inconclusive', 'failed', 'not_attempted', 'unsupported'];
+export type AssessmentStatus = 'in_progress' | 'completed' | 'partial' | 'inconclusive' | 'failed' | 'not_attempted' | 'cancelled';
 export interface VmsAssessmentStep {
     kind: string; label: string; decision: 'queued' | 'not_attempted' | 'unsupported'; reason: string; status: StepStatus; detail: string;
     job_id: string | null; previous_job_ids: string[]; finding_ids: string[];
@@ -98,17 +101,17 @@ export interface VmsAssessment {
     step_counts: Record<string, number>; progress: { finished: number; total: number };
 }
 export const STEP_STATUS_LABEL: Record<StepStatus, string> = {
-    pending: 'Pending', running: 'Running', completed: 'Completed', findings_detected: 'Findings detected',
+    pending: 'Pending', running: 'Running', completed: 'Completed', findings_detected: 'Findings detected', inconclusive: 'Inconclusive',
     failed: 'Failed', not_attempted: 'Not attempted', unsupported: 'Unsupported',
 };
 export const STEP_STATUS_STYLE: Record<StepStatus, string> = {
     pending: 'bg-card-muted text-foreground-muted', running: 'bg-blue/10 text-blue', completed: 'bg-green/10 text-green',
-    findings_detected: 'bg-orange/10 text-orange', failed: 'bg-red/10 text-red', not_attempted: 'bg-amber/10 text-amber', unsupported: 'bg-amber/10 text-amber',
+    findings_detected: 'bg-orange/10 text-orange', inconclusive: 'bg-amber/10 text-amber', failed: 'bg-red/10 text-red', not_attempted: 'bg-amber/10 text-amber', unsupported: 'bg-amber/10 text-amber',
 };
 export const ASSESSMENT_STATUS_LABEL: Record<AssessmentStatus, string> = {
-    in_progress: 'In progress', completed: 'Completed', partial: 'Partly completed', failed: 'Failed', not_attempted: 'Not attempted', cancelled: 'Cancelled',
+    in_progress: 'In progress', completed: 'Completed', partial: 'Partly completed', inconclusive: 'Inconclusive', failed: 'Failed', not_attempted: 'Not attempted', cancelled: 'Cancelled',
 };
 export const ASSESSMENT_STATUS_STYLE: Record<AssessmentStatus, string> = {
-    in_progress: 'bg-blue/10 text-blue', completed: 'bg-green/10 text-green', partial: 'bg-amber/10 text-amber',
+    in_progress: 'bg-blue/10 text-blue', completed: 'bg-green/10 text-green', partial: 'bg-amber/10 text-amber', inconclusive: 'bg-amber/10 text-amber',
     failed: 'bg-red/10 text-red', not_attempted: 'bg-amber/10 text-amber', cancelled: 'bg-card-muted text-foreground-muted',
 };

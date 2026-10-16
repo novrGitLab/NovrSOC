@@ -91,7 +91,7 @@ export function VmsAssets() {
                                     <span className="text-xs font-bold font-mono text-foreground break-all">{a.value}</span>
                                     <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${CRIT_STYLE[a.criticality]}`}>{a.criticality}</span>
                                 </div>
-                                <p className="text-[10px] text-foreground-muted mt-1">{a.exposure} · {a.ips.join(', ') || 'no IP'} · {a.http?.status ? `HTTP ${a.http.status}` : 'no HTTP'} · seen {fmtWat(a.last_seen)}{a.status === 'gone' ? ' · gone' : ''}{a.asset_type === 'endpoint' ? ' · Wazuh' : ''}{a.last_assessed_at ? ` · assessed ${fmtWat(a.last_assessed_at)}` : ' · not assessed'}</p>
+                                <p className="text-[10px] text-foreground-muted mt-1">{a.exposure} · {a.ips.join(', ') || 'no IP'} · {a.http?.status ? `HTTP ${a.http.status}` : 'no HTTP'} · seen {fmtWat(a.last_seen)}{a.status === 'gone' ? ' · gone' : ''}{a.asset_type === 'endpoint' ? ' · Wazuh' : ''}{!a.last_assessed_at ? ' · not assessed' : /^reachable/.test(a.last_assessment?.outcome ?? '') ? ` · assessed ${fmtWat(a.last_assessed_at)}` : ` · last check ${fmtWat(a.last_assessed_at)}: ${OUTCOME_LABEL[a.last_assessment?.outcome ?? ''] ?? a.last_assessment?.outcome ?? 'no result'}`}</p>
                             </button>
                         ))}
                     </div>

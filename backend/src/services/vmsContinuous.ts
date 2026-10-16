@@ -12,6 +12,7 @@
 import { getSupabase } from './geoEnrichment';
 import { queueScan } from '../routes/vms';
 import { isEmailEnabled, sendVmsDigestEmail, socNotificationRecipients } from './email';
+import { wazuhFreshness } from './wazuhVulnSync';
 
 export const OPEN_STATUSES = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'] as const;
 const PRIORITIES = ['P1', 'P2', 'P3', 'P4'] as const;
@@ -182,7 +183,10 @@ export async function periodReport(org: string, days: number, now = new Date()) 
     const limitations: string[] = [];
     if ((scopes.count ?? 0) === 0) limitations.push('No active authorised scope: no active scanning was possible at the end of the period.');
     if (!(jobs.data ?? []).some((j) => j.status === 'succeeded')) limitations.push('No scan succeeded in the period: findings reflect earlier scans and Wazuh only.');
-    if (!wazuh.data?.last_synced_at) limitations.push('Wazuh vulnerability sync has not run for this organisation: endpoint vulnerabilities are not included.');
+    const wf = wazuhFreshness(wazuh.data);
+    if (!wf.last_attempt_at) limitations.push('Wazuh vulnerability sync has not run for this organisation: endpoint vulnerabilities are not included.');
+    else if (!wf.last_complete_at) limitations.push(`Wazuh vulnerability sync has never completed for this organisation (${wf.problem ?? 'incomplete'}): endpoint vulnerabilities may be missing.`);
+    else if (!wf.complete) limitations.push(`The latest Wazuh vulnerability sync was incomplete (${wf.problem}); endpoint vulnerabilities are as of ${wf.last_complete_at}.`);
     limitations.push('Only assets inside authorised scope and endpoints with a Wazuh agent are covered; anything else is unknown, not clean.');
     return {
         period: { from: since, to: until, days },

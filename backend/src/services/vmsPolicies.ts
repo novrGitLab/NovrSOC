@@ -6,12 +6,15 @@
 // Safety: an asset assessed by any trigger within the cooldown is skipped, so an unreachable or
 // blocked asset is not re-queued every hour; at most max_per_run assets per policy per run; an
 // asset outside authorised scope is reported as blocked with the reason and creates nothing.
+// Blocked assets create no assessment, so they would be re-tried every run: each run therefore
+// tries at most max_per_run × BLOCKED_BUDGET_FACTOR assets and reports how many it left for later.
 
 import { getSupabase } from './geoEnrichment';
 import { createAssessment } from './vmsAssessments';
 
 export interface Policy { id: string; org_id: string; name: string; enabled: boolean; asset_source: 'wazuh' | 'external' | 'any'; profile: 'full'; cooldown_hours: number; max_per_run: number; last_run_at: string | null; last_result: unknown }
-export interface PolicyRun { policy: string; org: string; queued: number; existing: number; skipped_cooldown: number; blocked: { asset: string; reason: string }[] }
+export interface PolicyRun { policy: string; org: string; queued: number; existing: number; skipped_cooldown: number; blocked: { asset: string; reason: string }[]; blocked_total?: number; not_evaluated?: number }
+export const BLOCKED_BUDGET_FACTOR = 4;
 
 const P14_MISSING = 'Assessment policies are not set up yet (run sql/2026-10-21_p14_vms_policies.sql)';
 export const isMissingP14 = (e: { message?: string; code?: string } | null) => !!e && (e.code === 'PGRST205' || e.code === '42P01' || /vms_assessment_policies/.test(e.message ?? ''));
@@ -37,11 +40,15 @@ export async function runPolicy(p: Policy, now = Date.now()): Promise<PolicyRun>
     const rank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
     const candidates = (assets ?? []).filter((a) => eligible(a, p.asset_source)).sort((a, b) => (rank[a.criticality] ?? 9) - (rank[b.criticality] ?? 9));
     let started = 0;
+    let tried = 0;
+    out.blocked_total = 0;
+    out.not_evaluated = 0;
     for (const a of candidates) {
         if (cooled.has(a.id)) { out.skipped_cooldown++; continue; }
-        if (started >= p.max_per_run) break;
+        if (started >= p.max_per_run || tried >= p.max_per_run * BLOCKED_BUDGET_FACTOR) { out.not_evaluated++; continue; }
+        tried++;
         const r = await createAssessment(p.org_id, `policy:${p.name}`.slice(0, 120), { asset_id: a.id }, 'scheduler', { trigger: 'policy', policy_id: p.id });
-        if (!r.ok) { if (out.blocked.length < 50) out.blocked.push({ asset: a.value, reason: r.error }); continue; }
+        if (!r.ok) { out.blocked_total++; if (out.blocked.length < 50) out.blocked.push({ asset: a.value, reason: r.error }); continue; }
         started++;
         if (r.existing) out.existing++; else out.queued++;
     }
