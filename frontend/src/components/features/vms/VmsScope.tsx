@@ -26,7 +26,7 @@ export function VmsScope() {
     const [error, setError] = useState<string | null>(null);
     const [msg, setMsg] = useState<string | null>(null);
     const [adding, setAdding] = useState(false);
-    const [form, setForm] = useState({ kind: 'domain' as Scope['kind'], value: '', include_subdomains: true, allow_port_scan: false, allow_vuln_scan: false, authorization_reference: '', expires_at: inThreeMonths(), notes: '' });
+    const [form, setForm] = useState({ kind: 'domain' as Scope['kind'], value: '', include_subdomains: true, allow_port_scan: false, allow_vuln_scan: false, authorization_reference: '', expires_at: inThreeMonths(), notes: '', exclusions: '' });
     const [reloadKey, setReloadKey] = useState(0);
     const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -44,7 +44,7 @@ export function VmsScope() {
         setMsg(null);
         const r = await apiFetch(apiUrl('/api/vms/scopes'), {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...form, expires_at: new Date(`${form.expires_at}T23:59:59Z`).toISOString(), notes: form.notes || undefined }),
+            body: JSON.stringify({ ...form, expires_at: new Date(`${form.expires_at}T23:59:59Z`).toISOString(), notes: form.notes || undefined, exclusions: form.exclusions.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) }),
         });
         const d = await r.json().catch(() => null);
         if (!r.ok) { setMsg(d?.error ?? `HTTP ${r.status}`); return; }
@@ -93,6 +93,9 @@ export function VmsScope() {
                         {form.kind === 'domain' && <label className="flex items-center gap-2"><input type="checkbox" checked={form.include_subdomains} onChange={(e) => setForm({ ...form, include_subdomains: e.target.checked })} /> Include subdomains</label>}
                         <label className="flex items-center gap-2"><input type="checkbox" checked={form.allow_port_scan} onChange={(e) => setForm({ ...form, allow_port_scan: e.target.checked })} /> Allow port and service scanning</label>
                         <label className="flex items-center gap-2"><input type="checkbox" checked={form.allow_vuln_scan} onChange={(e) => setForm({ ...form, allow_vuln_scan: e.target.checked })} /> Allow vulnerability scanning</label>
+                        <label className="text-[11px] font-bold text-foreground-muted md:col-span-2">Exclusions — never touched (hosts, .subdomains, IPs or CIDRs, comma-separated)
+                            <input className={input} value={form.exclusions} onChange={(e) => setForm({ ...form, exclusions: e.target.value })} placeholder="payments.example.com, .legacy.example.com, 203.0.113.7" />
+                        </label>
                     </div>
                     <label className="text-[11px] font-bold text-foreground-muted md:col-span-2">Notes
                         <input className={input} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Testing windows, contacts, exclusions" />
@@ -113,7 +116,7 @@ export function VmsScope() {
                         <tbody>
                             {scopes.map((s) => (
                                 <tr key={s.id} className="border-b border-border last:border-0 align-top">
-                                    <td className="p-3 font-mono">{s.value}{s.kind === 'domain' && s.include_subdomains ? ' (+ subdomains)' : ''}</td>
+                                    <td className="p-3 font-mono">{s.value}{s.kind === 'domain' && s.include_subdomains ? ' (+ subdomains)' : ''}{(s.exclusions ?? []).length ? <span className="block text-amber font-sans">excluding {(s.exclusions ?? []).join(', ')}</span> : null}</td>
                                     <td className="py-3">Discovery{s.allow_port_scan ? ', ports' : ''}{s.allow_vuln_scan ? ', vulnerabilities' : ''}</td>
                                     <td className="py-3 max-w-xs">{s.authorization_reference}</td>
                                     <td className="py-3">{s.approved_by}<br /><span className="text-foreground-muted">{fmtWat(s.approved_at)}</span></td>

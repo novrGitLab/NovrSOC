@@ -2,6 +2,9 @@
 //   CISA KEV  https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
 //   FIRST EPSS https://api.first.org/data/v1/epss?cve=…        (probability of exploitation)
 //   NVD 2.0   https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=…  (description, CVSS, CWE)
+//   OSV       https://api.osv.dev/v1/vulns/<CVE id>   (P16: related advisory ids, fixed versions per
+//             package). Needs sql/2026-10-22_p16_osv.sql; without it the step is skipped and says so.
+//             Informational only: it never changes risk, priority or status.
 // A value a source didn't give stays null ("unknown"); nothing is inferred. NVD is rate limited
 // (5 requests / 30 s without NVD_API_KEY, 50 with), so lookups are paced and capped per run.
 // Only CVEs that appear in findings are tracked.
@@ -89,7 +92,80 @@ export async function ensureCves(ids: string[]): Promise<void> {
     if (error) throw new Error(`cve_intel upsert failed: ${error.message}`);
 }
 
-export interface IntelRunResult { tracked: number; kev_marked: number; epss_updated: number; nvd_updated: number; errors: string[] }
+export interface IntelRunResult { tracked: number; kev_marked: number; epss_updated: number; nvd_updated: number; errors: string[]; osv?: OsvRunResult }
+
+// ── OSV (P16) ──────────────────────────────────────────────────────────────────────────────────
+export const OSV_URL = 'https://api.osv.dev/v1/vulns';
+const OSV_TIMEOUT = 15_000;
+const OSV_REFRESH_DAYS = 7;
+export interface OsvAffected { ecosystem: string | null; name: string | null; repo: string | null; fixed: string[]; last_affected: string[] }
+export interface OsvRunResult { state: 'done' | 'not_set_up' | 'rate_limited' | 'failed'; looked_up: number; found: number; not_found: number; errors: string[] }
+const str = (v: unknown, max = 200) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
+
+/** The fields kept from an OSV record (osv.dev schema): ids naming the same issue, a summary, fixes per package. */
+export function parseOsv(json: unknown): { ids: string[]; summary: string | null; affected: OsvAffected[] } | null {
+    const j = json as { id?: unknown; aliases?: unknown; related?: unknown; summary?: unknown; details?: unknown; affected?: unknown } | null;
+    const id = str(j?.id, 100);
+    if (!id) return null;
+    const list = (v: unknown) => (Array.isArray(v) ? v.map((x) => str(x, 100)).filter((x): x is string => !!x) : []);
+    const ids = [...new Set([id, ...list(j?.aliases), ...list(j?.related)])].slice(0, 50);
+    const affected: OsvAffected[] = [];
+    for (const a of Array.isArray(j?.affected) ? j!.affected as Record<string, unknown>[] : []) {
+        const pkg = (a?.package ?? {}) as { ecosystem?: unknown; name?: unknown };
+        const ranges = Array.isArray(a?.ranges) ? a.ranges as { repo?: unknown; events?: unknown }[] : [];
+        const events = ranges.flatMap((r) => (Array.isArray(r?.events) ? r.events as Record<string, unknown>[] : []));
+        const entry: OsvAffected = {
+            ecosystem: str(pkg.ecosystem, 80), name: str(pkg.name, 200), repo: str(ranges.find((r) => str(r?.repo))?.repo, 300),
+            fixed: [...new Set(events.map((e) => str(e?.fixed, 100)).filter((x): x is string => !!x))].slice(0, 20),
+            last_affected: [...new Set(events.map((e) => str(e?.last_affected, 100)).filter((x): x is string => !!x))].slice(0, 20),
+        };
+        if (entry.name || entry.repo) affected.push(entry);
+        if (affected.length >= 50) break;
+    }
+    return { ids, summary: str(j?.summary, 1000) ?? str(j?.details, 1000), affected };
+}
+
+const isMissingColumn = (e: { code?: string; message?: string } | null) => !!e && (e.code === '42703' || e.code === 'PGRST204' || /osv_/.test(e.message ?? '') && /does not exist|Could not find/i.test(e.message ?? ''));
+
+/**
+ * Looks up to `limit` tracked CVEs in OSV: never looked up first, then the oldest past the refresh
+ * interval. One request at a time with a pause; HTTP 429 stops the run (retried next run); any other
+ * failure is recorded and the CVE is retried next run — a failed lookup is never stored as "none".
+ */
+export async function refreshOsv(opts: { limit?: number; fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void>; now?: Date } = {}): Promise<OsvRunResult> {
+    const out: OsvRunResult = { state: 'done', looked_up: 0, found: 0, not_found: 0, errors: [] };
+    const supabase = getSupabase();
+    if (!supabase) return { ...out, state: 'failed', errors: ['database not configured'] };
+    const doFetch = opts.fetchImpl ?? fetch;
+    const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+    const now = opts.now ?? new Date();
+    const staleBefore = new Date(now.getTime() - OSV_REFRESH_DAYS * 86_400_000).toISOString();
+    const { data, error } = await supabase.from('cve_intel').select('cve_id, osv_fetched_at').or(`osv_fetched_at.is.null,osv_fetched_at.lt.${staleBefore}`)
+        .order('osv_fetched_at', { ascending: true, nullsFirst: true }).limit(opts.limit ?? 50);
+    if (error) return isMissingColumn(error) ? { ...out, state: 'not_set_up', errors: ['OSV is not set up (run sql/2026-10-22_p16_osv.sql)'] } : { ...out, state: 'failed', errors: [`cve_intel read: ${error.message}`] };
+    for (const [i, row] of ((data ?? []) as { cve_id: string }[]).filter((r) => isCve(r.cve_id)).entries()) {
+        if (i) await sleep(250);
+        out.looked_up++;
+        try {
+            const r = await doFetch(`${OSV_URL}/${encodeURIComponent(row.cve_id)}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(OSV_TIMEOUT) });
+            if (r.status === 429) { out.state = 'rate_limited'; out.errors.push('OSV: HTTP 429, stopped for this run'); break; }
+            if (r.status === 404) {
+                await supabase.from('cve_intel').update({ osv_ids: [], osv_summary: null, osv_affected: [], osv_status: 'not_found', osv_fetched_at: now.toISOString() }).eq('cve_id', row.cve_id);
+                out.not_found++; continue;
+            }
+            if (!r.ok) { out.errors.push(`OSV ${row.cve_id}: HTTP ${r.status}`); continue; }
+            const parsed = parseOsv(await r.json());
+            if (!parsed) { out.errors.push(`OSV ${row.cve_id}: unreadable record`); continue; }
+            const { error: uErr } = await supabase.from('cve_intel').update({ osv_ids: parsed.ids, osv_summary: parsed.summary, osv_affected: parsed.affected, osv_status: 'found', osv_fetched_at: now.toISOString() }).eq('cve_id', row.cve_id);
+            if (uErr) { out.errors.push(`OSV ${row.cve_id}: not stored (${uErr.message})`); continue; }
+            out.found++;
+        } catch (err) {
+            out.errors.push(`OSV ${row.cve_id}: ${err instanceof Error ? (err.name === 'TimeoutError' ? `no answer within ${OSV_TIMEOUT / 1000} s` : err.message) : String(err)}`.slice(0, 200));
+        }
+    }
+    if (out.errors.length && out.state === 'done' && out.found + out.not_found === 0) out.state = 'failed';
+    return out;
+}
 
 /** One refresh: KEV flags for every tracked CVE, EPSS for every tracked CVE, NVD for up to nvdLimit missing ones. */
 export async function refreshCveIntel(opts: { nvdLimit?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<IntelRunResult> {
@@ -141,5 +217,8 @@ export async function refreshCveIntel(opts: { nvdLimit?: number; sleep?: (ms: nu
             if (fields) out.nvd_updated++;
         } catch (err) { out.errors.push(`NVD ${id}: ${err instanceof Error ? err.message : err}`); }
     }
+
+    // OSV last and isolated: whatever happens there, KEV, EPSS and NVD above are already stored.
+    try { out.osv = await refreshOsv({ sleep }); } catch (err) { out.osv = { state: 'failed', looked_up: 0, found: 0, not_found: 0, errors: [err instanceof Error ? err.message : String(err)] }; }
     return out;
 }

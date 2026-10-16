@@ -26,8 +26,10 @@ import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid } from '../services/cases';
 import { logAudit } from '../lib/audit';
 import { loadScannerStatus, jobAttention } from '../services/vmsWorkers';
+import { assetGraph } from '../services/vmsGraph';
 import { isStaffRole } from '../lib/resolveOrg';
-import { validateScopeValue, parseTarget, coveringScope, type ScopeEntry, type Activity } from '../lib/vmsScope';
+import { validateScopeValue, parseTarget, coveringScope, normalizeExclusion, type ScopeEntry, type Activity } from '../lib/vmsScope';
+import { describe, RETRYABLE, type AssessmentRow } from '../services/vmsAssessments';
 
 const router = Router();
 const MAX_SCOPE_DAYS = 400;
@@ -62,10 +64,31 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
         loadScannerStatus(),
     ]);
     if (active.error) { fail(res, active.error); return; }
+    // Coverage (P14): Wazuh-managed vs external, and what was actually assessed — never counting a
+    // check that did not run as an assessment. last_assessed_at is stamped for every outcome
+    // (no route and unreachable too), so "assessed" means the last outcome reached the target; a
+    // check that did not run or was inconclusive is counted from the derived step status.
+    const since30 = days(30);
+    const [endpoints, external, assessed30, assessments30] = await Promise.all([
+        count(assets().eq('status', 'active').eq('asset_type', 'endpoint')),
+        count(assets().eq('status', 'active').in('asset_type', ['host', 'ip', 'domain'])),
+        supabase.from('vms_assets').select('id, last_assessment').eq('org_id', org).eq('status', 'active').gte('last_assessed_at', since30).limit(5000),
+        supabase.from('vms_assessments').select('*').eq('org_id', org).gte('requested_at', since30).order('requested_at', { ascending: false }).limit(500),
+    ]);
+    const reached = (assessed30.data ?? []).filter((a) => /^reachable/.test(String((a.last_assessment as { outcome?: string } | null)?.outcome ?? ''))).length;
+    const described = assessments30.error ? [] : await describe((assessments30.data ?? []) as AssessmentRow[]);
     res.json({
         assets: { active: active.count ?? 0, internet_facing: internet.count ?? 0, gone: gone.count ?? 0, open_services: services.count ?? 0 },
         last_7_days: { new_assets: newA.count ?? 0, changed_assets: changedA.count ?? 0, gone_assets: goneA.count ?? 0, new_services: newSvc.count ?? 0 },
         active_scopes: scopes.count ?? 0,
+        coverage: {
+            wazuh_endpoints: endpoints.count ?? 0,
+            external_assets: external.count ?? 0,
+            // null when the P12 column is missing: unknown, not zero.
+            assessed_last_30_days: assessed30.error ? null : reached,
+            assessments_last_30_days: assessments30.error ? null : described.length,
+            checks_not_run_last_30_days: assessments30.error ? null : described.reduce((n, a) => n + a.steps.filter((s) => RETRYABLE.has(s.status)).length, 0),
+        },
         recent_scans: scans.data ?? [],
         // Scanner workers are shared infrastructure, not tenant data: client roles get the state only.
         worker: {
@@ -88,6 +111,8 @@ const NewScope = z.object({
     value: z.string().min(1).max(253),
     include_subdomains: z.boolean().default(true),
     allow_discovery: z.boolean().default(true),
+    // Hosts, .subdomains, IPs or CIDRs inside the entry that must never be touched (P13).
+    exclusions: z.array(z.string().max(253)).max(200).default([]),
     allow_port_scan: z.boolean().default(false),
     allow_vuln_scan: z.boolean().default(false),
     authorization_reference: z.string().trim().min(3).max(300),
@@ -100,6 +125,12 @@ router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, 
     if (!p.success) { res.status(400).json({ error: `Invalid scope: ${p.error.issues[0]?.path.join('.') || ''} ${p.error.issues[0]?.message ?? ''}`.trim() }); return; }
     const v = validateScopeValue(p.data.kind, p.data.value);
     if (!v.ok) { res.status(400).json({ error: v.error }); return; }
+    const exclusions: string[] = [];
+    for (const raw of p.data.exclusions) {
+        const x = normalizeExclusion(raw);
+        if (!x) { res.status(400).json({ error: `Not a valid exclusion (host, .subdomain, IP or CIDR): ${String(raw).slice(0, 80)}` }); return; }
+        exclusions.push(x);
+    }
     // An AS number covers no host or address: it registers the network for passive monitoring.
     const allowDiscovery = p.data.kind === 'asn' ? false : p.data.allow_discovery;
     if (p.data.kind === 'asn' && (p.data.allow_port_scan || p.data.allow_vuln_scan)) { res.status(400).json({ error: 'An AS number is registered for passive monitoring only; add its ranges as CIDR entries to scan them' }); return; }
@@ -112,6 +143,7 @@ router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, 
         allow_port_scan: p.data.allow_port_scan, allow_vuln_scan: p.data.allow_vuln_scan, authorization_reference: p.data.authorization_reference,
         // Only written when false: rows without the column (before sql/2026-10-17_p9_cnii.sql) mean true.
         ...(allowDiscovery ? {} : { allow_discovery: false }),
+        ...(exclusions.length ? { exclusions: [...new Set(exclusions)] } : {}),
         notes: p.data.notes ?? null, approved_by: actor(req), expires_at: new Date(exp).toISOString(),
     }).select('*').single();
     if (error) {
@@ -119,7 +151,7 @@ router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, 
         fail(res, error); return;
     }
     logAudit({ user: actor(req), action: 'VMS_SCOPE_APPROVED', resource: 'vms_scope', resource_id: data.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', severity: 'warning',
-        details: `${p.data.kind} ${v.value} discovery=${allowDiscovery} ports=${p.data.allow_port_scan} vuln=${p.data.allow_vuln_scan} ref=${p.data.authorization_reference}`.slice(0, 200) });
+        details: `${p.data.kind} ${v.value} discovery=${allowDiscovery} ports=${p.data.allow_port_scan} vuln=${p.data.allow_vuln_scan}${exclusions.length ? ` excl=${exclusions.length}` : ''} ref=${p.data.authorization_reference}`.slice(0, 200) });
     res.status(201).json({ scope: data });
 });
 
@@ -188,7 +220,11 @@ export async function validateScan(org: string, input: z.infer<typeof NewScan>, 
     const requested = input.targets?.length ? input.targets : [entry.value];
     const targets: string[] = [];
     for (const raw of requested) {
-        if (entry.kind === 'cidr' && raw === entry.value) { targets.push(raw); continue; } // a whole authorised range
+        if (entry.kind === 'cidr' && raw === entry.value) {
+            // A whole range would sweep its excluded addresses too: queue individual addresses instead.
+            if ((entry.exclusions ?? []).length) return { ok: false, status: 400, error: 'This range has exclusions: queue the addresses to assess individually' };
+            targets.push(raw); continue;
+        }
         const t = parseTarget(raw);
         if (!t || !coveringScope(t, [entry], activity)) return { ok: false, status: 400, error: `Not in this scope: ${String(raw).slice(0, 80)}` };
         targets.push(t.value);
@@ -198,7 +234,7 @@ export async function validateScan(org: string, input: z.infer<typeof NewScan>, 
 }
 
 /** Queues a scan after checking every target against scope. Shared with the scheduler (Release 3). */
-export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification'; options?: Record<string, unknown> } = {}):
+export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification'; options?: Record<string, unknown>; assessment_id?: string } = {}):
     Promise<{ ok: true; job: Record<string, unknown>; existing: boolean } | { ok: false; status: number; error: string }> {
     const supabase = getSupabase()!;
     const v = await validateScan(org, input, extra.options);
@@ -208,7 +244,7 @@ export async function queueScan(org: string, by: string, input: z.infer<typeof N
     const { data: open } = await supabase.from('vms_scan_jobs').select('*').eq('org_id', org).eq('scope_id', entry.id).eq('kind', input.kind).in('status', ['queued', 'running']);
     const dup = (open ?? []).find((j) => JSON.stringify(j.targets) === JSON.stringify(uniq) && JSON.stringify(j.options ?? {}) === JSON.stringify(options));
     if (dup) return { ok: true, job: dup, existing: true };
-    const ins = await supabase.from('vms_scan_jobs').insert({ org_id: org, scope_id: entry.id, kind: input.kind, targets: uniq, options, requested_by: by, schedule_id: extra.schedule_id ?? null, purpose: extra.purpose ?? 'assessment' }).select('*').single();
+    const ins = await supabase.from('vms_scan_jobs').insert({ org_id: org, scope_id: entry.id, kind: input.kind, targets: uniq, options, requested_by: by, schedule_id: extra.schedule_id ?? null, purpose: extra.purpose ?? 'assessment', ...(extra.assessment_id ? { assessment_id: extra.assessment_id } : {}) }).select('*').single();
     if (ins.error) return { ok: false, status: 502, error: dbErrorMessage(ins.error) };
     logAudit({ user: by, action: 'VMS_SCAN_QUEUED', resource: 'vms_scan_job', resource_id: ins.data.id, org_id: org, ip: 'n/a', result: 'success', details: `${input.kind} ${uniq.slice(0, 5).join(', ')}${uniq.length > 5 ? ` +${uniq.length - 5}` : ''}` });
     return { ok: true, job: ins.data, existing: false };
@@ -252,6 +288,14 @@ router.get('/assets', requirePermission('vms:read'), async (req: AuthRequest, re
     res.json({ assets: data ?? [] });
 });
 
+// Relationships around an asset, from stored records only, each labelled confirmed/observed/inferred.
+router.get('/assets/:id/graph', requirePermission('vms:read'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Asset not found' }); return; }
+    const g = await assetGraph(requestOrg(req), req.params.id);
+    if (!g) { res.status(404).json({ error: 'Asset not found' }); return; }
+    res.json(g);
+});
+
 router.get('/assets/:id', requirePermission('vms:read'), async (req: AuthRequest, res) => {
     if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Asset not found' }); return; }
     const supabase = getSupabase()!;
@@ -259,12 +303,24 @@ router.get('/assets/:id', requirePermission('vms:read'), async (req: AuthRequest
     const { data: asset, error } = await supabase.from('vms_assets').select('*').eq('id', req.params.id).eq('org_id', org).maybeSingle();
     if (error) { fail(res, error); return; }
     if (!asset) { res.status(404).json({ error: 'Asset not found' }); return; }
-    const [services, techs, events] = await Promise.all([
+    // A Wazuh endpoint and a scanned address are separate records; show each from the other (P14).
+    const addrs: string[] = asset.asset_type === 'endpoint' ? (asset.ips ?? []) : asset.asset_type === 'ip' ? [asset.value] : [];
+    const [services, techs, events, linked] = await Promise.all([
         supabase.from('vms_services').select('*').eq('asset_id', asset.id).order('port'),
         supabase.from('vms_technologies').select('*').eq('asset_id', asset.id).order('name'),
         supabase.from('vms_asset_events').select('*').eq('asset_id', asset.id).order('at', { ascending: false }).limit(100),
+        addrs.length
+            ? (asset.asset_type === 'endpoint'
+                ? supabase.from('vms_assets').select('id, asset_type, value, exposure, last_seen').eq('org_id', org).eq('asset_type', 'ip').in('value', addrs)
+                : supabase.from('vms_assets').select('id, asset_type, value, exposure, last_seen').eq('org_id', org).eq('asset_type', 'endpoint').overlaps('ips', addrs))
+            : Promise.resolve({ data: [] }),
     ]);
-    res.json({ asset, services: services.data ?? [], technologies: techs.data ?? [], events: events.data ?? [] });
+    const linkedIds = (linked.data ?? []).map((l) => l.id);
+    const linkedServices = linkedIds.length ? (await supabase.from('vms_services').select('*').in('asset_id', linkedIds).eq('status', 'active').order('port')).data ?? [] : [];
+    res.json({
+        asset, services: services.data ?? [], technologies: techs.data ?? [], events: events.data ?? [],
+        linked: (linked.data ?? []).map((l) => ({ ...l, relation: 'same address (inferred: an address can be shared or reassigned)', services: linkedServices.filter((s) => s.asset_id === l.id) })),
+    });
 });
 
 const AssetPatch = z.object({ owner: z.string().trim().max(200).nullable().optional(), criticality: z.enum(['low', 'medium', 'high', 'critical']).optional() }).strict();

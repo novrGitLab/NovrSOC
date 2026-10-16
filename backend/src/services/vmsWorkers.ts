@@ -24,6 +24,10 @@ export interface WorkerRow {
     worker_id: string; kinds: string[] | null; version: string | null; tools: Record<string, boolean> | null;
     /** Private networks the worker declares it can reach (P12; absent before that SQL). */
     networks?: string[] | null;
+    /** What it enforces itself, e.g. 'exclusions' (P13). */
+    features?: string[] | null;
+    /** Tool versions as reported (P14). */
+    tool_versions?: Record<string, string> | null;
     first_seen_at: string; last_seen_at: string; last_heartbeat_at: string | null; last_claim_at: string | null;
     last_job_id: string | null; last_job_at: string | null;
 }
@@ -82,15 +86,19 @@ let warnedMissing = false;
  * Records an authenticated worker request. Never throws: presence must not break job claiming.
  * Returns 'missing' when the presence table does not exist yet.
  */
-export async function recordWorkerSeen(workerId: string, fields: Partial<Pick<WorkerRow, 'kinds' | 'version' | 'tools' | 'networks' | 'last_heartbeat_at' | 'last_claim_at' | 'last_job_id' | 'last_job_at'>>): Promise<'ok' | 'missing' | 'failed'> {
+export async function recordWorkerSeen(workerId: string, fields: Partial<Pick<WorkerRow, 'kinds' | 'version' | 'tools' | 'networks' | 'features' | 'tool_versions' | 'last_heartbeat_at' | 'last_claim_at' | 'last_job_id' | 'last_job_at'>>): Promise<'ok' | 'missing' | 'failed'> {
     const supabase = getSupabase();
     if (!supabase) return 'failed';
     const now = new Date().toISOString();
     let { error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...fields }, { onConflict: 'worker_id' });
-    // Before the P12 SQL there is no networks column: record the rest.
-    if (error && 'networks' in fields && (error.code === 'PGRST204' || error.code === '42703') && /networks/.test(error.message)) {
-        const { networks: _n, ...rest } = fields;
-        ({ error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...rest }, { onConflict: 'worker_id' }));
+    // Before the P12/P13/P14 SQL there is no networks/features/tool_versions column: drop whichever
+    // column the database names and record the rest — in any order, at most once per column.
+    const optional = ['networks', 'features', 'tool_versions'] as const;
+    for (let i = 0; i < optional.length && error && (error.code === 'PGRST204' || error.code === '42703'); i++) {
+        const col = optional.find((c) => c in fields && (error!.message.includes(`'${c}'`) || error!.message.includes(`"${c}"`)));
+        if (!col) break;
+        delete (fields as Record<string, unknown>)[col];
+        ({ error } = await supabase.from('vms_workers').upsert({ worker_id: workerId, last_seen_at: now, ...fields }, { onConflict: 'worker_id' }));
     }
     if (!error) return 'ok';
     if (isMissingTable(error)) {

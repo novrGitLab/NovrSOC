@@ -83,11 +83,11 @@ beforeEach(() => { for (const t of Object.keys(db.tables)) db.tables[t].length =
 async function scope(over: Row = {}) {
     return (await http('POST', '/api/vms/scopes', MGR, { kind: 'domain', value: 'example.test', allow_port_scan: true, allow_vuln_scan: true, authorization_reference: 'LOA-1', expires_at: future, ...over })).data.scope;
 }
-async function runJob(kind: string, obs: Row[], status: 'succeeded' | 'failed' = 'succeeded') {
+async function runJob(kind: string, obs: Row[], status: 'succeeded' | 'failed' = 'succeeded', summary: Row | null = null) {
     const c = await worker('/claim', { worker_id: 'w1', kinds: [kind] });
     const id = c.data.job.id;
     const r = await worker(`/jobs/${id}/results`, { worker_id: 'w1', observations: obs });
-    await worker(`/jobs/${id}/complete`, { worker_id: 'w1', status });
+    await worker(`/jobs/${id}/complete`, { worker_id: 'w1', status, summary });
     return { id, results: r.data };
 }
 const nuclei = (over: Row = {}) => ({ type: 'finding', host: 'api.example.test', port: 443, protocol: 'tcp', scanner: 'nuclei', rule_id: 'CVE-2023-12345', title: 'Example RCE', severity: 'critical', cve_ids: ['CVE-2023-12345'], cvss: 9.8, matched_at: 'https://api.example.test/', evidence: { extracted: ['1.2.3'], note: 'password=hunter2' }, ...over });
@@ -167,10 +167,19 @@ test('people cannot verify by hand; verification needs a rescan, and only a succ
     await runJob('vuln_nuclei', [nuclei()]);
     assert.equal(db.tables.vms_findings[0].status, 'reopened');
 
-    // Fixed again, clean successful rescan → verified.
+    // Fixed again; a clean rescan that does not show it reached the host proves nothing (P16).
     await http('PATCH', `/api/vms/findings/${id}`, AN, { status: 'fixed_pending_verification' });
     await http('POST', `/api/vms/findings/${id}/verify`, AN);
     await runJob('vuln_nuclei', []);
+    assert.equal(db.tables.vms_findings[0].status, 'fixed_pending_verification', 'no reachability evidence: not verified');
+    await http('POST', `/api/vms/findings/${id}/verify`, AN);
+    await runJob('vuln_nuclei', [], 'succeeded', { outcome: 'unreachable', target_outcomes: { 'api.example.test': { outcome: 'unreachable', reason: 'no answer on 443' } } });
+    assert.equal(db.tables.vms_findings[0].status, 'fixed_pending_verification', 'host did not answer: not verified');
+    assert.ok(db.tables.vms_finding_events.some((e) => e.action === 'verification' && /did not show it reached api\.example\.test \(unreachable\)/.test(String(e.details))));
+
+    // A clean rescan that reached the host → verified.
+    await http('POST', `/api/vms/findings/${id}/verify`, AN);
+    await runJob('vuln_nuclei', [], 'succeeded', { outcome: 'assessed', target_outcomes: { 'api.example.test': { outcome: 'reachable_open', reason: '443 open' } } });
     const f = db.tables.vms_findings[0];
     assert.equal(f.status, 'verified');
     assert.ok(f.verified_at && f.verification_job_id);
@@ -236,6 +245,18 @@ test('Wazuh sync: endpoints and findings per org; ambiguous agents skipped; abse
     r = await syncWazuhVulnerabilities(failing);
     assert.equal(r.find((x) => x.org === A)!.complete, false);
     assert.equal(byCve('CVE-2024-3333').status, 'open');
+    const lastComplete = (db.tables.vms_wazuh_sync.find((x) => x.org_id === A)!.last_result as Row).last_complete_at;
+    assert.ok(lastComplete, 'the last complete sync time is kept across an incomplete run');
+
+    // P15: error replies and a missing index are incomplete syncs, not "no vulnerabilities".
+    for (const reply of [{ error: { type: 'security_exception' }, status: 403 }, { _shards: { total: 0, failed: 0 }, hits: { total: { value: 0 }, hits: [] } }]) {
+        r = await syncWazuhVulnerabilities({ ...deps, search: async () => reply as never });
+        const x = r.find((y) => y.org === A)!;
+        assert.equal(x.complete, false);
+        assert.match(x.errors[0], /refused the query|no index matches/);
+        assert.equal(x.last_complete_at, lastComplete);
+        assert.equal(byCve('CVE-2024-3333').status, 'open', 'nothing concluded');
+    }
 });
 
 // ── API ──────────────────────────────────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ interface Overview {
     last_7_days: { new_assets: number; changed_assets: number; gone_assets: number; new_services: number };
     active_scopes: number;
     recent_scans: VmsScan[];
+    coverage?: { wazuh_endpoints: number; external_assets: number; assessed_last_30_days: number | null; assessments_last_30_days: number | null; checks_not_run_last_30_days: number | null };
     worker: {
         last_heartbeat_at: string | null; seen_recently: boolean;
         // Phase P10 (absent from an older backend):
@@ -115,6 +116,15 @@ export function VmsOverview() {
                         <Tile label="Open services" value={data.assets.open_services} />
                         <Tile label="Authorised scopes" value={data.active_scopes} href="/admin/vms/scope" />
                     </div>
+                    {data.coverage && (
+                        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                            <Tile label="Wazuh endpoints" value={data.coverage.wazuh_endpoints} href="/admin/vms/assets?source=wazuh" />
+                            <Tile label="External assets" value={data.coverage.external_assets} href="/admin/vms/assets?source=external" />
+                            <Tile label="Assessed (30 days)" value={data.coverage.assessed_last_30_days ?? 'unknown'} />
+                            <Tile label="Assessments (30 days)" value={data.coverage.assessments_last_30_days ?? 'not set up'} href="/admin/vms/assessments" />
+                            <Tile label="Checks not run (30 days)" value={data.coverage.checks_not_run_last_30_days ?? '—'} href="/admin/vms/assessments" />
+                        </div>
+                    )}
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                         <Tile label="New assets (7 days)" value={data.last_7_days.new_assets} />
                         <Tile label="Changed assets (7 days)" value={data.last_7_days.changed_assets} />

@@ -11,6 +11,12 @@
 //   POST  /findings/:id/tasks { title, details?, owner?, due_at? }  vms:manage
 //   PATCH /tasks/:id { status?, owner?, due_at? }                   vms:manage
 //   GET   /remediation                                              vms:read   open work by priority and deadline
+//   GET   /wazuh/vulnerabilities?asset_id&severity                     vms:read   the Wazuh Vulnerabilities page (P16): open
+//                                          Wazuh findings of this organisation, by severity, with the sync's freshness
+//
+// Lists and the detail carry cross-source correlations (services/vmsCorrelation.ts, P16): findings
+// naming the same CVE on the same asset (confirmed) or on a Wazuh endpoint and the scanned address
+// its agent reports (inferred). Derived on read; nothing is merged.
 //
 // Verified and reopened are set only by scan evidence (services/vmsFindings.ts), never here.
 
@@ -24,6 +30,8 @@ import { logAudit } from '../lib/audit';
 import { FINDING_STATUSES, setFindingStatus, type FindingStatus } from '../services/vmsFindings';
 import { queueScan, activeScopes } from './vms';
 import { coveringScope, parseTarget } from '../lib/vmsScope';
+import { correlateFindings, type CorrFinding } from '../services/vmsCorrelation';
+import { wazuhFreshness } from '../services/wazuhVulnSync';
 
 const router = Router();
 const P5_MISSING = 'Findings are not set up yet (run sql/2026-10-14_p5_vms_findings.sql)';
@@ -32,6 +40,17 @@ const fail = (res: import('express').Response, e: { message?: string }) => res.s
 const actor = (req: AuthRequest) => req.user?.email ?? 'unknown';
 const OPEN: FindingStatus[] = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'];
 const LIST_COLUMNS = 'id, asset_id, asset_value, port, protocol, source_class, detected_by, rule_id, title, finding_type, cve_ids, scanner_severity, scanner_cvss, risk_score, priority, status, owner, due_at, first_seen, last_seen, verified_at, case_id';
+
+/** Adds { correlated: n, correlated_confirmed: n } to each row; a failure leaves the rows as they are and says so. */
+async function withCorrelationCounts<T extends { id: string }>(org: string, rows: T[]): Promise<{ rows: (T & { correlated?: number; correlated_confirmed?: number })[]; correlation_error: string | null }> {
+    try {
+        const m = await correlateFindings(org, rows as unknown as CorrFinding[]);
+        return { rows: rows.map((r) => { const c = m.get(r.id) ?? []; return { ...r, correlated: c.length, correlated_confirmed: c.filter((x) => x.basis === 'confirmed').length }; }), correlation_error: null };
+    } catch (err) {
+        console.error('[vms] correlation failed:', err instanceof Error ? err.message : err);
+        return { rows, correlation_error: 'Correlations could not be computed; findings are shown without them' };
+    }
+}
 
 async function addEvent(org: string, findingId: string, by: string, action: string, from: string | null, to: string | null, details?: string) {
     await getSupabase()!.from('vms_finding_events').insert({ org_id: org, finding_id: findingId, actor: by, action, from_value: from, to_value: to, details: details?.slice(0, 2000) ?? null });
@@ -63,7 +82,8 @@ router.get('/findings', requirePermission('vms:read'), async (req: AuthRequest, 
         const kevSet = new Set((kev ?? []).map((k) => k.cve_id));
         rows = rows.filter((r) => (r.cve_ids ?? []).some((c: string) => kevSet.has(c)));
     }
-    res.json({ findings: rows });
+    const c = await withCorrelationCounts(requestOrg(req), rows);
+    res.json({ findings: c.rows, correlation_error: c.correlation_error });
 });
 
 router.get('/findings/summary', requirePermission('vms:read'), async (req: AuthRequest, res) => {
@@ -102,7 +122,10 @@ router.get('/findings/:id', requirePermission('vms:read'), async (req: AuthReque
         f.asset_id ? supabase.from('vms_assets').select('id, value, asset_type, exposure, criticality, owner, ips').eq('id', f.asset_id).eq('org_id', org).maybeSingle() : Promise.resolve({ data: null }),
         supabase.from('vms_remediation_tasks').select('*').eq('finding_id', f.id).order('created_at'),
     ]);
-    res.json({ finding: f, evidence: evidence.data ?? [], events: events.data ?? [], cve_intel: intel.data ?? [], asset: asset.data ?? null, tasks: tasks.data ?? [] });
+    let correlated: unknown[] = [];
+    let correlation_error: string | null = null;
+    try { correlated = (await correlateFindings(org, [f as CorrFinding])).get(f.id) ?? []; } catch { correlation_error = 'Correlations could not be computed'; }
+    res.json({ finding: f, evidence: evidence.data ?? [], events: events.data ?? [], cve_intel: intel.data ?? [], asset: asset.data ?? null, tasks: tasks.data ?? [], correlated, correlation_error });
 });
 
 const Patch = z.object({
@@ -231,6 +254,54 @@ router.get('/remediation', requirePermission('vms:read'), async (req: AuthReques
     res.json({
         items: (data ?? []).map((f) => ({ ...f, overdue: !!f.due_at && Date.parse(f.due_at) < now, tasks: (tasks ?? []).filter((t) => t.finding_id === f.id) })),
         can_manage: hasPermission(req.user?.role, 'vms:manage'),
+    });
+});
+
+// ── Wazuh Vulnerabilities page (P16) ───────────────────────────────────────────────────────
+// The page reads the shared findings the hourly sync stores (source_class 'wazuh'), scoped to the
+// caller's organisation, instead of querying the indexer itself. Freshness comes with the data:
+// before a complete sync there is no summary at all (never "0 vulnerabilities"), and an
+// incomplete latest sync is named, with the time the data is from.
+export const WAZUH_STALE_HOURS = 3;
+const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+router.get('/wazuh/vulnerabilities', requirePermission('vms:read'), async (req: AuthRequest, res) => {
+    const org = requestOrg(req);
+    const supabase = getSupabase()!;
+    // One endpoint, by its asset id (agent names keep Wazuh's case in findings but not in assets).
+    const assetId = typeof req.query.asset_id === 'string' && req.query.asset_id ? req.query.asset_id : null;
+    if (assetId && !isUuid(assetId)) { res.status(400).json({ error: 'asset_id must be an endpoint asset id' }); return; }
+    const severity = typeof req.query.severity === 'string' && (SEVERITIES as readonly string[]).includes(req.query.severity) ? req.query.severity : null;
+    let list = supabase.from('vms_findings').select(LIST_COLUMNS).eq('org_id', org).eq('source_class', 'wazuh').in('status', OPEN);
+    let all = supabase.from('vms_findings').select('scanner_severity').eq('org_id', org).eq('source_class', 'wazuh').in('status', OPEN);
+    if (assetId) { list = list.eq('asset_id', assetId); all = all.eq('asset_id', assetId); }
+    if (severity) list = list.eq('scanner_severity', severity);
+    const [sync, rows, sev, endpoints] = await Promise.all([
+        supabase.from('vms_wazuh_sync').select('last_synced_at, last_result').eq('org_id', org).maybeSingle(),
+        list.order('scanner_cvss', { ascending: false, nullsFirst: false }).order('risk_score', { ascending: false, nullsFirst: false }).limit(100),
+        all.limit(20_000),
+        supabase.from('vms_assets').select('id, value, wazuh_agent_id, alive, status, last_seen').eq('org_id', org).eq('asset_type', 'endpoint').order('value').limit(1000),
+    ]);
+    if (rows.error || sev.error) { fail(res, (rows.error ?? sev.error)!); return; }
+    const f = wazuhFreshness(sync.error ? null : sync.data);
+    const age = f.last_complete_at ? (Date.now() - Date.parse(f.last_complete_at)) / 3_600_000 : null;
+    const state = !f.last_attempt_at ? 'not_synced' : !f.last_complete_at ? 'never_complete' : f.complete === false ? 'incomplete' : age! > WAZUH_STALE_HOURS ? 'stale' : 'fresh';
+    // The package and version Wazuh last reported, from the newest Wazuh evidence of each finding.
+    const ids = (rows.data ?? []).map((r) => r.id);
+    const { data: ev } = ids.length ? await supabase.from('vms_finding_evidence').select('finding_id, observed_at, evidence').eq('org_id', org).eq('source', 'wazuh').in('finding_id', ids).order('observed_at', { ascending: false }).limit(2000) : { data: [] as { finding_id: string; evidence: unknown }[] };
+    const pkg = new Map<string, { name: string | null; version: string | null }>();
+    for (const e of ev ?? []) if (!pkg.has(e.finding_id)) { const p = (e.evidence as { package?: { name?: string; version?: string } } | null)?.package; pkg.set(e.finding_id, { name: p?.name ?? null, version: p?.version ?? null }); }
+    const c = await withCorrelationCounts(org, rows.data ?? []);
+    const counts: Record<string, number> = Object.fromEntries(SEVERITIES.map((s) => [s, 0]));
+    for (const r of sev.data ?? []) counts[r.scanner_severity] = (counts[r.scanner_severity] ?? 0) + 1;
+    const total = (sev.data ?? []).length;
+    res.json({
+        source: 'vms_findings (Wazuh sync)', state, freshness: f, stale_after_hours: WAZUH_STALE_HOURS,
+        // No complete sync yet: there is nothing to count, which is not the same as zero.
+        summary: f.last_complete_at ? { ...counts, total } : null,
+        vulnerabilities: c.rows.map((r) => ({ ...r, package: pkg.get(r.id)?.name ?? null, package_version: pkg.get(r.id)?.version ?? null })),
+        shown: (rows.data ?? []).length,
+        endpoints: (endpoints.data ?? []).map((e) => ({ id: e.id, name: e.value, wazuh_agent_id: e.wazuh_agent_id, alive: e.alive, status: e.status, last_seen: e.last_seen })),
+        correlation_error: c.correlation_error,
     });
 });
 

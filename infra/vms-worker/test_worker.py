@@ -297,6 +297,77 @@ ONE_OPEN = nmap_xml('203.0.113.9', extra='<extraports state="closed" count="999"
 HOST_DOWN = nmap_xml('203.0.113.9', status='down', reason='no-response')
 
 
+class Exclusions(unittest.TestCase):
+    """P13: the worker enforces scope exclusions itself and says so in its heartbeat."""
+
+    SCOPES = [{'kind': 'domain', 'value': 'example.test', 'include_subdomains': True, 'allow_port_scan': True, 'allow_vuln_scan': True,
+               'status': 'active', 'expires_at': FUTURE, 'exclusions': ['.legacy.example.test', 'pay.example.test']},
+              {'kind': 'cidr', 'value': '203.0.113.0/28', 'allow_port_scan': True, 'allow_vuln_scan': True, 'status': 'active', 'expires_at': FUTURE,
+               'exclusions': ['203.0.113.5', '203.0.113.8/30']}]
+
+    def test_excluded_hosts_and_addresses_are_out_of_scope(self):
+        self.assertTrue(worker.in_scope('www.example.test', self.SCOPES, 'ports'))
+        for t in ('pay.example.test', 'legacy.example.test', 'a.legacy.example.test', '203.0.113.5', '203.0.113.9'):
+            for activity in ('discovery', 'ports', 'vuln'):
+                self.assertFalse(worker.in_scope(t, self.SCOPES, activity), f'{t} {activity}')
+        self.assertTrue(worker.in_scope('203.0.113.6', self.SCOPES, 'ports'))
+
+    def test_no_whole_range_sweep_over_exclusions(self):
+        self.assertFalse(worker.job_target_allowed('203.0.113.0/28', self.SCOPES, 'ports'))
+
+    def test_excluded_results_never_leave_the_worker(self):
+        sent = []
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                sent.extend(body.get('observations', []))
+                return {'accepted': len(body.get('observations', []))}
+        r = worker.JobRunner(Api(), {'id': 'x1', 'kind': 'discovery', 'targets': ['example.test']}, self.SCOPES)
+        r.send([{'type': 'host', 'host': 'www.example.test', 'source': 'subfinder'}, {'type': 'host', 'host': 'pay.example.test', 'source': 'subfinder'}], 'discovery')
+        self.assertEqual([o['host'] for o in sent], ['www.example.test'])
+
+    def test_heartbeat_announces_the_feature(self):
+        self.assertIn('exclusions', worker.heartbeat_body()['features'])
+
+
+class SelfTest(unittest.TestCase):
+    """P14: tool versions as the tools report them; a preflight that never prints secrets."""
+
+    def test_tool_versions_are_parsed(self):
+        self.assertEqual(worker.parse_tool_version('Nmap version 7.94SVN ( https://nmap.org )'), '7.94SVN')
+        self.assertEqual(worker.parse_tool_version('[INF] Current Version: v1.6.8'), '1.6.8')
+        self.assertEqual(worker.parse_tool_version('Current Version: v3.3.2\n'), '3.3.2')
+        self.assertIsNone(worker.parse_tool_version('usage: httpx [-h]'))
+
+    def test_heartbeat_carries_versions(self):
+        self.assertIn('tool_versions', worker.heartbeat_body())
+
+    def test_preflight_finds_bad_configuration_without_printing_secrets(self):
+        saved = (worker.API, worker.TOKEN, worker.WORKER_ID, worker.KINDS, worker.WORKER_NETWORKS)
+        try:
+            worker.API, worker.TOKEN, worker.WORKER_ID, worker.KINDS, worker.WORKER_NETWORKS = 'http://example.test', 'short-secret', 'bad id!', ['discovery', 'scan_everything'], ['10.0.0.0/33']
+            problems = worker.preflight()
+            text = ' | '.join(problems)
+            for phrase in ('https URL', 'shorter than 32', 'VMS_WORKER_ID', 'scan_everything', 'invalid CIDR'):
+                self.assertIn(phrase, text)
+            self.assertNotIn('short-secret', text)
+            worker.API, worker.TOKEN, worker.WORKER_ID, worker.KINDS, worker.WORKER_NETWORKS = 'https://backend.example.test', 'x' * 40, 'vps3-demo-worker', ['discovery'], []
+            self.assertTrue(all('not installed' in p for p in worker.preflight()), 'only missing tools remain on a host without them')
+        finally:
+            worker.API, worker.TOKEN, worker.WORKER_ID, worker.KINDS, worker.WORKER_NETWORKS = saved
+
+    def test_self_test_fails_before_contacting_the_backend_on_bad_config(self):
+        saved, saved_check = worker.TOKEN, worker.check
+        called = []
+        try:
+            worker.TOKEN = ''
+            worker.check = lambda: called.append(1) or 0
+            self.assertEqual(worker.self_test(), 1)
+            self.assertEqual(called, [])
+        finally:
+            worker.TOKEN, worker.check = saved, saved_check
+
+
 class NmapOutcomes(unittest.TestCase):
     """P12: host status and <extraports> are read; each target gets an honest outcome."""
 
@@ -569,6 +640,77 @@ class ReliabilityP1(unittest.TestCase):
         finally:
             worker.WORKER_NETWORKS = saved
 
+
+
+class NucleiReach(unittest.TestCase):
+    """1.6.0: a Nuclei job records whether each target answered before trusting "nothing found"."""
+
+    SCOPES = [{'kind': 'ip', 'value': '203.0.113.9', 'allow_port_scan': True, 'allow_vuln_scan': True, 'status': 'active', 'expires_at': FUTURE},
+              {'kind': 'ip', 'value': '10.88.1.139', 'allow_port_scan': True, 'allow_vuln_scan': True, 'status': 'active', 'expires_at': FUTURE}]
+
+    def setUp(self):
+        self.posts = []
+        self._nets = worker.WORKER_NETWORKS
+        worker.WORKER_NETWORKS = ['203.0.113.0/24']   # the documentation range stands in for a routable network
+
+    def tearDown(self):
+        worker.WORKER_NETWORKS = self._nets
+
+    def run_job(self, target, connect, nuclei_out='', options=None, calls=None):
+        posts = self.posts
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                posts.append((path, body))
+                return {'accepted': len(body.get('observations', [])), 'ok': True}
+        r = worker.JobRunner(Api(), {'id': 'n1', 'kind': 'vuln_nuclei', 'targets': [target], 'options': options or {}}, self.SCOPES)
+        r.connect = connect
+
+        def fake_tool(args, stdin=None):
+            if calls is not None:
+                calls.append((args, stdin))
+            return nuclei_out
+        r.run_tool = fake_tool
+        r.run()
+        return [b for p, b in posts if p.endswith('/complete')][0]
+
+    def test_ports_for_the_probe(self):
+        self.assertEqual(worker.reach_ports('8443'), [8443])
+        self.assertEqual(worker.reach_ports('22,80,22'), [22, 80])
+        self.assertEqual(worker.reach_ports('top-1000'), [443, 80])
+        self.assertEqual(worker.reach_ports(None), [443, 80])
+
+    def test_unreachable_target_is_not_a_clean_result(self):
+        def refuse(addr, timeout):
+            raise TimeoutError('timed out')
+        calls = []
+        done = self.run_job('203.0.113.9', refuse, calls=calls)
+        self.assertEqual(calls, [], 'nuclei never ran against a target that did not answer')
+        self.assertEqual((done['status'], done['summary']['outcome']), ('succeeded', 'unreachable'))
+        self.assertIn('no TCP answer from 203.0.113.9 on 443 (TimeoutError), 80 (TimeoutError)', done['summary']['target_outcomes']['203.0.113.9']['reason'])
+
+    def test_reachable_target_is_assessed_and_scanned(self):
+        class Conn:
+            def close(self):
+                pass
+        seen = []
+
+        def accept(addr, timeout):
+            seen.append(addr)
+            return Conn()
+        calls = []
+        done = self.run_job('203.0.113.9', accept, options={'ports': '8443', 'templates': ['CVE-2023-12345']}, calls=calls)
+        self.assertEqual(seen, [('203.0.113.9', 8443)], 'the verification port is probed, once')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], '203.0.113.9')
+        self.assertEqual((done['status'], done['summary']['outcome']), ('succeeded', 'assessed'))
+        self.assertEqual(done['summary']['target_outcomes']['203.0.113.9']['outcome'], 'reachable_open')
+
+    def test_private_target_without_route_is_not_probed(self):
+        def boom(addr, timeout):
+            raise AssertionError('must not connect')
+        done = self.run_job('10.88.1.139', boom)
+        self.assertEqual((done['status'], done['summary']['outcome']), ('failed', 'no_route'))
 
 if __name__ == '__main__':
     unittest.main()

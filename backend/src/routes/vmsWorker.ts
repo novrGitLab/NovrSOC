@@ -46,6 +46,8 @@ const digest = (s: string) => createHash('sha256').update(s).digest();
 export const MAX_OBSERVATIONS_PER_BATCH = 500;
 // The worker's job kinds. passive_osint is not among them: the backend runs it (jobs/cniiPassiveJob.ts).
 export const VMS_KINDS = ['discovery', 'ports', 'vuln_nuclei', 'vuln_openvas'] as const;
+/** Features a worker must announce to be given a job (P13): exclusions need a worker that enforces them. */
+export const WORKER_FEATURES = ['exclusions'] as const;
 
 router.use(rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false }));
 function requireWorkerToken(req: Request, res: Response, next: NextFunction) {
@@ -77,9 +79,14 @@ const WorkerHeartbeat = z.object({
     worker_id: z.string().regex(WORKER_ID),
     kinds: z.array(z.enum(VMS_KINDS)).min(1).max(VMS_KINDS.length),
     version: z.string().trim().max(40).regex(/^[\w.+-]*$/).optional(),
-    tools: z.record(z.enum(TOOL_NAMES), z.boolean()).optional(),
+    // partialRecord: an enum-keyed z.record requires every key (zod 4); a worker may report a subset.
+    tools: z.partialRecord(z.enum(TOOL_NAMES), z.boolean()).optional(),
     // Private networks this worker can reach (VMS_WORKER_NETWORKS). Each must be a valid CIDR.
     networks: z.array(z.string().max(50).refine((n) => !!parseCidr(n), 'not a CIDR')).max(32).optional(),
+    // What it enforces itself (P13), e.g. 'exclusions'.
+    features: z.array(z.enum(WORKER_FEATURES)).max(WORKER_FEATURES.length).optional(),
+    // Versions as each tool reports them (P14), e.g. { nmap: "7.94SVN" }.
+    tool_versions: z.partialRecord(z.enum(TOOL_NAMES), z.string().max(80)).optional(),
 }).strict();
 const heartbeatLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many worker heartbeats: at most 30 a minute' } });
 
@@ -89,7 +96,11 @@ router.post('/heartbeat', heartbeatLimiter, async (req, res) => {
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Database not configured' }); return; }
     const now = new Date().toISOString();
-    const r = await recordWorkerSeen(p.data.worker_id, { kinds: [...new Set(p.data.kinds)], version: p.data.version ?? null, tools: p.data.tools ?? {}, ...(p.data.networks ? { networks: p.data.networks } : {}), last_heartbeat_at: now });
+    // A heartbeat states the worker's whole capability: what it does not announce, it does not have.
+    // (Absent fields used to keep their old values, so after a rollback from 1.5.0 to an older
+    // worker — whose --self-test had announced 'exclusions' — the old worker kept that feature and
+    // could be given jobs whose exclusions it does not enforce.)
+    const r = await recordWorkerSeen(p.data.worker_id, { kinds: [...new Set(p.data.kinds)], version: p.data.version ?? null, tools: p.data.tools ?? {}, networks: p.data.networks ?? [], features: p.data.features ?? [], tool_versions: p.data.tool_versions ?? {}, last_heartbeat_at: now });
     if (r === 'missing') { res.status(503).json({ error: PRESENCE_MISSING_MESSAGE }); return; }
     if (r === 'failed') { res.status(503).json({ error: 'Could not record the heartbeat' }); return; }
     // How many jobs are waiting for this worker's kinds: lets the worker say "idle" vs "work waiting".
@@ -107,7 +118,12 @@ export function queueFailure(e: { message?: string; code?: string; details?: str
     return { reason: 'database_error', detail: `database error${e.code ? ` ${e.code}` : ''}` };
 }
 
-const scopesFor = async (orgId: string) => (await activeScopes(orgId)).map((s) => ({ kind: s.kind, value: s.value, include_subdomains: s.include_subdomains, allow_discovery: s.allow_discovery !== false, allow_port_scan: s.allow_port_scan, allow_vuln_scan: s.allow_vuln_scan, expires_at: s.expires_at, status: s.status }));
+const scopesFor = async (orgId: string) => (await activeScopes(orgId)).map((s) => ({ kind: s.kind, value: s.value, include_subdomains: s.include_subdomains, allow_discovery: s.allow_discovery !== false, allow_port_scan: s.allow_port_scan, allow_vuln_scan: s.allow_vuln_scan, exclusions: s.exclusions ?? [], expires_at: s.expires_at, status: s.status }));
+
+async function workerFeatures(workerId: string): Promise<string[]> {
+    const { data, error } = await getSupabase()!.from('vms_workers').select('features').eq('worker_id', workerId).maybeSingle();
+    return error ? [] : ((data?.features as string[] | undefined) ?? []);
+}
 
 router.post('/claim', async (req, res) => {
     const workerId = String(req.body?.worker_id ?? '');
@@ -146,6 +162,17 @@ router.post('/claim', async (req, res) => {
     }
     const job = (Array.isArray(data) ? data[0] : data) as Job | undefined;
     const now = new Date().toISOString();
+    // A job whose scope carves out exclusions goes only to a worker that enforces them: an older
+    // worker would probe excluded names it discovers. Put it straight back, as it was.
+    if (job) {
+        const { data: sc } = await supabase.from('vms_scopes').select('*').eq('id', (job as Job & { scope_id?: string }).scope_id ?? '').maybeSingle();
+        if (((sc?.exclusions as string[] | undefined) ?? []).length && !(await workerFeatures(workerId)).includes('exclusions')) {
+            await supabase.from('vms_scan_jobs').update({ status: 'queued', worker_id: null, claimed_at: null, heartbeat_at: null, started_at: null, attempts: Math.max(0, Number((job as Job & { attempts?: number }).attempts ?? 1) - 1), progress: { message: 'Waiting for a worker that enforces scope exclusions (worker 1.4.0 or later)' } }).eq('id', job.id).eq('status', 'running');
+            await recordWorkerSeen(workerId, { kinds, last_claim_at: now });
+            res.json({ job: null, notice: 'A queued job needs a worker that enforces scope exclusions; upgrade this worker to 1.4.0' });
+            return;
+        }
+    }
     // An authenticated poll is presence, even when the queue is empty.
     await recordWorkerSeen(workerId, { kinds, last_claim_at: now, ...(job ? { last_job_id: job.id, last_job_at: now } : {}) });
     if (!job) { res.json({ job: null }); return; }
@@ -267,7 +294,7 @@ router.post('/jobs/:id/complete', async (req, res) => {
     let gone = 0;
     if (p.data.status === 'succeeded' && job.kind === 'ports') gone = await markGoneServices(job);
     // A verification scan concludes its findings: verified only when it succeeded without detecting them.
-    const verification = job.purpose === 'verification' ? await concludeVerification(job, p.data.status) : null;
+    const verification = job.purpose === 'verification' ? await concludeVerification(job, p.data.status, p.data.summary ?? null) : null;
     const summary = { ...(p.data.summary ?? {}), ...(gone ? { services_gone: gone } : {}), ...(verification ? { verification } : {}) };
     // Only a job still running under this worker moves: queue upkeep may have requeued or failed it meanwhile.
     const { data: moved, error } = await getSupabase()!.from('vms_scan_jobs')

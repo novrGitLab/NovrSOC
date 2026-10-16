@@ -23,7 +23,9 @@ when the worker connects, explains each kind of failure once (wrong token, wrong
 rejected request, backend not ready) instead of repeating it every poll, and writes a short status
 line every VMS_STATUS_LOG_SECONDS (default 600) so a quiet log is never ambiguous.
 
-  python3 worker.py --check   one heartbeat to the backend and a plain-language result; claims nothing
+  python3 worker.py --check       one heartbeat to the backend and a plain-language result; claims nothing
+  python3 worker.py --self-test   preflight for deployment: configuration (no secret printed), tools and
+                                  their versions, then the heartbeat; exit 0 only when all pass
 
 Outcomes (1.3.0): every target of a ports or discovery job gets a host-level result with an
 assessment, so "nothing found" is never confused with "could not look":
@@ -56,6 +58,7 @@ from typing import Iterable, Optional
 
 import requests
 import signal
+import socket
 
 log = logging.getLogger('vms-worker')
 
@@ -65,7 +68,9 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
-VERSION = '1.3.0'
+VERSION = '1.6.0'
+# What this worker enforces itself; the backend only gives jobs that need a feature to workers announcing it.
+FEATURES = ['exclusions']
 # Networks this worker can actually reach besides the public internet (comma-separated CIDRs), e.g.
 # a VPN into a client LAN. Private, link-local and CGNAT addresses outside them are not scanned.
 WORKER_NETWORKS = [n.strip() for n in os.environ.get('VMS_WORKER_NETWORKS', '').split(',') if n.strip()]
@@ -124,6 +129,27 @@ def parse_target(s: str):
         return ('host', h) if h else None
 
 
+def is_excluded(t: tuple, exclusions) -> bool:
+    """Same rules as the backend (lib/vmsScope.ts isExcluded): host, '.suffix', IP or CIDR."""
+    for x in exclusions or []:
+        x = str(x).strip().lower()
+        if not x:
+            continue
+        if t[0] == 'host':
+            if x == t[1] or (x.startswith('.') and (t[1] == x[1:] or t[1].endswith(x))):
+                return True
+        else:
+            if x == t[1]:
+                return True
+            if '/' in x:
+                try:
+                    if ipaddress.ip_address(t[1]) in ipaddress.ip_network(x, strict=False):
+                        return True
+                except ValueError:
+                    pass
+    return False
+
+
 def in_scope(target: str, scopes: list[dict], activity: str) -> bool:
     """True when an active, unexpired scope entry covers target for activity (discovery|ports|vuln).
 
@@ -142,6 +168,8 @@ def in_scope(target: str, scopes: list[dict], activity: str) -> bool:
         except (KeyError, ValueError):
             continue
         if exp <= now:
+            continue
+        if is_excluded(t, e.get('exclusions')):
             continue
         if not e.get('allow_discovery', True):
             continue
@@ -174,7 +202,7 @@ def job_target_allowed(raw: str, scopes: list[dict], activity: str) -> bool:
     """A job target is a host/IP in scope, or exactly an approved CIDR entry."""
     if '/' in raw:
         return any(e.get('kind') == 'cidr' and e.get('status') == 'active' and str(e.get('value')) == raw
-                   and _unexpired(e) and e.get('allow_discovery', True)
+                   and _unexpired(e) and e.get('allow_discovery', True) and not e.get('exclusions')
                    and (activity != 'ports' or e.get('allow_port_scan'))
                    and (activity != 'vuln' or e.get('allow_vuln_scan')) for e in scopes)
     return in_scope(raw, scopes, activity)
@@ -351,6 +379,42 @@ def target_route(target: str) -> tuple[bool, Optional[str]]:
     return False, (f'{target} is a private/non-public address and worker {WORKER_ID} declares no route to it '
                    f'(VMS_WORKER_NETWORKS: {declared}). Run a worker inside that network, or declare the network '
                    'on this worker if it really has a route (e.g. a VPN). Not attempted.')
+
+
+REACH_TIMEOUT = 5
+REACH_DEFAULT_PORTS = (443, 80)
+
+
+def reach_ports(spec) -> list[int]:
+    """The ports a reachability probe tries: a job's explicit port list (a verification rescan
+    names the finding's port), else 443 and 80. At most five; ranges and top-N lists fall back."""
+    out = []
+    for part in str(spec or '').split(','):
+        part = part.strip()
+        if part.isdigit() and 0 < int(part) < 65536 and int(part) not in out:
+            out.append(int(part))
+    return out[:5] or list(REACH_DEFAULT_PORTS)
+
+
+def tcp_reach(target: str, ports: list[int], connect=None) -> tuple[str, str]:
+    """One TCP connection attempt per port, stopping at the first that is accepted (version 1.6.0).
+    Says whether the target answered this scanner, so "the check found nothing" can be told apart
+    from "the check never got an answer". Nothing is sent over the connection."""
+    connect = connect or socket.create_connection
+    tried = []
+    for port in ports:
+        try:
+            conn = connect((target, port), REACH_TIMEOUT)
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return 'reachable_open', f'{target}:{port} accepted a TCP connection'
+        except socket.gaierror:
+            return 'unreachable', f'{target} does not resolve from this scanner'
+        except OSError as e:
+            tried.append(f'{port} ({type(e).__name__})')
+    return 'unreachable', f'no TCP answer from {target} on {", ".join(tried)}: unreachable from this scanner, or filtered'
 
 
 def job_outcome(target_outcomes: dict[str, dict]) -> str:
@@ -612,8 +676,80 @@ def tool_inventory() -> dict:
     return tools
 
 
+_VERSION_RE = re.compile(r'(?:version|v)\s*:?\s*v?(\d+\.\d+(?:\.\d+)?[\w.+-]*)', re.I)
+_TOOL_VERSIONS: dict = {}
+
+
+def parse_tool_version(output: str) -> Optional[str]:
+    """'Nmap version 7.94SVN ...' -> '7.94SVN'; 'Current Version: v1.6.8' -> '1.6.8'."""
+    m = _VERSION_RE.search(output or '')
+    return m.group(1)[:80] if m else None
+
+
+def tool_versions(refresh: bool = False) -> dict:
+    """Each installed tool's version, as it reports it (asked once, cached)."""
+    if _TOOL_VERSIONS and not refresh:
+        return dict(_TOOL_VERSIONS)
+    flags = {'nmap': ['--version'], 'subfinder': ['-version'], 'dnsx': ['-version'], 'httpx': ['-version'], 'nuclei': ['-version']}
+    out = {}
+    for name, args in flags.items():
+        exe = shutil.which(TOOLS[name])
+        if not exe:
+            continue
+        try:
+            r = subprocess.run([exe, *args], capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
+            out[name] = parse_tool_version((r.stdout or '') + '\n' + (r.stderr or '')) or 'unknown'
+        except (OSError, subprocess.TimeoutExpired):
+            out[name] = 'unknown'
+    _TOOL_VERSIONS.clear()
+    _TOOL_VERSIONS.update(out)
+    return dict(out)
+
+
 def heartbeat_body() -> dict:
-    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory(), 'networks': WORKER_NETWORKS}
+    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory(), 'networks': WORKER_NETWORKS, 'features': FEATURES, 'tool_versions': tool_versions()}
+
+
+VALID_KINDS = ('discovery', 'ports', 'vuln_nuclei', 'vuln_openvas')
+KIND_TOOLS = {'discovery': ['subfinder', 'dnsx', 'httpx'], 'ports': ['nmap'], 'vuln_nuclei': ['nuclei'], 'vuln_openvas': ['openvas']}
+
+
+def preflight() -> list[str]:
+    """Problems that should stop a deployment. Never includes the token or other secret values."""
+    problems = []
+    if not (API.startswith('https://') or API.startswith('http://127.0.0.1')):
+        problems.append('NOVRSOC_API_URL must be the backend https URL')
+    if len(TOKEN) < 32:
+        problems.append('VMS_WORKER_TOKEN is not set or shorter than 32 characters')
+    if not re.match(r'^[\w.-]{1,64}$', WORKER_ID):
+        problems.append('VMS_WORKER_ID may hold letters, digits, _ . - (at most 64)')
+    bad = [k for k in KINDS if k not in VALID_KINDS]
+    if bad or not KINDS:
+        problems.append(f'VMS_WORKER_KINDS has unknown kinds: {", ".join(bad) or "(empty)"}')
+    for n in WORKER_NETWORKS:
+        try:
+            ipaddress.ip_network(n, strict=False)
+        except ValueError:
+            problems.append(f'VMS_WORKER_NETWORKS has an invalid CIDR: {n}')
+    tools = tool_inventory()
+    for k in KINDS:
+        missing = [t for t in KIND_TOOLS.get(k, []) if not tools.get(t)]
+        if missing:
+            problems.append(f'{k} is in VMS_WORKER_KINDS but {", ".join(missing)} is not installed')
+    return problems
+
+
+def self_test() -> int:
+    print(f'worker {WORKER_ID} version {VERSION}; kinds {",".join(KINDS)}; private networks: {", ".join(WORKER_NETWORKS) or "none declared"}')
+    tools, versions = tool_inventory(), tool_versions()
+    for t, ok in tools.items():
+        print(f'  {t:10} {"installed " + versions.get(t, "") if ok else "not installed"}')
+    problems = preflight()
+    for p_ in problems:
+        print(f'FAIL: {p_}')
+    if problems:
+        return 1
+    return check()
 
 
 def send_heartbeat(api: 'Api', body: dict, sleep=time.sleep) -> dict:
@@ -858,6 +994,23 @@ class JobRunner:
         if not targets:
             raise RuntimeError('No target of this job is in vulnerability-scan scope')
         opts = self.job.get('options') or {}
+        # Reachability first (1.6.0): Nuclei reports matches only, so without this a host that never
+        # answered would look like a clean result — and a verification rescan would close a finding.
+        ports = reach_ports(opts.get('ports'))
+        reachable = []
+        for t in targets:
+            ok, why = target_route(t)
+            if not ok:
+                self.record_outcome(t, 'no_route', why or '')
+                continue
+            outcome, reason = tcp_reach(t, ports, getattr(self, 'connect', None))
+            self.record_outcome(t, outcome, reason)
+            if outcome.startswith('reachable'):
+                reachable.append(t)
+        self.summary['targets'] = len(targets)
+        if not reachable:
+            return
+        targets = reachable
         templates = [x for x in (opts.get('templates') or []) if re.match(r'^[\w./-]{1,200}$', str(x))]
         args = [TOOLS['nuclei'], '-silent', '-jsonl', '-duc', '-no-color', '-rl', NUCLEI_RATE, '-c', '10', '-timeout', '10', '-retries', '1', '-etags', NUCLEI_EXCLUDE_TAGS]
         # A verification rescan runs exactly the check that found the issue (any severity).
@@ -865,7 +1018,6 @@ class JobRunner:
         self.progress = {'phase': 'nuclei', 'done': 0, 'total': len(targets)}
         out = self.run_tool(args, '\n'.join(targets))
         self.send(parse_nuclei(out.splitlines()), 'vuln')
-        self.summary['targets'] = len(targets)
 
     def vuln_openvas(self):
         targets = [t for t in self.job['targets'] if job_target_allowed(t, self.scopes, 'vuln')]
@@ -984,6 +1136,8 @@ def check() -> int:
 
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [vms-worker] %(levelname)s: %(message)s')
+    if '--self-test' in sys.argv[1:]:
+        sys.exit(self_test())
     if not API.startswith('https://') and not API.startswith('http://127.0.0.1'):
         sys.exit('NOVRSOC_API_URL must be the backend https URL')
     if len(TOKEN) < 32:

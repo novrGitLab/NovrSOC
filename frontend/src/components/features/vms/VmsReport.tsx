@@ -19,6 +19,18 @@ interface Report {
     attack_surface_changes: Record<string, number>;
     top_open: { id: string; title: string; asset: string; priority: string; due_at: string | null; status: string }[];
     recurring: { reopened: { id: string; title: string; asset_value: string; times_reopened: number }[]; widespread: { rule_id: string; title: string; open_on_assets: number }[] };
+    /** P16: closure by evidence vs claims; what was actually assessed. */
+    closure?: { available: false; note: string } | {
+        available: true; verified_by_rescan: number; verified_by_wazuh: number; marked_fixed_by_people: number; awaiting_verification_now: number | null;
+        verification_inconclusive: number; closed_without_fix: { risk_accepted: number; false_positive: number }; reopened_after_verification: number;
+        tasks_completed: { total: number; findings: number; findings_verified: number; findings_not_verified: number };
+        verified_examples: { finding_id: string; at: string; how: string; evidence: string | null; title: string | null; asset: string | null; priority: string | null }[];
+    };
+    coverage?: {
+        inventory: { wazuh_endpoints: number; external_assets: number };
+        latest_checks: { total: number; reached: number; by_outcome: Record<string, number> };
+        full_assessments: { available: false; note: string } | { available: true; total: number; by_status: Record<string, number>; checks_by_status: Record<string, number>; by_trigger: Record<string, number> };
+    };
     sources: string[];
     limitations: string[];
 }
@@ -68,6 +80,30 @@ export function VmsReport() {
                         <h2 className="text-sm font-black text-foreground">Time to verified fix</h2>
                         {Object.entries(data.time_to_remediate).map(([p, t]) => <p key={p}>{p}: {t.verified} verified{t.mean_hours !== null ? `, mean ${t.mean_hours} h, ${t.within_deadline} within deadline` : ''}</p>)}
                     </div>
+                    {data.closure && (
+                        <div className={section}>
+                            <h2 className="text-sm font-black text-foreground">Verified closure</h2>
+                            {!data.closure.available ? <p className="text-foreground-muted">{data.closure.note}</p> : (
+                                <>
+                                    <p>Verified fixed by evidence: {data.closure.verified_by_rescan + data.closure.verified_by_wazuh} ({data.closure.verified_by_rescan} by a verification rescan that reached the target, {data.closure.verified_by_wazuh} by a complete Wazuh sync that no longer reports them).</p>
+                                    <p>Marked fixed by people: {data.closure.marked_fixed_by_people} — a claim until verified; {data.closure.awaiting_verification_now ?? 'unknown'} awaiting verification now; {data.closure.verification_inconclusive} verification attempt(s) proved nothing (scan failed or did not reach the target).</p>
+                                    <p>Remediation tasks completed: {data.closure.tasks_completed.total} on {data.closure.tasks_completed.findings} finding(s), of which {data.closure.tasks_completed.findings_verified} verified and {data.closure.tasks_completed.findings_not_verified} not verified. A completed task is not a verified fix.</p>
+                                    <p>Closed without a fix: {data.closure.closed_without_fix.risk_accepted} risk accepted, {data.closure.closed_without_fix.false_positive} false positive. Reopened after verification: {data.closure.reopened_after_verification}.</p>
+                                    {data.closure.verified_examples.slice(0, 10).map((e) => <p key={`${e.finding_id}-${e.at}`} className="text-foreground-muted">✓ <Link href={`/admin/vms/findings?id=${e.finding_id}`} className="text-blue">{e.title ?? e.finding_id}</Link>{e.asset ? ` · ${e.asset}` : ''} · {e.how === 'rescan' ? 'rescan' : e.how === 'wazuh' ? 'Wazuh' : e.how} · {fmtWat(e.at)}{e.evidence ? ` — ${e.evidence}` : ''}</p>)}
+                                </>
+                            )}
+                        </div>
+                    )}
+                    {data.coverage && (
+                        <div className={section}>
+                            <h2 className="text-sm font-black text-foreground">Assessment coverage</h2>
+                            <p>Inventory now: {data.coverage.inventory.wazuh_endpoints} Wazuh endpoint(s), {data.coverage.inventory.external_assets} external asset(s).</p>
+                            <p>Assets whose latest check fell in the period: {data.coverage.latest_checks.total}, of which {data.coverage.latest_checks.reached} reached ({pairs(data.coverage.latest_checks.by_outcome)}). No route and unreachable are not assessments.</p>
+                            {data.coverage.full_assessments.available
+                                ? <p>Full Assessments: {data.coverage.full_assessments.total} ({pairs(data.coverage.full_assessments.by_status)}); checks: {pairs(data.coverage.full_assessments.checks_by_status)}; started by: {pairs(data.coverage.full_assessments.by_trigger)}.</p>
+                                : <p className="text-foreground-muted">{data.coverage.full_assessments.note}</p>}
+                        </div>
+                    )}
                     <div className={section}>
                         <h2 className="text-sm font-black text-foreground">Open P1 / P2</h2>
                         {data.top_open.length === 0 ? <p className="text-foreground-muted">None.</p> : data.top_open.map((f) => <p key={f.id}><span className="font-bold">{f.priority}</span> <Link href={`/admin/vms/findings?id=${f.id}`} className="text-blue">{f.title}</Link> · {f.asset} · {f.status} · due {fmtWat(f.due_at)}</p>)}

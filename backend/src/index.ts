@@ -38,6 +38,8 @@ import vmsWorkerRouter from './routes/vmsWorker';
 import vmsFindingsRouter from './routes/vmsFindings';
 import threatInfoRouter from './routes/threatInfo';
 import vmsContinuousRouter from './routes/vmsContinuous';
+import vmsAssessmentsRouter from './routes/vmsAssessments';
+import vmsAdminRouter from './routes/vmsAdmin';
 import insightsRouter from './routes/insights';
 import wazuhGroupMapRouter from './routes/wazuhGroupMap';
 import threatManagementRouter from './routes/threatManagement';
@@ -108,7 +110,8 @@ const PORT = Number(process.env.PORT || 8000);
 // body parsing, no rate limit — guarantees a direct 200 no matter what headers the caller did
 // or didn't send.
 app.get('/health', (_req, res) => {
-    res.status(200).json({ status: 'healthy' });
+    // The deployed commit (Railway sets RAILWAY_GIT_COMMIT_SHA), so a deployment can be confirmed from outside.
+    res.status(200).json({ status: 'healthy', version: (process.env.RAILWAY_GIT_COMMIT_SHA ?? '').slice(0, 12) || null });
 });
 app.get('/', (_req, res) => {
     res.status(200).json({ ok: true, service: 'novrsoc-backend' });
@@ -344,6 +347,8 @@ app.use('/api/ai', requireAuth, aiRouter);
 app.use('/api/vms', requireAuth, vmsRouter);
 app.use('/api/vms', requireAuth, vmsFindingsRouter); // findings, remediation (phase P5)
 app.use('/api/vms', requireAuth, vmsContinuousRouter); // schedules, trends, reports, notifications (phase P7)
+app.use('/api/vms', requireAuth, vmsAssessmentsRouter); // asset-centric Full Assessment (phase P13)
+app.use('/api/vms', requireAuth, vmsAdminRouter); // VMS administration: policies, workers, integrations (phase P14)
 app.use('/api/ti', requireAuth, threatInfoRouter); // Threat Information System (phase P6)
 app.use('/api/insights', requireAuth, insightsRouter); // weekly insights (phase P8)
 // Security Assessment: posture from real case data.

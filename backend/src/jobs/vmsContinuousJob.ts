@@ -2,12 +2,15 @@
 //   • every 5 minutes: due scan schedules are queued (services/vmsContinuous.ts runDueSchedules)
 //   • every hour: today's risk snapshot per organisation (re-measured; one row per day)
 //   • every 30 minutes, only with VMS_NOTIFY_ENABLED=true: change digest per organisation
+//   • every hour: enabled assessment policies (services/vmsPolicies.ts) — created disabled; each
+//     run is capped and respects the cooldown, and planning applies every scope and worker check
 // Each run's outcome is logged; failures are reported and retried on the next run.
 
 import { runDueSchedules, snapshotOrg, notifyChanges, notifyEnabled } from '../services/vmsContinuous';
 import { correlationOrgs } from './threatInfoJob';
+import { runEnabledPolicies } from '../services/vmsPolicies';
 
-export const lastVmsContinuousRun: { schedules: unknown; snapshots: unknown; notify: unknown; at: string | null } = { schedules: null, snapshots: null, notify: null, at: null };
+export const lastVmsContinuousRun: { schedules: unknown; snapshots: unknown; notify: unknown; policies: unknown; at: string | null } = { schedules: null, snapshots: null, notify: null, policies: null, at: null };
 
 export function startVmsContinuousJob(): void {
     const busy = new Set<string>();
@@ -36,7 +39,14 @@ export function startVmsContinuousJob(): void {
         }
         lastVmsContinuousRun.notify = out;
     });
+    const policies = once('policies', async () => {
+        const r = await runEnabledPolicies();
+        lastVmsContinuousRun.policies = { at: new Date().toISOString(), result: r };
+        if (Array.isArray(r)) for (const x of r) if (x.queued || x.blocked.length) console.log(`[vms-continuous] policy ${x.policy} (${x.org}): ${x.queued} queued, ${x.blocked.length} blocked`);
+    });
     setTimeout(() => { void schedules(); void snapshots(); }, 120_000).unref();
+    setTimeout(() => { void policies(); }, 10 * 60_000).unref();
+    setInterval(() => { void policies(); }, 60 * 60_000).unref();
     setInterval(() => { void schedules(); }, 5 * 60_000).unref();
     setInterval(() => { void snapshots(); }, 60 * 60_000).unref();
     if (notifyEnabled()) setInterval(() => { void notify(); }, 30 * 60_000).unref();
