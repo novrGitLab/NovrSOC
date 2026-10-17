@@ -68,9 +68,9 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
-VERSION = '1.6.0'
+VERSION = '1.7.0'
 # What this worker enforces itself; the backend only gives jobs that need a feature to workers announcing it.
-FEATURES = ['exclusions']
+FEATURES = ['exclusions', 'pinned_addresses']
 # Networks this worker can actually reach besides the public internet (comma-separated CIDRs), e.g.
 # a VPN into a client LAN. Private, link-local and CGNAT addresses outside them are not scanned.
 WORKER_NETWORKS = [n.strip() for n in os.environ.get('VMS_WORKER_NETWORKS', '').split(',') if n.strip()]
@@ -198,8 +198,52 @@ def _unexpired(e: dict) -> bool:
         return False
 
 
+def resolve_addresses(host: str) -> set:
+    """Every address the name resolves to from this worker, now (empty when it does not resolve)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return set()
+    out = set()
+    for i in infos:
+        try:
+            out.add(str(ipaddress.ip_address(str(i[4][0]).split('%')[0])))
+        except ValueError:
+            continue
+    return out
+
+
+RESOLVE = resolve_addresses   # replaced in tests
+
+
+def pins_ok(target: str, scopes: list[dict], activity: str) -> tuple:
+    """1.7.0: a name authorised only by CNII entries pinned to approved addresses may be scanned only
+    while it resolves within them, checked here just before the tool runs. A name also covered by an
+    unpinned entry keeps that entry's authorisation. Returns (allowed, reason)."""
+    t = parse_target(target)
+    if not t or t[0] != 'host':
+        return True, None
+    covering = [e for e in scopes if in_scope(target, [e], activity)]
+    if not covering or any(not e.get('pinned_addresses') for e in covering):
+        return True, None
+    pins = {str(p).lower() for e in covering for p in e.get('pinned_addresses') or []}
+    now = {a.lower() for a in RESOLVE(t[1])}
+    if not now:
+        return False, f'{t[1]} does not resolve from this worker; its CNII authorisation is pinned to {", ".join(sorted(pins))}'
+    extra = sorted(now - pins)
+    if extra:
+        return False, f'{t[1]} now resolves to {", ".join(extra)}, outside its CNII approval ({", ".join(sorted(pins))}); not scanned until re-approved'
+    return True, None
+
+
 def job_target_allowed(raw: str, scopes: list[dict], activity: str) -> bool:
-    """A job target is a host/IP in scope, or exactly an approved CIDR entry."""
+    """A job target is a host/IP in scope (and, for a CNII-pinned name, resolving within its approved
+    addresses), or exactly an approved CIDR entry."""
+    if '/' not in raw and in_scope(raw, scopes, activity):
+        ok, why = pins_ok(raw, scopes, activity)
+        if not ok:
+            log.warning('target refused: %s', why)
+        return ok
     if '/' in raw:
         return any(e.get('kind') == 'cidr' and e.get('status') == 'active' and str(e.get('value')) == raw
                    and _unexpired(e) and e.get('allow_discovery', True) and not e.get('exclusions')

@@ -14,13 +14,19 @@
 // being in someone's scope is NOT enough (shared hosting, CDNs): it is recorded as evidence only.
 // Everything else stays a candidate with the reason, until a manager confirms or rejects it.
 //
+// P18 adds: bulk submission (each entry independent), manual registration (an analyst's claim of
+// organisation and sector — a candidate until a manager confirms it, authorising nothing), and CNII
+// scan authorisation: a manager's evidence-backed approval written as exact VMS scope entries
+// (origin 'cnii'; a domain without subdomains pinned to its approved addresses, plus chosen IPs), so
+// every existing scope check enforces it and nothing is bypassed.
+//
 // Safety: the backend never connects to a resolved address; it only asks DNS and RIPEstat. Loopback,
 // link-local, multicast and unspecified addresses are never linked or assessed. Private addresses
 // are linked only when an organisation's scope explicitly covers them, and assessed only through a
 // worker that declares a route (Full Assessment planning).
 
-import { Resolver } from 'dns/promises';
 import { isIP } from 'net';
+import { dns, setDnsForTests } from '../lib/dnsResolve';
 import { getSupabase } from './geoEnrichment';
 import { coveringScope, normalizeHostname, parseTarget, type ScopeEntry, type Target } from '../lib/vmsScope';
 import { classifySector } from '../lib/cnii-classify';
@@ -45,11 +51,14 @@ export interface IntakeDeps {
     holder: (asn: string) => Promise<string | null>;
 }
 function defaultDeps(): IntakeDeps {
-    const r = new Resolver({ timeout: 3000, tries: 2 });
-    return { resolve4: (h) => r.resolve4(h), resolve6: (h) => r.resolve6(h), reverse: (ip) => r.reverse(ip), networkInfo: ipNetworkInfo, holder: asHolder };
+    return { ...dns(), networkInfo: ipNetworkInfo, holder: asHolder };
 }
 let depsOverride: Partial<IntakeDeps> | null = null;
-export function setIntakeDepsForTests(d: Partial<IntakeDeps> | null): void { depsOverride = d; }
+/** Also answers the shared resolver (lib/dnsResolve.ts), so queue-time pin checks see the same DNS. */
+export function setIntakeDepsForTests(d: Partial<IntakeDeps> | null): void {
+    depsOverride = d;
+    setDnsForTests(d ? { ...(d.resolve4 ? { resolve4: d.resolve4 } : {}), ...(d.resolve6 ? { resolve6: d.resolve6 } : {}), ...(d.reverse ? { reverse: d.reverse } : {}) } : null);
+}
 const deps = (): IntakeDeps => ({ ...defaultDeps(), ...(depsOverride ?? {}) });
 
 // ── Input ───────────────────────────────────────────────────────────────────────────────────
@@ -60,6 +69,23 @@ export function parseIntake(input: unknown): { kind: 'domain' | 'ip'; value: str
     if (isIP(s)) return { kind: 'ip', value: s };
     const h = normalizeHostname(s);
     return h ? { kind: 'domain', value: h } : null;
+}
+
+export const MAX_BULK = 25;
+export type BulkEntry = { input: string; kind?: 'domain' | 'ip'; value?: string; outcome: 'valid' | 'invalid' | 'duplicate' };
+/** Comma-, space- or newline-separated entries, each validated and normalised on its own; repeats marked. */
+export function parseIntakeList(input: unknown): { entries: BulkEntry[]; too_many: boolean } {
+    const raw = Array.isArray(input) ? input.map(String) : typeof input === 'string' ? input.split(/[\s,;]+/) : [];
+    const items = raw.map((x) => x.trim()).filter(Boolean);
+    const seen = new Set<string>();
+    const entries = items.slice(0, MAX_BULK).map((i): BulkEntry => {
+        const p = parseIntake(i);
+        if (!p) return { input: i.slice(0, 253), outcome: 'invalid' };
+        if (seen.has(p.value)) return { input: i, ...p, outcome: 'duplicate' };
+        seen.add(p.value);
+        return { input: i, ...p, outcome: 'valid' };
+    });
+    return { entries, too_many: items.length > MAX_BULK };
 }
 
 /** Addresses that are never linked or assessed, whatever a scope says. */
@@ -216,11 +242,14 @@ export async function submitIntake(kind: 'domain' | 'ip', value: string, by: str
     const { data: prev, error: pErr } = await db().from('cnii_submissions').select('*').eq('value', value).maybeSingle();
     if (pErr) throw Object.assign(new Error(pErr.message), { code: pErr.code });
     const decidedByPerson = prev && (prev.basis === 'analyst_confirmed' || prev.basis === 'analyst_rejected');
+    // A manual registration (P18) stays until trusted records confirm the value or a manager decides.
+    const registered = prev?.basis === 'manual_registration' && d.status !== 'confirmed';
+    const keptEvidence = ((prev?.evidence ?? []) as Evidence[]).filter((e) => e.kind === 'manual_registration');
     const now = new Date().toISOString();
     const fresh = {
-        kind, ips: res.addresses.map((a) => a.ip), resolution: res, evidence: d.evidence, suggestion: keywordSuggestion(kind, value, res), resolved_at: res.resolved_at, updated_at: now,
+        kind, ips: res.addresses.map((a) => a.ip), resolution: res, evidence: [...d.evidence, ...keptEvidence], suggestion: keywordSuggestion(kind, value, res), resolved_at: res.resolved_at, updated_at: now,
         // Automatic status only where no person has decided; a person's decision stands until they change it.
-        ...(decidedByPerson ? {} : { status: d.status, basis: d.basis, reason: d.reason, org_id: d.org_id, sector_id: d.sector_id, subfield: d.subfield }),
+        ...(decidedByPerson || registered ? {} : { status: d.status, basis: d.basis, reason: d.reason, org_id: d.org_id, sector_id: d.sector_id, subfield: d.subfield }),
     };
     const saved = prev
         ? await db().from('cnii_submissions').update(fresh).eq('id', prev.id).select('*').single()
@@ -246,9 +275,10 @@ export async function decideIntake(id: string, by: string, input: { decision: 'c
         const { data } = await db().from('cnii_submissions').update({ status: 'rejected', basis: 'analyst_rejected', reason: `Rejected by ${by}: ${input.note}`, decided_by: by, decided_at: now, decision_note: input.note, updated_at: now }).eq('id', id).select('*').single();
         return { ok: true as const, submission: data as Submission, link: null };
     }
-    if (!input.org_id) return { ok: false as const, status: 400, error: 'Confirming needs the organisation that operates it' };
+    const orgId = input.org_id ?? (s.basis === 'manual_registration' ? s.org_id : null);
+    if (!orgId) return { ok: false as const, status: 400, error: 'Confirming needs the organisation that operates it' };
     const ctx = await context();
-    const p = ctx.profiles.find((x) => x.org_id === input.org_id);
+    const p = ctx.profiles.find((x) => x.org_id === orgId);
     if (!p) return { ok: false as const, status: 409, error: 'That organisation has no CNII sector profile: classify it first' };
     const { data } = await db().from('cnii_submissions').update({
         status: 'confirmed', basis: 'analyst_confirmed', org_id: p.org_id, sector_id: p.sector_id, subfield: p.subfield,
@@ -324,4 +354,103 @@ export async function intakeResults(s: Submission) {
         severity, schedules: sch.error ? [] : sch.data ?? [], schedules_available: !sch.error,
         note: null,
     };
+}
+
+// ── Manual registration (P18) ─────────────────────────────────────────────────────────────────
+/** An analyst registers an IP against an organisation and sector, with a justification. It stays a
+ *  candidate — never on the watch list — and authorises nothing, until a manager confirms it. */
+export async function registerManual(by: string, input: { org_id: string; sector_id: string; ip: string; justification: string }) {
+    const v = parseIntake(input.ip);
+    if (!v || v.kind !== 'ip') return { ok: false as const, status: 400, error: 'Give one IP address' };
+    if (!SECTOR_BY_ID[input.sector_id]) return { ok: false as const, status: 400, error: 'Unknown sector' };
+    const { data: org } = await db().from('organisations').select('slug, name').eq('slug', input.org_id).maybeSingle();
+    if (!org) return { ok: false as const, status: 404, error: 'Organisation not found' };
+    const { data: prof } = await db().from('cnii_org_profiles').select('sector_id').eq('org_id', input.org_id).maybeSingle();
+    if (prof && prof.sector_id !== input.sector_id) return { ok: false as const, status: 409, error: `${org.name} is classified in ${prof.sector_id}, not ${input.sector_id}` };
+    const r = await submitIntake('ip', v.value, by);
+    const s = r.submission;
+    if (s.status === 'confirmed') return { ok: true as const, submission: s, registered: false, note: 'Already confirmed from trusted records or a manager decision; nothing registered' };
+    if (s.basis === 'analyst_rejected') return { ok: false as const, status: 409, error: 'A manager marked this address not CNII; a manager must reconsider it' };
+    const now = new Date().toISOString();
+    const ev: Evidence = { kind: 'manual_registration', detail: `Registered by ${by} for ${org.name} in ${input.sector_id}: ${input.justification} (unverified)`, source: 'analyst', strength: 'supporting' };
+    const { data, error } = await db().from('cnii_submissions').update({
+        basis: 'manual_registration', status: 'candidate', org_id: input.org_id, sector_id: input.sector_id, subfield: null,
+        reason: `Registered manually for ${org.name} (${input.sector_id}), not verified: a manager must confirm it before it is CNII, and scanning needs a separate authorisation`,
+        evidence: [...((s.evidence ?? []) as Evidence[]).filter((e) => e.kind !== 'manual_registration'), ev], updated_at: now,
+    }).eq('id', s.id).select('*').single();
+    if (error) return { ok: false as const, status: /basis|check constraint/i.test(error.message) ? 503 : 502, error: /basis|check constraint/i.test(error.message) ? P18_MISSING : 'Could not register the asset' };
+    return { ok: true as const, submission: data as Submission, registered: true, note: null };
+}
+
+// ── CNII scan authorisation (P18) ─────────────────────────────────────────────────────────────
+export const P18_MISSING = 'CNII scan authorisation is not set up yet (run sql/2026-10-24_p18_cnii_authorisation.sql)';
+export const MAX_AUTH_DAYS = 90;
+export interface AuthoriseInput { reference: string; evidence: string; expires_days: number; allow_port_scan: boolean; allow_vuln_scan: boolean; addresses?: string[] }
+
+/**
+ * A manager authorises scanning of a confirmed submission. Written as exact VMS scope entries in the
+ * operator's organisation (origin 'cnii'), so the API, Full Assessment, scheduler, worker and ingest
+ * all enforce it with their existing checks:
+ *   • a domain: the name only (no subdomains), pinned to every address it resolves to now;
+ *   • the addresses chosen (default: its public ones), each as a single-IP entry.
+ * Refused when the name resolves to a reserved address or not at all. An existing general scope entry
+ * for the same value is left untouched and reported.
+ */
+export async function authoriseIntake(s: Submission, by: string, input: AuthoriseInput, now = Date.now()) {
+    if (s.status !== 'confirmed' || !s.org_id) return { ok: false as const, status: 409, error: 'Only a confirmed CNII submission can be authorised for scanning' };
+    const res = await resolveIntake(s.kind, s.value);
+    const current = res.addresses;
+    if (s.kind === 'domain' && !current.length) return { ok: false as const, status: 409, error: `${s.value} does not resolve now${res.errors.length ? ` (${res.errors.join('; ')})` : ''}: nothing to pin the approval to` };
+    if (current.some((a) => a.reserved)) return { ok: false as const, status: 409, error: `${s.value} resolves to a reserved address (${current.filter((a) => a.reserved).map((a) => a.ip).join(', ')}): never authorised` };
+    if (res.truncated) return { ok: false as const, status: 409, error: `${s.value} resolves to more addresses than can be pinned; authorise its addresses as VMS scope entries instead` };
+    const wanted = input.addresses?.length ? input.addresses.map((a) => a.trim().toLowerCase()) : current.filter((a) => a.public).map((a) => a.ip);
+    const unknown = wanted.filter((a) => !current.some((c) => c.ip === a));
+    if (unknown.length) return { ok: false as const, status: 400, error: `Not addresses of ${s.value} now: ${unknown.join(', ')}` };
+    const expires = new Date(now + Math.min(Math.max(1, input.expires_days), MAX_AUTH_DAYS) * 86_400_000).toISOString();
+    const pins = s.kind === 'domain' ? current.map((a) => a.ip) : [];
+    const targets: { kind: 'domain' | 'ip'; value: string; pinned: string[] }[] = [
+        ...(s.kind === 'domain' ? [{ kind: 'domain' as const, value: s.value, pinned: pins }] : []),
+        ...[...new Set(s.kind === 'ip' ? [s.value] : wanted)].map((ip) => ({ kind: 'ip' as const, value: ip, pinned: [] as string[] })),
+    ];
+    const results: { target: string; scope_id?: string; outcome: 'created' | 'updated' | 'existing_vms_scope'; detail?: string }[] = [];
+    for (const t of targets) {
+        const row = {
+            allow_discovery: true, allow_port_scan: input.allow_port_scan, allow_vuln_scan: input.allow_vuln_scan, include_subdomains: false, exclusions: [],
+            authorization_reference: `CNII ${input.reference}`.slice(0, 300), notes: `CNII scan authorisation for submission ${s.id}: ${input.evidence}`.slice(0, 2000),
+            approved_by: by, approved_at: new Date(now).toISOString(), expires_at: expires, origin: 'cnii', cnii_submission_id: s.id, pinned_addresses: t.pinned,
+        };
+        const { data: ex, error: exErr } = await db().from('vms_scopes').select('*').eq('org_id', s.org_id).eq('kind', t.kind).eq('value', t.value).eq('status', 'active').maybeSingle();
+        if (exErr) throw Object.assign(new Error(exErr.message), { code: exErr.code });
+        if (ex && (ex.origin !== 'cnii' || ex.cnii_submission_id !== s.id)) { results.push({ target: t.value, scope_id: ex.id, outcome: 'existing_vms_scope', detail: `Already authorised by ${ex.origin === 'cnii' ? 'another CNII approval' : 'a VMS scope entry'} (ref ${ex.authorization_reference}); left unchanged` }); continue; }
+        const w = ex ? await db().from('vms_scopes').update(row).eq('id', ex.id).select('id').single()
+            : await db().from('vms_scopes').insert({ org_id: s.org_id, kind: t.kind, value: t.value, status: 'active', ...row }).select('id').single();
+        if (w.error) {
+            if (w.error.code === 'PGRST204' || w.error.code === '42703' || /origin|pinned_addresses|cnii_submission_id/.test(w.error.message)) return { ok: false as const, status: 503, error: P18_MISSING };
+            throw Object.assign(new Error(w.error.message), { code: w.error.code });
+        }
+        results.push({ target: t.value, scope_id: w.data.id, outcome: ex ? 'updated' : 'created' });
+    }
+    const authorisation = {
+        scope_ids: results.filter((r) => r.outcome !== 'existing_vms_scope').map((r) => r.scope_id), targets: results.map((r) => r.target), approved_addresses: pins,
+        reference: input.reference, evidence: input.evidence, activities: { discovery: true, ports: input.allow_port_scan, vuln: input.allow_vuln_scan },
+        approved_by: by, approved_at: new Date(now).toISOString(), expires_at: expires, revoked_by: null, revoked_at: null,
+    };
+    const upd = await db().from('cnii_submissions').update({ authorisation, resolution: res, ips: current.map((a) => a.ip), resolved_at: res.resolved_at, updated_at: new Date(now).toISOString() }).eq('id', s.id).select('*').single();
+    if (upd.error) return { ok: false as const, status: /authorisation/.test(upd.error.message) ? 503 : 502, error: /authorisation/.test(upd.error.message) ? P18_MISSING : 'The scope entries were written but the submission could not be updated' };
+    // Now inside scope: add the values to the organisation's inventory.
+    const link = await linkToInventory(s.org_id, s.kind, s.value, res, await allScopes());
+    await db().from('cnii_submissions').update({ asset_ids: [...new Set([...((upd.data.asset_ids as string[]) ?? []), ...link.asset_ids])] }).eq('id', s.id);
+    return { ok: true as const, results, authorisation, link };
+}
+
+/** Revokes the scope entries a CNII approval created and stops its Full Assessment schedules. */
+export async function revokeIntakeAuthorisation(s: Submission, by: string, reason: string) {
+    const now = new Date().toISOString();
+    const { data: scopes, error } = await db().from('vms_scopes').update({ status: 'revoked', revoked_by: by, revoked_at: now }).eq('cnii_submission_id', s.id).eq('origin', 'cnii').eq('status', 'active').select('id, value');
+    if (error) return { ok: false as const, status: /origin|cnii_submission_id/.test(error.message) ? 503 : 502, error: /origin|cnii_submission_id/.test(error.message) ? P18_MISSING : 'Could not revoke' };
+    const ids = (scopes ?? []).map((x) => x.id);
+    if (ids.length) await db().from('vms_scan_schedules').update({ enabled: false, last_result: `Disabled: CNII authorisation revoked by ${by}`, updated_at: now }).in('scope_id', ids);
+    const auth = { ...((s.authorisation as Record<string, unknown> | null) ?? {}), revoked_by: by, revoked_at: now, revoke_reason: reason };
+    await db().from('cnii_submissions').update({ authorisation: auth, updated_at: now }).eq('id', s.id);
+    return { ok: true as const, revoked: (scopes ?? []).map((x) => x.value) };
 }

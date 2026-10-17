@@ -47,7 +47,7 @@ export const MAX_OBSERVATIONS_PER_BATCH = 500;
 // The worker's job kinds. passive_osint is not among them: the backend runs it (jobs/cniiPassiveJob.ts).
 export const VMS_KINDS = ['discovery', 'ports', 'vuln_nuclei', 'vuln_openvas'] as const;
 /** Features a worker must announce to be given a job (P13): exclusions need a worker that enforces them. */
-export const WORKER_FEATURES = ['exclusions'] as const;
+export const WORKER_FEATURES = ['exclusions', 'pinned_addresses'] as const;
 
 router.use(rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, legacyHeaders: false }));
 function requireWorkerToken(req: Request, res: Response, next: NextFunction) {
@@ -118,7 +118,7 @@ export function queueFailure(e: { message?: string; code?: string; details?: str
     return { reason: 'database_error', detail: `database error${e.code ? ` ${e.code}` : ''}` };
 }
 
-const scopesFor = async (orgId: string) => (await activeScopes(orgId)).map((s) => ({ kind: s.kind, value: s.value, include_subdomains: s.include_subdomains, allow_discovery: s.allow_discovery !== false, allow_port_scan: s.allow_port_scan, allow_vuln_scan: s.allow_vuln_scan, exclusions: s.exclusions ?? [], expires_at: s.expires_at, status: s.status }));
+const scopesFor = async (orgId: string) => (await activeScopes(orgId)).map((s) => ({ kind: s.kind, value: s.value, include_subdomains: s.include_subdomains, allow_discovery: s.allow_discovery !== false, allow_port_scan: s.allow_port_scan, allow_vuln_scan: s.allow_vuln_scan, exclusions: s.exclusions ?? [], pinned_addresses: s.pinned_addresses ?? [], expires_at: s.expires_at, status: s.status }));
 
 async function workerFeatures(workerId: string): Promise<string[]> {
     const { data, error } = await getSupabase()!.from('vms_workers').select('features').eq('worker_id', workerId).maybeSingle();
@@ -166,10 +166,15 @@ router.post('/claim', async (req, res) => {
     // worker would probe excluded names it discovers. Put it straight back, as it was.
     if (job) {
         const { data: sc } = await supabase.from('vms_scopes').select('*').eq('id', (job as Job & { scope_id?: string }).scope_id ?? '').maybeSingle();
-        if (((sc?.exclusions as string[] | undefined) ?? []).length && !(await workerFeatures(workerId)).includes('exclusions')) {
-            await supabase.from('vms_scan_jobs').update({ status: 'queued', worker_id: null, claimed_at: null, heartbeat_at: null, started_at: null, attempts: Math.max(0, Number((job as Job & { attempts?: number }).attempts ?? 1) - 1), progress: { message: 'Waiting for a worker that enforces scope exclusions (worker 1.4.0 or later)' } }).eq('id', job.id).eq('status', 'running');
+        // The same for a CNII authorisation pinned to approved addresses (P18): worker 1.7.0 or later.
+        const needs = [...(((sc?.exclusions as string[] | undefined) ?? []).length ? ['exclusions'] : []), ...(((sc?.pinned_addresses as string[] | undefined) ?? []).length ? ['pinned_addresses'] : [])];
+        const has = needs.length ? await workerFeatures(workerId) : [];
+        const lacking = needs.filter((f) => !has.includes(f));
+        if (lacking.length) {
+            const which = lacking.includes('pinned_addresses') ? 'enforces CNII pinned addresses (worker 1.7.0 or later)' : 'enforces scope exclusions (worker 1.4.0 or later)';
+            await supabase.from('vms_scan_jobs').update({ status: 'queued', worker_id: null, claimed_at: null, heartbeat_at: null, started_at: null, attempts: Math.max(0, Number((job as Job & { attempts?: number }).attempts ?? 1) - 1), progress: { message: `Waiting for a worker that ${which}` } }).eq('id', job.id).eq('status', 'running');
             await recordWorkerSeen(workerId, { kinds, last_claim_at: now });
-            res.json({ job: null, notice: 'A queued job needs a worker that enforces scope exclusions; upgrade this worker to 1.4.0' });
+            res.json({ job: null, notice: `A queued job needs a worker that ${which}; upgrade this worker` });
             return;
         }
     }

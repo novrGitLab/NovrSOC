@@ -11,7 +11,8 @@ import { SECTOR_BY_ID } from '@/lib/cnii-sectors';
 import { cniiGet, apiSend, timeAgo, type CniiProfile, type OrgStats } from '@/lib/cnii-types';
 
 interface OrgEntry { profile: CniiProfile; name: string; stats: OrgStats; gaps: string[] }
-interface WatchItem { id: string; value: string; kind: string; org_id: string; subfield: string | null; basis: string; ips: string[]; updated_at: string }
+interface WatchItem { id: string; value: string; kind: string; org_id: string; subfield: string | null; basis: string; ips: string[]; updated_at: string; authorisation?: { revoked_at: string | null; expires_at: string } | null }
+interface RegisteredItem { id: string; value: string; org_id: string; reason: string; updated_at: string }
 interface Briefing {
     period: string; headline: string; posture_summary: string;
     statements: { statement: string; basis: 'platform_record' | 'source_claim' | 'ai_assessment'; evidence_refs: string[] }[];
@@ -25,6 +26,11 @@ export function CniiSector({ sectorId }: { sectorId: string }) {
     const meta = SECTOR_BY_ID[sectorId];
     const [orgs, setOrgs] = useState<OrgEntry[] | null>(null);
     const [watch, setWatch] = useState<WatchItem[] | null>(null);
+    const [registered, setRegistered] = useState<RegisteredItem[] | null>(null);
+    const [allOrgs, setAllOrgs] = useState<{ slug: string; name: string; profile: CniiProfile | null }[]>([]);
+    const [manual, setManual] = useState({ open: false, org_id: '', sector_id: sectorId, ip: '', justification: '' });
+    const [manualMsg, setManualMsg] = useState<string | null>(null);
+    const [reloadKey, setReloadKey] = useState(0);
     const [error, setError] = useState<string | null>(null);
     const [brief, setBrief] = useState<{ content: Briefing; model: string; created_at: string } | null>(null);
     const [briefing, setBriefing] = useState(false);
@@ -33,14 +39,27 @@ export function CniiSector({ sectorId }: { sectorId: string }) {
     useEffect(() => {
         if (!meta) return;
         let active = true;
-        void cniiGet<{ organisations: OrgEntry[]; watchlist?: WatchItem[] | null }>(`/sectors/${sectorId}`).then((r) => {
+        void cniiGet<{ organisations: OrgEntry[]; watchlist?: WatchItem[] | null; registered?: RegisteredItem[] | null }>(`/sectors/${sectorId}`).then((r) => {
             if (!active) return;
             setOrgs(r.ok ? r.data.organisations : null);
             setWatch(r.ok ? r.data.watchlist ?? null : null);
+            setRegistered(r.ok ? r.data.registered ?? null : null);
             setError(r.ok ? null : r.error);
         });
         return () => { active = false; };
-    }, [sectorId, meta]);
+    }, [sectorId, meta, reloadKey]);
+    useEffect(() => {
+        if (!manual.open || allOrgs.length) return;
+        let active = true;
+        void cniiGet<{ organisations: { slug: string; name: string; profile: CniiProfile | null }[] }>('/organisations').then((r) => { if (active && r.ok) setAllOrgs(r.data.organisations); });
+        return () => { active = false; };
+    }, [manual.open, allOrgs.length]);
+
+    async function addManual() {
+        const r = await apiSend<{ registered: boolean; note: string | null }>('/api/cnii/intake/manual', 'POST', { org_id: manual.org_id, sector_id: manual.sector_id, ip: manual.ip.trim(), justification: manual.justification.trim() });
+        setManualMsg(r.ok ? (r.data.registered ? `${manual.ip} registered, not verified: a manager must confirm it, and scanning needs a separate authorisation.` : r.data.note) : r.error);
+        if (r.ok) { setManual({ ...manual, ip: '', justification: '' }); setReloadKey((k) => k + 1); }
+    }
 
     async function generate(period: '7d' | '30d') {
         setBriefing(true); setBriefErr(null);
@@ -95,6 +114,36 @@ export function CniiSector({ sectorId }: { sectorId: string }) {
             )}
 
             {orgs && orgs.length === 0 && <p className="text-xs text-foreground-muted">No organisation is classified into this sector yet.</p>}
+            <div className="bg-card border border-border rounded-xl p-4 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                    <h2 className="text-sm font-bold text-foreground">Manually add asset</h2>
+                    <button onClick={() => setManual({ ...manual, open: !manual.open })} className="text-[11px] font-bold text-purple">{manual.open ? 'Close' : 'Manually Add Asset'}</button>
+                </div>
+                {manual.open && (
+                    <>
+                        <p className="text-foreground-muted">Registers an IP against an organisation and sector with your justification. It is <span className="font-bold">not verified</span>: it does not appear as confirmed, does not designate the operator, and does not authorise any scan.</p>
+                        <div className="flex flex-wrap gap-2 items-center">
+                            <select className="bg-card-muted border border-border rounded-lg px-2 py-1" value={manual.org_id} onChange={(e) => setManual({ ...manual, org_id: e.target.value })} aria-label="Organisation">
+                                <option value="">Organisation</option>
+                                {allOrgs.map((o) => <option key={o.slug} value={o.slug}>{o.name}{o.profile ? ` — ${o.profile.sector_id} (${o.profile.designation})` : ' — not classified'}</option>)}
+                            </select>
+                            <select className="bg-card-muted border border-border rounded-lg px-2 py-1" value={manual.sector_id} onChange={(e) => setManual({ ...manual, sector_id: e.target.value })} aria-label="Sector">
+                                {Object.keys(SECTOR_BY_ID).map((id) => <option key={id} value={id}>{id}</option>)}
+                            </select>
+                            <input className="bg-card-muted border border-border rounded-lg px-2 py-1 font-mono" placeholder="IP address" value={manual.ip} onChange={(e) => setManual({ ...manual, ip: e.target.value })} aria-label="IP address" />
+                            <input className="bg-card-muted border border-border rounded-lg px-2 py-1 flex-1 min-w-[240px]" placeholder="Justification / evidence (10+ characters)" value={manual.justification} onChange={(e) => setManual({ ...manual, justification: e.target.value })} aria-label="Justification" />
+                            <button disabled={!manual.org_id || !manual.ip.trim() || manual.justification.trim().length < 10} onClick={() => void addManual()} className="text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1 disabled:opacity-50">Register</button>
+                        </div>
+                    </>
+                )}
+                {manualMsg && <p role="status" className="font-semibold">{manualMsg}</p>}
+                {registered && registered.length > 0 && (
+                    <div>
+                        <p className="text-[10px] font-bold uppercase text-foreground-muted">Registered, not verified ({registered.length})</p>
+                        {registered.map((r) => <p key={r.id}><span className="font-mono font-bold">{r.value}</span> <span className="text-amber font-bold text-[10px] uppercase">unverified</span> <span className="text-foreground-muted">· {r.org_id} · {timeAgo(r.updated_at)}</span></p>)}
+                    </div>
+                )}
+            </div>
             {watch && watch.length > 0 && (
                 <div className="bg-card border border-border rounded-xl p-4">
                     <h2 className="text-sm font-bold text-foreground mb-1">Confirmed watch-list assets ({watch.length})</h2>

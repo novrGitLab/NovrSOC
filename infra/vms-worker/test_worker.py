@@ -712,5 +712,40 @@ class NucleiReach(unittest.TestCase):
         done = self.run_job('10.88.1.139', boom)
         self.assertEqual((done['status'], done['summary']['outcome']), ('failed', 'no_route'))
 
+
+class PinnedAddresses(unittest.TestCase):
+    """1.7.0: a CNII-pinned name is scanned only while it resolves within its approved addresses."""
+
+    PINNED = [{'kind': 'domain', 'value': 'portal.grid.test', 'include_subdomains': False, 'allow_port_scan': True, 'allow_vuln_scan': True, 'status': 'active', 'expires_at': FUTURE, 'pinned_addresses': ['196.1.2.3', '196.1.2.4']}]
+
+    def setUp(self):
+        self._resolve = worker.RESOLVE
+
+    def tearDown(self):
+        worker.RESOLVE = self._resolve
+
+    def test_announces_the_feature(self):
+        self.assertIn('pinned_addresses', worker.heartbeat_body()['features'])
+
+    def test_within_pins_is_allowed(self):
+        worker.RESOLVE = lambda h: {'196.1.2.4'}
+        self.assertTrue(worker.job_target_allowed('portal.grid.test', self.PINNED, 'ports'))
+
+    def test_dns_change_or_no_answer_is_refused(self):
+        worker.RESOLVE = lambda h: {'196.1.2.3', '203.0.113.50'}
+        ok, why = worker.pins_ok('portal.grid.test', self.PINNED, 'ports')
+        self.assertFalse(ok)
+        self.assertIn('203.0.113.50', why)
+        self.assertFalse(worker.job_target_allowed('portal.grid.test', self.PINNED, 'ports'))
+        worker.RESOLVE = lambda h: set()
+        self.assertFalse(worker.job_target_allowed('portal.grid.test', self.PINNED, 'ports'))
+
+    def test_subdomains_are_not_covered_and_unpinned_entries_keep_their_meaning(self):
+        worker.RESOLVE = lambda h: {'203.0.113.50'}
+        self.assertFalse(worker.job_target_allowed('www.portal.grid.test', self.PINNED, 'ports'), 'exact name only')
+        general = [{'kind': 'domain', 'value': 'grid.test', 'include_subdomains': True, 'allow_port_scan': True, 'allow_vuln_scan': True, 'status': 'active', 'expires_at': FUTURE}]
+        self.assertTrue(worker.job_target_allowed('portal.grid.test', self.PINNED + general, 'ports'), 'a general scope entry still authorises it')
+        self.assertTrue(worker.job_target_allowed('196.1.2.3', [{'kind': 'ip', 'value': '196.1.2.3', 'allow_port_scan': True, 'status': 'active', 'expires_at': FUTURE}], 'ports'))
+
 if __name__ == '__main__':
     unittest.main()

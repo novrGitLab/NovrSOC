@@ -29,6 +29,8 @@ export interface ScopeEntry {
     allow_discovery?: boolean;
     /** Never touched even though the entry covers them (P13; absent before that SQL). */
     exclusions?: string[] | null;
+    /** P18: 'cnii' when written by a CNII scan approval; pinned_addresses = a domain's approved addresses. */
+    origin?: 'vms' | 'cnii'; cnii_submission_id?: string | null; pinned_addresses?: string[] | null;
 }
 
 /** Canonical form of one exclusion, or null when it is not a host, .suffix, IP or CIDR. */

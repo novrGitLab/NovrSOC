@@ -58,3 +58,54 @@ Executives and portal users are refused. Every submission, re-check, decision, a
 - **Code:** redeploy the previous commit.
 - **Schedules:** to stop them, run `update vms_scan_schedules set enabled = false where kind = 'full_assessment';`.
 - **Table:** `cnii_submissions` can stay, or be dropped.
+
+## P18: bulk intake, manual registration and CNII scan authorisation
+
+Needs `backend/sql/2026-10-24_p18_cnii_authorisation.sql`, applied after P17. It is additive and can be re-run. Check it with:
+
+```sql
+select origin, cnii_submission_id, pinned_addresses from vms_scopes limit 0;
+select authorisation from cnii_submissions limit 0;
+```
+
+**Deployment order:**
+1. P18 SQL.
+2. Backend and frontend.
+3. Worker 1.7.0 (`./deploy.sh main`).
+
+Worker 1.7.0 announces the `pinned_addresses` feature, which a backend before P18 rejects. Until 1.7.0 runs, jobs under a CNII-pinned entry wait in the queue ("Waiting for a worker that enforces CNII pinned addresses"). They are never run by an older worker.
+
+### Bulk
+
+Enter up to 25 domains or IPs, separated by commas, spaces or new lines.
+- Each entry is validated and normalised on its own, and gets its own result: confirmed, candidate, rejected, invalid, duplicate or failed.
+- A bad or failing entry never blocks the rest.
+- Values already submitted are re-checked, not duplicated.
+
+### Manually Add Asset (sector page)
+
+An analyst registers an IP against an organisation and a sector, with a justification.
+- **The result is unverified:** it is listed under "Registered, not verified" and never on the watch list. It does not designate the operator, add inventory or authorise any scan.
+- **Refused** if the organisation is classified in a different sector.
+- **Verification:** a manager confirms it (the "Manager decision" control), which is separate.
+- **Scanning** needs the separate authorisation below.
+
+### Authorise scanning (managers: `cnii:manage` and `vms:scope`)
+
+Only for a confirmed submission. It needs a reference, written evidence, an expiry of at most 90 days, and explicit port and vulnerability permissions. The approval is written as ordinary VMS scope entries in the operator's organisation (`origin = 'cnii'`), so every existing check enforces it; nothing is bypassed:
+
+- **What it covers:**
+  - **a domain:** that name only, no subdomains, pinned to the addresses it resolves to at approval;
+  - **its public addresses,** or the ones chosen, as single-IP entries.
+- **Refused** if the name doesn't resolve, resolves to a reserved address, or resolves to more than 16 addresses.
+- **DNS changes are caught three times:**
+  - when queueing, the name is resolved again, and a change means nothing is queued ("pinned to its approved addresses"; a manager must re-approve);
+  - worker 1.7.0 resolves it again just before scanning, and refuses on a change;
+  - at ingest, observations of the name at an address outside the pins are dropped.
+- **Redirects:** httpx and Nuclei run without redirect following, and results for other hosts are dropped at ingest.
+- **Existing general VMS scope entries** for the same value are left unchanged and reported.
+- **Revoke:** revokes the entries and disables their Full Assessment schedules. Queued jobs are refused by the worker because the scope is no longer active.
+
+**Audit actions:** `CNII_INTAKE_SUBMITTED` / `RECHECKED` (including bulk entries), `CNII_ASSET_REGISTERED`, `CNII_INTAKE_CONFIRMED` / `REJECTED`, `CNII_SCAN_AUTHORISED`, `CNII_SCAN_AUTHORISATION_REVOKED`.
+
+**Residual risk:** between the worker's own lookup and the tool's lookup, a few seconds apart, DNS could change. Ingest drops results seen at other addresses, but a request may already have been sent. Fully closing that gap would need the tools to connect to a fixed address, which is not done here.
