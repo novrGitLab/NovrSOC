@@ -20,6 +20,7 @@ const SUBJECT: Record<string, string> = {
     alert_summary: 'alert', case_summary: 'case', case_handover: 'case', incident_report: 'case',
     finding_explanation: 'finding', remediation_plan: 'finding', rescan_interpretation: 'finding', asset_assessment: 'asset',
     indicator_assessment: 'indicator', threat_briefing: 'report', weekly_insights: 'report',
+    cnii_intake_classification: 'cnii_submission',
 };
 const LABEL = (k: string) => k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 const MAIN_FIELDS = ['action', 'step', 'event', 'observation', 'title', 'task', 'control', 'finding', 'item', 'name'];

@@ -13,7 +13,7 @@ import { getSupabase } from './geoEnrichment';
 import { queueScan } from '../routes/vms';
 import { isEmailEnabled, sendVmsDigestEmail, socNotificationRecipients } from './email';
 import { wazuhFreshness } from './wazuhVulnSync';
-import { describe, type AssessmentRow } from './vmsAssessments';
+import { describe, createAssessment, type AssessmentRow } from './vmsAssessments';
 
 export const OPEN_STATUSES = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'] as const;
 const PRIORITIES = ['P1', 'P2', 'P3', 'P4'] as const;
@@ -40,6 +40,34 @@ export async function runDueSchedules(now = Date.now()): Promise<ScheduleRun[]> 
     for (const s of due ?? []) {
         const next = nextRunAfter(s.next_run_at, s.interval_hours, now);
         const at = new Date(now).toISOString();
+        // An end date (P17) is final: the schedule stops, it never runs past it.
+        if (s.ends_at && Date.parse(s.ends_at) <= now) {
+            const detail = `Ended: the configured end date ${s.ends_at} was reached`;
+            await supabase.from('vms_scan_schedules').update({ enabled: false, last_result: detail, updated_at: at }).eq('id', s.id);
+            out.push({ id: s.id, org: s.org_id, outcome: 'disabled', detail });
+            continue;
+        }
+        // A Full Assessment (P17): createAssessment re-plans every check and returns the one still in
+        // progress for the same target instead of starting another, so runs never overlap.
+        if (s.kind === 'full_assessment') {
+            const target = (s.targets ?? [])[0];
+            const r = target ? await createAssessment(s.org_id, `schedule:${s.id}`, { target, scope_id: s.scope_id }, 'scheduler', { trigger: 'schedule' }) : { ok: false as const, status: 400, error: 'The schedule names no target' };
+            const after = s.ends_at && Date.parse(next) > Date.parse(s.ends_at) ? s.ends_at : next;
+            if (r.ok) {
+                const detail = r.existing ? `Skipped: assessment ${r.assessment.id} is still in progress` : `Assessment ${r.assessment.id} started`;
+                await supabase.from('vms_scan_schedules').update({ next_run_at: after, last_run_at: at, last_result: detail, updated_at: at }).eq('id', s.id);
+                out.push({ id: s.id, org: s.org_id, outcome: r.existing ? 'skipped_in_progress' : 'queued', detail });
+            } else if (r.status === 400 || r.status === 403 || r.status === 404) {
+                const detail = `Disabled: ${r.error}`;
+                await supabase.from('vms_scan_schedules').update({ enabled: false, last_result: detail, updated_at: at }).eq('id', s.id);
+                out.push({ id: s.id, org: s.org_id, outcome: 'disabled', detail });
+            } else {
+                const detail = `Failed (will retry next interval): ${r.error}`;
+                await supabase.from('vms_scan_schedules').update({ next_run_at: after, last_result: detail, updated_at: at }).eq('id', s.id);
+                out.push({ id: s.id, org: s.org_id, outcome: 'failed', detail });
+            }
+            continue;
+        }
         if (s.last_job_id) {
             const { data: prev } = await supabase.from('vms_scan_jobs').select('status').eq('id', s.last_job_id).maybeSingle();
             if (prev && (prev.status === 'queued' || prev.status === 'running')) {

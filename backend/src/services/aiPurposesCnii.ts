@@ -108,3 +108,47 @@ registerAiPurpose('cnii_sector_briefing', {
         confidence: Confidence,
     }),
 });
+
+// ── Intake classification assistance (P17) ────────────────────────────────────────────────────
+// For an ambiguous submission: which organisation and sector the gathered evidence points to, and
+// what the analyst should verify. A suggestion only — the submission's status changes solely by a
+// manager's decision or trusted records (services/cniiIntake.ts). The model sees the submission's
+// stored evidence and the list of classified organisations, nothing else.
+export async function buildIntakeClassification(_org: string, id: string): Promise<BuiltContext | null> {
+    const supabase = getSupabase();
+    if (!supabase) return null;
+    const { data: s } = await supabase.from('cnii_submissions').select('id, value, kind, status, reason, ips, resolution, evidence, suggestion').eq('id', id).maybeSingle();
+    if (!s) return null;
+    const records: Record<string, unknown>[] = [];
+    const refs: SourceRef[] = [];
+    const res = (s.resolution ?? {}) as { addresses?: { ip: string; ptr: string[]; asn: string | null; holder: string | null; public: boolean; covered_by: unknown[] }[]; errors?: string[] };
+    // Row fields never named `kind`: push() keeps the record kind in that field.
+    push(records, refs, 'submission', s.id, { value: s.value, value_type: s.kind, status: s.status, reason: s.reason, dns_errors: res.errors ?? [], keyword_hint: s.suggestion ?? null }, s.value);
+    for (const a of res.addresses ?? []) push(records, refs, 'address', a.ip, { ip: a.ip, reverse_dns: a.ptr, asn: a.asn, registry_holder: a.holder, public: a.public, in_authorised_scope_of: a.covered_by }, a.ip);
+    for (const [i, e] of ((s.evidence ?? []) as { kind?: string; detail?: string; source?: string; strength?: string }[]).entries()) push(records, refs, 'evidence', `${s.id}:${i}`, { evidence_type: e.kind, detail: e.detail, source: e.source, strength: e.strength });
+    const [{ data: profs }, { data: orgs }] = await Promise.all([
+        supabase.from('cnii_org_profiles').select('org_id, sector_id, subfield, designation').limit(300),
+        supabase.from('organisations').select('slug, name').limit(2000),
+    ]);
+    const names = new Map((orgs ?? []).map((o) => [o.slug as string, o.name as string]));
+    for (const p of profs ?? []) push(records, refs, 'organisation', p.org_id, { org_id: p.org_id, name: names.get(p.org_id) ?? p.org_id, sector_id: p.sector_id, subfield: p.subfield, designation: p.designation }, names.get(p.org_id) ?? p.org_id);
+    return { records, refs };
+}
+
+const SECTOR_IDS = Object.keys(SECTOR_BY_ID) as [string, ...string[]];
+registerAiPurpose('cnii_intake_classification', {
+    permission: 'cnii:sector', subjectType: 'cnii_submission', build: buildIntakeClassification,
+    task: 'Help an analyst decide which classified organisation (if any) operates the submitted domain or IP, and its CNII sector, from the records given only. '
+        + 'Registry holders and AS names identify the network operator, not the owner; reverse DNS and keyword hints are weak; an address in an organisation\'s authorised scope does not prove it operates a domain hosted there. '
+        + 'suggested_org_id must be the org_id of one of the organisation records, or null when the records do not support one; never invent an organisation. suggested_sector_id is null unless supported. '
+        + 'This is a suggestion: list in verify_before_confirming what a person must check (e.g. a designation letter, WHOIS registrant, the organisation confirming the asset). Every statement cites refs. If the evidence is thin, say so and lower confidence.',
+    schema: z.object({
+        suggested_org_id: z.string().nullable(),
+        suggested_sector_id: z.enum(SECTOR_IDS).nullable(),
+        summary: z.string(),
+        statements: z.array(Claim),
+        verify_before_confirming: z.array(z.string()),
+        data_gaps: z.array(z.string()),
+        confidence: Confidence,
+    }),
+});
