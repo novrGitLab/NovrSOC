@@ -138,6 +138,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         items: [
             { id: 'cnii-overview', label: 'Overview', href: '/admin/cnii', domain: 'cnii', status: 'PARTIAL', roles: NOT_EXEC, icon: LayoutDashboard },
             { id: 'cnii-my-org', label: 'My organisation', href: '/admin/cnii/org/me', domain: 'cnii', status: 'PARTIAL', roles: ['executive'], icon: LayoutDashboard },
+            { id: 'cnii-authorisations', label: 'CNII Scan Authorisations', href: '/admin/cnii/authorisations', domain: 'cnii', status: 'WORKING', roles: ['super_admin', 'soc_manager'], icon: ShieldCheck },
             ...CNII_SECTORS.map(([slug, label, icon]): NavItemConfig => (
                 { id: `cnii-${slug}`, label, href: `/admin/cnii/${slug}`, domain: 'cnii', status: 'PARTIAL', roles: NOT_EXEC, icon }
             )),
