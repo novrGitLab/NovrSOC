@@ -20,6 +20,8 @@ interface Submission {
     ips: string[]; resolution: { resolved_at: string; errors: string[]; truncated: boolean; addresses: Address[] };
     evidence: { kind: string; detail: string; source: string; strength: 'trusted' | 'supporting' | 'context' }[];
     suggestion: { sectorId: string; subfield: string; note: string } | null; decided_by: string | null; decided_at: string | null; submitted_by: string; submitted_at: string; updated_at: string;
+    /** P18: a manager's CNII scan authorisation (exact scope entries, origin cnii). */
+    authorisation?: { targets: string[]; approved_addresses: string[]; reference: string; activities: { ports: boolean; vuln: boolean }; approved_by: string; approved_at: string; expires_at: string; revoked_by: string | null; revoked_at: string | null } | null;
     open_by_severity?: Record<string, number>; last_assessment_at?: string | null;
 }
 interface Finding { id: string; title: string; rule_id: string; cve_ids: string[]; scanner_severity: string; priority: string | null; status: string; asset_value: string; port: number | null; evidence_class: string; remediation: string | null; first_seen: string; last_seen: string; latest_evidence: { matched_at: string | null; observed_at: string } | null }
@@ -41,6 +43,10 @@ const STATUS_STYLE: Record<Status, string> = { confirmed: 'bg-green/10 text-gree
 const STATUS_TEXT: Record<Status, string> = { confirmed: 'Confirmed CNII', candidate: 'Unverified candidate', rejected: 'Not CNII' };
 const SEV = ['critical', 'high', 'medium', 'low', 'info'];
 const SEV_STYLE: Record<string, string> = { critical: 'text-red', high: 'text-red/80', medium: 'text-amber', low: 'text-blue', info: 'text-foreground-muted' };
+/** Entries of a comma-, space- or newline-separated list (each validated by intakeInputError). */
+export const splitEntries = (v: string) => v.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+interface BulkResult { input: string; value?: string; outcome: string; error?: string; reason?: string; id?: string }
+const OUTCOME_STYLE: Record<string, string> = { confirmed: 'text-green', candidate: 'text-amber', rejected: 'text-foreground-muted', invalid: 'text-red', failed: 'text-red', duplicate: 'text-foreground-muted' };
 const sevLine = (s: Record<string, number> | undefined) => SEV.filter((k) => s?.[k]).map((k) => <span key={k} className={`font-bold ${SEV_STYLE[k]}`}>{s![k]} {k}</span>);
 
 export function CniiIntake({ orgs, isManager, canScan }: { orgs: IntakeOrg[]; isManager: boolean; canScan: boolean }) {
@@ -52,6 +58,7 @@ export function CniiIntake({ orgs, isManager, canScan }: { orgs: IntakeOrg[]; is
     const [tab, setTab] = useState<Status | 'all'>('all');
     const [sel, setSel] = useState<string | null>(null);
     const [tick, setTick] = useState(0);
+    const [bulk, setBulk] = useState<BulkResult[] | null>(null);
     const reload = useCallback(() => setTick((t) => t + 1), []);
 
     useEffect(() => {
@@ -61,6 +68,20 @@ export function CniiIntake({ orgs, isManager, canScan }: { orgs: IntakeOrg[]; is
     }, [tick]);
 
     async function submit(v: string) {
+        const entries = splitEntries(v);
+        if (entries.length > 1) {
+            if (entries.length > 25) { setMsg('At most 25 entries at a time'); return; }
+            setBusy(true);
+            const r = await apiSend<{ results: BulkResult[]; counts: Record<string, number> }>('/api/cnii/intake', 'POST', { values: entries });
+            setBusy(false);
+            if (!r.ok) { setMsg(r.error); return; }
+            setBulk(r.data.results);
+            setMsg(`Checked ${entries.length} entries: ${Object.entries(r.data.counts).map(([k, n]) => `${n} ${k}`).join(', ')}`);
+            setValue('');
+            reload();
+            return;
+        }
+        setBulk(null);
         const err = intakeInputError(v);
         if (err) { setMsg(err); return; }
         setBusy(true);
@@ -84,11 +105,18 @@ export function CniiIntake({ orgs, isManager, canScan }: { orgs: IntakeOrg[]; is
                     <p className="text-[11px] text-foreground-muted max-w-3xl">Submit a domain or IP. It is resolved and checked against authorised scope and CNII profiles; it joins the watch list only when a designated CNII organisation holds it in authorised scope, or a manager confirms it. Registry data and AI give hints, never ownership.</p>
                 </div>
                 <form onSubmit={(e) => { e.preventDefault(); void submit(value); }} className="flex gap-2">
-                    <input className={input} placeholder="portal.example.gov.ng or 196.x.x.x" value={value} onChange={(e) => setValue(e.target.value)} aria-label="Domain or IP address to submit" maxLength={253} />
+                    <input className={`${input} w-80`} placeholder="portal.example.gov.ng, 196.x.x.x, … (up to 25)" value={value} onChange={(e) => setValue(e.target.value)} aria-label="Domains or IP addresses to submit, comma-separated" maxLength={6400} />
                     <button disabled={busy} className="flex items-center gap-1.5 text-[11px] font-bold text-white bg-purple rounded-lg px-3 disabled:opacity-50"><Plus className="w-3.5 h-3.5" /> {busy ? 'Checking…' : 'Submit'}</button>
                 </form>
             </div>
             {msg && <p role="status" className="text-xs text-foreground">{msg}</p>}
+            {bulk && (
+                <div className="border border-border rounded-lg p-2 text-xs space-y-0.5">
+                    {bulk.map((b, i) => (
+                        <p key={i}><span className="font-mono">{b.value ?? b.input}</span> <span className={`font-bold uppercase text-[10px] ${OUTCOME_STYLE[b.outcome] ?? ''}`}>{b.outcome}</span> <span className="text-foreground-muted">{b.error ?? b.reason ?? ''}</span>{b.id && <button onClick={() => setSel(b.id!)} className="ml-1 text-purple font-bold">open</button>}</p>
+                    ))}
+                </div>
+            )}
             {listErr && <p role="alert" className="text-xs text-red font-semibold">{listErr}</p>}
             {list && (
                 <>
@@ -128,6 +156,7 @@ function IntakeDetail({ id, orgs, isManager, canScan, onChanged, onRecheck }: { 
     const [org, setOrg] = useState('');
     const [note, setNote] = useState('');
     const [days, setDays] = useState(60);
+    const [auth, setAuth] = useState({ reference: '', evidence: '', expires_days: 30, allow_port_scan: true, allow_vuln_scan: false });
     const [tick, setTick] = useState(0);
     const running = !!d?.assessments.some((a) => a.status === 'in_progress');
 
@@ -195,6 +224,26 @@ function IntakeDetail({ id, orgs, isManager, canScan, onChanged, onRecheck }: { 
                         <button disabled={!org || note.trim().length < 5} onClick={() => void act('decision', { decision: 'confirm', org_id: org, note }, () => 'Confirmed and linked; in-scope values were added to the organisation\'s inventory')} className="text-[11px] font-bold text-white bg-green rounded-lg px-3 py-1 disabled:opacity-50">Confirm CNII</button>
                         <button disabled={note.trim().length < 5} onClick={() => void act('decision', { decision: 'reject', note }, () => 'Marked not CNII')} className="text-[11px] font-bold border border-border rounded-lg px-3 py-1 disabled:opacity-50">Not CNII</button>
                     </div>
+                </div>
+            )}
+
+            {s.status === 'confirmed' && (
+                <div className={box}>
+                    <p className="text-[10px] font-bold uppercase text-foreground-muted">Scan authorisation</p>
+                    {s.authorisation && !s.authorisation.revoked_at ? (
+                        <p>Authorised by {s.authorisation.approved_by} {timeAgo(s.authorisation.approved_at)} until {fmtWat(s.authorisation.expires_at)} (ref {s.authorisation.reference}): {s.authorisation.targets.join(', ')} · discovery{s.authorisation.activities.ports ? ', ports' : ''}{s.authorisation.activities.vuln ? ', vulnerability checks' : ''}.{s.authorisation.approved_addresses.length ? ` ${s.value} is pinned to ${s.authorisation.approved_addresses.join(', ')}: if its DNS changes it is not scanned until re-approved.` : ''}</p>
+                    ) : <p className="text-foreground-muted">{s.authorisation?.revoked_at ? `Revoked by ${s.authorisation.revoked_by} ${timeAgo(s.authorisation.revoked_at)}. ` : ''}Confirmed as CNII is not permission to scan: values are assessed only when an authorised scope entry covers them.</p>}
+                    {isManager && (
+                        <div className="flex flex-wrap gap-2 items-center">
+                            <input className={input} placeholder="Authorisation reference" value={auth.reference} onChange={(e) => setAuth({ ...auth, reference: e.target.value })} aria-label="Authorisation reference" />
+                            <input className={`${input} flex-1 min-w-[220px]`} placeholder="Evidence (letter, contract, owner's written consent)" value={auth.evidence} onChange={(e) => setAuth({ ...auth, evidence: e.target.value })} aria-label="Authorisation evidence" />
+                            <label className="flex items-center gap-1">days <input type="number" min={1} max={90} value={auth.expires_days} onChange={(e) => setAuth({ ...auth, expires_days: Math.min(90, Math.max(1, Number(e.target.value) || 1)) })} className={`${input} w-14`} aria-label="Days the authorisation lasts" /></label>
+                            <label className="flex items-center gap-1"><input type="checkbox" checked={auth.allow_port_scan} onChange={(e) => setAuth({ ...auth, allow_port_scan: e.target.checked })} /> ports</label>
+                            <label className="flex items-center gap-1"><input type="checkbox" checked={auth.allow_vuln_scan} onChange={(e) => setAuth({ ...auth, allow_vuln_scan: e.target.checked })} /> vulnerability checks</label>
+                            <button disabled={auth.reference.trim().length < 3 || auth.evidence.trim().length < 10} onClick={() => { if (window.confirm(`Authorise scanning of ${s.value}${s.kind === 'domain' ? ' (this name only, pinned to its current addresses) and its public addresses' : ''} for ${auth.expires_days} days?`)) void act('authorise', auth, (r) => `Authorised: ${((r.results as { target: string; outcome: string }[]) ?? []).map((x) => `${x.target} ${x.outcome.replace(/_/g, ' ')}`).join(' · ')}`); }} className="text-[11px] font-bold text-white bg-green rounded-lg px-3 py-1 disabled:opacity-50">Authorise scanning</button>
+                            {s.authorisation && !s.authorisation.revoked_at && <button onClick={() => { const reason = window.prompt('Why is the authorisation revoked?'); if (reason) void act('authorise/revoke', { reason }, (r) => `Revoked: ${((r.revoked as string[]) ?? []).join(', ') || 'nothing active'}`); }} className="text-[11px] font-bold border border-border rounded-lg px-3 py-1">Revoke</button>}
+                        </div>
+                    )}
                 </div>
             )}
 

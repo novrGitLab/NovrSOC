@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { isIP } from 'net';
 import { getSupabase } from './geoEnrichment';
 import { coveringScope, parseTarget, type Activity, type ScopeEntry } from '../lib/vmsScope';
+import { pinsSatisfied } from '../lib/dnsResolve';
 
 const str = (max: number) => z.string().trim().min(1).max(max);
 const Tech = z.object({ name: str(80), version: z.string().trim().max(60).optional().nullable() });
@@ -99,6 +100,8 @@ export async function ingestObservations(job: { id: string; org_id: string; kind
         if (!target) { out.rejected_invalid++; continue; }
         const scope = coveringScope(target, scopes, activity);
         if (!scope) { out.rejected_out_of_scope++; continue; }
+        // A CNII-pinned name seen at an address its approval did not cover (P18): not this asset.
+        if (o.type === 'host' && scope.kind === 'domain' && (scope.pinned_addresses ?? []).length && o.ips.length && !pinsSatisfied(o.ips, scope.pinned_addresses ?? []).ok) { out.rejected_out_of_scope++; continue; }
 
         const assetType = target.type === 'host' ? 'host' : 'ip';
         const { data: existing, error: readErr } = await supabase.from('vms_assets').select('*').eq('org_id', job.org_id).eq('asset_type', assetType).eq('value', target.value).maybeSingle();

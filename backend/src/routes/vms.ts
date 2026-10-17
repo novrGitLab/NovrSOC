@@ -30,6 +30,7 @@ import { assetGraph } from '../services/vmsGraph';
 import { isStaffRole } from '../lib/resolveOrg';
 import { validateScopeValue, parseTarget, coveringScope, normalizeExclusion, type ScopeEntry, type Activity } from '../lib/vmsScope';
 import { describe, RETRYABLE, type AssessmentRow } from '../services/vmsAssessments';
+import { resolveAddresses, pinsSatisfied } from '../lib/dnsResolve';
 
 const router = Router();
 const MAX_SCOPE_DAYS = 400;
@@ -228,6 +229,14 @@ export async function validateScan(org: string, input: z.infer<typeof NewScan>, 
         const t = parseTarget(raw);
         if (!t || !coveringScope(t, [entry], activity)) return { ok: false, status: 400, error: `Not in this scope: ${String(raw).slice(0, 80)}` };
         targets.push(t.value);
+    }
+    // A CNII authorisation of a domain is pinned to the addresses it resolved to when approved (P18):
+    // while the name resolves outside them it is not scanned — a DNS change needs a new approval.
+    const pins = entry.kind === 'domain' && activity !== 'passive' ? (entry.pinned_addresses ?? []) : [];
+    if (pins.length) for (const t of new Set(targets)) {
+        const r = await resolveAddresses(t);
+        const ok = pinsSatisfied(r.addresses, pins);
+        if (!ok.ok) return { ok: false, status: 409, error: `Not queued: ${t} is authorised by a CNII approval pinned to its approved addresses, and ${r.error ? `its DNS lookup failed (${r.error})` : ok.reason}. A manager must re-approve it.` };
     }
     const options = { ...(input.kind === 'ports' ? { ports: input.ports ?? 'top-1000' } : {}), ...extraOptions };
     return { ok: true, scope: entry, targets: [...new Set(targets)].sort(), options };

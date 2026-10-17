@@ -22,6 +22,14 @@
 //   POST /intake/:id/decision        cnii:manage  { decision: confirm|reject, org_id?, note }
 //   POST /intake/:id/assess          vms:scan     { targets? } Full Assessment of its in-scope values
 //   POST /intake/:id/schedule        vms:scope    { days ≤ 60 } Full Assessment every 48 h until the end date
+// P18:
+//   POST /intake { values }          bulk: comma/space/newline-separated, up to 25; a result per entry
+//   POST /intake/manual              { org_id, sector_id, ip, justification } — registered, unverified,
+//                                    authorises nothing (a candidate until a manager confirms it)
+//   POST /intake/:id/authorise       cnii:manage + vms:scope  { reference, evidence, expires_days ≤ 90,
+//                                    allow_port_scan, allow_vuln_scan, addresses? } — exact scope entries
+//                                    (origin cnii; a domain pinned to its approved addresses)
+//   POST /intake/:id/authorise/revoke  cnii:manage + vms:scope  { reason }
 // One organisation (the caller's, or X-Org-Id for staff):
 //   GET  /profile                    cnii:read    sector profile + history, scope, summary
 //   PUT  /profile                    cnii:manage  { sector_id, subfield?, designation, designation_reference?, notes? }
@@ -50,7 +58,7 @@ import { storeObservations, type Obs } from '../services/cniiPassive';
 import { ingestPassiveClaims } from '../services/vmsFindings';
 import { cleanAsHolder } from '../lib/spiderfoot';
 import rateLimit from 'express-rate-limit';
-import { parseIntake, submitIntake, decideIntake, assessIntake, scheduleIntake, intakeResults, isMissingP17, P17_MISSING, SCHEDULE_MAX_DAYS, type Submission } from '../services/cniiIntake';
+import { parseIntake, parseIntakeList, submitIntake, decideIntake, assessIntake, scheduleIntake, intakeResults, registerManual, authoriseIntake, revokeIntakeAuthorisation, isMissingP17, P17_MISSING, SCHEDULE_MAX_DAYS, MAX_BULK, MAX_AUTH_DAYS, type Submission } from '../services/cniiIntake';
 
 const router = Router();
 const OPEN = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'];
@@ -173,8 +181,10 @@ router.get('/sectors/:sector', requirePermission('cnii:sector'), async (req: Aut
         const [stats, orgs] = await Promise.all([orgStats(ids), ids.length ? db().from('organisations').select('slug, name').in('slug', ids) : Promise.resolve({ data: [] as { slug: string; name: string }[] })]);
         const names = new Map((orgs.data ?? []).map((o) => [o.slug, o.name]));
         // Confirmed intake submissions in this sector (P17); absent before that SQL.
-        const { data: watch, error: wErr } = await db().from('cnii_submissions').select('id, value, kind, org_id, subfield, basis, ips, updated_at').eq('status', 'confirmed').eq('sector_id', req.params.sector).order('updated_at', { ascending: false }).limit(500);
-        res.json({ sector: req.params.sector, organisations: (profs ?? []).map((p) => ({ profile: p, name: names.get(p.org_id) ?? p.org_id, stats: stats[p.org_id], gaps: gaps(stats[p.org_id]) })), watchlist: wErr ? null : watch ?? [] });
+        const { data: watch, error: wErr } = await db().from('cnii_submissions').select('id, value, kind, org_id, subfield, basis, ips, updated_at, authorisation').eq('status', 'confirmed').eq('sector_id', req.params.sector).order('updated_at', { ascending: false }).limit(500);
+        // Registered by hand for this sector but not verified (P18): listed apart, never as confirmed.
+        const { data: reg } = wErr ? { data: null } : await db().from('cnii_submissions').select('id, value, org_id, reason, updated_at').eq('status', 'candidate').eq('basis', 'manual_registration').eq('sector_id', req.params.sector).order('updated_at', { ascending: false }).limit(500);
+        res.json({ sector: req.params.sector, organisations: (profs ?? []).map((p) => ({ profile: p, name: names.get(p.org_id) ?? p.org_id, stats: stats[p.org_id], gaps: gaps(stats[p.org_id]) })), watchlist: wErr ? null : watch ?? [], registered: wErr ? null : reg ?? [] });
     } catch (e) { fail(res, e as { message?: string }); }
 });
 
@@ -418,6 +428,29 @@ async function loadSubmission(id: string): Promise<Submission | null> {
 }
 
 router.post('/intake', requirePermission('cnii:sector'), intakeLimiter, async (req: AuthRequest, res) => {
+    // Bulk (P18): each entry validated, deduplicated and processed on its own; one failure blocks nothing.
+    if (req.body?.values !== undefined) {
+        const { entries, too_many } = parseIntakeList(req.body.values);
+        if (!entries.length) { res.status(400).json({ error: 'Give one or more domains or IP addresses, separated by commas, spaces or new lines' }); return; }
+        const results: Record<string, unknown>[] = [];
+        for (const e of entries) {
+            if (e.outcome === 'invalid') { results.push({ input: e.input, outcome: 'invalid', error: 'Not a domain name or IP address (no URL, port, wildcard or range)' }); continue; }
+            if (e.outcome === 'duplicate') { results.push({ input: e.input, value: e.value, outcome: 'duplicate', error: 'Repeated in this submission' }); continue; }
+            try {
+                const r = await submitIntake(e.kind!, e.value!, actor(req));
+                logAudit({ user: actor(req), action: r.created ? 'CNII_INTAKE_SUBMITTED' : 'CNII_INTAKE_RECHECKED', resource: 'cnii_submission', resource_id: r.submission.id, org_id: r.submission.org_id ?? requestOrg(req), ip: req.ip ?? 'unknown', result: 'success',
+                    details: `bulk ${e.kind} ${e.value}: ${r.submission.status}${r.submission.org_id ? ` (${r.submission.org_id})` : ''}`.slice(0, 200) });
+                results.push({ input: e.input, value: e.value, outcome: r.submission.status, created: r.created, id: r.submission.id, reason: r.submission.reason });
+            } catch (err) {
+                if (isMissingP17(err as { code?: string; message?: string })) { res.status(503).json({ error: P17_MISSING }); return; }
+                console.error(`[cnii] bulk intake ${e.value}:`, (err as Error).message);
+                results.push({ input: e.input, value: e.value, outcome: 'failed', error: 'Could not be checked; try it again' });
+            }
+        }
+        const counts = results.reduce<Record<string, number>>((m, r) => ({ ...m, [String(r.outcome)]: (m[String(r.outcome)] ?? 0) + 1 }), {});
+        res.status(200).json({ results, counts, ...(too_many ? { note: `Only the first ${MAX_BULK} entries were processed` } : {}) });
+        return;
+    }
     const v = parseIntake(req.body?.value);
     if (!v) { res.status(400).json({ error: 'Give one domain name (e.g. portal.example.gov.ng) or one IP address — no URL, port, wildcard or range' }); return; }
     try {
@@ -460,6 +493,19 @@ router.get('/intake/:id', requirePermission('cnii:sector'), async (req: AuthRequ
         if (!s) { res.status(404).json({ error: 'Submission not found' }); return; }
         const [results, org] = await Promise.all([intakeResults(s), s.org_id ? db().from('organisations').select('slug, name').eq('slug', s.org_id).maybeSingle() : Promise.resolve({ data: null })]);
         res.json({ submission: s, organisation: org.data ?? null, ...results });
+    } catch (e) { intakeFail(res, e); }
+});
+
+const Manual = z.object({ org_id: z.string().trim().min(1).max(100), sector_id: z.string().trim().min(1).max(40), ip: z.string().trim().min(2).max(64), justification: z.string().trim().min(10).max(1000) }).strict();
+router.post('/intake/manual', requirePermission('cnii:sector'), intakeLimiter, async (req: AuthRequest, res) => {
+    const p = Manual.safeParse(req.body);
+    if (!p.success) { res.status(400).json({ error: 'Body must be { org_id, sector_id, ip, justification (10+ characters: the evidence for this registration) }' }); return; }
+    try {
+        const r = await registerManual(actor(req), p.data);
+        if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+        if (r.registered) logAudit({ user: actor(req), action: 'CNII_ASSET_REGISTERED', resource: 'cnii_submission', resource_id: r.submission.id, org_id: p.data.org_id, ip: req.ip ?? 'unknown', result: 'success', severity: 'warning',
+            details: `${p.data.ip} -> ${p.data.org_id}/${p.data.sector_id} (unverified): ${p.data.justification}`.slice(0, 200) });
+        res.status(r.registered ? 201 : 200).json({ submission: r.submission, registered: r.registered, note: r.note });
     } catch (e) { intakeFail(res, e); }
 });
 
@@ -506,6 +552,39 @@ router.post('/intake/:id/schedule', requirePermission('cnii:sector'), requirePer
         if (!r.schedules.length) { res.status(409).json({ error: 'No value of this submission is inside its organisation\'s active authorised scope' }); return; }
         logAudit({ user: actor(req), action: 'CNII_INTAKE_SCHEDULED', resource: 'cnii_submission', resource_id: s.id, org_id: s.org_id, ip: req.ip ?? 'unknown', result: r.schedules.some((x) => x.schedule_id) ? 'success' : 'failed',
             details: `every ${r.interval_hours} h until ${r.ends_at}: ${r.schedules.map((x) => `${x.target}=${x.error ? 'refused' : x.existing ? 'existing' : 'created'}`).join(' ')}`.slice(0, 200) });
+        res.json(r);
+    } catch (e) { intakeFail(res, e); }
+});
+
+const Authorise = z.object({
+    reference: z.string().trim().min(3).max(200), evidence: z.string().trim().min(10).max(1500), expires_days: z.number().int().min(1).max(MAX_AUTH_DAYS),
+    allow_port_scan: z.boolean(), allow_vuln_scan: z.boolean(), addresses: z.array(z.string().max(64)).max(16).optional(),
+}).strict();
+router.post('/intake/:id/authorise', requirePermission('cnii:sector'), requirePermission('cnii:manage'), requirePermission('vms:scope'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Submission not found' }); return; }
+    const p = Authorise.safeParse(req.body);
+    if (!p.success) { res.status(400).json({ error: `Body must be { reference, evidence (10+ characters), expires_days: 1..${MAX_AUTH_DAYS}, allow_port_scan, allow_vuln_scan, addresses? }` }); return; }
+    try {
+        const s = await loadSubmission(req.params.id);
+        if (!s) { res.status(404).json({ error: 'Submission not found' }); return; }
+        const r = await authoriseIntake(s, actor(req), p.data);
+        if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+        logAudit({ user: actor(req), action: 'CNII_SCAN_AUTHORISED', resource: 'cnii_submission', resource_id: s.id, org_id: s.org_id!, ip: req.ip ?? 'unknown', result: 'success', severity: 'warning',
+            details: `${r.results.map((x) => `${x.target}=${x.outcome}`).join(' ')}; ports=${p.data.allow_port_scan} vuln=${p.data.allow_vuln_scan} until ${r.authorisation.expires_at} ref=${p.data.reference}`.slice(0, 200) });
+        res.json(r);
+    } catch (e) { intakeFail(res, e); }
+});
+
+router.post('/intake/:id/authorise/revoke', requirePermission('cnii:sector'), requirePermission('cnii:manage'), requirePermission('vms:scope'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Submission not found' }); return; }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (reason.length < 5 || reason.length > 500) { res.status(400).json({ error: 'Body must be { reason (5+ characters) }' }); return; }
+    try {
+        const s = await loadSubmission(req.params.id);
+        if (!s) { res.status(404).json({ error: 'Submission not found' }); return; }
+        const r = await revokeIntakeAuthorisation(s, actor(req), reason);
+        if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+        logAudit({ user: actor(req), action: 'CNII_SCAN_AUTHORISATION_REVOKED', resource: 'cnii_submission', resource_id: s.id, org_id: s.org_id ?? requestOrg(req), ip: req.ip ?? 'unknown', result: 'success', severity: 'warning', details: `${r.revoked.join(', ') || 'nothing active'}: ${reason}`.slice(0, 200) });
         res.json(r);
     } catch (e) { intakeFail(res, e); }
 });
