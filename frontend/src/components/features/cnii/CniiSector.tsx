@@ -11,6 +11,7 @@ import { SECTOR_BY_ID } from '@/lib/cnii-sectors';
 import { cniiGet, apiSend, timeAgo, type CniiProfile, type OrgStats } from '@/lib/cnii-types';
 
 interface OrgEntry { profile: CniiProfile; name: string; stats: OrgStats; gaps: string[] }
+interface WatchItem { id: string; value: string; kind: string; org_id: string; subfield: string | null; basis: string; ips: string[]; updated_at: string }
 interface Briefing {
     period: string; headline: string; posture_summary: string;
     statements: { statement: string; basis: 'platform_record' | 'source_claim' | 'ai_assessment'; evidence_refs: string[] }[];
@@ -23,6 +24,7 @@ const BASIS: Record<string, string> = { platform_record: 'Platform record', sour
 export function CniiSector({ sectorId }: { sectorId: string }) {
     const meta = SECTOR_BY_ID[sectorId];
     const [orgs, setOrgs] = useState<OrgEntry[] | null>(null);
+    const [watch, setWatch] = useState<WatchItem[] | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [brief, setBrief] = useState<{ content: Briefing; model: string; created_at: string } | null>(null);
     const [briefing, setBriefing] = useState(false);
@@ -31,9 +33,10 @@ export function CniiSector({ sectorId }: { sectorId: string }) {
     useEffect(() => {
         if (!meta) return;
         let active = true;
-        void cniiGet<{ organisations: OrgEntry[] }>(`/sectors/${sectorId}`).then((r) => {
+        void cniiGet<{ organisations: OrgEntry[]; watchlist?: WatchItem[] | null }>(`/sectors/${sectorId}`).then((r) => {
             if (!active) return;
             setOrgs(r.ok ? r.data.organisations : null);
+            setWatch(r.ok ? r.data.watchlist ?? null : null);
             setError(r.ok ? null : r.error);
         });
         return () => { active = false; };
@@ -92,6 +95,13 @@ export function CniiSector({ sectorId }: { sectorId: string }) {
             )}
 
             {orgs && orgs.length === 0 && <p className="text-xs text-foreground-muted">No organisation is classified into this sector yet.</p>}
+            {watch && watch.length > 0 && (
+                <div className="bg-card border border-border rounded-xl p-4">
+                    <h2 className="text-sm font-bold text-foreground mb-1">Confirmed watch-list assets ({watch.length})</h2>
+                    <p className="text-[11px] text-foreground-muted mb-2">Submitted through intake and linked to an organisation in this sector by authorised scope or a manager&apos;s confirmation. Open one from the CNII overview for its assessments and findings.</p>
+                    {watch.map((w) => <p key={w.id} className="text-xs"><span className="font-mono font-bold">{w.value}</span> <span className="text-foreground-muted">· {w.org_id}{w.subfield ? ` / ${w.subfield}` : ''} · {w.ips.slice(0, 3).join(', ')}{w.ips.length > 3 ? ` +${w.ips.length - 3}` : ''} · {w.basis === 'authorised_scope' ? 'from authorised scope' : 'confirmed by a manager'} · {timeAgo(w.updated_at)}</span></p>)}
+                </div>
+            )}
             {orgs && orgs.length > 0 && (
                 <div className="bg-card border border-border rounded-xl p-4 overflow-x-auto">
                     <table className="w-full text-xs">

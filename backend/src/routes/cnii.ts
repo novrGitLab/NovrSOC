@@ -14,6 +14,14 @@
 //                                    sector, indicator matches, which organisation (if any) has it
 //                                    in authorised scope. Nothing is stored; the lookup is audited.
 //   GET  /legacy                     rows of the pre-P9 cnii_assets table and whether each was imported
+// Intake (P17, services/cniiIntake.ts; cnii:sector plus the permission named):
+//   POST /intake { value }           submit or re-check a domain or IP: resolve, gather evidence, link to a
+//                                    designated CNII organisation only from authorised scope; else a candidate
+//   GET  /intake?status              submissions with severity counts and the latest assessment status
+//   GET  /intake/:id                 one submission with its assessments, findings (with evidence) and schedules
+//   POST /intake/:id/decision        cnii:manage  { decision: confirm|reject, org_id?, note }
+//   POST /intake/:id/assess          vms:scan     { targets? } Full Assessment of its in-scope values
+//   POST /intake/:id/schedule        vms:scope    { days ≤ 60 } Full Assessment every 48 h until the end date
 // One organisation (the caller's, or X-Org-Id for staff):
 //   GET  /profile                    cnii:read    sector profile + history, scope, summary
 //   PUT  /profile                    cnii:manage  { sector_id, subfield?, designation, designation_reference?, notes? }
@@ -41,6 +49,8 @@ import { asHolder, ipNetworkInfo } from '../services/ripeStat';
 import { storeObservations, type Obs } from '../services/cniiPassive';
 import { ingestPassiveClaims } from '../services/vmsFindings';
 import { cleanAsHolder } from '../lib/spiderfoot';
+import rateLimit from 'express-rate-limit';
+import { parseIntake, submitIntake, decideIntake, assessIntake, scheduleIntake, intakeResults, isMissingP17, P17_MISSING, SCHEDULE_MAX_DAYS, type Submission } from '../services/cniiIntake';
 
 const router = Router();
 const OPEN = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'];
@@ -162,7 +172,9 @@ router.get('/sectors/:sector', requirePermission('cnii:sector'), async (req: Aut
         const ids = (profs ?? []).map((p) => p.org_id);
         const [stats, orgs] = await Promise.all([orgStats(ids), ids.length ? db().from('organisations').select('slug, name').in('slug', ids) : Promise.resolve({ data: [] as { slug: string; name: string }[] })]);
         const names = new Map((orgs.data ?? []).map((o) => [o.slug, o.name]));
-        res.json({ sector: req.params.sector, organisations: (profs ?? []).map((p) => ({ profile: p, name: names.get(p.org_id) ?? p.org_id, stats: stats[p.org_id], gaps: gaps(stats[p.org_id]) })) });
+        // Confirmed intake submissions in this sector (P17); absent before that SQL.
+        const { data: watch, error: wErr } = await db().from('cnii_submissions').select('id, value, kind, org_id, subfield, basis, ips, updated_at').eq('status', 'confirmed').eq('sector_id', req.params.sector).order('updated_at', { ascending: false }).limit(500);
+        res.json({ sector: req.params.sector, organisations: (profs ?? []).map((p) => ({ profile: p, name: names.get(p.org_id) ?? p.org_id, stats: stats[p.org_id], gaps: gaps(stats[p.org_id]) })), watchlist: wErr ? null : watch ?? [] });
     } catch (e) { fail(res, e as { message?: string }); }
 });
 
@@ -389,6 +401,113 @@ router.post('/legacy/:id/import', requirePermission('cnii:manage'), async (req: 
     await db().from('cnii_assets').update({ imported_org_id: org, imported_asset_id: assetId, imported_at: now, imported_by: actor(req) }).eq('id', row.id);
     logAudit({ user: actor(req), action: 'CNII_LEGACY_IMPORTED', resource: 'cnii_asset', resource_id: row.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', details: `${ip} -> asset ${assetId}; ${added} observation(s), ${f.new_findings} unconfirmed finding(s)` });
     res.json({ asset_id: assetId, observations_added: added, findings_new: f.new_findings, sector_mismatch: row.sector_id !== profile.sector_id ? { legacy: row.sector_id, organisation: profile.sector_id } : null });
+});
+
+// ── Intake (P17) ────────────────────────────────────────────────────────────────────────────
+const intakeLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: (req) => (req as AuthRequest).user?.email ?? 'anonymous', message: { error: 'At most 20 submissions a minute' } });
+const intakeFail = (res: Response, e: unknown) => {
+    const err = e as { message?: string; code?: string };
+    if (isMissingP17(err)) { res.status(503).json({ error: P17_MISSING }); return; }
+    console.error('[cnii] intake:', err?.message ?? e);
+    res.status(502).json({ error: 'The intake could not be completed; see the backend log' });
+};
+async function loadSubmission(id: string): Promise<Submission | null> {
+    const { data, error } = await db().from('cnii_submissions').select('*').eq('id', id).maybeSingle();
+    if (error) throw Object.assign(new Error(error.message), { code: error.code });
+    return (data as Submission | null) ?? null;
+}
+
+router.post('/intake', requirePermission('cnii:sector'), intakeLimiter, async (req: AuthRequest, res) => {
+    const v = parseIntake(req.body?.value);
+    if (!v) { res.status(400).json({ error: 'Give one domain name (e.g. portal.example.gov.ng) or one IP address — no URL, port, wildcard or range' }); return; }
+    try {
+        const r = await submitIntake(v.kind, v.value, actor(req));
+        logAudit({ user: actor(req), action: r.created ? 'CNII_INTAKE_SUBMITTED' : 'CNII_INTAKE_RECHECKED', resource: 'cnii_submission', resource_id: r.submission.id, org_id: r.submission.org_id ?? requestOrg(req), ip: req.ip ?? 'unknown', result: 'success',
+            details: `${v.kind} ${v.value}: ${r.submission.status}${r.submission.org_id ? ` (${r.submission.org_id})` : ''}; ${r.submission.ips.length} address(es)`.slice(0, 200) });
+        res.status(r.created ? 201 : 200).json({ submission: r.submission, created: r.created, link: r.link });
+    } catch (e) { intakeFail(res, e); }
+});
+
+router.get('/intake', requirePermission('cnii:sector'), async (req: AuthRequest, res) => {
+    let q = db().from('cnii_submissions').select('*').order('updated_at', { ascending: false }).limit(500);
+    if (typeof req.query.status === 'string' && ['confirmed', 'candidate', 'rejected'].includes(req.query.status)) q = q.eq('status', req.query.status);
+    const { data, error } = await q;
+    if (error) { intakeFail(res, error); return; }
+    const rows = (data ?? []) as Submission[];
+    // Per confirmed submission: open findings by severity on its values, and its latest assessment.
+    const orgs = [...new Set(rows.filter((r) => r.status === 'confirmed' && r.org_id).map((r) => r.org_id!))];
+    const values = [...new Set(rows.flatMap((r) => [r.value, ...(r.ips ?? [])]))];
+    const [fs, as] = orgs.length && values.length ? await Promise.all([
+        db().from('vms_findings').select('org_id, asset_value, scanner_severity').in('org_id', orgs).in('asset_value', values).in('status', OPEN).limit(20_000),
+        db().from('vms_assessments').select('org_id, target, requested_at').in('org_id', orgs).in('target', values).order('requested_at', { ascending: false }).limit(2000),
+    ]) : [{ data: [] as { org_id: string; asset_value: string; scanner_severity: string }[] }, { data: [] as { org_id: string; target: string; requested_at: string }[], error: null }];
+    res.json({
+        submissions: rows.map((r) => {
+            const vals = new Set([r.value, ...(r.ips ?? [])]);
+            const sev: Record<string, number> = {};
+            if (r.status === 'confirmed') for (const f of fs.data ?? []) if (f.org_id === r.org_id && vals.has(f.asset_value)) sev[f.scanner_severity] = (sev[f.scanner_severity] ?? 0) + 1;
+            const last = r.status === 'confirmed' ? (as.data ?? []).find((a) => a.org_id === r.org_id && vals.has(a.target)) : undefined;
+            return { ...r, open_by_severity: sev, last_assessment_at: last?.requested_at ?? null };
+        }),
+        assessments_available: !('error' in as && as.error),
+    });
+});
+
+router.get('/intake/:id', requirePermission('cnii:sector'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Submission not found' }); return; }
+    try {
+        const s = await loadSubmission(req.params.id);
+        if (!s) { res.status(404).json({ error: 'Submission not found' }); return; }
+        const [results, org] = await Promise.all([intakeResults(s), s.org_id ? db().from('organisations').select('slug, name').eq('slug', s.org_id).maybeSingle() : Promise.resolve({ data: null })]);
+        res.json({ submission: s, organisation: org.data ?? null, ...results });
+    } catch (e) { intakeFail(res, e); }
+});
+
+const Decision = z.object({ decision: z.enum(['confirm', 'reject']), org_id: z.string().trim().min(1).max(100).optional(), note: z.string().trim().min(5).max(1000) }).strict();
+router.post('/intake/:id/decision', requirePermission('cnii:sector'), requirePermission('cnii:manage'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Submission not found' }); return; }
+    const p = Decision.safeParse(req.body);
+    if (!p.success) { res.status(400).json({ error: 'Body must be { decision: confirm|reject, org_id? (for confirm), note: the evidence or reason (5+ characters) }' }); return; }
+    try {
+        const r = await decideIntake(req.params.id, actor(req), p.data);
+        if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+        logAudit({ user: actor(req), action: p.data.decision === 'confirm' ? 'CNII_INTAKE_CONFIRMED' : 'CNII_INTAKE_REJECTED', resource: 'cnii_submission', resource_id: req.params.id, org_id: r.submission.org_id ?? requestOrg(req), ip: req.ip ?? 'unknown', result: 'success', severity: 'warning',
+            details: `${r.submission.value}${p.data.org_id ? ` -> ${p.data.org_id}` : ''}: ${p.data.note}`.slice(0, 200) });
+        res.json({ submission: r.submission, link: r.link });
+    } catch (e) { intakeFail(res, e); }
+});
+
+const Assess = z.object({ targets: z.array(z.string().max(253)).max(10).optional() }).strict();
+router.post('/intake/:id/assess', requirePermission('cnii:sector'), requirePermission('vms:scan'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Submission not found' }); return; }
+    const p = Assess.safeParse(req.body ?? {});
+    if (!p.success) { res.status(400).json({ error: 'Body may hold targets: [up to 10 of its values]' }); return; }
+    try {
+        const s = await loadSubmission(req.params.id);
+        if (!s) { res.status(404).json({ error: 'Submission not found' }); return; }
+        const r = await assessIntake(s, actor(req), req.ip ?? 'unknown', p.data.targets?.map((t) => t.trim().toLowerCase()));
+        logAudit({ user: actor(req), action: 'CNII_INTAKE_ASSESSMENT', resource: 'cnii_submission', resource_id: s.id, org_id: s.org_id ?? requestOrg(req), ip: req.ip ?? 'unknown', result: r.results.some((x) => x.ok) ? 'success' : 'failed',
+            details: (r.not_assessable ?? r.results.map((x) => `${x.target}=${x.ok ? x.status : 'refused'}`).join(' ')).slice(0, 200) });
+        if (r.not_assessable) { res.status(409).json({ error: r.not_assessable, results: r.results }); return; }
+        res.json(r);
+    } catch (e) { intakeFail(res, e); }
+});
+
+const Schedule = z.object({ days: z.number().int().min(1).max(SCHEDULE_MAX_DAYS) }).strict();
+router.post('/intake/:id/schedule', requirePermission('cnii:sector'), requirePermission('vms:scope'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Submission not found' }); return; }
+    const p = Schedule.safeParse(req.body);
+    if (!p.success) { res.status(400).json({ error: `Body must be { days: 1..${SCHEDULE_MAX_DAYS} }` }); return; }
+    try {
+        const s = await loadSubmission(req.params.id);
+        if (!s) { res.status(404).json({ error: 'Submission not found' }); return; }
+        if (s.status !== 'confirmed' || !s.org_id) { res.status(409).json({ error: 'Only a confirmed submission can be scheduled' }); return; }
+        const r = await scheduleIntake(s, actor(req), p.data.days);
+        if (!r.schedules.length) { res.status(409).json({ error: 'No value of this submission is inside its organisation\'s active authorised scope' }); return; }
+        logAudit({ user: actor(req), action: 'CNII_INTAKE_SCHEDULED', resource: 'cnii_submission', resource_id: s.id, org_id: s.org_id, ip: req.ip ?? 'unknown', result: r.schedules.some((x) => x.schedule_id) ? 'success' : 'failed',
+            details: `every ${r.interval_hours} h until ${r.ends_at}: ${r.schedules.map((x) => `${x.target}=${x.error ? 'refused' : x.existing ? 'existing' : 'created'}`).join(' ')}`.slice(0, 200) });
+        res.json(r);
+    } catch (e) { intakeFail(res, e); }
 });
 
 export default router;
