@@ -91,7 +91,7 @@ export async function checkOpenPhish(url: string): Promise<PhishCheckResult> {
     return { is_phishing: isPhishing, source: 'openphish' };
 }
 
-// Runs both in parallel — used by PHISHID's classify route alongside the Claude/heuristic
+// Runs both in parallel — used by PHISHID's classify route alongside the AI/heuristic
 // verdict, not as a replacement for it.
 export async function checkPhishSources(url: string): Promise<{ is_phishing: boolean; hits: string[]; details: PhishCheckResult[] }> {
     const [pt, op] = await Promise.allSettled([checkPhishTank(url), checkOpenPhish(url)]);

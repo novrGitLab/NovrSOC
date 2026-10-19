@@ -4,7 +4,7 @@
 // planner and queue, results per asset, sector watch list, AI optional, and the 48 h / 60-day
 // schedule. Fake PostgREST; DNS and RIPE Stat injected; no network and no scan.
 process.env.JWT_SECRET = 'cnii-intake-test-secret';
-for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'ANTHROPIC_API_KEY', 'SPIDERFOOT_URL', 'OPENCTI_URL', 'OPENCTI_TOKEN']) delete process.env[k];
+for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'NVIDIA_API_KEY', 'SPIDERFOOT_URL', 'OPENCTI_URL', 'OPENCTI_TOKEN']) delete process.env[k];
 
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -229,7 +229,7 @@ test('results: findings of the scanned asset and its assessment, from stored rec
 });
 
 test('AI is optional: the workflow runs without credentials; the AI purpose only suggests', async () => {
-    assert.equal(process.env.ANTHROPIC_API_KEY, undefined);
+    assert.equal(process.env.NVIDIA_API_KEY, undefined);
     const s = (await submit('shared.cdn.test')).data.submission as Row;
     assert.equal(s.status, 'candidate');
     const p = aiPurpose('cnii_intake_classification')!;

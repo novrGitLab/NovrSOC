@@ -1,4 +1,4 @@
-// /api/ai — Claude-backed analysis for SecOps, VMS and the Threat Information System (phase P3).
+// /api/ai — AI-backed analysis (NVIDIA, services/nvidia.ts) for SecOps, VMS and the Threat Information System (phase P3).
 // Mounted behind requireAuth. Each purpose (services/aiPurposes.ts) carries its own permission and
 // only ever reads the caller's organisation.
 //

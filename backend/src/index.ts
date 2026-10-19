@@ -198,7 +198,7 @@ app.use(helmet({
             scriptSrc: ["'self'"],
             styleSrc: ["'self'"],
             imgSrc: ["'self'", 'data:', 'https:'],
-            connectSrc: ["'self'", 'https://api.anthropic.com', 'https://*.supabase.co'],
+            connectSrc: ["'self'", 'https://*.supabase.co'],
             frameSrc: ["'none'"],
             objectSrc: ["'none'"],
         },
@@ -341,7 +341,7 @@ app.use('/api/admin/push-status', requireAuth, requireRole('super_admin'), pushS
 app.use('/api/admin/users', requireAuth, requireRole('super_admin'), usersRouter);
 // Consequential response actions wait here for a manager's approval — services/responseApprovals.ts.
 app.use('/api/response-approvals', requireAuth, responseApprovalsRouter);
-// Claude-backed analysis (services/ai.ts). Advice only: never changes records or runs actions.
+// AI analysis (services/ai.ts, NVIDIA via services/nvidia.ts). Advice only: never changes records or runs actions.
 app.use('/api/ai', requireAuth, aiRouter);
 // Vulnerability Management (routes/vms.ts) — attack surface, scope, scans.
 app.use('/api/vms', requireAuth, vmsRouter);

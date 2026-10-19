@@ -3,7 +3,7 @@
 // references the model invents are removed and reported; the output is stored as advice and
 // changes nothing. A fake model client; no network.
 process.env.JWT_SECRET = 'ai-cnii-test-secret';
-for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'ANTHROPIC_API_KEY', 'AI_MODEL', 'SPIDERFOOT_URL', 'OPENCTI_URL', 'OPENCTI_TOKEN', 'MISP_URL', 'MISP_API_KEY']) delete process.env[k];
+for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'NVIDIA_API_KEY', 'AI_MODEL', 'SPIDERFOOT_URL', 'OPENCTI_URL', 'OPENCTI_TOKEN', 'MISP_URL', 'MISP_API_KEY']) delete process.env[k];
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,21 +29,20 @@ async function gen(bearer: string, subject: string) {
 const calls: { messages: { content: string }[] }[] = [];
 let findingRef = '';
 const fake: AiClient = {
-    beta: { messages: { parse: (async (params: { messages: { content: string }[] }) => {
+    chat: { completions: { create: (async (params: { messages: { content: string }[] }) => {
         calls.push(params);
         return {
-            stop_reason: 'end_turn', model: 'claude-opus-5-5', usage: { input_tokens: 900, output_tokens: 200 },
-            parsed_output: {
+            model: 'nvidia/nemotron-3-super-120b-a12b', usage: { prompt_tokens: 900, completion_tokens: 200 },
+            choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify({
                 period: '7d', sector: 'ict', headline: 'One confirmed internet-facing issue; one unconfirmed claim',
                 posture_summary: 's',
                 statements: [{ statement: 'A KEV CVE was confirmed on portal.a.test', basis: 'platform_record', evidence_refs: [findingRef, 'finding:invented-123'] }],
                 emerging_risks: [{ risk: 'r', confirmed: true, evidence_refs: [findingRef] }],
                 organisation_actions: [{ org_id: 'org-a', action: 'Patch PAN-OS', priority: 'high', requires_approval: true, evidence_refs: [findingRef] }],
                 data_gaps: ['org-b has no active scope'], confidence: 'medium',
-            },
+            }) } }],
         };
     }) as never } },
-    models: { retrieve: async (id: string) => ({ id }) },
 };
 
 before(async () => {
@@ -94,7 +93,7 @@ test('sector briefing: only the sector\'s records, confirmed vs unconfirmed mark
     const findingsBefore = JSON.stringify(db.tables.vms_findings);
     const r = await gen(tok('analyst'), 'ict:7d');
     assert.equal(r.status, 200);
-    const content = calls.at(-1)!.messages[0].content;
+    const content = calls.at(-1)!.messages[1].content;
     assert.ok(content.includes('portal.a.test') && content.includes('mail.a.test'));
     assert.ok(!content.includes('scada.power.test') && !content.includes('org-power'), 'another sector leaked into the prompt');
     assert.match(content, /"evidence_class":"version_match"[^}]*"confirmed":false/);

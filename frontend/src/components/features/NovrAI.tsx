@@ -154,10 +154,9 @@ export function NovrAI() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
-    // Which model is actually answering. The header used to hardcode "Claude CTI Engine" even
-    // when ANTHROPIC_API_KEY was unset and every reply was really coming from Gemini. Backed by
-    // GET /api/novr-ai/status, so it flips to Claude on its own the moment that key is set —
-    // no code change needed (routes/novr-ai.ts tries Claude first and falls back to Gemini).
+    // Which model is actually answering, so the header never claims a provider that isn't in use.
+    // Backed by GET /api/novr-ai/status, so it shows NVIDIA on its own once NVIDIA_API_KEY is set —
+    // no code change needed (routes/novr-ai.ts tries NVIDIA first and falls back to Gemini).
     const [aiStatus, setAiStatus] = useState<{ provider: string; model: string } | null>(null);
     const bottomRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -299,17 +298,17 @@ export function NovrAI() {
                                     <span
                                         title={aiStatus.provider === 'none' ? 'No AI provider key configured' : `Model: ${aiStatus.model}`}
                                         className={`flex items-center gap-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded border ${
-                                            aiStatus.provider === 'claude' ? 'bg-purple/10 text-purple border-purple/30'
+                                            aiStatus.provider === 'nvidia' ? 'bg-green/10 text-green border-green/30'
                                                 : aiStatus.provider === 'gemini' ? 'bg-blue/10 text-blue border-blue/30'
                                                 : 'bg-card-muted text-foreground-muted border-border'
                                         }`}
                                     >
                                         <span className={`w-1.5 h-1.5 rounded-full ${
-                                            aiStatus.provider === 'claude' ? 'bg-purple'
+                                            aiStatus.provider === 'nvidia' ? 'bg-green'
                                                 : aiStatus.provider === 'gemini' ? 'bg-blue'
                                                 : 'bg-foreground-muted'
                                         }`} />
-                                        {aiStatus.provider === 'claude' ? 'Claude AI'
+                                        {aiStatus.provider === 'nvidia' ? 'NVIDIA AI'
                                             : aiStatus.provider === 'gemini' ? 'Gemini AI'
                                             : 'AI Offline'}
                                     </span>
@@ -340,7 +339,7 @@ export function NovrAI() {
                             </div>
                             <h3 className="text-base font-bold text-foreground">How can NovrAI assist your SOC today?</h3>
                             <p className="text-xs text-foreground-muted mt-1 mb-6 max-w-md">
-                                Query real-time telemetry, analyze MITRE patterns, evaluate Nigerian ASN threats, or assess compliance posture using Claude-powered intelligence.
+                                Query real-time telemetry, analyze MITRE patterns, evaluate Nigerian ASN threats, or assess compliance posture using AI-powered intelligence.
                             </p>
 
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full">
@@ -412,7 +411,7 @@ export function NovrAI() {
                             <div className="bg-card border border-border rounded-xl px-4 py-3 shadow-xs">
                                 <div className="flex items-center gap-2 text-xs text-foreground-muted font-medium">
                                     <Loader2 size={13} className="animate-spin text-orange" />
-                                    Analyzing security telemetry with Claude...
+                                    Analyzing security telemetry...
                                 </div>
                             </div>
                         </div>

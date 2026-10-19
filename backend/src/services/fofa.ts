@@ -2,7 +2,7 @@
 //
 // Dormant by design: FOFA_API_KEY and FOFA_EMAIL are not set in this environment, so every
 // export below reports "not configured" and performs no network call. It activates with no code
-// change once both are set, the same way ANTHROPIC_API_KEY activates Claude in NovrAI.
+// change once both are set, the same way NVIDIA_API_KEY activates NVIDIA in NovrAI.
 //
 // Not verified against a live response — there are no credentials here to verify with — so this
 // is written to FOFA's documented v1 contract and degrades to null/[] on any shape it doesn't

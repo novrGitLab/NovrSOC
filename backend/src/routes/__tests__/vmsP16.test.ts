@@ -5,7 +5,7 @@
 // enrichment (bounded, isolated, never storing a failed lookup as "none").
 // Fake PostgREST and injected fetch; nothing external is contacted and nothing is scanned.
 process.env.JWT_SECRET = 'vms-p16-test-secret';
-for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'VMS_WORKER_TOKEN', 'ANTHROPIC_API_KEY', 'WAZUH_HOST', 'WAZUH_INDEXER_HOST', 'WAZUH_INDEXER_PASSWORD', 'WAZUH_INDEXER_PASS']) delete process.env[k];
+for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'VMS_WORKER_TOKEN', 'NVIDIA_API_KEY', 'WAZUH_HOST', 'WAZUH_INDEXER_HOST', 'WAZUH_INDEXER_PASSWORD', 'WAZUH_INDEXER_PASS']) delete process.env[k];
 
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';

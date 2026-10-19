@@ -2,7 +2,7 @@
 // with the period before, counted from stored records — alerts, cases, response approvals,
 // vulnerability management and threat-intelligence matches — plus the platform's own health
 // checks, so that gaps in the data are stated next to the numbers. The same facts are shown to
-// people (GET /api/insights/weekly) and given to Claude (purpose weekly_insights); Claude adds
+// people (GET /api/insights/weekly) and given to the AI model (purpose weekly_insights); the model adds
 // interpretation, never numbers of its own.
 
 import { getSupabase } from './geoEnrichment';

@@ -56,11 +56,13 @@ on 2026-09-02, not assumed from code alone — see each item for how it was chec
    the authenticated token rather than trusting a client-supplied value; `wazuh`,
    `incidents`, `threats`, and `org-cti` are not yet scoped (blocked on #5 above).
 
-7. NovrAI requires `ANTHROPIC_API_KEY` in the Railway environment — as of this
-   deploy it's still the placeholder value from `.env`
-   (`[GET FROM console.anthropic.com — replace this]`), so `POST /api/novr-ai`
-   returns `503 {"configured": false}` until a real key is set there. This is the
-   intended graceful-degradation behavior, not a crash.
+7. AI (NovrAI chat and every AI panel) runs on NVIDIA's hosted API
+   (`https://integrate.api.nvidia.com/v1`, model `nvidia/nemotron-3-super-120b-a12b`
+   unless `AI_MODEL` overrides it) and needs `NVIDIA_API_KEY` in the Railway
+   environment. Without it, `POST /api/novr-ai` falls back to Gemini when
+   `GEMINI_API_KEY` is set and otherwise returns `503 {"configured": false}`, and AI
+   panels say "unavailable". This is the intended graceful-degradation behavior, not a
+   crash. `ANTHROPIC_API_KEY` is no longer read and can be removed.
 
 8. Nigerian Threat Feed (`/admin/threat/nigeria`) shows explicitly-labeled mock
    NCC-CSIRT/NGCERT advisory data — no live scraper exists yet. (Separately, the

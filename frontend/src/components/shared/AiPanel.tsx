@@ -1,6 +1,6 @@
 'use client';
 
-// AI panel (phase P3) — asks the backend for a Claude analysis of one record
+// AI panel (phase P3) — asks the backend for an AI analysis of one record
 // (POST /api/ai/generate) and shows the latest one (GET /api/ai/artifacts). The output is
 // labelled as an AI assessment, shows the records it cites, flags any citation the backend had to
 // remove, and takes analyst feedback. It never changes the record. When AI is unavailable it

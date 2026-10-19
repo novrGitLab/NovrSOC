@@ -6,7 +6,7 @@ import { apiUrl, apiFetch } from '@/lib/api';
 
 // Everything on this page is a real check. GET /api/platform/health (routes/platform.ts) runs
 // four live probes per request — Wazuh Manager, Database (Supabase, which also holds cases),
-// Claude AI and MISP — and returns the integration key/config state alongside them.
+// NVIDIA AI and MISP — and returns the integration key/config state alongside them.
 //
 // This page used to pad that out with a hardcoded service list carrying invented uptime
 // percentages (99.98%, 99.91%…), a twelve-row API table of made-up latencies, a synthetic sine

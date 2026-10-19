@@ -2,7 +2,7 @@
 // rules, limitations from unhealthy pipelines, the route's permission, and that the AI context is
 // exactly the counted facts (every record cited by ref). Fake PostgREST, no network, no model call.
 process.env.JWT_SECRET = 'insights-test-secret';
-for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'ANTHROPIC_API_KEY']) delete process.env[k];
+for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'NVIDIA_API_KEY']) delete process.env[k];
 
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,6 +1,6 @@
 # Deploying P9: CNII Watch on VMS and the Threat Information System
 
-P9 rebuilds CNII Watch on top of the VMS scope, inventory and findings and the Threat Information System. It adds passive collection, evidence classes, OpenCTI and MISP feeds, and a Claude sector briefing.
+P9 rebuilds CNII Watch on top of the VMS scope, inventory and findings and the Threat Information System. It adds passive collection, evidence classes, OpenCTI and MISP feeds, and an AI sector briefing.
 
 **Status:**
 - Nothing here has been deployed.
@@ -67,7 +67,7 @@ Names only. Everything has a safe default.
 | `MISP_URL`, `MISP_API_KEY`, `MISP_CA_CERT` | The `misp` indicator feed | feed shows "not configured" |
 | `MISP_NIGERIA_EVENT_ID` | The event NovrSOC's collector writes to; the feed skips it | `1` |
 | `TI_ENABLED` | All threat feeds and correlation | on |
-| `ANTHROPIC_API_KEY`, `AI_MODEL`, `AI_FALLBACK_MODEL` | Sector briefing and the other AI purposes | AI panels say "unavailable" |
+| `NVIDIA_API_KEY`, `AI_MODEL`, `AI_FALLBACK_MODEL` | Sector briefing and the other AI purposes | AI panels say "unavailable" |
 
 No Wazuh variable is needed by CNII.
 

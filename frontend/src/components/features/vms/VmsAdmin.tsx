@@ -104,7 +104,7 @@ export function VmsAdmin() {
                                 )}
                             </div>
                             <p>CVE intelligence: {s.cve_intel.tracked} CVEs · KEV {fmtWat(s.cve_intel.kev_checked_at)} · EPSS {fmtWat(s.cve_intel.epss_fetched_at)} · NVD {fmtWat(s.cve_intel.nvd_fetched_at)} · OSV {!s.cve_intel.osv ? 'unknown' : s.cve_intel.osv.available ? fmtWat(s.cve_intel.osv.fetched_at ?? null) : 'not set up'}</p>
-                            <p>Claude AI: {s.ai.configured ? `configured (${s.ai.model})` : 'not configured — deterministic rules and templates only'}</p>
+                            <p>AI (NVIDIA): {s.ai.configured ? `configured (${s.ai.model})` : 'not configured — deterministic rules and templates only'}</p>
                             <p>Raw evidence: {s.evidence.available ? `${s.evidence.items} item(s), kept ${s.evidence.retention_days} days; next expiry ${fmtWat(s.evidence.next_expiry ?? null)}` : 'not set up'}</p>
                             <p>Scheduler: last scan-schedule run {fmtWat(s.scheduler.last_run_at)}; last policy run {fmtWat(s.scheduler.policies?.at ?? null)}</p>
                         </div>

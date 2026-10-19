@@ -13,7 +13,7 @@ Branch `feat/cnii-intake`. **Not deployed.** It needs `backend/sql/2026-10-23_p1
 
    Without it, intake answers 503 "CNII intake is not set up yet"; the rest of CNII Watch is unchanged.
 
-2. **No new environment variables.** AI help uses the existing `ANTHROPIC_API_KEY` on Railway, with `AI_MODEL` optional.
+2. **No new environment variables.** AI help uses the platform-wide `NVIDIA_API_KEY` on Railway, with `AI_MODEL` optional.
    - **Without the key,** intake, classification, confirmation, assessment and scheduling all work; the AI panel shows "unavailable".
 
 ## Workflow

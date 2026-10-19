@@ -4,7 +4,7 @@
 // and the scheduler — including DNS drift and revocation. Fake PostgREST; DNS and RIPE Stat injected;
 // no network and no scan.
 process.env.JWT_SECRET = 'cnii-auth-test-secret';
-for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'ANTHROPIC_API_KEY', 'SPIDERFOOT_URL', 'OPENCTI_URL', 'OPENCTI_TOKEN', 'VMS_WORKER_TOKEN']) delete process.env[k];
+for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'NVIDIA_API_KEY', 'SPIDERFOOT_URL', 'OPENCTI_URL', 'OPENCTI_TOKEN', 'VMS_WORKER_TOKEN']) delete process.env[k];
 
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';

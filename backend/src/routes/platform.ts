@@ -5,6 +5,7 @@ import { pipelineChecks, type PipelineCheck } from '../services/pipelineHealth';
 import { getMISPStats, isMISPConfigured, checkMISPBrowseRedirect } from '../services/misp';
 import { isConfigured as leakixConfigured } from '../services/leakix';
 import { isConfigured as fofaConfigured } from '../services/fofa';
+import { probeNvidia, nvidiaConfigured, AI_MODEL } from '../services/nvidia';
 
 const router = Router();
 
@@ -42,22 +43,11 @@ async function checkDatabase(): Promise<ServiceCheck> {
     }
 }
 
-async function checkClaudeAI(): Promise<ServiceCheck> {
-    const start = Date.now();
-    const key = process.env.ANTHROPIC_API_KEY;
-    if (!key || key === 'your-key-here') return { name: 'Claude AI', status: 'down', latency_ms: 0 };
-    try {
-        // anthropic-version is required — omitting it doesn't degrade gracefully, the API
-        // 401s the same way an actually-invalid key does, which would make this check
-        // indistinguishable from "no key configured" (verified live while building this).
-        const res = await fetch('https://api.anthropic.com/v1/models', {
-            headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-            signal: AbortSignal.timeout(4000),
-        });
-        return { name: 'Claude AI', status: res.ok ? 'up' : 'degraded', latency_ms: Date.now() - start };
-    } catch {
-        return { name: 'Claude AI', status: 'down', latency_ms: Date.now() - start };
-    }
+// Uses the shared NVIDIA probe: it proves the key is accepted without generating anything.
+// (NVIDIA's /v1/models is public and answers 200 for any key, so it can't be the check.)
+async function checkNvidiaAI(): Promise<ServiceCheck> {
+    const p = await probeNvidia(4000);
+    return { name: 'NVIDIA AI', status: p.status, latency_ms: p.latency_ms };
 }
 
 // MISP reports three distinguishable states, so this can say WHY it's not usable rather than a
@@ -135,20 +125,20 @@ function integrationConfig() {
             configured: isMISPConfigured(),
             detail: isMISPConfigured() ? 'MISP_URL and MISP_API_KEY set' : 'MISP_URL/MISP_API_KEY not set',
         },
-        anthropic: {
-            configured: !!process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY !== 'your-key-here',
-            detail: process.env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY set — NovrAI uses Claude' : 'ANTHROPIC_API_KEY not set — NovrAI falls back to Gemini',
+        nvidia: {
+            configured: nvidiaConfigured(),
+            detail: nvidiaConfigured() ? `NVIDIA_API_KEY set — AI features use ${AI_MODEL()}` : 'NVIDIA_API_KEY not set — NovrAI falls back to Gemini; AI panels say "unavailable"',
         },
     };
 }
 
-// GET /api/platform/health — real checks for Wazuh Manager, Database (Supabase), Claude AI,
+// GET /api/platform/health — real checks for Wazuh Manager, Database (Supabase), NVIDIA AI,
 // and MISP, plus a per-integration credential summary. Every other service on the
 // Platform Health page stays mock until it has its own real check built — see
 // frontend/src/components/features/PlatformHealth.tsx.
 router.get('/health', async (_req, res) => {
     const [results, pipelines] = await Promise.all([
-        Promise.all([checkWazuh(), checkDatabase(), checkClaudeAI(), checkMISP()]),
+        Promise.all([checkWazuh(), checkDatabase(), checkNvidiaAI(), checkMISP()]),
         pipelineChecks().catch((err): PipelineCheck[] => [{ name: 'Pipelines', status: 'down', detail: err instanceof Error ? err.message : 'check failed' }]),
     ]);
 

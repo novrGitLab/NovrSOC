@@ -4,7 +4,7 @@
 // planning as manual), the admin status (no secrets), coverage metrics and worker tool versions.
 // Fake PostgREST; nothing is scanned.
 process.env.JWT_SECRET = 'vms-platform-test-secret';
-for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'VMS_WORKER_TOKEN', 'ANTHROPIC_API_KEY']) delete process.env[k];
+for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'VMS_WORKER_TOKEN', 'NVIDIA_API_KEY']) delete process.env[k];
 
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -162,17 +162,17 @@ test('policy runs: same planning as manual, private endpoint not attempted, cool
 });
 
 test('admin status: workers with tool versions, integrations as configured/not, never a secret', async () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-secret-value';
+    process.env.NVIDIA_API_KEY = 'nvapi-test-secret-value';
     try {
         const s = (await http('GET', '/api/vms/admin/status', MGR)).data;
         const w = ((s.workers as Row).list as Row[])[0];
         assert.deepEqual([w.worker_id, (w.tool_versions as Row).nmap, (w.features as string[])[0]], ['vps3-demo-worker', '7.94SVN', 'exclusions']);
         assert.equal((s.ai as Row).configured, true);
-        assert.ok(!JSON.stringify(s).includes('sk-ant-test-secret-value'));
+        assert.ok(!JSON.stringify(s).includes('nvapi-test-secret-value'));
         assert.ok(!JSON.stringify(s).includes(WT));
         assert.equal((s.scopes as Row).active, 2);
         assert.equal((s.policies as Row).available, true);
-    } finally { delete process.env.ANTHROPIC_API_KEY; }
+    } finally { delete process.env.NVIDIA_API_KEY; }
 });
 
 test('overview coverage counts Wazuh and external assets separately and never counts unrun checks as assessed', async () => {

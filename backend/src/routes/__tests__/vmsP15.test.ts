@@ -5,7 +5,7 @@
 // integration check reports what the installation answers (or why it cannot), never a secret.
 // Fake PostgREST and injected Wazuh replies; nothing is scanned and nothing external is contacted.
 process.env.JWT_SECRET = 'vms-p15-test-secret';
-for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'VMS_WORKER_TOKEN', 'ANTHROPIC_API_KEY', 'WAZUH_HOST', 'WAZUH_INDEXER_HOST']) delete process.env[k];
+for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'VMS_WORKER_TOKEN', 'NVIDIA_API_KEY', 'WAZUH_HOST', 'WAZUH_INDEXER_HOST']) delete process.env[k];
 
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';

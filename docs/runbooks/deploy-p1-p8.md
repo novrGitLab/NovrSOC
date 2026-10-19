@@ -50,8 +50,8 @@ safe default.
 | `JWT_SECRET` | Signs sessions. *Required.* | sign-in fails |
 | `FRONTEND_URL` | Base URL for one-time password links (`https://novr-soc.vercel.app`). *Required for invites/resets.* | links cannot be built (503) |
 | `DEV_ADMIN_LOGIN_ENABLED` | Break-glass shared admin login. Set it to `false` once staff have their own passwords. | on (if `DEV_ADMIN_EMAIL`/`DEV_ADMIN_PASSWORD` are set) |
-| `ANTHROPIC_API_KEY` | Claude, for summaries, reports, plans, assessments and insights. *Required for AI.* | AI panels say "unavailable" |
-| `AI_MODEL` / `AI_FALLBACK_MODEL` / `AI_TIMEOUT_MS` | Model choice and timeout | `claude-opus-5-5` / `claude-opus-4-8` / 120000 |
+| `NVIDIA_API_KEY` | NVIDIA API Catalog key (`nvapi-…`, from build.nvidia.com) for summaries, reports, plans, assessments, insights and NovrAI chat. *Required for AI.* Server-side only. | AI panels say "unavailable"; NovrAI chat falls back to Gemini if `GEMINI_API_KEY` is set |
+| `AI_MODEL` / `AI_FALLBACK_MODEL` / `AI_TIMEOUT_MS` | NVIDIA model id, optional model to retry a refusal on, and timeout | `nvidia/nemotron-3-super-120b-a12b` / none / 120000 |
 | `RESPONSE_ALLOW_SELF_APPROVAL` | Lets someone approve their own block or isolate request | `false` (a second person must approve) |
 | `AUTO_CASE_ENABLED` (+ `AUTO_CASE_MIN_LEVEL`, `AUTO_CASE_GROUP_HOURS`, `AUTO_CASE_LOOKBACK_HOURS`, `AUTO_CASE_MAX_NEW_PER_RUN`) | Opens cases from stored alerts automatically | off |
 | `ALERT_STALE_MINUTES` | When alert ingestion counts as stale on Platform Health | 60 |

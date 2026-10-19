@@ -1,16 +1,13 @@
 import { Router, Request, Response } from 'express';
-import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { search } from '../lib/wazuh-indexer';
 import { SEVERITY_MIN_LEVEL } from '../lib/severity';
+import { AI_MODEL, AI_TIMEOUT_MS, nvidiaConfigured, getNvidiaClient, describeNvidiaError, completionText } from '../services/nvidia';
 
 const router = Router();
 
-// Was 'claude-sonnet-4-6' — not a real Anthropic model id (doesn't match any published
-// snapshot/family name), so every Claude call here 400'd before this fix. That's the actual
-// reason a Gemini fallback matters: Claude wasn't silently "preferred but sometimes down", it
-// was permanently broken, so "Claude first" never actually served a Claude response.
-const CLAUDE_MODEL = 'claude-sonnet-5';
+// Primary provider: NVIDIA's hosted API (services/nvidia.ts), same model and key as every other
+// AI feature (AI_MODEL / NVIDIA_API_KEY). Gemini stays as the fallback.
 // Was 'gemini-1.5-flash' per the spec — confirmed live (ListModels against the real configured
 // key, and the actual generateContent error) that model is retired. gemini-2.5-flash is also
 // gone for new users — Google's own 404 body names its replacement explicitly: "This model
@@ -19,10 +16,6 @@ const CLAUDE_MODEL = 'claude-sonnet-5';
 // for the live test).
 const GEMINI_MODEL = 'gemini-3.6-flash';
 
-function hasClaudeKey(): boolean {
-    const key = process.env.ANTHROPIC_API_KEY;
-    return !!key && key !== 'your-key-here' && !key.startsWith('[') && key !== 'REPLACE_WHEN_OBTAINED';
-}
 function hasGeminiKey(): boolean {
     const key = process.env.GEMINI_API_KEY;
     return !!key && key !== 'REPLACE_WHEN_OBTAINED';
@@ -52,12 +45,12 @@ interface IncomingMessage {
 
 // GET /api/novr-ai/status
 router.get('/status', (_req: Request, res: Response) => {
-    const claude = hasClaudeKey();
+    const nvidia = nvidiaConfigured();
     const gemini = hasGeminiKey();
     res.json({
-        configured: claude || gemini,
-        provider: claude ? 'claude' : gemini ? 'gemini' : 'none',
-        model: claude ? CLAUDE_MODEL : gemini ? GEMINI_MODEL : 'none',
+        configured: nvidia || gemini,
+        provider: nvidia ? 'nvidia' : gemini ? 'gemini' : 'none',
+        model: nvidia ? AI_MODEL() : gemini ? GEMINI_MODEL : 'none',
     });
 });
 
@@ -85,23 +78,23 @@ async function buildTelemetryContext(): Promise<string> {
     }
 }
 
-async function askClaude(messages: IncomingMessage[], systemPrompt: string): Promise<string> {
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const response = await client.messages.create({
-        model: CLAUDE_MODEL,
+async function askNvidia(messages: IncomingMessage[], systemPrompt: string): Promise<string> {
+    const client = getNvidiaClient();
+    if (!client) throw new Error('NVIDIA_API_KEY is not set');
+    const response = await client.chat.completions.create({
+        model: AI_MODEL(),
         max_tokens: 4096,
-        system: systemPrompt,
-        messages: messages.map((m) => ({
-            role: m.role === 'assistant' ? 'assistant' : 'user',
-            content: m.content,
-        })),
-    });
-    const reply = response.content
-        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-        .map((block) => block.text)
-        .join('');
-    if (!reply) throw new Error(`Claude returned no text content (stop_reason: ${response.stop_reason})`);
-    return reply;
+        messages: [
+            { role: 'system', content: systemPrompt },
+            ...messages.map((m) => ({
+                role: m.role === 'assistant' ? 'assistant' : 'user',
+                content: m.content,
+            })),
+        ],
+    } as never, { timeout: AI_TIMEOUT_MS() });
+    const { text, finishReason } = completionText(response);
+    if (!text) throw new Error(`NVIDIA returned no text content (finish_reason: ${finishReason})`);
+    return text;
 }
 
 async function askGemini(messages: IncomingMessage[], systemPrompt: string): Promise<string> {
@@ -125,7 +118,7 @@ async function askGemini(messages: IncomingMessage[], systemPrompt: string): Pro
     return text;
 }
 
-// POST /api/novr-ai — Claude first, Gemini fallback (only on Claude failure or if no Claude key
+// POST /api/novr-ai — NVIDIA first, Gemini fallback (only on NVIDIA failure or if no NVIDIA key
 // at all), matching the spec exactly. Neither configured -> honest 503, not a fabricated reply.
 router.post('/', async (req: Request, res: Response) => {
     const { messages, context } = req.body as {
@@ -144,13 +137,13 @@ router.post('/', async (req: Request, res: Response) => {
         systemPrompt += `\n\nCurrent platform context:\n- Active agents: ${context.active_agents ?? 0}\n- Open incidents: ${context.open_incidents ?? 0}`;
     }
 
-    if (hasClaudeKey()) {
+    if (nvidiaConfigured()) {
         try {
-            const reply = await askClaude(messages, systemPrompt);
-            res.json({ reply, model: CLAUDE_MODEL, provider: 'claude', configured: true, timestamp: new Date().toISOString() });
+            const reply = await askNvidia(messages, systemPrompt);
+            res.json({ reply, model: AI_MODEL(), provider: 'nvidia', configured: true, timestamp: new Date().toISOString() });
             return;
         } catch (err) {
-            console.error('NovrAI Claude error, trying Gemini:', err instanceof Error ? err.message : err);
+            console.error('NovrAI NVIDIA error, trying Gemini:', describeNvidiaError(err));
             // falls through to Gemini below
         }
     }
@@ -165,10 +158,10 @@ router.post('/', async (req: Request, res: Response) => {
         }
     }
 
-    if (!hasClaudeKey() && !hasGeminiKey()) {
+    if (!nvidiaConfigured() && !hasGeminiKey()) {
         res.status(503).json({
             error: 'NovrAI unavailable',
-            reply: 'NovrAI is not configured. Add ANTHROPIC_API_KEY or GEMINI_API_KEY to Railway environment variables.',
+            reply: 'NovrAI is not configured. Add NVIDIA_API_KEY or GEMINI_API_KEY to Railway environment variables.',
             provider: 'none',
             configured: false,
         });
@@ -177,7 +170,7 @@ router.post('/', async (req: Request, res: Response) => {
 
     // Both were configured but both failed (e.g. rate limits, transient outages on both sides).
     res.status(502).json({
-        error: 'Both Claude and Gemini failed to respond',
+        error: 'Both NVIDIA and Gemini failed to respond',
         reply: 'NovrAI could not reach either AI provider right now — try again shortly.',
         provider: 'none',
         configured: true,
