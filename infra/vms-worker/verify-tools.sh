@@ -14,6 +14,13 @@ for t in subfinder dnsx httpx nmap nuclei; do
     echo "           WARNING: this httpx does not look like ProjectDiscovery's; set VMS_HTTPX_PATH to the right binary"
   fi
 done
-if python3 -c 'import gvm' 2>/dev/null; then echo "openvas    python-gvm present (scanner service, credentials and socket still need checking)"; else echo "openvas    NOT CONFIGURED (python-gvm absent)"; fi
+if RUN python3 -c 'import gvm' 2>/dev/null; then
+  echo "openvas    python-gvm $(RUN python3 -c 'import gvm; print(gvm.get_version())')"
+  SOCK="${GVM_SOCKET:-/run/gvmd/gvmd.sock}"
+  if [ ! -S "$SOCK" ]; then echo "           gvmd socket $SOCK NOT FOUND (is gvmd running? set GVM_SOCKET)";
+  elif RUN test -r "$SOCK" -a -w "$SOCK"; then echo "           gvmd socket $SOCK usable by novrsoc-vms ($(stat -c '%U:%G %a' "$SOCK"))";
+  else echo "           gvmd socket $SOCK NOT usable by novrsoc-vms ($(stat -c '%U:%G %a' "$SOCK")): usermod -aG $(stat -c %G "$SOCK") novrsoc-vms"; fi
+  echo "           login, scan configuration and its safety: python3 worker.py --self-test"
+else echo "openvas    NOT CONFIGURED (python-gvm absent: sudo apt-get install python3-gvm)"; fi
 python3 --version
 python3 -c 'import requests; print("requests", requests.__version__)'

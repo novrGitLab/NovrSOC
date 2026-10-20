@@ -31,6 +31,10 @@ import { isStaffRole } from '../lib/resolveOrg';
 import { validateScopeValue, parseTarget, coveringScope, normalizeExclusion, type ScopeEntry, type Activity } from '../lib/vmsScope';
 import { describe, RETRYABLE, type AssessmentRow } from '../services/vmsAssessments';
 import { resolveAddresses, pinsSatisfied } from '../lib/dnsResolve';
+import { refreshEligibility } from '../services/vmsEligibility';
+
+/** Coverage changed: re-evaluate the organisation's Wazuh endpoints now, in the background (P19). */
+const reevaluate = (org: string) => { void refreshEligibility(org).catch((err) => console.warn('[vms] eligibility refresh failed:', err instanceof Error ? err.message : err)); };
 
 const router = Router();
 const MAX_SCOPE_DAYS = 400;
@@ -70,12 +74,25 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
     // (no route and unreachable too), so "assessed" means the last outcome reached the target; a
     // check that did not run or was inconclusive is counted from the derived step status.
     const since30 = days(30);
-    const [endpoints, external, assessed30, assessments30] = await Promise.all([
+    const [endpoints, external, assessed30, assessments30, openFindings] = await Promise.all([
         count(assets().eq('status', 'active').eq('asset_type', 'endpoint')),
         count(assets().eq('status', 'active').in('asset_type', ['host', 'ip', 'domain'])),
         supabase.from('vms_assets').select('id, last_assessment').eq('org_id', org).eq('status', 'active').gte('last_assessed_at', since30).limit(5000),
         supabase.from('vms_assessments').select('*').eq('org_id', org).gte('requested_at', since30).order('requested_at', { ascending: false }).limit(500),
+        // P19: the assets carrying the most open risk, from stored findings (severity first, then risk score).
+        supabase.from('vms_findings').select('asset_id, asset_value, scanner_severity, risk_score').eq('org_id', org).in('status', ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened']).limit(20_000),
     ]);
+    const SEV_W: Record<string, number> = { critical: 1000, high: 100, medium: 10, low: 1 };
+    type Vuln = { asset_id: string; value: string; open: number; by_severity: Record<string, number>; weight: number; max_risk: number };
+    const perAsset = new Map<string, Vuln>();
+    for (const f of openFindings.data ?? []) {
+        if (!f.asset_id) continue;
+        const e: Vuln = perAsset.get(f.asset_id) ?? { asset_id: f.asset_id, value: f.asset_value, open: 0, by_severity: {}, weight: 0, max_risk: 0 };
+        e.open++; e.by_severity[String(f.scanner_severity)] = (e.by_severity[String(f.scanner_severity)] ?? 0) + 1;
+        e.weight += SEV_W[f.scanner_severity] ?? 0; e.max_risk = Math.max(e.max_risk, Number(f.risk_score ?? 0));
+        perAsset.set(f.asset_id, e);
+    }
+    const mostVulnerable = [...perAsset.values()].sort((a, b) => b.weight - a.weight || b.max_risk - a.max_risk).slice(0, 5).map(({ weight: _w, ...x }) => x);
     const reached = (assessed30.data ?? []).filter((a) => /^reachable/.test(String((a.last_assessment as { outcome?: string } | null)?.outcome ?? ''))).length;
     const described = assessments30.error ? [] : await describe((assessments30.data ?? []) as AssessmentRow[]);
     res.json({
@@ -91,6 +108,7 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
             checks_not_run_last_30_days: assessments30.error ? null : described.reduce((n, a) => n + a.steps.filter((s) => RETRYABLE.has(s.status)).length, 0),
         },
         recent_scans: scans.data ?? [],
+        most_vulnerable_assets: openFindings.error ? null : mostVulnerable,
         // Scanner workers are shared infrastructure, not tenant data: client roles get the state only.
         worker: {
             state: scanner.state, source: scanner.source, last_heartbeat_at: scanner.last_seen_at, seen_recently: scanner.state === 'online',
@@ -153,6 +171,7 @@ router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, 
     }
     logAudit({ user: actor(req), action: 'VMS_SCOPE_APPROVED', resource: 'vms_scope', resource_id: data.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', severity: 'warning',
         details: `${p.data.kind} ${v.value} discovery=${allowDiscovery} ports=${p.data.allow_port_scan} vuln=${p.data.allow_vuln_scan}${exclusions.length ? ` excl=${exclusions.length}` : ''} ref=${p.data.authorization_reference}`.slice(0, 200) });
+    reevaluate(org);
     res.status(201).json({ scope: data });
 });
 
@@ -168,6 +187,7 @@ router.post('/scopes/:id/revoke', requirePermission('vms:scope'), async (req: Au
     await supabase.from('vms_scan_jobs').update({ status: 'cancelled', finished_at: new Date().toISOString(), error: 'Scope revoked' }).eq('scope_id', data.id).eq('status', 'queued');
     await supabase.from('vms_scan_jobs').update({ cancel_requested: true }).eq('scope_id', data.id).eq('status', 'running');
     logAudit({ user: actor(req), action: 'VMS_SCOPE_REVOKED', resource: 'vms_scope', resource_id: data.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', severity: 'warning', details: `${data.kind} ${data.value}` });
+    reevaluate(org);
     res.json({ scope: data });
 });
 
@@ -242,8 +262,12 @@ export async function validateScan(org: string, input: z.infer<typeof NewScan>, 
     return { ok: true, scope: entry, targets: [...new Set(targets)].sort(), options };
 }
 
+/** Queue priority (P19): higher is claimed first; equal priority is first-in, first-out. */
+export const JOB_PRIORITY = { verification: 80, manual: 60, event: 50, schedule: 40, policy: 30 } as const;
+export type JobTrigger = keyof typeof JOB_PRIORITY;
+
 /** Queues a scan after checking every target against scope. Shared with the scheduler (Release 3). */
-export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification'; options?: Record<string, unknown>; assessment_id?: string } = {}):
+export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification'; options?: Record<string, unknown>; assessment_id?: string; trigger?: JobTrigger } = {}):
     Promise<{ ok: true; job: Record<string, unknown>; existing: boolean } | { ok: false; status: number; error: string }> {
     const supabase = getSupabase()!;
     const v = await validateScan(org, input, extra.options);
@@ -253,7 +277,11 @@ export async function queueScan(org: string, by: string, input: z.infer<typeof N
     const { data: open } = await supabase.from('vms_scan_jobs').select('*').eq('org_id', org).eq('scope_id', entry.id).eq('kind', input.kind).in('status', ['queued', 'running']);
     const dup = (open ?? []).find((j) => JSON.stringify(j.targets) === JSON.stringify(uniq) && JSON.stringify(j.options ?? {}) === JSON.stringify(options));
     if (dup) return { ok: true, job: dup, existing: true };
-    const ins = await supabase.from('vms_scan_jobs').insert({ org_id: org, scope_id: entry.id, kind: input.kind, targets: uniq, options, requested_by: by, schedule_id: extra.schedule_id ?? null, purpose: extra.purpose ?? 'assessment', ...(extra.assessment_id ? { assessment_id: extra.assessment_id } : {}) }).select('*').single();
+    const trigger: JobTrigger = extra.purpose === 'verification' ? 'verification' : extra.trigger ?? (extra.schedule_id ? 'schedule' : 'manual');
+    const row = { org_id: org, scope_id: entry.id, kind: input.kind, targets: uniq, options, requested_by: by, schedule_id: extra.schedule_id ?? null, purpose: extra.purpose ?? 'assessment', ...(extra.assessment_id ? { assessment_id: extra.assessment_id } : {}) };
+    let ins = await supabase.from('vms_scan_jobs').insert({ ...row, priority: JOB_PRIORITY[trigger] }).select('*').single();
+    // Before sql/2026-10-25_p19_vms_automation.sql there is no priority column: queue in arrival order.
+    if (ins.error && /priority/.test(ins.error.message) && /column|schema cache/i.test(ins.error.message)) ins = await supabase.from('vms_scan_jobs').insert(row).select('*').single();
     if (ins.error) return { ok: false, status: 502, error: dbErrorMessage(ins.error) };
     logAudit({ user: by, action: 'VMS_SCAN_QUEUED', resource: 'vms_scan_job', resource_id: ins.data.id, org_id: org, ip: 'n/a', result: 'success', details: `${input.kind} ${uniq.slice(0, 5).join(', ')}${uniq.length > 5 ? ` +${uniq.length - 5}` : ''}` });
     return { ok: true, job: ins.data, existing: false };

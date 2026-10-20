@@ -9,7 +9,7 @@ import { useSearchParams } from 'next/navigation';
 import { Search, Globe } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
-import { OUTCOME_LABEL, OUTCOME_STYLE, portStates, ASSESSMENT_STATUS_LABEL, ASSESSMENT_STATUS_STYLE, type VmsAssessment } from '@/lib/vms';
+import { OUTCOME_LABEL, OUTCOME_STYLE, portStates, ASSESSMENT_STATUS_LABEL, ASSESSMENT_STATUS_STYLE, type VmsAssessment, ELIGIBILITY_LABEL, ELIGIBILITY_STYLE } from '@/lib/vms';
 import Link from 'next/link';
 import { apiUrl as assessUrl, apiFetch as assessFetch } from '@/lib/api';
 import { getAdminUser } from '@/lib/admin-auth';
@@ -52,6 +52,14 @@ export function VmsAssets() {
         const r = await loadJson<Detail>(`/api/vms/assets/${a.id}`);
         setDetail(r.ok ? r.data : null);
     }
+    // Opened from a link (Managed Endpoints, Services & Technology): /admin/vms/assets?id=…
+    useEffect(() => {
+        const id = params.get('id');
+        if (!id) return;
+        let active = true;
+        void loadJson<Detail>(`/api/vms/assets/${id}`).then((r) => { if (active && r.ok) setDetail(r.data); });
+        return () => { active = false; };
+    }, [params]);
     const shown = assets?.filter((a) => source === 'all' || (source === 'wazuh' ? a.asset_type === 'endpoint' : a.asset_type !== 'endpoint')) ?? null;
     async function patch(body: Record<string, unknown>) {
         if (!detail) return;
@@ -103,6 +111,16 @@ export function VmsAssets() {
                                 <h2 className="text-sm font-black font-mono text-foreground break-all">{detail.asset.value}</h2>
                                 <p className="text-foreground-muted">{detail.asset.asset_type} · {detail.asset.exposure} · first seen {fmtWat(detail.asset.first_seen)} · last seen {fmtWat(detail.asset.last_seen)} · found by {detail.asset.discovery_sources.join(', ')}</p>
                             </div>
+                            {detail.asset.asset_type === 'endpoint' && (
+                                <div className="bg-card-muted rounded-lg p-3 space-y-1">
+                                    <p className="text-[10px] font-bold text-foreground-muted uppercase">Wazuh agent {detail.asset.wazuh_agent_id ?? ''}</p>
+                                    <p className="text-foreground">{detail.asset.os ?? 'OS not reported'} · {detail.asset.agent_status ?? 'status not recorded'}{detail.asset.agent_last_keepalive ? ` · keep-alive ${fmtWat(detail.asset.agent_last_keepalive)}` : ''}{detail.asset.agent_groups?.length ? ` · groups ${detail.asset.agent_groups.join(', ')}` : ''}</p>
+                                    {detail.asset.scan_eligibility ? (
+                                        <p><span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${ELIGIBILITY_STYLE[detail.asset.scan_eligibility.status]}`}>{ELIGIBILITY_LABEL[detail.asset.scan_eligibility.status]}</span> <span className="text-foreground-muted">{detail.asset.scan_eligibility.reason}</span></p>
+                                    ) : <p className="text-foreground-muted">Scan eligibility not evaluated yet (see Managed Endpoints).</p>}
+                                    <p className="text-foreground-muted">Next automatic assessment: {detail.asset.next_scan_at ? fmtWat(detail.asset.next_scan_at) : 'not planned by an enabled policy'}</p>
+                                </div>
+                            )}
                             {detail.asset.last_assessment && (
                                 <div className="border border-border rounded-lg p-2 space-y-1">
                                     <p className="text-[10px] font-bold text-foreground-muted uppercase">Last assessment · {detail.asset.last_assessment.method} · {fmtWat(detail.asset.last_assessed_at ?? null)}</p>

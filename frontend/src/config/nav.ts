@@ -24,6 +24,7 @@ import {
     ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor,
     Target, Fingerprint, CalendarRange, Droplets, Wifi, HeartPulse, GraduationCap, Swords, Truck, Wheat, Factory, Mountain, KeyRound,
     type LucideIcon,
+    Gauge, MonitorSmartphone,
 } from 'lucide-react';
 import type { NavGroup, NavItem, NavRole } from '@/components/layout/Sidebar';
 
@@ -106,11 +107,14 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'vms-overview', label: 'Overview', href: '/admin/vms', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Radar },
             { id: 'vms-assessments', label: 'Assessments', href: '/admin/vms/assessments', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: ScanSearch },
             { id: 'vms-assets', label: 'Attack Surface', href: '/admin/vms/assets', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Globe },
+            { id: 'vms-endpoints', label: 'Managed Endpoints', href: '/admin/vms/endpoints', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: MonitorSmartphone },
+            { id: 'vms-services', label: 'Services & Technology', href: '/admin/vms/services', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Server },
             { id: 'vms-findings', label: 'Findings', href: '/admin/vms/findings', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Bug },
             { id: 'vms-remediation', label: 'Remediation', href: '/admin/vms/remediation', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Wrench },
             { id: 'vms-report', label: 'Reports', href: '/admin/vms/report', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: FileBarChart },
             { id: 'vulnerabilities', label: 'Wazuh Vulnerabilities', href: '/admin/secops/vulnerabilities', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: Bug },
             { id: 'vms-scans', label: 'Scans', href: '/admin/vms/scans', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: ScanSearch },
+            { id: 'vms-operations', label: 'Scanner Operations', href: '/admin/vms/operations', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Gauge },
             { id: 'vms-scope', label: 'Authorised Scope', href: '/admin/vms/scope', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: ShieldCheck },
             { id: 'vms-admin', label: 'VMS Admin', href: '/admin/vms/admin', domain: 'vms', status: 'WORKING', roles: ['super_admin', 'soc_manager'], icon: ShieldCheck },
         ],

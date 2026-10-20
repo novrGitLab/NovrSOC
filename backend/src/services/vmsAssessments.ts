@@ -20,6 +20,8 @@ import { coveringScope, parseTarget, type ScopeEntry, type Activity, type Target
 import { isNonPublicIp, workerCanReach } from '../lib/netClass';
 import { loadScannerStatus, type ScannerStatus } from './vmsWorkers';
 import { logAudit } from '../lib/audit';
+import { PROFILES, profileActivity, type ProfileId } from './vmsProfiles';
+import { eligibilityFor } from './vmsEligibility';
 
 export const FULL_PROFILE = ['discovery', 'ports', 'vuln_nuclei', 'vuln_openvas'] as const;
 export type ProfileKind = (typeof FULL_PROFILE)[number];
@@ -133,15 +135,24 @@ export async function describe(rows: AssessmentRow[]) {
 }
 
 /** Resolves what to assess: an asset's host/IP, or a target given directly. */
-export async function resolveTarget(org: string, input: { asset_id?: string; target?: string }): Promise<{ ok: true; target: Target; asset_id: string | null } | { ok: false; status: number; error: string }> {
+export async function resolveTarget(org: string, input: { asset_id?: string; target?: string }, profile: ProfileId = 'full'): Promise<{ ok: true; target: Target; asset_id: string | null; scope_id?: string | null } | { ok: false; status: number; error: string }> {
     const supabase = getSupabase()!;
     if (input.asset_id) {
         const { data: a } = await supabase.from('vms_assets').select('id, asset_type, value, ips').eq('id', input.asset_id).eq('org_id', org).maybeSingle();
         if (!a) return { ok: false, status: 404, error: 'Asset not found' };
-        // A Wazuh endpoint is assessed at its recorded address; a host or IP at its own value.
-        const raw = a.asset_type === 'endpoint' ? (a.ips ?? [])[0] : a.value;
-        const t = raw ? parseTarget(String(raw)) : null;
-        if (!t) return { ok: false, status: 400, error: a.asset_type === 'endpoint' ? 'This endpoint has no recorded IP address to assess' : `A ${a.asset_type} asset cannot be assessed directly; assess its hosts` };
+        // A Wazuh endpoint (P19) is assessed only at an address inside agreed coverage that a worker
+        // can reach, and not while offline or sharing its address (services/vmsEligibility.ts). 409:
+        // these states change on their own, so a schedule is not disabled by them.
+        if (a.asset_type === 'endpoint') {
+            const el = await eligibilityFor(org, a.id, profileActivity(profile));
+            if (!el) return { ok: false, status: 409, error: 'This endpoint is not active in the Wazuh inventory' };
+            if (el.status !== 'eligible' || !el.target) return { ok: false, status: 409, error: `Not assessed (${el.status.replace(/_/g, ' ')}): ${el.reason}` };
+            const t = parseTarget(el.target);
+            if (!t) return { ok: false, status: 409, error: 'The eligible address could not be read' };
+            return { ok: true, target: t, asset_id: a.id, scope_id: el.scope_id };
+        }
+        const t = parseTarget(String(a.value));
+        if (!t) return { ok: false, status: 400, error: `A ${a.asset_type} asset cannot be assessed directly; assess its hosts` };
         return { ok: true, target: t, asset_id: a.id };
     }
     const t = input.target ? parseTarget(input.target) : null;
@@ -150,10 +161,11 @@ export async function resolveTarget(org: string, input: { asset_id?: string; tar
     return { ok: true, target: t, asset_id: a?.id ?? null };
 }
 
-async function queueStep(org: string, by: string, assessmentId: string, kind: ProfileKind, target: Target, scope: ScopeEntry, scanner: ScannerStatus, previous: string[] = []): Promise<Step> {
+type Trigger = 'manual' | 'policy' | 'schedule' | 'event';
+async function queueStep(org: string, by: string, assessmentId: string, kind: ProfileKind, target: Target, scope: ScopeEntry, scanner: ScannerStatus, previous: string[] = [], ports = 'top-1000', trigger: Trigger = 'manual'): Promise<Step> {
     const plan = planStep(kind, target, scope, scanner);
     if (plan.decision !== 'queue') return { kind, decision: plan.decision, reason: plan.reason, job_id: null, previous_job_ids: previous };
-    const r = await queueScan(org, by, { scope_id: scope.id, kind, targets: [target.value], ...(kind === 'ports' ? { ports: 'top-1000' } : {}) }, { assessment_id: assessmentId });
+    const r = await queueScan(org, by, { scope_id: scope.id, kind, targets: [target.value], ...(kind === 'ports' ? { ports } : {}) }, { assessment_id: assessmentId, trigger });
     if (!r.ok) return { kind, decision: 'not_attempted', reason: r.error, job_id: null, previous_job_ids: previous };
     return { kind, decision: 'queued', reason: plan.reason, job_id: String(r.job.id), previous_job_ids: previous };
 }
@@ -171,42 +183,47 @@ async function serialised<T>(key: string, fn: () => Promise<T>): Promise<T> {
     try { return await run; } finally { if (inFlight.get(key) === run) inFlight.delete(key); }
 }
 
-/** Creates a Full Assessment, or returns the one already in progress for the same target (idempotent). */
-export async function createAssessment(org: string, by: string, input: { asset_id?: string; target?: string; scope_id?: string }, ip = 'unknown', origin: { trigger?: 'manual' | 'policy' | 'schedule'; policy_id?: string } = {}): Promise<CreateResult> {
+/** Creates an assessment with a profile (P19; default full), or returns the one already in progress
+ *  for the same target, whatever its profile (idempotent: one target is never assessed twice at once). */
+export async function createAssessment(org: string, by: string, input: { asset_id?: string; target?: string; scope_id?: string }, ip = 'unknown', origin: { trigger?: Trigger; policy_id?: string } = {}, profile: ProfileId = 'full'): Promise<CreateResult> {
     const supabase = getSupabase()!;
-    const t = await resolveTarget(org, input);
+    const t = await resolveTarget(org, input, profile);
     if (!t.ok) return t;
     const { data: scopes, error: sErr } = await supabase.from('vms_scopes').select('*').eq('org_id', org).eq('status', 'active');
     if (sErr) return { ok: false, status: 502, error: 'Could not read the authorised scope' };
     const live = ((scopes ?? []) as ScopeEntry[]).filter((s) => Date.parse(s.expires_at) > Date.now());
-    const scope = input.scope_id ? live.find((s) => s.id === input.scope_id) : live.find((s) => coveringScope(t.target, [s], 'passive'));
+    const wanted = input.scope_id ?? t.scope_id ?? null;
+    const scope = wanted ? live.find((s) => s.id === wanted) : live.find((s) => coveringScope(t.target, [s], 'passive'));
     if (!scope) return { ok: false, status: 403, error: `${t.target.value} is not inside an active authorised scope entry of this organisation` };
     if (!coveringScope(t.target, [scope], 'passive')) return { ok: false, status: 403, error: `${t.target.value} is excluded from, or not covered by, that scope entry` };
-    return serialised(`${org}|${t.target.value}`, () => planAssessment(org, by, t, scope, ip, origin));
+    return serialised(`${org}|${t.target.value}`, () => planAssessment(org, by, t, scope, ip, origin, profile));
 }
 
-async function planAssessment(org: string, by: string, t: { target: Target; asset_id: string | null }, scope: ScopeEntry, ip: string, origin: { trigger?: 'manual' | 'policy' | 'schedule'; policy_id?: string }): Promise<CreateResult> {
+async function planAssessment(org: string, by: string, t: { target: Target; asset_id: string | null }, scope: ScopeEntry, ip: string, origin: { trigger?: Trigger; policy_id?: string }, profile: ProfileId): Promise<CreateResult> {
     const supabase = getSupabase()!;
     // Idempotent: an assessment of the same target still in progress is returned, not duplicated.
-    const { data: open, error: oErr } = await supabase.from('vms_assessments').select('*').eq('org_id', org).eq('target', t.target.value).eq('profile', 'full').is('cancelled_at', null).order('requested_at', { ascending: false }).limit(5);
+    const { data: open, error: oErr } = await supabase.from('vms_assessments').select('*').eq('org_id', org).eq('target', t.target.value).is('cancelled_at', null).order('requested_at', { ascending: false }).limit(5);
     if (oErr) return { ok: false, status: isMissingP13(oErr) ? 503 : 502, error: isMissingP13(oErr) ? P13_MISSING : 'Could not read assessments' };
     const described = await describe((open ?? []) as AssessmentRow[]);
     const inProgress = described.find((a) => a.status === 'in_progress');
     if (inProgress) return { ok: true, assessment: inProgress, existing: true };
 
-    const row = { org_id: org, asset_id: t.asset_id, scope_id: scope.id, target: t.target.value, profile: 'full', steps: [], requested_by: by };
+    const row = { org_id: org, asset_id: t.asset_id, scope_id: scope.id, target: t.target.value, profile, steps: [], requested_by: by };
     const withOrigin = origin.trigger && origin.trigger !== 'manual' ? { ...row, trigger: origin.trigger, ...(origin.policy_id ? { policy_id: origin.policy_id } : {}) } : row;
     let ins = await supabase.from('vms_assessments').insert(withOrigin).select('*').single();
     // Before the P14 SQL there is no trigger/policy_id column: record the assessment without them.
     if (ins.error && withOrigin !== row && (ins.error.code === 'PGRST204' || ins.error.code === '42703')) ins = await supabase.from('vms_assessments').insert(row).select('*').single();
+    // Before the P19 SQL only 'full' and the P14 triggers pass the CHECK constraints (23514).
+    if (ins.error?.code === '23514') return { ok: false, status: 503, error: `The ${PROFILES[profile].label} profile${origin.trigger === 'event' ? ' or event trigger' : ''} is not set up yet (run sql/2026-10-25_p19_vms_automation.sql)` };
     if (ins.error) return { ok: false, status: isMissingP13(ins.error) ? 503 : 502, error: isMissingP13(ins.error) ? P13_MISSING : 'Could not create the assessment' };
     const scanner = await loadScannerStatus();
     const steps: Step[] = [];
-    for (const kind of FULL_PROFILE) steps.push(await queueStep(org, by, ins.data.id, kind, t.target, scope, scanner));
+    const def = PROFILES[profile];
+    for (const kind of def.steps) steps.push(await queueStep(org, by, ins.data.id, kind, t.target, scope, scanner, [], def.ports, origin.trigger ?? 'manual'));
     const upd = await supabase.from('vms_assessments').update({ steps }).eq('id', ins.data.id).select('*').single();
     if (upd.error) return { ok: false, status: 502, error: 'The assessment was created but its plan could not be saved' };
     logAudit({ user: by, action: 'VMS_ASSESSMENT_REQUESTED', resource: 'vms_assessment', resource_id: ins.data.id, org_id: org, ip, result: 'success',
-        details: `${t.target.value}: ${steps.map((s) => `${s.kind}=${s.decision}`).join(' ')}`.slice(0, 200) });
+        details: `${profile} ${t.target.value}${origin.trigger && origin.trigger !== 'manual' ? ` (${origin.trigger})` : ''}: ${steps.map((s) => `${s.kind}=${s.decision}`).join(' ')}`.slice(0, 200) });
     return { ok: true, assessment: (await describe([upd.data as AssessmentRow]))[0], existing: false };
 }
 
@@ -228,7 +245,8 @@ export async function retryAssessment(org: string, id: string, by: string, ip = 
     for (const s of current.steps) {
         const base: Step = { kind: s.kind, decision: s.decision, reason: s.reason, job_id: s.job_id, previous_job_ids: s.previous_job_ids ?? [] };
         if (!retryable.has(s.status)) { steps.push(base); continue; }
-        steps.push(await queueStep(org, by, id, s.kind, t, scope as ScopeEntry, scanner, [...base.previous_job_ids, ...(s.job_id ? [s.job_id] : [])]));
+        const ports = PROFILES[(row.profile as ProfileId) in PROFILES ? row.profile as ProfileId : 'full'].ports;
+        steps.push(await queueStep(org, by, id, s.kind, t, scope as ScopeEntry, scanner, [...base.previous_job_ids, ...(s.job_id ? [s.job_id] : [])], ports));
     }
     const upd = await supabase.from('vms_assessments').update({ steps, retried_at: new Date().toISOString() }).eq('id', id).select('*').single();
     if (upd.error) return { ok: false, status: 502, error: 'Could not save the retry' };

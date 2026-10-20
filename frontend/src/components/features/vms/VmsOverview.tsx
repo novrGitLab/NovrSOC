@@ -10,13 +10,22 @@ import Link from 'next/link';
 import { Radar, AlertTriangle } from 'lucide-react';
 import { loadJson } from '@/lib/alerts';
 import { VmsTrends } from './VmsTrends';
-import { fmtWat, SCAN_STATUS_STYLE, SCAN_KIND_LABEL, describeEvent, EVENT_LABEL, type VmsScan, type VmsEvent } from '@/lib/vms';
+import {
+    fmtWat, SCAN_STATUS_STYLE, SCAN_KIND_LABEL, describeEvent, EVENT_LABEL, SEVERITIES, SEVERITY_STYLE, ENGINE_STATE_LABEL, ENGINE_STATE_STYLE,
+    type VmsScan, type VmsEvent, type VmsOperations, type VmsEndpointsResponse,
+} from '@/lib/vms';
+
+// P19: exposure, managed-endpoint coverage, scan activity and engine health, each from its own
+// endpoint — a section whose source cannot be read is left out, never shown as zero.
+interface FindingSummary { open: number; by_severity: Record<string, number>; known_exploited_open: number; overdue: number }
+interface MostVulnerable { asset_id: string; value: string; open: number; by_severity: Record<string, number>; max_risk: number }
 
 interface Overview {
     assets: { active: number; internet_facing: number; gone: number; open_services: number };
     last_7_days: { new_assets: number; changed_assets: number; gone_assets: number; new_services: number };
     active_scopes: number;
     recent_scans: VmsScan[];
+    most_vulnerable_assets?: MostVulnerable[] | null;
     coverage?: { wazuh_endpoints: number; external_assets: number; assessed_last_30_days: number | null; assessments_last_30_days: number | null; checks_not_run_last_30_days: number | null };
     worker: {
         last_heartbeat_at: string | null; seen_recently: boolean;
@@ -49,6 +58,9 @@ function Tile({ label, value, href }: { label: string; value: number | string; h
 export function VmsOverview() {
     const [data, setData] = useState<Overview | null>(null);
     const [events, setEvents] = useState<VmsEvent[]>([]);
+    const [findings, setFindings] = useState<FindingSummary | null>(null);
+    const [ops, setOps] = useState<VmsOperations | null>(null);
+    const [coverage, setCoverage] = useState<VmsEndpointsResponse['coverage'] | null>(null);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
@@ -58,6 +70,12 @@ export function VmsOverview() {
             setData(o.ok ? o.data : null);
             setError(o.ok ? null : o.error);
             setEvents(e.ok ? e.data.events.slice(0, 15) : []);
+        });
+        void Promise.all([loadJson<FindingSummary>('/api/vms/findings/summary'), loadJson<VmsOperations>('/api/vms/operations'), loadJson<VmsEndpointsResponse>('/api/vms/endpoints')]).then(([f, o, en]) => {
+            if (!active) return;
+            setFindings(f.ok ? f.data : null);
+            setOps(o.ok ? o.data : null);
+            setCoverage(en.ok ? en.data.coverage : null);
         });
         return () => { active = false; };
     }, []);
@@ -109,6 +127,52 @@ export function VmsOverview() {
                         <div className="rounded-xl p-3 border border-border bg-card text-xs text-foreground">
                             No authorised scope yet. <Link href="/admin/vms/scope" className="text-purple font-bold underline">Add the domains and IP ranges you are authorised to assess</Link> before scanning.
                         </div>
+                    )}
+                    {findings && (
+                        <section aria-label="Exposure" className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+                            {SEVERITIES.map((sev) => (
+                                <Link key={sev} href="/admin/vms/findings" className="bg-card border border-border rounded-xl p-4">
+                                    <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">Open {sev}</p>
+                                    <p className={`text-2xl font-black mt-1 inline-block px-2 rounded ${(findings.by_severity[sev] ?? 0) ? SEVERITY_STYLE[sev] : 'text-foreground'}`}>{findings.by_severity[sev] ?? 0}</p>
+                                </Link>
+                            ))}
+                            <Tile label="Known exploited (KEV)" value={findings.known_exploited_open} href="/admin/vms/findings" />
+                            <Tile label="Overdue" value={findings.overdue} href="/admin/vms/findings?overdue=true" />
+                        </section>
+                    )}
+                    {(coverage || ops) && (
+                        <section aria-label="Coverage and scanning" className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+                            {coverage && <Tile label="Managed endpoints" value={coverage.active} href="/admin/vms/endpoints" />}
+                            {coverage && <Tile label="Eligible for assessment" value={coverage.eligible} href="/admin/vms/endpoints" />}
+                            {coverage && <Tile label="Awaiting assessment" value={coverage.awaiting_assessment} href="/admin/vms/endpoints" />}
+                            {coverage && <Tile label="Endpoint coverage (30 days)" value={coverage.active ? `${Math.round((coverage.assessed_last_30_days / coverage.active) * 100)}%` : '—'} href="/admin/vms/endpoints" />}
+                            {ops && <Tile label="Active scans" value={ops.queue.queued + ops.queue.running} href="/admin/vms/operations" />}
+                            {ops && <Tile label="Failed scans (7 days)" value={Object.values(ops.last_7_days).reduce((n, k) => n + k.failed, 0)} href="/admin/vms/operations" />}
+                        </section>
+                    )}
+                    {ops && (
+                        <div className="flex flex-wrap gap-2 items-center text-[11px]">
+                            <span className="font-bold text-foreground-muted uppercase tracking-wider text-[10px]">Engines</span>
+                            {ops.engines.map((e) => (
+                                <Link key={e.id} href="/admin/vms/operations" title={e.note} className={`font-bold px-2 py-1 rounded-full ${ENGINE_STATE_STYLE[e.state]}`}>{e.label.split(' (')[0]}: {ENGINE_STATE_LABEL[e.state]}</Link>
+                            ))}
+                        </div>
+                    )}
+                    {data.most_vulnerable_assets && data.most_vulnerable_assets.length > 0 && (
+                        <section className="bg-card border border-border rounded-xl p-4">
+                            <h2 className="text-sm font-black text-foreground mb-2">Most vulnerable assets</h2>
+                            <div className="space-y-1.5">
+                                {data.most_vulnerable_assets.map((a) => (
+                                    <Link key={a.asset_id} href={`/admin/vms/findings?asset_id=${a.asset_id}`} className="flex items-center justify-between gap-2 text-xs border-t border-border pt-1.5 first:border-0 first:pt-0">
+                                        <span className="font-mono font-bold text-foreground">{a.value}</span>
+                                        <span className="flex flex-wrap gap-1 justify-end">
+                                            {SEVERITIES.filter((sev) => a.by_severity[sev]).map((sev) => <span key={sev} className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${SEVERITY_STYLE[sev]}`}>{a.by_severity[sev]} {sev}</span>)}
+                                            <span className="text-foreground-muted">{a.open} open</span>
+                                        </span>
+                                    </Link>
+                                ))}
+                            </div>
+                        </section>
                     )}
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                         <Tile label="Active assets" value={data.assets.active} href="/admin/vms/assets" />

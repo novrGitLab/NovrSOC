@@ -126,12 +126,25 @@ test('a private target with no worker route is not attempted, with the reason; n
     assert.equal(steps((await assess({ target: '10.88.1.139' })).data.assessment as Row).ports.status, 'pending', 'declared route: queued');
 });
 
-test('an asset-centric assessment of a Wazuh endpoint uses its recorded address', async () => {
+test('a Wazuh endpoint is assessed only at an eligible address (P19): covered, reachable, unique, agent active', async () => {
     const id = randomUUID();
-    db.tables.vms_assets.push({ id, org_id: ORG, asset_type: 'endpoint', value: 'rayneops', ips: ['10.88.1.139'] });
+    db.tables.vms_assets.push({ id, org_id: ORG, asset_type: 'endpoint', value: 'rayneops', ips: ['10.88.1.139'], status: 'active', agent_status: 'active' });
+    // Covered by scope, but private, and no worker declares a route to it: refused, nothing created.
     const r = await assess({ asset_id: id });
-    assert.equal(r.status, 201);
-    assert.deepEqual([(r.data.assessment as Row).target, (r.data.assessment as Row).asset_id], ['10.88.1.139', id]);
+    assert.equal(r.status, 409);
+    assert.match(String(r.data.error), /private no route/);
+    assert.equal(db.tables.vms_assessments.length, 0, 'no assessment of steps that could never run');
+    // A worker inside that network: assessed at that address.
+    db.tables.vms_workers.push(worker({ networks: ['10.88.0.0/16'] }));
+    const ok = await assess({ asset_id: id });
+    assert.equal(ok.status, 201);
+    assert.deepEqual([(ok.data.assessment as Row).target, (ok.data.assessment as Row).asset_id], ['10.88.1.139', id]);
+    // The agent goes offline: refused with the reason (409, so a schedule is not disabled by it).
+    db.tables.vms_assessments = [];
+    db.tables.vms_scan_jobs = [];
+    db.tables.vms_assets.find((a) => a.id === id)!.agent_status = 'disconnected';
+    const off = await assess({ asset_id: id });
+    assert.deepEqual([off.status, /offline/.test(String(off.data.error))], [409, true]);
     assert.equal((await assess({ asset_id: randomUUID() })).status, 404);
 });
 

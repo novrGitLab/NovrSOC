@@ -20,6 +20,7 @@ import { getSupabase } from '../services/geoEnrichment';
 import { isUuid } from '../services/cases';
 import { logAudit } from '../lib/audit';
 import { createAssessment, retryAssessment, describe, assessmentFindings, managementReport, isMissingP13, P13_MISSING, type AssessmentRow } from '../services/vmsAssessments';
+import { RUNNABLE_PROFILES } from '../services/vmsProfiles';
 
 const router = Router();
 const actor = (req: AuthRequest) => req.user?.email ?? 'unknown';
@@ -33,12 +34,13 @@ router.get('/assessments', requirePermission('vms:read'), async (req: AuthReques
     res.json({ assessments: (await describe((data ?? []) as AssessmentRow[])).map(({ all_job_ids: _j, ...a }) => a) });
 });
 
-const NewAssessment = z.object({ asset_id: z.string().uuid().optional(), target: z.string().max(253).optional(), scope_id: z.string().uuid().optional() }).strict()
+const NewAssessment = z.object({ asset_id: z.string().uuid().optional(), target: z.string().max(253).optional(), scope_id: z.string().uuid().optional(), profile: z.enum(RUNNABLE_PROFILES).default('full') }).strict()
     .refine((b) => !!b.asset_id !== !!b.target, 'give asset_id or target');
 router.post('/assessments', requirePermission('vms:scan'), async (req: AuthRequest, res) => {
     const p = NewAssessment.safeParse(req.body);
-    if (!p.success) { res.status(400).json({ error: 'Body must be { asset_id } or { target }, with an optional scope_id' }); return; }
-    const r = await createAssessment(requestOrg(req), actor(req), p.data, req.ip ?? 'unknown');
+    if (!p.success) { res.status(400).json({ error: `Body must be { asset_id } or { target }, with an optional scope_id and profile (${RUNNABLE_PROFILES.join(' | ')})` }); return; }
+    const { profile, ...input } = p.data;
+    const r = await createAssessment(requestOrg(req), actor(req), input, req.ip ?? 'unknown', {}, profile);
     if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
     res.status(r.existing ? 200 : 201).json({ assessment: r.assessment, existing: r.existing });
 });

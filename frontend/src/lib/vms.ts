@@ -22,6 +22,9 @@ export interface VmsAsset {
     wazuh_agent_id: string | null; discovery_sources: string[]; first_seen: string; last_seen: string; status: 'active' | 'gone';
     /** What the last scan learned about reaching this host (P12; absent before that SQL). */
     last_assessment?: VmsReachAssessment | null; last_assessed_at?: string | null;
+    /** Wazuh endpoints (P19; absent before that SQL): what the agent reports, eligibility, next scan. */
+    os?: string | null; agent_status?: string | null; agent_last_keepalive?: string | null; agent_groups?: string[];
+    scan_eligibility?: VmsEligibility | null; next_scan_at?: string | null;
 }
 export type AssessmentOutcome = 'reachable_open' | 'reachable_no_open' | 'unreachable' | 'no_route' | 'insufficient_evidence';
 /** What one scan learned about reaching a host (P12). Not the Full Assessment (VmsAssessment, P13). */
@@ -98,6 +101,8 @@ export interface VmsAssessmentStep {
 export interface VmsAssessment {
     id: string; asset_id: string | null; scope_id: string; target: string; profile: string; requested_by: string; requested_at: string;
     retried_at: string | null; cancelled_at: string | null; status: AssessmentStatus; steps: VmsAssessmentStep[];
+    /** What started it (P14/P19): manual, policy, schedule, or event (a managed endpoint's address changed). */
+    trigger?: string;
     step_counts: Record<string, number>; progress: { finished: number; total: number };
 }
 export const STEP_STATUS_LABEL: Record<StepStatus, string> = {
@@ -115,3 +120,63 @@ export const ASSESSMENT_STATUS_STYLE: Record<AssessmentStatus, string> = {
     in_progress: 'bg-blue/10 text-blue', completed: 'bg-green/10 text-green', partial: 'bg-amber/10 text-amber', inconclusive: 'bg-amber/10 text-amber',
     failed: 'bg-red/10 text-red', not_attempted: 'bg-amber/10 text-amber', cancelled: 'bg-card-muted text-foreground-muted',
 };
+
+// ── Phase P19: profiles, eligibility, scanner operations, managed endpoints ───────────────────
+export const PROFILE_LABEL: Record<string, string> = { discovery: 'Discovery', standard: 'Standard', full: 'Full Assessment', authenticated: 'Authenticated', verification: 'Verification' };
+export const TRIGGER_LABEL: Record<string, string> = { manual: 'Manual', policy: 'Automatic (policy)', schedule: 'Scheduled', event: 'Automatic (address changed)' };
+
+export interface VmsProfile {
+    id: string; label: string; description: string; steps: string[]; ports: string; engines: string[]; not_covered: string[];
+    runnable: boolean; available: boolean | null; availability_note: string | null;
+}
+
+export type EligibilityStatus = 'eligible' | 'not_covered' | 'private_no_route' | 'offline' | 'no_address' | 'duplicate_address';
+export interface VmsEligibility { status: EligibilityStatus; reason: string; target: string | null; scope_id: string | null; evaluated_at: string }
+export const ELIGIBILITY_LABEL: Record<EligibilityStatus, string> = {
+    eligible: 'Eligible', not_covered: 'Not in agreed coverage', private_no_route: 'Private — no scanner route', offline: 'Agent offline',
+    no_address: 'No address', duplicate_address: 'Shared address (DHCP/NAT)',
+};
+export const ELIGIBILITY_STYLE: Record<EligibilityStatus, string> = {
+    eligible: 'bg-green/10 text-green', not_covered: 'bg-amber/10 text-amber', private_no_route: 'bg-amber/10 text-amber', offline: 'bg-card-muted text-foreground-muted',
+    no_address: 'bg-card-muted text-foreground-muted', duplicate_address: 'bg-amber/10 text-amber',
+};
+
+export interface VmsEndpoint {
+    id: string; name: string; wazuh_agent_id: string | null; ips: string[]; os: string | null; agent_status: string | null; agent_last_keepalive: string | null;
+    agent_groups: string[]; status: 'active' | 'gone'; criticality: VmsAsset['criticality']; owner: string | null; last_seen: string;
+    eligibility: VmsEligibility | null; last_assessment: { id: string; target: string; profile: string; requested_at: string; cancelled_at: string | null } | null;
+    last_assessed_at: string | null; assessed_recently: boolean; next_scan_at: string | null; open_findings: Record<string, number>;
+}
+export interface VmsEndpointsResponse {
+    endpoints: VmsEndpoint[]; eligibility_stored: boolean;
+    coverage: { active: number; eligible: number; assessed_last_30_days: number; awaiting_assessment: number; not_eligible: Record<string, number> };
+}
+
+export type EngineState = 'available' | 'offline' | 'not_enabled' | 'not_installed' | 'no_worker';
+export const ENGINE_STATE_LABEL: Record<EngineState, string> = { available: 'Available', offline: 'Worker offline', not_enabled: 'Installed, not enabled', not_installed: 'Not installed', no_worker: 'No worker' };
+export const ENGINE_STATE_STYLE: Record<EngineState, string> = {
+    available: 'bg-green/10 text-green', offline: 'bg-amber/10 text-amber', not_enabled: 'bg-card-muted text-foreground-muted', not_installed: 'bg-red/10 text-red', no_worker: 'bg-red/10 text-red',
+};
+export interface VmsOperations {
+    engines: { id: string; label: string; kind: string; state: EngineState; note: string; versions: string[] }[];
+    worker_presence: { state: 'online' | 'offline' | 'never'; source: string; online_workers: number; last_seen_at: string | null };
+    workers?: { worker_id: string; online: boolean; version: string | null; kinds: string[]; tools: Record<string, boolean>; tool_versions: Record<string, string>; networks: string[]; last_seen_at: string; last_job_at: string | null }[];
+    queue: { queued: number; running: number; oldest_queued_at: string | null };
+    last_7_days: Record<string, { queued: number; running: number; succeeded: number; inconclusive: number; failed: number; cancelled: number; median_duration_s: number | null }>;
+    active: (VmsScan & { assessment_id?: string | null; priority?: number })[];
+    recent_failures: (VmsScan & { assessment_id?: string | null; attempts?: number })[];
+    wazuh_sync: { last_attempt_at: string | null; last_complete_at: string | null; complete: boolean | null; problem: string | null };
+}
+
+export const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
+export const SEVERITY_STYLE: Record<string, string> = {
+    critical: 'bg-red/10 text-red', high: 'bg-orange/10 text-orange', medium: 'bg-amber/10 text-amber', low: 'bg-blue/10 text-blue', info: 'bg-card-muted text-foreground-muted',
+};
+/** "4m 10s" from seconds. */
+export const fmtDuration = (s: number | null | undefined) => (s === null || s === undefined ? '—' : s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`);
+/** Progress text from what the worker reported — a percentage only when it reported done/total. */
+export function scanProgress(p: VmsScan['progress'] | null | undefined): string {
+    if (!p) return '';
+    const pct = typeof p.done === 'number' && typeof p.total === 'number' && p.total > 0 ? ` ${p.done}/${p.total}` : '';
+    return [p.phase, p.message].filter(Boolean).join(' · ') + pct;
+}

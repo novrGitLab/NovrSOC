@@ -26,6 +26,7 @@ import { getAgentsForGroup, type WazuhAgent } from '../lib/wazuh-group';
 import { riskScore, DUE_DAYS, type Severity } from '../lib/riskScore';
 import { cleanCves, computeRisk } from './vmsFindings';
 import { ensureCves } from './cveIntel';
+import { refreshEligibility, missingP19, withoutP19, type EligibilityStatus } from './vmsEligibility';
 
 export const VULN_INDEX = 'wazuh-states-vulnerabilities-*';
 const INDEX = VULN_INDEX;
@@ -58,7 +59,7 @@ type AgentsFn = (group: string) => Promise<WazuhAgent[]>;
 const SEV: Record<string, Severity> = { critical: 'critical', high: 'high', medium: 'medium', low: 'low', none: 'info', untriaged: 'info' };
 const isPublic = (ip: string | null) => !!ip && !/^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
 
-export interface WazuhSyncResult { org: string; agents: number; ambiguous_agents: number; vulnerabilities: number; new_findings: number; verified: number; complete: boolean; errors: string[]; last_complete_at?: string | null }
+export interface WazuhSyncResult { org: string; agents: number; ambiguous_agents: number; vulnerabilities: number; new_findings: number; verified: number; complete: boolean; errors: string[]; last_complete_at?: string | null; eligibility?: Record<EligibilityStatus, number> | null }
 
 /** Freshness of one vms_wazuh_sync row: last attempt, last complete sync (rows from before P15
  *  carry no last_complete_at: a complete last run counts from last_synced_at), and why the last run was incomplete. */
@@ -95,19 +96,57 @@ export async function syncWazuhVulnerabilities(deps: { search?: SearchFn; agents
         const mine = agents.filter((x) => x.orgs.size === 1).map((x) => x.agent);
         res.agents = mine.length;
 
-        // Endpoint assets.
+        // Endpoint assets (P19: matched by agent id, with what the agent reports about itself).
         const assetByAgent = new Map<string, string>();
+        let p19 = true;
+        const write = async <T>(op: (f: Record<string, unknown>) => PromiseLike<{ data: T | null; error: { message: string; code?: string } | null }>, f: Record<string, unknown>) => {
+            let r = await op(p19 ? f : withoutP19(f));
+            if (p19 && missingP19(r.error)) { p19 = false; r = await op(withoutP19(f)); }
+            return r;
+        };
         for (const a of mine) {
             const value = a.name.toLowerCase();
-            const fields = { wazuh_agent_id: a.id, ips: a.ip ? [a.ip] : [], exposure: a.ip ? (isPublic(a.ip) ? 'internet' : 'internal') : 'unknown', alive: a.status === 'active', last_seen: started, status: 'active' };
-            const { data: ex } = await supabase.from('vms_assets').select('id').eq('org_id', org).eq('asset_type', 'endpoint').eq('value', value).maybeSingle();
-            if (ex) { await supabase.from('vms_assets').update(fields).eq('id', ex.id); assetByAgent.set(a.name, ex.id); }
-            else {
-                const ins = await supabase.from('vms_assets').insert({ org_id: org, asset_type: 'endpoint', value, hostnames: [], discovery_sources: ['wazuh'], first_seen: started, ...fields }).select('id').single();
-                if (ins.error) { res.errors.push(`asset ${value}: ${ins.error.message}`); continue; }
-                assetByAgent.set(a.name, ins.data.id);
-                await supabase.from('vms_asset_events').insert({ org_id: org, asset_id: ins.data.id, event: 'asset_new', details: { value, source: 'wazuh' } });
+            // lib/wazuh-group.ts adds the manager (agent 000) with a placeholder OS and keep-alive:
+            // those two are not reported by Wazuh, so they are stored as unknown.
+            const synthetic = a.id === '000';
+            const keepalive = !synthetic && a.lastKeepAlive && !Number.isNaN(Date.parse(a.lastKeepAlive)) ? new Date(a.lastKeepAlive).toISOString() : null;
+            const ips = a.ip ? [a.ip] : [];
+            const fields: Record<string, unknown> = {
+                wazuh_agent_id: a.id, ips, exposure: a.ip ? (isPublic(a.ip) ? 'internet' : 'internal') : 'unknown', alive: a.status === 'active',
+                // last_seen: present in Wazuh's agent inventory at this sync. The agent's own last
+                // contact is agent_last_keepalive.
+                last_seen: started, status: 'active',
+                os: synthetic ? null : a.os, agent_status: a.status, agent_last_keepalive: keepalive, agent_groups: a.group ?? [],
+            };
+            const byId = a.id ? await supabase.from('vms_assets').select('id, value, ips').eq('org_id', org).eq('asset_type', 'endpoint').eq('wazuh_agent_id', a.id).limit(1).maybeSingle() : { data: null };
+            const ex = byId.data ?? (await supabase.from('vms_assets').select('id, value, ips').eq('org_id', org).eq('asset_type', 'endpoint').eq('value', value).maybeSingle()).data;
+            if (ex) {
+                const upd = await write((f) => supabase.from('vms_assets').update(f).eq('id', ex.id).select('id'), fields);
+                if (upd.error) { res.errors.push(`asset ${value}: ${upd.error.message}`); continue; }
+                assetByAgent.set(a.name, ex.id);
+                const before = [...((ex.ips as string[] | null) ?? [])].sort().join(',');
+                const changes: Record<string, unknown> = {};
+                if (before !== [...ips].sort().join(',')) changes.ips = { from: ex.ips ?? [], to: ips };
+                if (ex.value !== value) {
+                    // A renamed agent keeps its asset; the name follows unless another endpoint holds it.
+                    const ren = await supabase.from('vms_assets').update({ value }).eq('id', ex.id).select('id');
+                    if (!ren.error) changes.name = { from: ex.value, to: value };
+                }
+                if (Object.keys(changes).length) await supabase.from('vms_asset_events').insert({ org_id: org, asset_id: ex.id, event: 'asset_changed', details: { ...changes, source: 'wazuh' } });
+            } else {
+                const ins = await write((f) => supabase.from('vms_assets').insert({ org_id: org, asset_type: 'endpoint', value, hostnames: [], discovery_sources: ['wazuh'], first_seen: started, ...f }).select('id').single(), fields);
+                if (ins.error || !ins.data) { res.errors.push(`asset ${value}: ${ins.error?.message ?? 'not stored'}`); continue; }
+                const id = (ins.data as { id: string }).id;
+                assetByAgent.set(a.name, id);
+                await supabase.from('vms_asset_events').insert({ org_id: org, asset_id: id, event: 'asset_new', details: { value, source: 'wazuh' } });
             }
+        }
+        // Where each endpoint may be scanned, given today's scope and workers (P19).
+        try {
+            const el = await refreshEligibility(org);
+            res.eligibility = el.stored ? el.counts : null;
+        } catch (err) {
+            res.errors.push(`eligibility: ${err instanceof Error ? err.message : String(err)}`);
         }
 
         // Vulnerabilities, in chunks of agents.

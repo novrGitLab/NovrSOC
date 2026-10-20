@@ -10,9 +10,12 @@ import Link from 'next/link';
 import { Settings2, Play } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
-import { fmtWat } from '@/lib/vms';
+import { fmtWat, PROFILE_LABEL, ELIGIBILITY_LABEL, type EligibilityStatus } from '@/lib/vms';
 
-interface Policy { id: string; name: string; enabled: boolean; asset_source: 'wazuh' | 'external' | 'any'; cooldown_hours: number; max_per_run: number; last_run_at: string | null; last_result: { queued?: number; existing?: number; skipped_cooldown?: number; blocked?: { asset: string; reason: string }[]; blocked_total?: number; not_evaluated?: number } | null }
+interface Policy {
+    id: string; name: string; enabled: boolean; asset_source: 'wazuh' | 'external' | 'any'; profile?: string; cooldown_hours: number; max_per_run: number; last_run_at: string | null;
+    last_result: { queued?: number; existing?: number; skipped_cooldown?: number; blocked?: { asset: string; reason: string }[]; blocked_total?: number; not_evaluated?: number; event_triggered?: number; ineligible?: Record<string, number> } | null;
+}
 interface Status {
     deployed_version: string | null;
     workers: { source: string; online: number; window_seconds: number; list: { worker_id: string; online: boolean; version: string | null; kinds: string[]; tools: Record<string, boolean>; tool_versions: Record<string, string>; networks: string[]; features: string[]; last_seen_at: string; last_job_at: string | null }[] };
@@ -34,7 +37,7 @@ export function VmsAdmin() {
     const [s, setS] = useState<Status | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [msg, setMsg] = useState<string | null>(null);
-    const [form, setForm] = useState({ name: '', asset_source: 'external' as Policy['asset_source'], cooldown_hours: 168, max_per_run: 5 });
+    const [form, setForm] = useState({ name: '', asset_source: 'external' as Policy['asset_source'], profile: 'full' as 'discovery' | 'standard' | 'full', cooldown_hours: 168, max_per_run: 5 });
     const [tick, setTick] = useState(0);
     const [check, setCheck] = useState<WazuhCheck | null>(null);
     const [checking, setChecking] = useState(false);
@@ -57,7 +60,7 @@ export function VmsAdmin() {
         if (r.ok) { setForm({ ...form, name: '' }); reload(); }
     }
     async function toggle(p: Policy) {
-        if (!p.enabled && !window.confirm(`Turn on "${p.name}"? Every hour, up to ${p.max_per_run} ${SOURCE_LABEL[p.asset_source].toLowerCase()} will get a Full Assessment (only the checks their authorised scope and the workers allow).`)) return;
+        if (!p.enabled && !window.confirm(`Turn on "${p.name}"? Every hour, up to ${p.max_per_run} ${SOURCE_LABEL[p.asset_source].toLowerCase()} will get a ${PROFILE_LABEL[p.profile ?? 'full'] ?? 'Full Assessment'} assessment (only the checks their authorised scope and the workers allow).`)) return;
         const r = await send('PATCH', `/api/vms/admin/policies/${p.id}`, { enabled: !p.enabled });
         setMsg(r.ok ? `Policy ${!p.enabled ? 'enabled' : 'disabled'}` : r.error);
         reload();
@@ -143,6 +146,7 @@ export function VmsAdmin() {
                                 <form onSubmit={(e) => { e.preventDefault(); void createPolicy(); }} className="flex flex-wrap gap-2 items-end">
                                     <label>Name<br /><input className={input} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="External hosts weekly" /></label>
                                     <label>Assets<br /><select className={input} value={form.asset_source} onChange={(e) => setForm({ ...form, asset_source: e.target.value as Policy['asset_source'] })}><option value="external">External hosts and IPs</option><option value="wazuh">Wazuh endpoints</option><option value="any">All assets</option></select></label>
+                                    <label>Profile<br /><select className={input} value={form.profile} onChange={(e) => setForm({ ...form, profile: e.target.value as typeof form.profile })}>{(['discovery', 'standard', 'full'] as const).map((x) => <option key={x} value={x}>{PROFILE_LABEL[x]}</option>)}</select></label>
                                     <label>Not more often than (hours)<br /><input type="number" min={24} max={2160} className={input} value={form.cooldown_hours} onChange={(e) => setForm({ ...form, cooldown_hours: Number(e.target.value) })} /></label>
                                     <label>At most per run<br /><input type="number" min={1} max={50} className={input} value={form.max_per_run} onChange={(e) => setForm({ ...form, max_per_run: Number(e.target.value) })} /></label>
                                     <button className="text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1.5" disabled={form.name.trim().length < 3}>Create (disabled)</button>
@@ -151,13 +155,14 @@ export function VmsAdmin() {
                                 {(s.policies.list ?? []).map((p) => (
                                     <div key={p.id} className="border-t border-border pt-2">
                                         <div className="flex items-center justify-between gap-2 flex-wrap">
-                                            <span className="font-bold text-foreground">{p.name} <span className="font-normal text-foreground-muted">· {SOURCE_LABEL[p.asset_source]} · every {p.cooldown_hours} h at most · up to {p.max_per_run} per run</span></span>
+                                            <span className="font-bold text-foreground">{p.name} <span className="font-normal text-foreground-muted">· {SOURCE_LABEL[p.asset_source]} · {PROFILE_LABEL[p.profile ?? 'full'] ?? p.profile} · every {p.cooldown_hours} h at most · up to {p.max_per_run} per run</span></span>
                                             <div className="flex gap-2">
                                                 <button onClick={() => void toggle(p)} className={`text-[11px] font-bold rounded-lg px-3 py-1 ${p.enabled ? 'bg-green/10 text-green' : 'border border-border'}`}>{p.enabled ? 'Enabled' : 'Disabled'}</button>
                                                 <button onClick={() => void runNow(p)} className="flex items-center gap-1 text-[11px] font-bold border border-border rounded-lg px-3 py-1"><Play className="w-3 h-3" /> Run now</button>
                                             </div>
                                         </div>
-                                        <p className="text-foreground-muted">Last run {fmtWat(p.last_run_at)}{p.last_result ? `: ${p.last_result.queued ?? 0} queued, ${p.last_result.skipped_cooldown ?? 0} in cooldown, ${p.last_result.blocked_total ?? (p.last_result.blocked ?? []).length} blocked${p.last_result.not_evaluated ? `, ${p.last_result.not_evaluated} left for the next run` : ''}` : ''}</p>
+                                        <p className="text-foreground-muted">Last run {fmtWat(p.last_run_at)}{p.last_result ? `: ${p.last_result.queued ?? 0} queued, ${p.last_result.skipped_cooldown ?? 0} in cooldown, ${p.last_result.blocked_total ?? (p.last_result.blocked ?? []).length} blocked${p.last_result.not_evaluated ? `, ${p.last_result.not_evaluated} left for the next run` : ''}${p.last_result.event_triggered ? `, ${p.last_result.event_triggered} early because the address changed` : ''}` : ''}</p>
+                                        {p.last_result?.ineligible && Object.keys(p.last_result.ineligible).length > 0 && <p className="text-foreground-muted">Not eligible: {Object.entries(p.last_result.ineligible).map(([k, n]) => `${n} ${ELIGIBILITY_LABEL[k as EligibilityStatus] ?? k}`).join(', ')} (<Link href="/admin/vms/endpoints" className="text-purple font-bold">Managed Endpoints</Link>)</p>}
                                         {(p.last_result?.blocked ?? []).slice(0, 5).map((b, i) => <p key={i} className="text-amber">{b.asset}: {b.reason}</p>)}
                                     </div>
                                 ))}

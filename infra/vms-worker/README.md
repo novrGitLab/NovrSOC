@@ -43,6 +43,16 @@ journalctl -u novrsoc-vms-worker -f
 
 Set the **same** `VMS_WORKER_TOKEN` on Railway; it must be at least 32 characters (`openssl rand -hex 32`). While it is unset, the backend refuses every worker call.
 
+### Health report
+
+```bash
+sudo -u novrsoc-vms bash -c 'set -a; . /opt/novrsoc-vms/worker.env; set +a; python3 /opt/novrsoc-vms/worker.py --health'
+```
+
+This reports each dependency by layer: local, reachability, authentication, functional, and end-to-end. End-to-end is never claimed; only a real authorised job proves it. Add `--json` for machine-readable output. It exits 1 on any failure. See [deploy-vms-worker-1.8.0.md](../../docs/runbooks/deploy-vms-worker-1.8.0.md).
+
+`audit-greenbone.sh` is a read-only audit of the Greenbone installation, native or containers. Run it before enabling `vuln_openvas`.
+
 ### Check the connection
 
 ```bash
@@ -102,7 +112,7 @@ status: connected; 30 poll(s), 0 job(s) in the last 10 min; backend reports 0 qu
 | `discovery` | `subfinder` (passive; queries public sources, not the target), `dnsx`, `httpx` | DNS lookups; one HTTP(S) request per host, at most `VMS_HTTPX_RATE` per second |
 | `ports` | `nmap -sT -sV -Pn -T3` | TCP connect scan with service detection, at most `VMS_NMAP_MAX_RATE` packets per second. No root. |
 | `vuln_nuclei` | `nuclei` | HTTP/network checks from templates, excluding disruptive ones, at most `VMS_NUCLEI_RATE` requests per second |
-| `vuln_openvas` | Greenbone | "Full and fast" network vulnerability tests |
+| `vuln_openvas` | Greenbone over gvmd's local socket | The configured scan configuration ("Full and fast" by default; safe checks on and vhost expansion off are required) |
 
 - **Shell:** tools run with argument lists, never through a shell.
 - **Time limit:** a job that runs longer than `VMS_TOOL_TIMEOUT_SECONDS` is stopped.
@@ -127,22 +137,31 @@ Add `vuln_nuclei` to `VMS_WORKER_KINDS`. How it runs:
 
 **Template updates:** keep templates current with a daily cron of `nuclei -update-templates` under that user.
 
-### OpenVAS / Greenbone (optional)
+### OpenVAS / Greenbone (optional, worker 1.8.0)
 
-OpenVAS needs its own installation (Greenbone Community Edition). Use a larger host: about 4 vCPU and 8 GB.
+Full setup, connectivity and troubleshooting: [docs/runbooks/vms-openvas.md](../../docs/runbooks/vms-openvas.md).
 
-1. Install it following Greenbone's documentation.
-2. Install the client library on the worker: `pip install python-gvm`.
-3. Give the `novrsoc-vms` user access to the gvmd socket.
-4. Create a dedicated GVM user.
-5. Set `GVM_SOCKET`, `GVM_USER` and `GVM_PASSWORD`, and add `vuln_openvas` to `VMS_WORKER_KINDS`.
-
-**What runs:** the built-in "Full and fast" scan configuration (non-destructive checks) against "All IANA assigned TCP" ports. The temporary task and target are deleted after each run.
+- **Connection:** the worker uses gvmd's **local socket** (GMP, via python-gvm) on the same host. No Greenbone port is opened, and Railway never connects to the VPS: the worker polls Railway outbound, as for every other kind.
+- **Requirements:**
+  - `python3-gvm` installed;
+  - the `novrsoc-vms` user in the socket's group;
+  - a dedicated, non-admin Greenbone user in `GVM_USER` / `GVM_PASSWORD`;
+  - `vuln_openvas` in `VMS_WORKER_KINDS`.
+- **Safety gate:** every job is refused unless the scan configuration has safe checks on and **vhost expansion off** (`expand_vhosts = no`). With expansion on, OpenVAS also tests hostnames it learns from reverse DNS and TLS certificates, which nobody authorised.
+- **Targets:**
+  - Greenbone gets exactly the job's authorised targets.
+  - Names are resolved just before submission. A name is refused if it does not resolve, if it resolves to a private address the worker has no declared route to, or, for a CNII-pinned name, if it resolves outside its approved addresses.
+  - Results are kept only for the submitted targets, and the backend re-checks each one against scope.
+- **One task per job:** `novrsoc-<job id>`. A job re-sent after a crash resumes that task instead of scanning twice. The task, its report and its target are deleted when the job ends.
+- **Limits and outcomes:**
+  - Each scan is stopped after `GVM_SCAN_TIMEOUT_SECONDS` (4 h).
+  - Transient gvmd failures are retried a bounded number of times.
+  - Every target gets an outcome from the report, so a verification rescan verifies a fix only when it shows it reached the target (and the finding's port).
 
 **Object ids:** the worker uses Greenbone's standard object ids. If your installation differs, override them with `GVM_CONFIG_ID`, `GVM_SCANNER_ID` or `GVM_PORT_LIST_ID`.
 
 ## 6. Tests
 
 ```bash
-python3 -m unittest test_worker -v
+python3 -m unittest test_worker test_greenbone -v
 ```

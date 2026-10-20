@@ -23,6 +23,7 @@ import { loadScannerStatus } from '../services/vmsWorkers';
 import { aiConfigured, AI_MODEL } from '../services/ai';
 import { lastVmsContinuousRun } from '../jobs/vmsContinuousJob';
 import { runPolicy, isMissingP14, P14_MISSING, type Policy } from '../services/vmsPolicies';
+import { RUNNABLE_PROFILES } from '../services/vmsProfiles';
 import { checkWazuhIntegration } from '../services/wazuhCheck';
 import { wazuhFreshness } from '../services/wazuhVulnSync';
 
@@ -79,24 +80,27 @@ router.get('/admin/status', requirePermission('vms:scope'), async (req: AuthRequ
 const NewPolicy = z.object({
     name: z.string().trim().min(3).max(120),
     asset_source: z.enum(['wazuh', 'external', 'any']),
+    // P19: what each run assesses (before sql/2026-10-25_p19_vms_automation.sql only 'full' is stored).
+    profile: z.enum(RUNNABLE_PROFILES).default('full'),
     cooldown_hours: z.number().int().min(24).max(2160).default(168),
     max_per_run: z.number().int().min(1).max(50).default(5),
 }).strict();
 router.post('/admin/policies', requirePermission('vms:scope'), async (req: AuthRequest, res) => {
     const p = NewPolicy.safeParse(req.body);
-    if (!p.success) { res.status(400).json({ error: 'Body must be { name, asset_source: wazuh|external|any, cooldown_hours?: 24..2160, max_per_run?: 1..50 }' }); return; }
+    if (!p.success) { res.status(400).json({ error: `Body must be { name, asset_source: wazuh|external|any, profile?: ${RUNNABLE_PROFILES.join('|')}, cooldown_hours?: 24..2160, max_per_run?: 1..50 }` }); return; }
     const org = requestOrg(req);
     const { data, error } = await getSupabase()!.from('vms_assessment_policies').insert({ org_id: org, ...p.data, enabled: false, created_by: actor(req) }).select('*').single();
+    if (error?.code === '23514') { res.status(503).json({ error: `The ${p.data.profile} profile is not set up yet (run sql/2026-10-25_p19_vms_automation.sql)` }); return; }
     if (error) { res.status(isMissingP14(error) ? 503 : 502).json({ error: isMissingP14(error) ? P14_MISSING : 'Could not create the policy' }); return; }
-    logAudit({ user: actor(req), action: 'VMS_POLICY_CREATED', resource: 'vms_assessment_policy', resource_id: data.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', details: `${p.data.name}: ${p.data.asset_source}, every ${p.data.cooldown_hours} h, max ${p.data.max_per_run}; disabled` });
+    logAudit({ user: actor(req), action: 'VMS_POLICY_CREATED', resource: 'vms_assessment_policy', resource_id: data.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', details: `${p.data.name}: ${p.data.asset_source} ${p.data.profile}, every ${p.data.cooldown_hours} h, max ${p.data.max_per_run}; disabled` });
     res.status(201).json({ policy: data });
 });
 
-const PolicyPatch = z.object({ name: z.string().trim().min(3).max(120).optional(), enabled: z.boolean().optional(), cooldown_hours: z.number().int().min(24).max(2160).optional(), max_per_run: z.number().int().min(1).max(50).optional() }).strict();
+const PolicyPatch = z.object({ name: z.string().trim().min(3).max(120).optional(), enabled: z.boolean().optional(), profile: z.enum(RUNNABLE_PROFILES).optional(), cooldown_hours: z.number().int().min(24).max(2160).optional(), max_per_run: z.number().int().min(1).max(50).optional() }).strict();
 router.patch('/admin/policies/:id', requirePermission('vms:scope'), async (req: AuthRequest, res) => {
     if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Policy not found' }); return; }
     const p = PolicyPatch.safeParse(req.body);
-    if (!p.success || !Object.keys(p.data).length) { res.status(400).json({ error: 'Body may hold name, enabled, cooldown_hours (24..2160), max_per_run (1..50)' }); return; }
+    if (!p.success || !Object.keys(p.data).length) { res.status(400).json({ error: 'Body may hold name, enabled, profile, cooldown_hours (24..2160), max_per_run (1..50)' }); return; }
     const org = requestOrg(req);
     const { data, error } = await getSupabase()!.from('vms_assessment_policies').update({ ...p.data, updated_by: actor(req), updated_at: new Date().toISOString() }).eq('id', req.params.id).eq('org_id', org).select('*').maybeSingle();
     if (error) { res.status(isMissingP14(error) ? 503 : 502).json({ error: isMissingP14(error) ? P14_MISSING : 'Could not update the policy' }); return; }

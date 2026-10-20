@@ -132,19 +132,32 @@ test('policies: managers only, created disabled, changes audited', async () => {
     assert.equal((await http('PATCH', `/api/vms/admin/policies/${(c.data.policy as Row).id}`, tok('soc_manager', 'org-b'), { enabled: false })).status, 404);
 });
 
-test('policy runs: same planning as manual, private endpoint not attempted, cooldown, cap, blocked reasons', async () => {
+test('policy runs: endpoint eligibility first, same planning as manual, cooldown, cap, blocked reasons', async () => {
     const policy = (b: Partial<Policy>): Policy => {
         const p = { id: randomUUID(), org_id: ORG, name: 'p', enabled: true, asset_source: 'wazuh', profile: 'full', cooldown_hours: 168, max_per_run: 5, last_run_at: null, last_result: null, ...b } as Policy;
         db.tables.vms_assessment_policies.push(p as unknown as Row);
         return p;
     };
     const wz = policy({ asset_source: 'wazuh' });
+    const endpoint = db.tables.vms_assets.find((x) => x.id === ids.endpoint)!;
+    // The endpoint's address is in scope for ports but not vulnerability scans: not covered for a Full Assessment.
+    const r0 = await runPolicy(wz);
+    assert.deepEqual([r0.queued, r0.blocked.length, r0.ineligible], [0, 0, { not_covered: 1 }], 'reported, not attempted, no budget spent');
+    assert.equal((endpoint.scan_eligibility as Row).status, 'not_covered');
+    // Covered for vulnerability scans, but private with no worker route.
+    db.tables.vms_scopes.find((s) => s.id === SCOPE_PRIV)!.allow_vuln_scan = true;
+    const r1a = await runPolicy(wz);
+    assert.deepEqual([r1a.queued, r1a.ineligible], [0, { private_no_route: 1 }]);
+    assert.equal(db.tables.vms_assessments.length, 0);
+    assert.equal(endpoint.next_scan_at ?? null, null, 'no next scan while it cannot be assessed');
+    // A worker inside that network: assessed, through the same planning as a manual request.
+    db.tables.vms_workers[0].networks = ['10.88.0.0/16'];
     const r1 = await runPolicy(wz);
     assert.deepEqual([r1.queued, r1.blocked.length], [1, 0]);
     const a = db.tables.vms_assessments[0];
-    assert.deepEqual([a.target, a.trigger, a.policy_id, a.asset_id], ['10.88.1.139', 'policy', wz.id, ids.endpoint]);
-    assert.ok((a.steps as Row[]).every((s) => s.decision !== 'queued'), 'public worker has no route: nothing queued');
-    assert.equal(db.tables.vms_scan_jobs.length, 0);
+    assert.deepEqual([a.target, a.trigger, a.policy_id, a.asset_id, a.profile], ['10.88.1.139', 'policy', wz.id, ids.endpoint, 'full']);
+    assert.deepEqual((a.steps as Row[]).map((s) => s.decision), ['queued', 'queued', 'unsupported', 'unsupported'], 'the worker runs discovery and ports only');
+    assert.equal(Date.parse(String(endpoint.next_scan_at)) > Date.now() + 160 * 3_600_000, true, 'next scan stamped at the end of the cooldown');
     const r2 = await runPolicy(wz);
     assert.deepEqual([r2.queued, r2.skipped_cooldown], [0, 1], 'not re-queued within the cooldown');
     // External assets: in scope -> assessed; out of scope -> blocked with the reason; capped.

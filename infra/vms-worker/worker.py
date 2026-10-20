@@ -10,6 +10,11 @@ still re-checks scope before each tool runs, as a second line of defence.
   discovery  subfinder (passive subdomains) -> dnsx (A/AAAA/CNAME) -> httpx (live HTTP, title,
              status, server, technologies)
   ports      nmap -sT -sV (TCP connect + service/version detection; no root needed)
+  vuln_nuclei   nuclei templates (non-disruptive), after a TCP reachability check
+  vuln_openvas  Greenbone/OpenVAS over gvmd's local socket (GMP, python-gvm); 1.8.0: one task per
+                job reused across redelivery, bounded retries and time limit, scan-configuration
+                safety gate (safe checks, no vhost expansion), results attributed only to the
+                submitted targets, per-target outcomes from the report
 
 Safety: tools are run with argument lists (never a shell); every target is re-validated as a
 plain hostname, IP or the job's own CIDR; rates and timeouts are conservative; a heartbeat every
@@ -26,6 +31,12 @@ line every VMS_STATUS_LOG_SECONDS (default 600) so a quiet log is never ambiguou
   python3 worker.py --check       one heartbeat to the backend and a plain-language result; claims nothing
   python3 worker.py --self-test   preflight for deployment: configuration (no secret printed), tools and
                                   their versions, then the heartbeat; exit 0 only when all pass
+  python3 worker.py --health [--json] [--gvm-permission-probe]
+                                  health of the worker and each dependency by layer: local, reachability,
+                                  authentication, functional, end-to-end (never claimed: needs a real job).
+                                  Read-only towards Greenbone; one heartbeat to the backend. Exit 1 on a failure.
+                                  --gvm-permission-probe also creates and deletes a test target and task
+                                  (TEST-NET 192.0.2.1, never started) to prove the GVM user may create them
 
 Outcomes (1.3.0): every target of a ports or discovery job gets a host-level result with an
 assessment, so "nothing found" is never confused with "could not look":
@@ -53,7 +64,7 @@ import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 import requests
@@ -68,7 +79,7 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
-VERSION = '1.7.0'
+VERSION = '1.8.0'
 # What this worker enforces itself; the backend only gives jobs that need a feature to workers announcing it.
 FEATURES = ['exclusions', 'pinned_addresses']
 # Networks this worker can actually reach besides the public internet (comma-separated CIDRs), e.g.
@@ -90,7 +101,8 @@ NUCLEI_RATE = os.environ.get('VMS_NUCLEI_RATE', '50')                    # reque
 NUCLEI_SEVERITIES = os.environ.get('VMS_NUCLEI_SEVERITIES', 'low,medium,high,critical')
 # Templates that could disrupt a service or brute-force credentials are never run.
 NUCLEI_EXCLUDE_TAGS = 'dos,fuzz,intrusive,bruteforce'
-# OpenVAS / Greenbone (Release 2, optional): reached over its management socket with python-gvm.
+# OpenVAS / Greenbone (Release 2, optional): reached over gvmd's local management socket (GMP) with
+# python-gvm, so no Greenbone port is ever exposed. See docs/runbooks/vms-openvas.md.
 GVM_SOCKET = os.environ.get('GVM_SOCKET', '/run/gvmd/gvmd.sock')
 GVM_USER = os.environ.get('GVM_USER', '')
 GVM_PASSWORD = os.environ.get('GVM_PASSWORD', '')
@@ -99,6 +111,21 @@ GVM_CONFIG_ID = os.environ.get('GVM_CONFIG_ID', 'daba56c8-73ec-11df-a475-0022647
 GVM_SCANNER_ID = os.environ.get('GVM_SCANNER_ID', '08b69003-5fc2-4037-a479-93b440211c73')      # "OpenVAS Default"
 GVM_PORT_LIST_ID = os.environ.get('GVM_PORT_LIST_ID', '33d0cd82-57c6-11e1-8ed1-406186ea4fc5')  # "All IANA assigned TCP"
 GVM_XML_FORMAT_ID = 'a994b278-1f62-11e1-96ac-406186ea4fc5'
+GVM_SCAN_TIMEOUT = max(600, int(os.environ.get('GVM_SCAN_TIMEOUT_SECONDS', '14400')))   # whole scan; stopped after this
+GVM_POLL_SECONDS = max(10, int(os.environ.get('GVM_POLL_SECONDS', '30')))
+GVM_SOCKET_TIMEOUT = max(30, int(os.environ.get('GVM_SOCKET_TIMEOUT_SECONDS', '300')))  # one GMP call (reports can be slow)
+# Optional target alive test (python-gvm AliveTest values); unset = the scan configuration's default.
+GVM_ALIVE_TEST = os.environ.get('GVM_ALIVE_TEST', '').strip()
+GVM_ALIVE_TESTS = ('Scan Config Default', 'ICMP Ping', 'TCP-ACK Service Ping', 'TCP-SYN Service Ping', 'ARP Ping',
+                   'ICMP & TCP-ACK Service Ping', 'ICMP & ARP Ping', 'TCP-ACK Service & ARP Ping',
+                   'ICMP, TCP-ACK Service & ARP Ping', 'Consider Alive')
+# Where the scanner's own settings live, read only to confirm vhost expansion is off (see gvm_config_safety).
+GVM_OPENVAS_CONF = os.environ.get('GVM_OPENVAS_CONF', '/etc/openvas/openvas.conf')
+# min_qod=70 is Greenbone's own default quality threshold; rows=-1 with ignore_pagination returns every result.
+GVM_REPORT_FILTER = 'apply_overrides=0 min_qod=70 first=1 rows=-1'
+GVM_RETRY_DELAYS = (5, 15, 45)    # seconds between attempts after a transient Greenbone failure
+GVM_MAX_POLL_FAILURES = 5         # consecutive failed status checks before the job fails
+GVM_TASK_PREFIX = 'novrsoc-'      # task and target names: novrsoc-<job id>; only these are ever touched
 CVE_RE = re.compile(r'^CVE-\d{4}-\d{4,7}$')
 
 LABEL = re.compile(r'^(?!-)[a-z0-9-]{1,63}(?<!-)$')
@@ -345,7 +372,9 @@ def parse_nmap_xml(xml_text: str) -> list[dict]:
                 'service': svc.get('name') if svc is not None else None,
                 'product': svc.get('product') if svc is not None else None,
                 'version': ' '.join(x for x in (svc.get('version'), svc.get('extrainfo')) if x)[:80] or None if svc is not None else None,
-                'cpe': cpes or None,
+                # Omitted when nmap gave none: backends before the fix rejected cpe: null, which made
+                # every service without a CPE an "invalid observation" (1.8.0).
+                **({'cpe': cpes} if cpes else {}),
             })
     return out
 
@@ -423,6 +452,31 @@ def target_route(target: str) -> tuple[bool, Optional[str]]:
     return False, (f'{target} is a private/non-public address and worker {WORKER_ID} declares no route to it '
                    f'(VMS_WORKER_NETWORKS: {declared}). Run a worker inside that network, or declare the network '
                    'on this worker if it really has a route (e.g. a VPN). Not attempted.')
+
+
+def _net_within(net, cidr: str) -> bool:
+    try:
+        return net.subnet_of(ipaddress.ip_network(cidr, strict=False))
+    except (ValueError, TypeError):   # invalid, or IPv4 against IPv6
+        return False
+
+
+def _in_net(ip: str, net) -> bool:
+    try:
+        return ipaddress.ip_address(ip) in net
+    except ValueError:
+        return False
+
+
+def _evidence_target(targets: list[str]) -> str:
+    """As many whole targets as fit the backend's 253-character evidence target (never a cut name)."""
+    out = ''
+    for t in targets:
+        nxt = f'{out},{t}' if out else t
+        if len(nxt) > 253:
+            break
+        out = nxt
+    return out or targets[0][:253]
 
 
 REACH_TIMEOUT = 5
@@ -526,39 +580,175 @@ def parse_nuclei(lines: Iterable[str]) -> list[dict]:
     return out
 
 
-def parse_openvas_report(xml_text: str) -> list[dict]:
-    """A GVM XML report into finding observations. Log/debug-level results are skipped."""
-    out = []
+_GVM_PORT = re.compile(r'^(\d{1,5})/(tcp|udp)$')
+_NOT_FINDINGS = ('Log', 'Debug', 'False Positive')
+
+
+def _gvm_score(*texts) -> Optional[float]:
+    for t in texts:
+        try:
+            v = float((t or '').strip())
+        except ValueError:
+            continue
+        if 0 <= v <= 10:
+            return v
+    return None
+
+
+def _result_host(r) -> tuple[str, str]:
+    """(ip, hostname) of a GMP <result>: <host>IP<hostname>name</hostname></host>."""
+    h = r.find('host')
+    if h is None:
+        return '', ''
+    return (h.text or '').strip(), (h.findtext('hostname') or '').strip().lower().rstrip('.')
+
+
+def openvas_results(xml_text: str, attribute=None, context: Optional[dict] = None) -> tuple[list[dict], dict]:
+    """A GMP XML report into finding observations, plus counts of what was not turned into one.
+
+    attribute(ip, hostname) names the submitted target a result belongs to, or None to drop it (a
+    host OpenVAS found on its own, such as a vhost from a TLS certificate, is never attributed).
+    Without it, the reported hostname or IP is used. Log/debug/false-positive results are skipped;
+    results missing a host, NVT or usable fields are counted, never fatal. Raises ET.ParseError
+    only when the XML itself cannot be read."""
+    attribute = attribute or (lambda ip, name: (parse_target(name) or parse_target(ip) or (None, None))[1])
+    context = context or {}
+    out: list[dict] = []
+    stats = {'results': 0, 'not_findings': 0, 'incomplete': 0, 'unattributed': 0}
     root = ET.fromstring(xml_text)
     for r in root.iter('result'):
+        if r.find('nvt') is None and r.find('host') is None:
+            continue   # a <result> reference elsewhere in the report, not a result
+        stats['results'] += 1
         threat = (r.findtext('threat') or '').strip()
-        if threat in ('Log', 'Debug', 'False Positive'):
+        if threat in _NOT_FINDINGS:
+            stats['not_findings'] += 1
             continue
-        host_el = r.find('host')
-        hostname = (host_el.findtext('hostname') if host_el is not None else '') or ''
-        ip = (host_el.text or '').strip() if host_el is not None else ''
-        t = parse_target(hostname) or parse_target(ip)
+        ip, hostname = _result_host(r)
         nvt = r.find('nvt')
-        oid = nvt.get('oid') if nvt is not None else None
-        if not t or not oid:
+        oid = (nvt.get('oid') or '').strip() if nvt is not None else ''
+        if not (ip or hostname) or not oid:
+            stats['incomplete'] += 1
             continue
-        try:
-            score = float(r.findtext('severity') or nvt.findtext('cvss_base') or '')
-        except ValueError:
-            score = None
-        port_txt = r.findtext('port') or ''
-        m = re.match(r'^(\d+)/(tcp|udp)$', port_txt)
-        cves = sorted({ref.get('id', '').upper() for ref in nvt.iter('ref') if ref.get('type') == 'cve' and CVE_RE.match(ref.get('id', '').upper())})
+        host = attribute(ip, hostname)
+        if not host:
+            stats['unattributed'] += 1
+            continue
+        # Current GMP: <severity> on the result, CVSS under nvt/severities; older: nvt/cvss_base.
+        score = _gvm_score(r.findtext('severity'), nvt.findtext('severities/severity/score'), nvt.findtext('cvss_base'))
+        port_txt = (r.findtext('port') or '').strip()
+        m = _GVM_PORT.match(port_txt)
+        cve_ids = {(ref.get('id') or '').upper() for ref in nvt.iter('ref') if ref.get('type') == 'cve'}
+        cve_ids |= {c.strip().upper() for c in (nvt.findtext('cve') or '').split(',')}   # older GMP: one comma list
+        cves = sorted(c for c in cve_ids if CVE_RE.match(c))
         refs = [ref.get('id') for ref in nvt.iter('ref') if ref.get('type') == 'url' and ref.get('id')][:50]
+        solution = nvt.find('solution')
         out.append({
-            'type': 'finding', 'host': t[1], 'port': int(m.group(1)) if m else None, 'protocol': m.group(2) if m else None, 'scanner': 'openvas',
-            'rule_id': oid[:200], 'title': (nvt.findtext('name') or oid)[:300], 'severity': _sev_from_score(score),
-            'cve_ids': cves, 'cvss': score if score is not None and 0 <= score <= 10 else None,
-            'description': (r.findtext('description') or '')[:8000] or None, 'remediation': (nvt.findtext('solution') or '')[:8000] or None,
-            'references': refs, 'matched_at': f'{t[1]}:{port_txt}'[:2048], 'finding_type': 'vulnerability',
-            'evidence': {'oid': oid, 'threat': threat, 'qod': r.findtext('qod/value')},
+            'type': 'finding', 'host': host, 'port': int(m.group(1)) if m and int(m.group(1)) <= 65535 else None,
+            'protocol': m.group(2) if m else None, 'scanner': 'openvas',
+            'rule_id': oid[:200], 'title': (nvt.findtext('name') or oid).strip()[:300] or oid[:300], 'severity': _sev_from_score(score),
+            'cve_ids': cves, 'cvss': score,
+            'description': (r.findtext('description') or '').strip()[:8000] or None,
+            'remediation': ((solution.text if solution is not None else '') or '').strip()[:8000] or None,
+            'references': refs, 'matched_at': f'{host}:{port_txt}'[:2048] if port_txt else host, 'finding_type': 'vulnerability',
+            'evidence': {
+                'oid': oid, 'threat': threat or None, 'severity': score, 'qod': r.findtext('qod/value'),
+                'result_id': r.get('id'), 'scanned_ip': ip or None, 'reported_hostname': hostname or None, 'port': port_txt or None,
+                'solution_type': solution.get('type') if solution is not None else None,
+                'detected_at': (r.findtext('creation_time') or '').strip() or None,
+                **{k: v for k, v in context.items() if v},
+            },
         })
-    return out
+    return out, stats
+
+
+def parse_openvas_report(xml_text: str) -> list[dict]:
+    """A GMP XML report into finding observations (hostname, else IP). Log/debug-level results are skipped."""
+    return openvas_results(xml_text)[0]
+
+
+def openvas_hosts(xml_text: str) -> dict[str, dict]:
+    """What the report says OpenVAS actually scanned, keyed by IP: hostnames it reported and the
+    ports with results. A host its alive test found dead is absent. Raises ET.ParseError on bad XML."""
+    root = ET.fromstring(xml_text)
+    hosts: dict[str, dict] = {}
+
+    def entry(ip: str) -> dict:
+        return hosts.setdefault(ip, {'hostnames': set(), 'ports': set(), 'results': 0})
+    # Report-level host summaries are the <host> elements that carry an <ip> child.
+    for h in root.iter('host'):
+        ip = (h.findtext('ip') or '').strip()
+        if not ip:
+            continue
+        e = entry(ip)
+        for d in h.findall('detail'):
+            name, value = (d.findtext('name') or '').strip(), (d.findtext('value') or '').strip()
+            if name == 'hostname' and value:
+                e['hostnames'].add(value.lower().rstrip('.'))
+            elif name in ('ports', 'tcp_ports', 'udp_ports') and value:
+                proto = 'udp' if name == 'udp_ports' else 'tcp'
+                e['ports'].update(f'{p.strip()}/{proto}' for p in value.split(',') if p.strip().isdigit())
+    for r in root.iter('result'):
+        ip, hostname = _result_host(r)
+        if not ip:
+            continue
+        e = entry(ip)
+        e['results'] += 1
+        if hostname:
+            e['hostnames'].add(hostname)
+        port_txt = (r.findtext('port') or '').strip()
+        if _GVM_PORT.match(port_txt):
+            e['ports'].add(port_txt)
+    return hosts
+
+
+def classify_openvas(target: str, ips: set, hosts: dict[str, dict], required_port: Optional[int] = None) -> tuple[str, str]:
+    """An outcome for one submitted target from the report. Like nmap, never claims a device is down:
+    absent from the report only means OpenVAS got no answer. A scan that found no port with a result
+    proves nothing either way (closed and filtered look the same), so it is insufficient evidence."""
+    seen = {ip: hosts[ip] for ip in ips if ip in hosts}
+    if not seen:
+        return 'unreachable', (f'OpenVAS did not report {target}: its alive test got no answer from this scanner, or the host '
+                               'was not scanned. The device may still be online; a firewall dropping every probe looks the same')
+    ports = sorted({p for h in seen.values() for p in h['ports']}, key=lambda p: (int(p.split('/')[0]), p))
+    if required_port is not None:
+        if any(p.split('/')[0] == str(required_port) for p in ports):
+            return 'reachable_open', f'OpenVAS scanned {", ".join(sorted(seen))} and port {required_port} answered'
+        return 'insufficient_evidence', f'OpenVAS scanned {", ".join(sorted(seen))} but port {required_port} produced no result, so the check proves nothing for it'
+    if ports:
+        return 'reachable_open', f'OpenVAS scanned {", ".join(sorted(seen))}: {len(ports)} port(s) with results ({", ".join(ports[:8])}{"…" if len(ports) > 8 else ""})'
+    return 'insufficient_evidence', f'OpenVAS scanned {", ".join(sorted(seen))} but reported no port with a result; closed and filtered cannot be told apart'
+
+
+class OpenvasSubmission:
+    """The exact targets handed to Greenbone, with the addresses each name resolved to just before
+    submission. Results are attributed only to these; nothing OpenVAS discovers is followed."""
+
+    def __init__(self):
+        self.names: dict[str, set] = {}       # hostname -> addresses it resolved to
+        self.ips: set = set()
+        self.nets: list = []                  # (text, ip_network)
+
+    @property
+    def hosts(self) -> list[str]:
+        return sorted(self.names) + sorted(self.ips) + [t for t, _ in self.nets]
+
+    def attribute(self, ip: str, hostname: str) -> Optional[str]:
+        try:
+            addr = str(ipaddress.ip_address(ip.split('%')[0])) if ip else ''
+        except ValueError:
+            addr = ''
+        if hostname in self.names and (not addr or addr in self.names[hostname]):
+            return hostname
+        if addr and addr in self.ips:
+            return addr
+        if addr and any(ipaddress.ip_address(addr) in n for _, n in self.nets):
+            return addr
+        if addr and not hostname:
+            owners = [n for n, a in self.names.items() if addr in a]
+            if len(owners) == 1:
+                return owners[0]
+        return None
 
 
 # ── Backend API ───────────────────────────────────────────────────────────────────────────────
@@ -569,8 +759,9 @@ _BEARER = re.compile(r'(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*')
 def redact_text(text: str, limit: int = 300) -> str:
     """Removes the worker token, bearer credentials and URL query strings, and caps the length."""
     t = str(text)
-    if TOKEN:
-        t = t.replace(TOKEN, '[REDACTED]')
+    for secret in (TOKEN, GVM_PASSWORD):
+        if secret:
+            t = t.replace(secret, '[REDACTED]')
     t = _BEARER.sub('Bearer [REDACTED]', t)
     t = _URL_QUERY.sub(r'\1?[REDACTED]', t)
     return t[:limit]
@@ -751,7 +942,14 @@ def tool_versions(refresh: bool = False) -> dict:
 
 
 def heartbeat_body() -> dict:
-    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory(), 'networks': WORKER_NETWORKS, 'features': FEATURES, 'tool_versions': tool_versions()}
+    versions = tool_versions()
+    try:
+        gvm = openvas_summary()
+    except Exception:  # noqa: BLE001 — presence must never fail because Greenbone did
+        gvm = None
+    if gvm:
+        versions = {**versions, 'openvas': gvm}
+    return {'worker_id': WORKER_ID, 'kinds': KINDS, 'version': VERSION, 'tools': tool_inventory(), 'networks': WORKER_NETWORKS, 'features': FEATURES, 'tool_versions': versions}
 
 
 VALID_KINDS = ('discovery', 'ports', 'vuln_nuclei', 'vuln_openvas')
@@ -775,6 +973,11 @@ def preflight() -> list[str]:
             ipaddress.ip_network(n, strict=False)
         except ValueError:
             problems.append(f'VMS_WORKER_NETWORKS has an invalid CIDR: {n}')
+    if 'vuln_openvas' in KINDS:
+        if not GVM_USER or not GVM_PASSWORD:
+            problems.append('vuln_openvas is in VMS_WORKER_KINDS but GVM_USER / GVM_PASSWORD are not set')
+        if GVM_ALIVE_TEST and GVM_ALIVE_TEST not in GVM_ALIVE_TESTS:
+            problems.append(f'GVM_ALIVE_TEST must be one of: {", ".join(GVM_ALIVE_TESTS)}')
     tools = tool_inventory()
     for k in KINDS:
         missing = [t for t in KIND_TOOLS.get(k, []) if not tools.get(t)]
@@ -789,6 +992,11 @@ def self_test() -> int:
     for t, ok in tools.items():
         print(f'  {t:10} {"installed " + versions.get(t, "") if ok else "not installed"}')
     problems = preflight()
+    if not problems and 'vuln_openvas' in KINDS:
+        info, gvm_problems = greenbone_check()
+        for line in info:
+            print(f'  {line}')
+        problems += gvm_problems
     for p_ in problems:
         print(f'FAIL: {p_}')
     if problems:
@@ -843,6 +1051,516 @@ def presence_loop(conn: ConnectionLog, stop: threading.Event) -> None:
 
 class Cancelled(Exception):
     pass
+
+
+# ── Greenbone / OpenVAS adapter (GMP over gvmd's local socket) ────────────────────────────────
+class GreenboneError(RuntimeError):
+    """A Greenbone failure with a plain reason, never a credential. retryable: worth another try."""
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def gvm_problem(e: BaseException) -> GreenboneError:
+    """Maps python-gvm and socket errors (by class name, so tests need no python-gvm) to a reason."""
+    if isinstance(e, GreenboneError):
+        return e
+    name = type(e).__name__
+    text = redact_text(getattr(e, 'message', None) or str(e) or name, 200)
+    status = str(getattr(e, 'status', '') or '')
+    if isinstance(e, PermissionError):
+        return GreenboneError(f'no permission to use the gvmd socket {GVM_SOCKET}: add the worker user to the group that owns it')
+    if name == 'GvmResponseError':   # gvmd answered 4xx
+        if status == '400' and 'auth' in text.lower():
+            return GreenboneError('Greenbone rejected GVM_USER / GVM_PASSWORD (authentication failed)')
+        return GreenboneError(f'Greenbone refused the request (GMP {status or "4xx"}): {text}')
+    if name == 'GvmServerError':     # gvmd answered 5xx, e.g. 503 while a feed sync holds its lock
+        return GreenboneError(f'Greenbone could not process the request (GMP {status or "5xx"}): {text}', retryable=True)
+    if name in ('ParseError', 'XMLSyntaxError'):   # a response gvmd sent that is not readable XML
+        return GreenboneError(f'the OpenVAS report could not be read: Greenbone sent a response that is not valid XML ({text})')
+    if 'unsupported version' in text.lower():
+        return GreenboneError(f'{text} (update python-gvm on this host)')
+    if name == 'GvmError' or isinstance(e, (OSError, EOFError)):
+        return GreenboneError(f'cannot talk to gvmd at {GVM_SOCKET}: {text}', retryable=True)
+    return GreenboneError(f'Greenbone call failed ({name}): {text}')
+
+
+def gmp_session():
+    """A python-gvm session on the local gvmd socket (use as `with gmp_session() as gmp:`)."""
+    from gvm.connections import UnixSocketConnection
+    from gvm.protocols.gmp import Gmp
+    from gvm.transforms import EtreeCheckCommandTransform
+    return Gmp(connection=UnixSocketConnection(path=GVM_SOCKET, timeout=GVM_SOCKET_TIMEOUT), transform=EtreeCheckCommandTransform())
+
+
+GMP_FACTORY = gmp_session   # replaced in tests
+
+
+def xml_text(el) -> str:
+    """A GMP response element as text (python-gvm returns lxml elements; tests use ElementTree)."""
+    if isinstance(el, (str, bytes)):
+        return el.decode('utf-8', 'replace') if isinstance(el, bytes) else el
+    if isinstance(el, ET.Element):
+        return ET.tostring(el, encoding='unicode')
+    from lxml import etree   # installed with python-gvm
+    return etree.tostring(el, encoding='unicode')
+
+
+def _flag(v) -> Optional[bool]:
+    v = str(v if v is not None else '').strip().lower()
+    return True if v in ('yes', '1', 'true') else False if v in ('no', '0', 'false') else None
+
+
+def read_openvas_conf() -> Optional[str]:
+    try:
+        with open(GVM_OPENVAS_CONF, encoding='utf-8', errors='replace') as f:
+            return f.read(256 * 1024)
+    except OSError:
+        return None
+
+
+def gvm_config_safety(config_el, conf_text: Optional[str]) -> tuple[bool, str]:
+    """Whether the scan configuration is safe to run against an authorised target. Fails closed:
+      • safe_checks must not be off (checks that can disrupt a service);
+      • expand_vhosts must be confirmed off. When on, OpenVAS adds hostnames it learns from reverse DNS
+        and TLS certificates and tests them too: names nobody authorised, on shared hosting often
+        someone else's sites. A configuration value wins; otherwise openvas.conf; otherwise refused,
+        since OpenVAS defaults it to on."""
+    prefs: dict[str, Optional[str]] = {}
+    for p in config_el.iter('preference'):
+        nvt = p.find('nvt')
+        if nvt is not None and (nvt.get('oid') or '').strip():
+            continue   # an individual check's preference, not a scanner setting
+        name = (p.findtext('name') or '').strip()
+        if name:
+            prefs[name] = p.findtext('value')
+    safe = _flag(prefs.get('safe_checks'))
+    if safe is False:
+        return False, 'the scan configuration has safe_checks off, which allows checks that can disrupt a service; use one with safe checks on'
+    if 'expand_vhosts' in prefs:
+        source, expand = 'the scan configuration', _flag(prefs['expand_vhosts'])
+    else:
+        source = GVM_OPENVAS_CONF
+        if conf_text is None:
+            return False, f'cannot confirm vhost expansion is off: the scan configuration does not set expand_vhosts and {GVM_OPENVAS_CONF} could not be read'
+        m = re.findall(r'^\s*expand_vhosts\s*=\s*(\S+)', conf_text, re.M)
+        expand = _flag(m[-1]) if m else None
+        if not m:
+            return False, f'cannot confirm vhost expansion is off: neither the scan configuration nor {GVM_OPENVAS_CONF} sets expand_vhosts, and OpenVAS defaults it to yes'
+    if expand is not False:
+        return False, f'vhost expansion is on ({source}: expand_vhosts): OpenVAS would also test hostnames it discovers, which are not authorised. Set expand_vhosts = no'
+    return True, f'safe checks {"on" if safe else "at the scanner default"}; vhost expansion off ({source})'
+
+
+TASK_IN_PROGRESS_HINT = 'New, Requested, Queued, Running, Stop Requested'
+TASK_FAILED = ('Stopped', 'Interrupted', 'Delete Requested', 'Ultimate Delete Requested')
+
+
+class GreenboneScan:
+    """One vuln_openvas job's task in Greenbone, named novrsoc-<job id>.
+
+    Each step opens a short GMP session (connect + authenticate). Submission is find-or-create by
+    that name, so a job re-sent after a crash resumes its existing task instead of starting a second
+    scan, and a retried step never duplicates one. Only objects with this exact name are touched."""
+
+    def __init__(self, job_id: str, submission: OpenvasSubmission, cancel: threading.Event, on_progress=None,
+                 factory=None, clock=time.monotonic, sleep=None, conf_reader=read_openvas_conf):
+        self.name = f'{GVM_TASK_PREFIX}{job_id}'
+        self.sub, self.cancel = submission, cancel
+        self.on_progress = on_progress or (lambda status, pct: None)
+        self.factory = factory or GMP_FACTORY
+        self.clock = clock
+        self.sleep = sleep or (lambda s: cancel.wait(s))
+        self.conf_reader = conf_reader
+        self.task_id: Optional[str] = None
+        self.target_id: Optional[str] = None
+        self.report_id: Optional[str] = None
+        self.resumed = False
+        self.safety = ''
+
+    # Sessions
+    def _session(self, fn):
+        try:
+            with self.factory() as gmp:
+                gmp.authenticate(GVM_USER, GVM_PASSWORD)
+                return fn(gmp)
+        except (Cancelled, GreenboneError):
+            raise
+        except Exception as e:  # noqa: BLE001 — every python-gvm/socket failure gets a plain reason
+            raise gvm_problem(e) from None
+
+    def _with_retry(self, what: str, fn):
+        for delay in (*GVM_RETRY_DELAYS, None):
+            try:
+                return self._session(fn)
+            except GreenboneError as e:
+                if not e.retryable or delay is None:
+                    raise
+                log.warning('greenbone %s failed (%s); retrying in %ss', what, e, delay)
+                self.sleep(delay)
+                if self.cancel.is_set():
+                    raise Cancelled() from None
+
+    # Lookups (GMP XML)
+    def _own(self, gmp, kind: str) -> list:
+        get = gmp.get_tasks if kind == 'task' else gmp.get_targets
+        resp = get(filter_string=f'name="{self.name}" rows=-1')
+        return [el for el in resp.findall(kind) if (el.findtext('name') or '').strip() == self.name and el.get('id')]
+
+    @staticmethod
+    def _report_of(task) -> Optional[str]:
+        for path in ('current_report/report', 'last_report/report'):
+            r = task.find(path)
+            if r is not None and r.get('id'):
+                return r.get('id')
+        return None
+
+    def _hosts_of(self, gmp, target_id: Optional[str]) -> set:
+        if not target_id:
+            return set()
+        try:
+            t = gmp.get_target(target_id).find('target')
+        except Exception as e:  # noqa: BLE001 — a missing target makes the task stale, not the job fail
+            if gvm_problem(e).retryable:
+                raise
+            return set()
+        text = (t.findtext('hosts') if t is not None else '') or ''
+        return {h.strip().lower() for h in text.split(',') if h.strip()}
+
+    def _delete(self, gmp, task_id: Optional[str], target_id: Optional[str]) -> None:
+        for fn, oid in ((gmp.delete_task, task_id), (gmp.delete_target, target_id)):
+            if oid:
+                try:
+                    fn(oid, ultimate=True)
+                except Exception as e:  # noqa: BLE001 — leftovers are named and logged for the operator
+                    log.warning('could not delete Greenbone object %s (%s): %s', oid, self.name, gvm_problem(e))
+
+    # Steps
+    def prepare(self) -> None:
+        """Checks the scan configuration is safe, then reuses or creates this job's task."""
+        def go(gmp):
+            ok, why = gvm_config_safety(gmp.get_scan_config(GVM_CONFIG_ID), self.conf_reader())
+            if not ok:
+                raise GreenboneError(f'OpenVAS scan refused: {why}')
+            self.safety = why
+            wanted = {h.lower() for h in self.sub.hosts}
+            for task in self._own(gmp, 'task'):
+                status = (task.findtext('status') or '').strip()
+                target = task.find('target')
+                tgt = target.get('id') if target is not None else None
+                if status not in TASK_FAILED and self._hosts_of(gmp, tgt) == wanted:
+                    self.task_id, self.target_id, self.resumed = task.get('id'), tgt, True
+                    self.report_id = self._report_of(task)
+                    if status == 'New' or not self.report_id:
+                        self.report_id = gmp.start_task(self.task_id).findtext('report_id')
+                    log.info('greenbone task %s for this job already exists (%s): resuming it, not submitting again', self.name, status)
+                    return
+                if status not in TASK_FAILED:
+                    gmp.stop_task(task.get('id'))
+                log.info('removing stale greenbone task %s (%s, different targets or ended)', self.name, status or 'unknown')
+                self._delete(gmp, task.get('id'), tgt)
+            for target in self._own(gmp, 'target'):   # a target left by an interrupted submission
+                self._delete(gmp, None, target.get('id'))
+            kw = {'name': self.name, 'hosts': self.sub.hosts, 'port_list_id': GVM_PORT_LIST_ID}
+            if GVM_ALIVE_TEST:
+                kw['alive_test'] = GVM_ALIVE_TEST
+            self.target_id = gmp.create_target(**kw).get('id')
+            self.task_id = gmp.create_task(name=self.name, config_id=GVM_CONFIG_ID, target_id=self.target_id, scanner_id=GVM_SCANNER_ID).get('id')
+            self.report_id = gmp.start_task(self.task_id).findtext('report_id')
+            if not (self.target_id and self.task_id and self.report_id):
+                raise GreenboneError('Greenbone did not return the new target, task or report id')
+            log.info('greenbone task %s started for %d target(s)', self.name, len(self.sub.hosts))
+        self._with_retry('submission', go)
+
+    def wait(self) -> None:
+        """Polls the task until Done; bounded by GVM_SCAN_TIMEOUT. Stops the task on cancel/timeout."""
+        deadline = self.clock() + GVM_SCAN_TIMEOUT
+        failures = 0
+        warned: set = set()
+        while True:
+            if self.cancel.is_set():
+                self.stop()
+                raise Cancelled()
+            if self.clock() >= deadline:
+                self.stop()
+                raise GreenboneError(f'the OpenVAS scan did not finish within {GVM_SCAN_TIMEOUT}s (GVM_SCAN_TIMEOUT_SECONDS); it was stopped')
+            try:
+                task = self._session(lambda g: g.get_task(self.task_id).find('task'))
+                failures = 0
+            except GreenboneError as e:
+                failures += 1
+                if not e.retryable or failures >= GVM_MAX_POLL_FAILURES:
+                    raise GreenboneError(f'checking the OpenVAS task failed{f" {failures} times in a row" if failures > 1 else ""}: {e}') from None
+                log.warning('greenbone status check failed (%s); %d of %d', e, failures, GVM_MAX_POLL_FAILURES)
+            else:
+                if task is None:
+                    raise GreenboneError(f'the OpenVAS task {self.name} no longer exists (deleted outside NovrSOC)')
+                status, pct = (task.findtext('status') or '').strip(), (task.findtext('progress') or '').strip()
+                self.on_progress(status, pct)
+                if status == 'Done':
+                    self.report_id = self._report_of(task) or self.report_id
+                    return
+                if status in TASK_FAILED:
+                    raise GreenboneError(f'the OpenVAS task ended as {status} (stopped outside NovrSOC, or the scanner failed; see gvmd and ospd-openvas logs)')
+                if status not in ('New', 'Requested', 'Queued', 'Running', 'Stop Requested', 'Processing') and status not in warned:
+                    warned.add(status)
+                    log.warning('greenbone task %s reports an unrecognised status %r; still waiting (time limit applies)', self.name, status)
+            self.sleep(GVM_POLL_SECONDS)
+
+    def report(self) -> str:
+        if not self.report_id:
+            raise GreenboneError('the OpenVAS task finished without a report id')
+        return self._with_retry('report download', lambda g: xml_text(g.get_report(
+            self.report_id, filter_string=GVM_REPORT_FILTER, report_format_id=GVM_XML_FORMAT_ID, ignore_pagination=True, details=True)))
+
+    def stop(self) -> None:
+        if not self.task_id:
+            return
+        try:
+            self._session(lambda g: g.stop_task(self.task_id))
+        except GreenboneError as e:
+            log.warning('could not stop greenbone task %s: %s', self.name, e)
+
+    def cleanup(self) -> None:
+        """Deletes this job's task (with its report) and target. Best effort; leftovers are logged."""
+        if not (self.task_id or self.target_id):
+            return
+        try:
+            self._session(lambda g: self._delete(g, self.task_id, self.target_id))
+        except GreenboneError as e:
+            log.warning('could not clean up greenbone objects %s: %s', self.name, e)
+
+
+FEED_MAX_AGE_DAYS = 7
+
+
+def _feed_age_days(version: str, now: Optional[datetime] = None) -> Optional[float]:
+    """Greenbone feed versions are timestamps (YYYYMMDDHHMM); None when it is not one."""
+    try:
+        t = datetime.strptime(version[:12], '%Y%m%d%H%M')
+    except ValueError:
+        return None
+    return ((now or datetime.now(timezone.utc).replace(tzinfo=None)) - t).total_seconds() / 86400
+
+
+def gvm_feed_rows(feeds_el, now: Optional[datetime] = None) -> list[dict]:
+    """One health row per feed from a GMP get_feeds answer: version, age, and whether it is syncing."""
+    rows = []
+    for f in feeds_el.iter('feed'):
+        kind = (f.findtext('type') or f.findtext('name') or 'feed').strip()
+        version = (f.findtext('version') or '').strip()
+        age = _feed_age_days(version, now)
+        if f.find('sync_not_available') is not None:
+            err = (f.findtext('sync_not_available/error') or 'sync not available').strip()
+            rows.append({'status': 'fail', 'detail': f'{kind}: {err[:160]}'})
+            continue
+        syncing = f.find('currently_syncing') is not None
+        if not version:
+            rows.append({'status': 'fail', 'detail': f'{kind}: gvmd reports no feed version (not loaded)'})
+        elif age is not None and age > FEED_MAX_AGE_DAYS:
+            rows.append({'status': 'warn', 'detail': f'{kind} {version}: {age:.0f} days old{" (syncing now)" if syncing else ""}'})
+        else:
+            rows.append({'status': 'warn' if syncing else 'ok',
+                         'detail': f'{kind} {version}' + (f': {age:.1f} days old' if age is not None else '') + (' (syncing now: scans may queue)' if syncing else '')})
+    return rows or [{'status': 'fail', 'detail': 'gvmd listed no feeds'}]
+
+
+HEALTH_LAYERS = ('local', 'reachability', 'authentication', 'functional', 'end_to_end')
+# TEST-NET-1 (RFC 5737): never routed. The permission probe's target is created and deleted, never scanned.
+PERMCHECK_HOST = '192.0.2.1'
+GVM_SUMMARY_SECONDS = 6 * 3600
+_GVM_SUMMARY: dict = {'at': None, 'value': None}
+
+
+def openvas_summary(factory=None, clock=time.monotonic) -> Optional[str]:
+    """What the heartbeat reports for Greenbone (tool_versions.openvas, at most 80 characters): the
+    GMP version and feed state, asked at most every 6 hours, or why it could not be asked. Only when
+    vuln_openvas is enabled with credentials; read-only."""
+    if 'vuln_openvas' not in KINDS or not GVM_USER or not GVM_PASSWORD:
+        return None
+    if _GVM_SUMMARY['at'] is not None and clock() - _GVM_SUMMARY['at'] < GVM_SUMMARY_SECONDS:
+        return _GVM_SUMMARY['value']
+    try:
+        with (factory or GMP_FACTORY)() as g:
+            g.authenticate(GVM_USER, GVM_PASSWORD)
+            version = g.get_version().findtext('version') or '?'
+            feeds_el = g.get_feeds()
+        rows = gvm_feed_rows(feeds_el)
+        ages = [a for a in (_feed_age_days((f.findtext('version') or '').strip()) for f in feeds_el.iter('feed')) if a is not None]
+        bad = sum(r['status'] == 'fail' for r in rows)
+        warn = sum(r['status'] == 'warn' for r in rows)
+        state = 'feeds current' if not bad and not warn else f'feeds {warn} warn, {bad} fail'
+        value = f'GMP {version}; {state}' + (f' (oldest {max(ages):.1f}d)' if ages else '')
+    except Exception as e:  # noqa: BLE001
+        value = f'unavailable: {gvm_problem(e)}'
+    _GVM_SUMMARY.update(at=clock(), value=value[:80])
+    return _GVM_SUMMARY['value']
+
+
+def health_report(api_factory=None, gmp_factory=None, conf_reader=read_openvas_conf, which=shutil.which, permission_probe: bool = False) -> list[dict]:
+    """Health of the worker and each dependency, one row per (component, layer). Never reports a
+    component healthy because a process runs, a file exists or a port answers: each layer is the
+    strongest evidence actually obtained. Read-only towards Greenbone (no target, task or scan is
+    created); sends one heartbeat to the backend (as --check does). Secrets are never included."""
+    rows: list[dict] = []
+
+    def row(component, layer, status, detail):
+        rows.append({'component': component, 'layer': layer, 'status': status, 'detail': redact_text(str(detail), 300)})
+
+    # Worker configuration
+    problems = preflight()
+    row('worker', 'local', 'fail' if problems else 'ok', '; '.join(problems) or f'{WORKER_ID} {VERSION}; kinds {",".join(KINDS)}')
+
+    # Scanning tools: present on PATH is only "local"; answering --version is "functional".
+    versions = tool_versions(refresh=True)
+    for tool in ('subfinder', 'dnsx', 'httpx', 'nmap', 'nuclei'):
+        needed = any(tool in KIND_TOOLS.get(k, []) for k in KINDS)
+        if not which(TOOLS[tool]):
+            row(tool, 'local', 'fail' if needed else 'not_configured', 'not installed' + ('' if needed else ' (not used by this worker\'s kinds)'))
+            continue
+        row(tool, 'local', 'ok', f'installed at {which(TOOLS[tool])}')
+        v = versions.get(tool)
+        row(tool, 'functional', 'ok' if v and v != 'unknown' else 'warn', f'answers --version: {v}' if v and v != 'unknown' else 'did not report a version when run')
+
+    # Backend: reachability, authentication and recording are separate facts.
+    try:
+        r = send_heartbeat((api_factory or Api)(), heartbeat_body())
+        row('backend', 'reachability', 'ok', f'{API} answered')
+        row('backend', 'authentication', 'ok', 'worker token accepted')
+        row('backend', 'functional', 'ok', f'heartbeat recorded at {r.get("server_time")}; {r.get("queued", 0)} job(s) queued for these kinds')
+    except ApiError as e:
+        if e.status is None:
+            row('backend', 'reachability', 'fail', e)
+        else:
+            row('backend', 'reachability', 'ok', f'{API} answered (HTTP {e.status})')
+            row('backend', 'authentication', 'fail' if e.status == 401 else 'ok', e if e.status == 401 else 'token accepted')
+            if e.status != 401:
+                row('backend', 'functional', 'fail', e)
+    row('backend', 'end_to_end', 'not_checked', 'proven only by a completed, authorised scan job whose results were accepted (see the job in NovrSOC)')
+
+    # Greenbone: independently configurable; skipped entirely unless vuln_openvas is enabled or credentials are set.
+    if 'vuln_openvas' not in KINDS and not GVM_USER:
+        row('greenbone', 'local', 'not_configured', 'vuln_openvas is not in VMS_WORKER_KINDS and GVM_USER is unset')
+        return rows
+    if (gmp_factory or GMP_FACTORY) is gmp_session:
+        try:
+            import gvm
+            row('greenbone', 'local', 'ok', f'python-gvm {gvm.get_version()}')
+        except ImportError:
+            row('greenbone', 'local', 'fail', 'python-gvm is not installed')
+            return rows
+        if not os.path.exists(GVM_SOCKET):
+            row('greenbone', 'local', 'fail', f'gvmd socket {GVM_SOCKET} not found (set GVM_SOCKET; container installs keep it in a Docker volume)')
+            return rows
+        if not os.access(GVM_SOCKET, os.R_OK | os.W_OK):
+            row('greenbone', 'local', 'fail', f'gvmd socket {GVM_SOCKET} exists but this user may not use it')
+            return rows
+        row('greenbone', 'local', 'ok', f'gvmd socket {GVM_SOCKET} present and usable by this user (not yet proof gvmd answers)')
+    try:
+        with (gmp_factory or GMP_FACTORY)() as g:
+            row('greenbone', 'reachability', 'ok', f'gvmd answered on {GVM_SOCKET}: GMP {g.get_version().findtext("version") or "unknown"}')
+            try:
+                g.authenticate(GVM_USER, GVM_PASSWORD)
+            except Exception as e:  # noqa: BLE001
+                row('greenbone', 'authentication', 'fail', gvm_problem(e))
+                return rows
+            row('greenbone', 'authentication', 'ok', 'logged in as the configured GVM user')
+            for name, fn in (
+                ('scanner', lambda: g.verify_scanner(GVM_SCANNER_ID)),
+                ('scan configuration', lambda: g.get_scan_config(GVM_CONFIG_ID)),
+                ('port list', lambda: g.get_port_list(GVM_PORT_LIST_ID)),
+                ('feeds', lambda: g.get_feeds()),
+                ('NovrSOC tasks', lambda: g.get_tasks(filter_string=f'name~"{GVM_TASK_PREFIX}" rows=-1')),
+            ):
+                try:
+                    el = fn()
+                except Exception as e:  # noqa: BLE001
+                    row(f'greenbone {name}', 'functional', 'fail', gvm_problem(e))
+                    continue
+                if name == 'scanner':
+                    row('greenbone scanner', 'functional', 'ok', f'gvmd verified scanner {GVM_SCANNER_ID} ({el.findtext("version") or "version not reported"})')
+                elif name == 'scan configuration':
+                    ok, why = gvm_config_safety(el, conf_reader())
+                    row('greenbone scan configuration', 'functional', 'ok' if ok else 'fail', why)
+                elif name == 'port list':
+                    row('greenbone port list', 'functional', 'ok', f'{GVM_PORT_LIST_ID} found')
+                elif name == 'feeds':
+                    for f in gvm_feed_rows(el):
+                        row('greenbone feed', 'functional', f['status'], f['detail'])
+                else:
+                    tasks = [t for t in el.findall('task') if (t.findtext('name') or '').startswith(GVM_TASK_PREFIX)]
+                    states: dict[str, int] = {}
+                    for t in tasks:
+                        st = (t.findtext('status') or 'unknown').strip()
+                        states[st] = states.get(st, 0) + 1
+                    summary = ', '.join(f'{n} {s}' for s, n in sorted(states.items())) or 'none'
+                    row('greenbone tasks', 'functional', 'ok' if not tasks else 'warn',
+                        f'NovrSOC tasks in Greenbone: {summary}' + ('' if not tasks else ' (one may be running now; leftovers come from a worker killed mid-scan)'))
+            if permission_probe:
+                rows.append(_permission_probe(g))
+    except Exception as e:  # noqa: BLE001
+        row('greenbone', 'reachability', 'fail', gvm_problem(e))
+        return rows
+    row('greenbone', 'end_to_end', 'not_checked', 'proven only by an authorised vuln_openvas job on an owned test host (docs/runbooks/vms-openvas.md, step 7)')
+    return rows
+
+
+def _permission_probe(g) -> dict:
+    """--gvm-permission-probe: proves the GVM user may create targets and tasks by creating one of
+    each for PERMCHECK_HOST and deleting both. Nothing is started, so nothing is scanned."""
+    name = f'{GVM_TASK_PREFIX}permcheck-{int(time.time())}'
+    target_id = task_id = None
+    status, detail = 'ok', ''
+    try:
+        target_id = g.create_target(name=name, hosts=[PERMCHECK_HOST], port_list_id=GVM_PORT_LIST_ID).get('id')
+        task_id = g.create_task(name=name, config_id=GVM_CONFIG_ID, target_id=target_id, scanner_id=GVM_SCANNER_ID).get('id')
+        detail = f'the GVM user may create targets and tasks (test target {PERMCHECK_HOST} and task {name} created and deleted; nothing was started)'
+    except Exception as e:  # noqa: BLE001
+        status, detail = 'fail', f'creating a target and task was refused: {gvm_problem(e)}'
+    finally:
+        leftovers = []
+        for fn, oid in ((g.delete_task, task_id), (g.delete_target, target_id)):
+            if oid:
+                try:
+                    fn(oid, ultimate=True)
+                except Exception:  # noqa: BLE001
+                    leftovers.append(oid)
+        if leftovers:
+            status = 'warn' if status == 'ok' else status
+            detail += f'; could not delete {", ".join(leftovers)} ({name}): delete it in GSA'
+    return {'component': 'greenbone permissions', 'layer': 'functional', 'status': status, 'detail': redact_text(detail, 300)}
+
+
+def print_health(rows: list[dict], as_json: bool = False) -> int:
+    if as_json:
+        print(json.dumps({'worker_id': WORKER_ID, 'version': VERSION, 'checks': rows}, indent=1))
+    else:
+        mark = {'ok': 'OK  ', 'warn': 'WARN', 'fail': 'FAIL', 'not_checked': '--  ', 'not_configured': 'n/a '}
+        for r in rows:
+            print(f'{mark.get(r["status"], r["status"])}  {r["component"]:30} {r["layer"]:15} {r["detail"]}')
+        print('\nlayers: local (installed/configured) < reachability (answers) < authentication < functional (works) < end_to_end (a real job)')
+    return 1 if any(r['status'] == 'fail' for r in rows) else 0
+
+
+def greenbone_check(factory=None, conf_reader=read_openvas_conf) -> tuple[list[str], list[str]]:
+    """--self-test for vuln_openvas: socket, login, GMP version, the configured scanner, port list and
+    scan configuration, and that configuration's safety. Returns (info lines, problems). No secrets."""
+    info: list[str] = []
+    try:
+        with (factory or GMP_FACTORY)() as g:
+            g.authenticate(GVM_USER, GVM_PASSWORD)
+            info.append(f'greenbone: GMP {g.get_version().findtext("version") or "unknown"} at {GVM_SOCKET}; logged in as the configured GVM user')
+            for what, call, oid in (('scanner', g.get_scanner, GVM_SCANNER_ID), ('port list', g.get_port_list, GVM_PORT_LIST_ID)):
+                el = call(oid)
+                info.append(f'greenbone: {what} {oid}: {next((x.findtext("name") for x in el if x.get("id") == oid), None) or "found"}')
+            cfg = g.get_scan_config(GVM_CONFIG_ID)
+            cname = next((x.findtext('name') for x in cfg if x.get('id') == GVM_CONFIG_ID), None) or 'found'
+            ok, why = gvm_config_safety(cfg, conf_reader())
+            info.append(f'greenbone: scan configuration {GVM_CONFIG_ID}: {cname}; {why}')
+            return info, ([] if ok else [f'vuln_openvas: {why}'])
+    except Exception as e:  # noqa: BLE001
+        return info, [f'vuln_openvas: {gvm_problem(e)}']
 
 
 class JobRunner:
@@ -923,6 +1641,14 @@ class JobRunner:
             r = self.api.post(f'/jobs/{self.job["id"]}/results', {'worker_id': WORKER_ID, 'observations': kept[i:i + BATCH]}, timeout=120)
             for k in ('accepted', 'rejected_out_of_scope', 'rejected_invalid'):
                 self.summary[k] += int(r.get(k, 0))
+            # Why the backend rejected observations (field and rule, never a value), kept with the job.
+            reasons = [str(x)[:200] for x in (r.get('invalid_reasons') or []) if x][:5]
+            if reasons:
+                known = self.summary.setdefault('invalid_reasons', [])
+                new = [x for x in reasons if x not in known]
+                known.extend(new[:max(0, 10 - len(known))])
+                if new:
+                    log.warning('job %s: the backend rejected %s observation(s) as invalid: %s', self.job['id'], r.get('rejected_invalid', '?'), '; '.join(new))
         self.summary['observations'] += len(observations)
         self.summary['dropped_by_worker'] = self.summary.get('dropped_by_worker', 0) + len(observations) - len(kept)
 
@@ -1063,48 +1789,109 @@ class JobRunner:
         out = self.run_tool(args, '\n'.join(targets))
         self.send(parse_nuclei(out.splitlines()), 'vuln')
 
+    def openvas_submission(self, targets: list[str]) -> OpenvasSubmission:
+        """What may be handed to Greenbone, decided here just before submission. A name is resolved
+        now; it is refused if it does not resolve, if any address is a private one this worker has no
+        declared route to (DNS must not point the scanner into an internal network), or if it is
+        CNII-pinned and resolves outside its approved addresses. Refusals are recorded as outcomes."""
+        sub = OpenvasSubmission()
+        for t in targets:
+            if '/' in t:
+                try:
+                    net = ipaddress.ip_network(t, strict=False)
+                except ValueError:
+                    self.record_outcome(t, 'insufficient_evidence', f'{t} is not a valid range; not submitted')
+                    continue
+                routed = net.is_global or any(_net_within(net, n) for n in WORKER_NETWORKS)
+                if not routed:
+                    self.record_outcome(t, 'no_route', f'{t} is a private range and this worker declares no route to it (VMS_WORKER_NETWORKS); not attempted')
+                    continue
+                sub.nets.append((t, net))
+                continue
+            p = parse_target(t)
+            if not p:
+                continue
+            if p[0] == 'ip':
+                ok, why = target_route(p[1])
+                if not ok:
+                    self.record_outcome(p[1], 'no_route', why or '')
+                    continue
+                sub.ips.add(p[1])
+                continue
+            addrs = {a.lower() for a in RESOLVE(p[1])}
+            if not addrs:
+                self.record_outcome(p[1], 'unreachable', f'{p[1]} does not resolve from this scanner; not submitted to OpenVAS')
+                continue
+            blocked = sorted(a for a in addrs if not target_route(a)[0])
+            if blocked:
+                self.record_outcome(p[1], 'no_route', f'{p[1]} resolves to {", ".join(blocked)}, a private address this worker declares no route to; not submitted, so DNS cannot point OpenVAS into an internal network')
+                continue
+            covering = [e for e in self.scopes if in_scope(p[1], [e], 'vuln')]
+            if covering and all(e.get('pinned_addresses') for e in covering):
+                pins = {str(x).lower() for e in covering for x in e.get('pinned_addresses') or []}
+                if not addrs <= pins:
+                    self.record_outcome(p[1], 'no_route', f'{p[1]} now resolves to {", ".join(sorted(addrs - pins))}, outside its CNII approval ({", ".join(sorted(pins))}); not scanned until re-approved')
+                    continue
+            sub.names[p[1]] = addrs
+        return sub
+
     def vuln_openvas(self):
         targets = [t for t in self.job['targets'] if job_target_allowed(t, self.scopes, 'vuln')]
         if not targets:
             raise RuntimeError('No target of this job is in vulnerability-scan scope')
-        try:
-            from gvm.connections import UnixSocketConnection
-            from gvm.protocols.gmp import Gmp
-            from gvm.transforms import EtreeCheckCommandTransform
-        except ImportError:
-            raise RuntimeError('OpenVAS is not available on this worker (python-gvm not installed)')
+        if GMP_FACTORY is gmp_session:
+            try:
+                import gvm  # noqa: F401
+            except ImportError:
+                raise RuntimeError('OpenVAS is not available on this worker (python-gvm not installed)') from None
         if not GVM_USER or not GVM_PASSWORD:
             raise RuntimeError('OpenVAS credentials (GVM_USER / GVM_PASSWORD) are not set on this worker')
-        name = f'novrsoc-{self.job["id"]}'
-        with Gmp(connection=UnixSocketConnection(path=GVM_SOCKET), transform=EtreeCheckCommandTransform()) as gmp:
-            gmp.authenticate(GVM_USER, GVM_PASSWORD)
-            target_id = gmp.create_target(name=name, hosts=targets, port_list_id=GVM_PORT_LIST_ID).get('id')
-            task_id = None
-            try:
-                task_id = gmp.create_task(name=name, config_id=GVM_CONFIG_ID, target_id=target_id, scanner_id=GVM_SCANNER_ID).get('id')
-                report_id = gmp.start_task(task_id).findtext('report_id')
-                while True:
-                    if self.cancel.is_set():
-                        gmp.stop_task(task_id)
-                        raise Cancelled()
-                    task = gmp.get_task(task_id).find('task')
-                    status, progress = task.findtext('status'), task.findtext('progress')
-                    self.progress = {'phase': 'openvas', 'message': f'{status} {progress}%'}
-                    if status in ('Done', 'Stopped', 'Interrupted'):
-                        break
-                    time.sleep(30)
-                if status != 'Done':
-                    raise RuntimeError(f'OpenVAS task ended as {status}')
-                report = gmp.get_report(report_id, report_format_id=GVM_XML_FORMAT_ID, ignore_pagination=True, details=True)
-                self.send(parse_openvas_report(ET.tostring(report, encoding='unicode')), 'vuln')
-            finally:
-                for fn, oid in ((gmp.delete_task, task_id), (gmp.delete_target, target_id)):
-                    if oid:
-                        try:
-                            fn(oid, ultimate=True)
-                        except Exception:  # noqa: BLE001 — cleanup is best effort
-                            log.warning('could not delete OpenVAS object %s', oid)
         self.summary['targets'] = len(targets)
+        sub = self.openvas_submission(targets)
+        if not sub.hosts:
+            return   # every target was refused; each outcome says why
+        opts = self.job.get('options') or {}
+        # A verification rescan of one finding must show the finding's own port answered.
+        vports = reach_ports(opts.get('ports')) if opts.get('finding_ids') and opts.get('ports') else []
+        required = vports[0] if len(vports) == 1 else None
+
+        def progress(status: str, pct: str):
+            self.progress = {'phase': 'openvas', 'message': f'{status} {pct}%'[:300] if pct and pct != '-1' else status[:300]}
+        scan = GreenboneScan(self.job['id'], sub, self.cancel, progress)
+        try:
+            self.progress = {'phase': 'openvas', 'message': 'submitting'}
+            scan.prepare()
+            scan.wait()
+            xml = scan.report()
+            ctx = {'task_id': scan.task_id, 'report_id': scan.report_id, 'scan_config_id': GVM_CONFIG_ID}
+            try:
+                findings, stats = openvas_results(xml, sub.attribute, ctx)
+                hosts = openvas_hosts(xml)
+            except ET.ParseError as e:
+                raise RuntimeError(f'the OpenVAS report could not be read: {e}') from None
+            for name, addrs in sub.names.items():
+                self.record_outcome(name, *classify_openvas(name, addrs, hosts, required))
+            for ip in sorted(sub.ips):
+                self.record_outcome(ip, *classify_openvas(ip, {ip}, hosts, required))
+            for text, net in sub.nets:
+                inside = sorted(ip for ip in hosts if _in_net(ip, net))
+                for ip in inside:
+                    self.record_outcome(ip, *classify_openvas(ip, {ip}, hosts, required))
+                if not inside:
+                    self.record_outcome(text, 'unreachable', f'OpenVAS reported no host in {text}: nothing answered its alive test from this scanner')
+            self.send(findings, 'vuln')
+            if stats['unattributed']:
+                log.info('job %s: %d OpenVAS result(s) for hosts not submitted (e.g. discovered names) were dropped', self.job['id'], stats['unattributed'])
+            self.summary['openvas'] = {**stats, 'findings': len(findings), 'task_id': scan.task_id, 'report_id': scan.report_id,
+                                       'resumed_existing_task': scan.resumed, 'config_check': scan.safety}
+            self.send_evidence(_evidence_target(sub.hosts), 'openvas', json.dumps({
+                'task': scan.name, 'task_id': scan.task_id, 'report_id': scan.report_id, 'scan_config_id': GVM_CONFIG_ID,
+                'port_list_id': GVM_PORT_LIST_ID, 'submitted': sub.hosts, 'resolved': {k: sorted(v) for k, v in sub.names.items()},
+                'scanned_hosts': {ip: {'hostnames': sorted(h['hostnames']), 'ports': sorted(h['ports']), 'results': h['results']} for ip, h in hosts.items()},
+                'counts': stats, 'findings': [{'host': f['host'], 'port': f['port'], 'oid': f['rule_id'], 'severity': f['severity'], 'title': f['title']} for f in findings[:200]],
+            }, indent=1))
+        finally:
+            scan.cleanup()
 
     def run(self):
         hb = threading.Thread(target=self.heartbeat_loop, daemon=True)
@@ -1182,6 +1969,8 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [vms-worker] %(levelname)s: %(message)s')
     if '--self-test' in sys.argv[1:]:
         sys.exit(self_test())
+    if '--health' in sys.argv[1:]:
+        sys.exit(print_health(health_report(permission_probe='--gvm-permission-probe' in sys.argv[1:]), as_json='--json' in sys.argv[1:]))
     if not API.startswith('https://') and not API.startswith('http://127.0.0.1'):
         sys.exit('NOVRSOC_API_URL must be the backend https URL')
     if len(TOKEN) < 32:

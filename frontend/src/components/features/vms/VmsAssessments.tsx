@@ -12,7 +12,7 @@ import { ClipboardCheck, Download, RefreshCw } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
 import { getAdminUser } from '@/lib/admin-auth';
-import { fmtWat, OUTCOME_LABEL, STEP_STATUS_LABEL, STEP_STATUS_STYLE, ASSESSMENT_STATUS_LABEL, ASSESSMENT_STATUS_STYLE, type VmsAssessment, type VmsEvidence, RETRYABLE_STEPS } from '@/lib/vms';
+import { PROFILE_LABEL, TRIGGER_LABEL, fmtWat, OUTCOME_LABEL, STEP_STATUS_LABEL, STEP_STATUS_STYLE, ASSESSMENT_STATUS_LABEL, ASSESSMENT_STATUS_STYLE, type VmsAssessment, type VmsEvidence, RETRYABLE_STEPS } from '@/lib/vms';
 
 interface Finding { id: string; title: string; priority: string | null; status: string; evidence_class: string; port: number | null; cve_ids: string[] }
 interface Detail { assessment: VmsAssessment; findings: Finding[]; evidence: (Omit<VmsEvidence, 'content'> & { job_id: string })[] }
@@ -26,6 +26,7 @@ export function VmsAssessments() {
     const [selected, setSelected] = useState<string | null>(params.get('id'));
     const [detail, setDetail] = useState<Detail | null>(null);
     const [target, setTarget] = useState('');
+    const [profile, setProfile] = useState<'discovery' | 'standard' | 'full'>('full');
     const [msg, setMsg] = useState<string | null>(null);
     const [content, setContent] = useState<Record<string, string>>({});
     const [tick, setTick] = useState(0);
@@ -63,9 +64,9 @@ export function VmsAssessments() {
     }
     async function start() {
         setMsg(null);
-        const r = await send('/api/vms/assessments', { target: target.trim() });
+        const r = await send('/api/vms/assessments', { target: target.trim(), profile });
         if (!r.ok) { setMsg(r.error); return; }
-        setMsg(r.data.existing ? 'An assessment of this target is already in progress; showing it.' : 'Full assessment planned.');
+        setMsg(r.data.existing ? 'An assessment of this target is already in progress; showing it.' : `${PROFILE_LABEL[profile]} assessment planned.`);
         setSelected(r.data.assessment.id);
         setTarget('');
         reload();
@@ -105,12 +106,15 @@ export function VmsAssessments() {
             <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div>
                     <h1 className="text-lg font-black text-foreground flex items-center gap-2"><ClipboardCheck className="w-5 h-5" /> Assessments</h1>
-                    <p className="text-xs text-foreground-muted max-w-3xl">A full assessment runs every check the authorised scope allows and a connected worker can perform, for one host or IP. Checks that cannot run are listed as not attempted or unsupported, with the reason — never as done.</p>
+                    <p className="text-xs text-foreground-muted max-w-3xl">An assessment runs the checks of its profile (Discovery, Standard or Full) that the authorised scope allows and a connected worker can perform, for one host or IP. Checks that cannot run are listed as not attempted or unsupported, with the reason — never as done.</p>
                 </div>
                 {canRun && (
                     <form onSubmit={(e) => { e.preventDefault(); if (target.trim()) void start(); }} className="flex gap-2">
                         <input className={input} placeholder="Host or IP inside authorised scope" value={target} onChange={(e) => setTarget(e.target.value)} aria-label="Target to assess" />
-                        <button className="text-[11px] font-bold text-white bg-purple rounded-lg px-3">Start full assessment</button>
+                        <select className={input} value={profile} onChange={(e) => setProfile(e.target.value as typeof profile)} aria-label="Scan profile" title="What each profile runs: Scanner Operations → Scan profiles">
+                            {(['discovery', 'standard', 'full'] as const).map((p) => <option key={p} value={p}>{PROFILE_LABEL[p]}</option>)}
+                        </select>
+                        <button className="text-[11px] font-bold text-white bg-purple rounded-lg px-3">Start assessment</button>
                     </form>
                 )}
             </div>
@@ -126,7 +130,7 @@ export function VmsAssessments() {
                                 <span className="font-mono font-bold text-foreground break-all">{x.target}</span>
                                 <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${ASSESSMENT_STATUS_STYLE[x.status]}`}>{ASSESSMENT_STATUS_LABEL[x.status]}</span>
                             </div>
-                            <p className="text-foreground-muted mt-1">{x.progress.finished}/{x.progress.total} checks finished · {fmtWat(x.requested_at)}</p>
+                            <p className="text-foreground-muted mt-1">{PROFILE_LABEL[x.profile] ?? x.profile}{x.trigger && x.trigger !== 'manual' ? ` · ${TRIGGER_LABEL[x.trigger] ?? x.trigger}` : ''} · {x.progress.finished}/{x.progress.total} checks finished · {fmtWat(x.requested_at)}</p>
                             <div className="flex flex-wrap gap-1 mt-1">{x.steps.map((s) => <span key={s.kind} className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${STEP_STATUS_STYLE[s.status]}`}>{s.label}: {STEP_STATUS_LABEL[s.status]}</span>)}</div>
                         </button>
                     ))}
@@ -138,7 +142,7 @@ export function VmsAssessments() {
                             <div className="flex items-start justify-between gap-2 flex-wrap">
                                 <div>
                                     <h2 className="text-sm font-black font-mono text-foreground">{a.target}</h2>
-                                    <p className="text-foreground-muted">Requested by {a.requested_by} · {fmtWat(a.requested_at)}{a.retried_at ? ` · retried ${fmtWat(a.retried_at)}` : ''}</p>
+                                    <p className="text-foreground-muted">{PROFILE_LABEL[a.profile] ?? a.profile} profile · requested by {a.requested_by} · {fmtWat(a.requested_at)}{a.retried_at ? ` · retried ${fmtWat(a.retried_at)}` : ''}</p>
                                 </div>
                                 <div className="flex gap-2">
                                     <button onClick={() => void download()} className="flex items-center gap-1 text-[11px] font-bold border border-border rounded-lg px-3 py-1.5"><Download className="w-3.5 h-3.5" /> Report</button>

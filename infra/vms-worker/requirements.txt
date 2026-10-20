@@ -1,4 +1,5 @@
 # NovrSOC VMS worker — Python dependencies (Python 3.10+).
 requests>=2.31,<3
-# Optional, only on a host that runs vuln_openvas against a local Greenbone install:
+# Optional, only on a host that runs vuln_openvas against a local Greenbone install (worker 1.8.0 is
+# tested with python-gvm 27.10; it needs a release that supports your gvmd's GMP version):
 # python-gvm>=24.1

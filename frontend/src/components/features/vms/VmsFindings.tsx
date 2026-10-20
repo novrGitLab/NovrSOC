@@ -76,6 +76,9 @@ export function VmsFindings() {
         if (filter.kev) p.set('kev', 'true');
         if (filter.overdue) p.set('overdue', 'true');
         if (text) p.set('q', text);
+        // One asset's findings, when opened from Services & Technology: /admin/vms/findings?asset_id=…
+        const assetId = params.get('asset_id');
+        if (assetId) p.set('asset_id', assetId);
         void Promise.all([loadJson<{ findings: Finding[] }>(`/api/vms/findings?${p.toString()}`), loadJson<Summary>('/api/vms/findings/summary')]).then(([f, s]) => {
             if (!active) return;
             setFindings(f.ok ? f.data.findings : null);
@@ -83,7 +86,7 @@ export function VmsFindings() {
             setSummary(s.ok ? s.data : null);
         });
         return () => { active = false; };
-    }, [filter, text, reloadKey]);
+    }, [filter, text, reloadKey, params]);
 
     // Opened from a link (e.g. the remediation queue): /admin/vms/findings?id=…
     useEffect(() => {
@@ -165,6 +168,7 @@ export function VmsFindings() {
                 </form>
             </div>
             {error && <p role="alert" className="text-xs text-red font-semibold">{error}</p>}
+            {params.get('asset_id') && <p className="text-xs text-foreground">Showing one asset&apos;s findings. <Link href="/admin/vms/findings" className="text-purple font-bold">Show all</Link></p>}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
                 <div className="lg:col-span-2 bg-card border border-border rounded-xl overflow-hidden">
                     {findings && findings.length === 0 && <p className="text-sm text-foreground-muted text-center py-10">No data — no findings for these filters.</p>}
