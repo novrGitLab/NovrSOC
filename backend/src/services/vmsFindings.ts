@@ -27,6 +27,7 @@ import { redactValue } from '../lib/redact';
 import { riskScore, DUE_DAYS, type Severity, type Priority, type EvidenceClass } from '../lib/riskScore';
 import { coveringScope, parseTarget, type ScopeEntry } from '../lib/vmsScope';
 import { ensureCves, CVE_RE } from './cveIntel';
+import { InvalidReasons } from './vmsIngest';
 
 export const FINDING_STATUSES = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'verified', 'reopened', 'risk_accepted', 'false_positive'] as const;
 export type FindingStatus = (typeof FINDING_STATUSES)[number];
@@ -126,7 +127,7 @@ export async function recomputeRisk(filter: { org?: string; ids?: string[]; cve?
     return changed;
 }
 
-export interface FindingIngestResult { accepted: number; new_findings: number; reopened: number; rejected_out_of_scope: number; rejected_invalid: number }
+export interface FindingIngestResult { accepted: number; new_findings: number; reopened: number; rejected_out_of_scope: number; rejected_invalid: number; invalid_reasons?: string[] }
 
 /** Stores scanner findings for a running vulnerability job. Every target is re-checked against vuln scope. */
 export async function ingestFindings(job: { id: string; org_id: string }, raw: unknown[], scopes: ScopeEntry[]): Promise<FindingIngestResult> {
@@ -134,12 +135,13 @@ export async function ingestFindings(job: { id: string; org_id: string }, raw: u
     if (!supabase) throw new Error('Database not configured');
     const out: FindingIngestResult = { accepted: 0, new_findings: 0, reopened: 0, rejected_out_of_scope: 0, rejected_invalid: 0 };
     const now = new Date().toISOString();
+    const reasons = new InvalidReasons();
     for (const item of raw) {
         const p = FindingObservation.safeParse(item);
-        if (!p.success) { out.rejected_invalid++; continue; }
+        if (!p.success) { out.rejected_invalid++; reasons.add('finding', p.error.issues); continue; }
         const o = p.data;
         const target = parseTarget(o.host);
-        if (!target) { out.rejected_invalid++; continue; }
+        if (!target) { out.rejected_invalid++; reasons.add('finding', 'host: not a hostname or IP address'); continue; }
         const scope = coveringScope(target, scopes, 'vuln');
         if (!scope) { out.rejected_out_of_scope++; continue; }
         const assetType = target.type === 'host' ? 'host' : 'ip';
@@ -187,6 +189,10 @@ export async function ingestFindings(job: { id: string; org_id: string }, raw: u
         }
         await supabase.from('vms_finding_evidence').insert({ org_id: job.org_id, finding_id: findingId, source: o.scanner, job_id: job.id, observed_at: now, matched_at: o.matched_at ?? null, evidence: capEvidence(o.evidence) });
         out.accepted++;
+    }
+    if (reasons.size) {
+        out.invalid_reasons = reasons.list();
+        console.warn(`[vms] job ${job.id}: ${out.rejected_invalid} finding(s) rejected as invalid: ${out.invalid_reasons.join('; ')}`);
     }
     return out;
 }

@@ -52,7 +52,10 @@ export const ServiceObservation = z.object({
     service: z.string().trim().max(80).nullable().optional(),
     product: z.string().trim().max(120).nullable().optional(),
     version: z.string().trim().max(80).nullable().optional(),
-    cpe: z.array(z.string().max(200)).max(10).optional(),
+    // nullish: workers up to 1.7.0 send cpe: null for a service nmap gave no CPE (filtered/closed
+    // ports, services named only from nmap's port table). With .optional() every such service was
+    // rejected as invalid and silently missing from inventory while the job reported success.
+    cpe: z.array(z.string().max(200)).max(10).nullish(),
     source: z.enum(['nmap', 'naabu', 'httpx']),
 });
 export const Observation = z.discriminatedUnion('type', [HostObservation, ServiceObservation]);
@@ -66,7 +69,22 @@ const isPublic = (ip: string): boolean => {
     return !(a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) || a === 0);
 };
 
-export interface IngestResult { accepted: number; rejected_out_of_scope: number; rejected_invalid: number; events: number; assessments_not_stored?: number }
+export interface IngestResult { accepted: number; rejected_out_of_scope: number; rejected_invalid: number; events: number; assessments_not_stored?: number; invalid_reasons?: string[] }
+
+/**
+ * Why observations were rejected, for the worker's job summary and the backend log: each zod issue
+ * as "type.field: message" (a schema rule, never the submitted value), deduplicated, at most 5.
+ */
+export class InvalidReasons {
+    private seen = new Map<string, number>();
+    add(type: unknown, issues: { path: PropertyKey[]; message: string }[] | string): void {
+        const kind = typeof type === 'string' && /^[a-z_]{1,20}$/.test(type) ? type : 'observation';
+        const list = typeof issues === 'string' ? [issues] : issues.slice(0, 3).map((i) => `${i.path.map(String).join('.') || '(root)'}: ${i.message.slice(0, 120)}`);
+        for (const r of list) this.seen.set(`${kind} ${r}`, (this.seen.get(`${kind} ${r}`) ?? 0) + 1);
+    }
+    list(): string[] { return [...this.seen].slice(0, 5).map(([r, n]) => (n > 1 ? `${r} (x${n})` : r)); }
+    get size(): number { return this.seen.size; }
+}
 
 // Before sql/2026-10-19_p12_vms_outcomes_evidence.sql the assessment columns do not exist: write
 // without them (the job summary still carries the outcome) and say so once.
@@ -89,15 +107,16 @@ export async function ingestObservations(job: { id: string; org_id: string; kind
     const out: IngestResult = { accepted: 0, rejected_out_of_scope: 0, rejected_invalid: 0, events: 0 };
     const now = new Date().toISOString();
     const events: Record<string, unknown>[] = [];
+    const reasons = new InvalidReasons();
 
     for (const item of raw) {
         const parsed = Observation.safeParse(item);
-        if (!parsed.success) { out.rejected_invalid++; continue; }
+        if (!parsed.success) { out.rejected_invalid++; reasons.add((item as { type?: unknown } | null)?.type, parsed.error.issues); continue; }
         const o = parsed.data;
         // A result must match what the job was allowed to do: discovery never adds services.
-        if (o.type === 'service' && activity === 'discovery') { out.rejected_invalid++; continue; }
+        if (o.type === 'service' && activity === 'discovery') { out.rejected_invalid++; reasons.add('service', 'not allowed in a discovery job'); continue; }
         const target = parseTarget(o.host);
-        if (!target) { out.rejected_invalid++; continue; }
+        if (!target) { out.rejected_invalid++; reasons.add(o.type, 'host: not a hostname or IP address'); continue; }
         const scope = coveringScope(target, scopes, activity);
         if (!scope) { out.rejected_out_of_scope++; continue; }
         // A CNII-pinned name seen at an address its approval did not cover (P18): not this asset.
@@ -181,6 +200,10 @@ export async function ingestObservations(job: { id: string; org_id: string; kind
         const ev = await supabase.from('vms_asset_events').insert(events);
         if (ev.error) throw new Error(`event insert failed: ${ev.error.message}`);
         out.events = events.length;
+    }
+    if (reasons.size) {
+        out.invalid_reasons = reasons.list();
+        console.warn(`[vms] job ${job.id}: ${out.rejected_invalid} observation(s) rejected as invalid: ${out.invalid_reasons.join('; ')}`);
     }
     return out;
 }

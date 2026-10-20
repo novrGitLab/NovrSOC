@@ -157,6 +157,7 @@ test('discovery: claim, progress, results re-checked against scope, new and chan
         { type: 'service', host: 'api.example.test', port: 22, protocol: 'tcp', source: 'nmap' },
     ] });
     assert.deepEqual([r.data.accepted, r.data.rejected_out_of_scope, r.data.rejected_invalid], [1, 1, 2], 'an out-of-scope host is dropped; a malformed host and a service result from a discovery job are invalid');
+    assert.deepEqual([...r.data.invalid_reasons].sort(), ['host host: not a hostname or IP address', 'service not allowed in a discovery job'], 'each rejection says why, without the submitted value');
     const asset = db.tables.vms_assets[0];
     assert.deepEqual([asset.value, asset.exposure, db.tables.vms_assets.length], ['api.example.test', 'internet', 1]);
     assert.deepEqual(db.tables.vms_technologies.map((t) => [t.name, t.version]), [['nginx', '1.25.3']]);
@@ -191,6 +192,28 @@ test('ports: services tracked; a full-range rescan marks missing ones gone, a to
     const full = await run('1-65535', [{ type: 'service', host: '203.0.113.5', port: 22, protocol: 'tcp', service: 'ssh', source: 'nmap' }]);
     assert.equal(full.services_gone, 1);
     assert.equal(db.tables.vms_services.find((s) => s.port === 8443)!.status, 'gone');
+});
+
+test('ports: a worker 1.7.0 batch with cpe: null is accepted (was 4 of 5 rejected as invalid)', async () => {
+    const net = (await newScope({ kind: 'ip', value: '203.0.113.9', allow_port_scan: true })).data.scope;
+    await http('POST', '/api/vms/scans', AN, { scope_id: net.id, kind: 'ports', targets: ['203.0.113.9'] });
+    const id = (await worker('/claim', { worker_id: 'w1', kinds: ['ports'] })).data.job.id;
+    // Exactly what worker 1.7.0 builds from nmap -oX for one host (parse_nmap_xml + host_observation).
+    const batch = [
+        { type: 'host', host: '203.0.113.9', ips: ['203.0.113.9'], source: 'nmap', alive: true, assessment: { outcome: 'reachable_open', reason: '3 open of 1000 port(s) scanned', method: 'nmap', host_status: 'up', host_status_reason: 'user-set', port_states: { open: 3, closed: 1, filtered: 996 }, ports_scanned: 1000 } },
+        { type: 'service', host: '203.0.113.9', port: 22, protocol: 'tcp', state: 'open', source: 'nmap', service: 'ssh', product: 'OpenSSH', version: '8.9p1 Ubuntu 3ubuntu0.10 Ubuntu Linux; protocol 2.0', cpe: ['cpe:/a:openbsd:openssh:8.9p1'] },
+        { type: 'service', host: '203.0.113.9', port: 80, protocol: 'tcp', state: 'open', source: 'nmap', service: 'http', product: null, version: null, cpe: null },
+        { type: 'service', host: '203.0.113.9', port: 443, protocol: 'tcp', state: 'open', source: 'nmap', service: 'https', product: null, version: null, cpe: null },
+        { type: 'service', host: '203.0.113.9', port: 8080, protocol: 'tcp', state: 'closed', source: 'nmap', service: 'http-proxy', product: null, version: null, cpe: null },
+    ];
+    const r = await worker(`/jobs/${id}/results`, { worker_id: 'w1', observations: batch });
+    assert.deepEqual([r.data.accepted, r.data.rejected_invalid, r.data.invalid_reasons], [5, 0, undefined]);
+    assert.deepEqual(db.tables.vms_services.filter((s) => s.port !== 22 || s.cpe).map((s) => [s.port, s.state, s.cpe]).sort(), [[22, 'open', ['cpe:/a:openbsd:openssh:8.9p1']], [443, 'open', null], [80, 'open', null]].sort(), 'open services stored (closed ones are not inventory)');
+    // A genuinely malformed observation is still rejected, and the reason names the field, not the value.
+    const bad = await worker(`/jobs/${id}/results`, { worker_id: 'w1', observations: [{ type: 'service', host: '203.0.113.9', port: 70000, protocol: 'tcp', source: 'nmap', product: 'secret-banner-value' }] });
+    assert.equal(bad.data.rejected_invalid, 1);
+    assert.match(bad.data.invalid_reasons[0], /^service port: /);
+    assert.ok(!JSON.stringify(bad.data).includes('secret-banner-value'));
 });
 
 test('revoking scope cancels queued scans and tells running ones to stop', async () => {
