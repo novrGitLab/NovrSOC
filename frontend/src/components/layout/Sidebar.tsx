@@ -50,11 +50,14 @@ interface SidebarProps {
     navGroups: NavGroup[];
     user: { name: string; email: string; role: string };
     onLogout: () => void;
+    /** Below the lg breakpoint the sidebar is off-canvas: shown while mobileOpen, closed by onClose. */
+    mobileOpen?: boolean;
+    onClose?: () => void;
 }
 
 const STORAGE_KEY = 'sidebar_collapsed';
 
-export function Sidebar({ navGroups, user, onLogout }: SidebarProps) {
+export function Sidebar({ navGroups, user, onLogout, mobileOpen = false, onClose }: SidebarProps) {
     const pathname = usePathname();
 
     // Drop adminOnly items for anyone who isn't a super_admin, and managerOnly items for anyone
@@ -124,7 +127,15 @@ export function Sidebar({ navGroups, user, onLogout }: SidebarProps) {
     const initials = user.name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
 
     return (
-        <aside className="w-[260px] h-screen bg-white border-r border-border text-foreground flex flex-col fixed left-0 top-0 z-40">
+        <>
+        {mobileOpen && <div className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={onClose} aria-hidden />}
+        <aside
+            id="app-sidebar"
+            className={cn(
+                'w-[260px] h-screen bg-white border-r border-border text-foreground flex flex-col fixed left-0 top-0 z-50 transition-transform duration-200 lg:translate-x-0',
+                mobileOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full',
+            )}
+        >
             {/* Logo */}
             <div className="flex-shrink-0 px-6 py-5 border-b border-border">
                 <Logo size="md" />
@@ -144,6 +155,7 @@ export function Sidebar({ navGroups, user, onLogout }: SidebarProps) {
                                     <Link
                                         key={item.href}
                                         href={item.href}
+                                        onClick={onClose}
                                         className={cn(
                                             'flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm mb-1 transition-colors',
                                             isActive
@@ -184,6 +196,7 @@ export function Sidebar({ navGroups, user, onLogout }: SidebarProps) {
                                                 <Link
                                                     key={item.href}
                                                     href={item.href}
+                                                    onClick={onClose}
                                                     className={cn(
                                                         'flex items-center gap-3 pl-8 pr-4 py-2 rounded-lg text-sm transition-colors',
                                                         isActive ? 'text-white font-medium bg-purple' : 'text-foreground-muted hover:text-purple hover:bg-[#F5F0FF]'
@@ -216,5 +229,6 @@ export function Sidebar({ navGroups, user, onLogout }: SidebarProps) {
                 </button>
             </div>
         </aside>
+        </>
     );
 }

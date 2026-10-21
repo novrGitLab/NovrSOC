@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { Bell, Sun, Moon } from 'lucide-react';
+import { Bell, Sun, Moon, Menu } from 'lucide-react';
 import { Logo } from '@/components/shared/Logo';
 import { GlobalSearch } from './GlobalSearch';
 import { useTheme } from '@/components/providers/ThemeProvider';
@@ -11,6 +11,8 @@ import { apiUrl, apiFetch } from '@/lib/api';
 interface HeaderProps {
     initials: string;
     onSignOut: () => void;
+    /** Opens the off-canvas sidebar below the lg breakpoint. */
+    onMenu?: () => void;
 }
 
 interface Notification {
@@ -40,7 +42,7 @@ function timeAgo(iso: string): string {
     return `${hrs}h ago`;
 }
 
-export function Header({ initials, onSignOut }: HeaderProps) {
+export function Header({ initials, onSignOut, onMenu }: HeaderProps) {
     const pathname = usePathname();
     const router = useRouter();
     const pageTitle = humanizePathname(pathname);
@@ -53,7 +55,7 @@ export function Header({ initials, onSignOut }: HeaderProps) {
     // nothing per-user to key it to) — "read" is tracked client-side only, per browser, and
     // resets on reload. Opening the dropdown marks whatever's currently loaded as seen; a
     // notification that's genuinely new on the next poll still counts toward the badge.
-    const seenIds = useRef<Set<string>>(new Set());
+    const [seenIds, setSeenIds] = useState<ReadonlySet<string>>(() => new Set());
     const panelRef = useRef<HTMLDivElement>(null);
 
     const load = () => {
@@ -78,14 +80,11 @@ export function Header({ initials, onSignOut }: HeaderProps) {
         return () => document.removeEventListener('mousedown', handleClick);
     }, [open]);
 
-    const unreadCount = notifications.filter((n) => !seenIds.current.has(n.id)).length;
+    const unreadCount = notifications.filter((n) => !seenIds.has(n.id)).length;
 
     const toggleOpen = () => {
-        setOpen((v) => {
-            const next = !v;
-            if (next) notifications.forEach((n) => seenIds.current.add(n.id));
-            return next;
-        });
+        if (!open) setSeenIds((prev) => new Set([...prev, ...notifications.map((n) => n.id)]));
+        setOpen(!open);
     };
 
     const goToIncident = (n: Notification) => {
@@ -97,32 +96,37 @@ export function Header({ initials, onSignOut }: HeaderProps) {
     };
 
     return (
-        <header className="h-14 bg-white border-b border-grey-100 flex items-center gap-4 px-6 sticky top-0 z-30 w-full">
+        <header className="h-14 bg-white border-b border-grey-100 flex items-center gap-2 sm:gap-4 px-3 sm:px-6 sticky top-0 z-30 w-full">
             {/* Left */}
             <div className="flex items-center gap-2 min-w-0">
+                {onMenu && (
+                    <button onClick={onMenu} className="lg:hidden p-1.5 -ml-1 rounded-lg text-grey-500 hover:text-grey-800 hover:bg-grey-50" aria-label="Open navigation" aria-controls="app-sidebar">
+                        <Menu size={20} />
+                    </button>
+                )}
                 <span className="shrink-0"><Logo size="sm" /></span>
-                <span className="text-grey-300">/</span>
+                <span className="text-grey-300 hidden sm:inline">/</span>
                 {/* Long path segments (e.g. a domain name) must not push the header controls off-screen. */}
-                <span className="text-sm text-grey-500 truncate max-w-[16rem]" title={pageTitle}>{pageTitle}</span>
+                <span className="text-sm text-grey-500 truncate max-w-[16rem] hidden sm:inline" title={pageTitle}>{pageTitle}</span>
             </div>
 
             {/* Center — search. Admin only: /api/search reads cases, which portal tokens can't
                 access, so the portal gets no box rather than one that always comes back empty. */}
-            <div className="flex-1 flex justify-center">
+            <div className="flex-1 hidden md:flex justify-center min-w-0">
                 {!pathname.startsWith('/client') && <GlobalSearch />}
             </div>
 
             {/* Right */}
-            <div className="flex items-center gap-3 min-w-fit">
-                <div className="flex items-center gap-1.5 bg-blue text-white text-xs font-semibold px-3 py-1.5 rounded-full">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-fit ml-auto md:ml-0">
+                <div className="hidden xl:flex items-center gap-1.5 bg-blue text-white text-xs font-semibold px-3 py-1.5 rounded-full">
                     <span className="w-2 h-2 rounded-full bg-green animate-pulse" />
                     Telemetry Online
                 </div>
                 <button onClick={onSignOut} className="text-sm text-grey-500 hover:text-red transition-colors">
                     Sign Out
                 </button>
-                <div className="w-px h-4 bg-grey-100" />
-                <div className="flex items-center gap-1.5">
+                <div className="hidden lg:block w-px h-4 bg-grey-100" />
+                <div className="hidden lg:flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-green" />
                     <span className="text-sm text-grey-800">Cloud Node</span>
                 </div>
@@ -143,7 +147,7 @@ export function Header({ initials, onSignOut }: HeaderProps) {
                         )}
                     </button>
                     {open && (
-                        <div className="absolute right-0 top-full mt-2 w-80 max-h-96 overflow-y-auto scrollbar-thin bg-white border border-grey-100 rounded-xl shadow-lg z-40">
+                        <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-1.5rem)] max-h-96 overflow-y-auto scrollbar-thin bg-white border border-grey-100 rounded-xl shadow-lg z-40">
                             <div className="px-4 py-2.5 border-b border-grey-100 text-xs font-bold text-grey-800">Notifications</div>
                             {notifications.length === 0 ? (
                                 <p className="px-4 py-6 text-center text-xs text-grey-500">Nothing to show right now.</p>

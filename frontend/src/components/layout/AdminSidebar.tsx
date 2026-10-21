@@ -13,8 +13,10 @@ const adminNav = toNavGroups(ADMIN_NAV);
 interface AdminSidebarProps {
     user: { name: string; email: string; role: string };
     onLogout: () => void;
+    mobileOpen?: boolean;
+    onClose?: () => void;
 }
 
-export function AdminSidebar({ user, onLogout }: AdminSidebarProps) {
-    return <Sidebar navGroups={adminNav} user={user} onLogout={onLogout} />;
+export function AdminSidebar({ user, onLogout, mobileOpen, onClose }: AdminSidebarProps) {
+    return <Sidebar navGroups={adminNav} user={user} onLogout={onLogout} mobileOpen={mobileOpen} onClose={onClose} />;
 }

@@ -19,6 +19,7 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
     const [authChecked, setAuthChecked] = useState(false);
     const [user, setUser] = useState({ name: 'Client User', email: '', role: 'Client' });
     const [railOpen, setRailOpen] = useState(true);
+    const [navOpen, setNavOpen] = useState(false);
 
     useEffect(() => {
         // The login page renders its own full-screen layout below and is the one route
@@ -32,6 +33,9 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
         }
         const portalUser = getPortalUser();
         if (portalUser) {
+            // The session lives in localStorage, which does not exist during server rendering, so it can only be
+            // read after mount (same reasoning as Sidebar.tsx); the page renders nothing until it is checked.
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setUser({ name: portalUser.name, email: portalUser.email, role: portalUser.portalRole || 'Client' });
         }
         setAuthChecked(true);
@@ -54,17 +58,17 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
 
     return (
         <div className="flex min-h-screen bg-surface">
-            <ClientSidebar user={user} onLogout={portalSignOut} />
+            <ClientSidebar mobileOpen={navOpen} onClose={() => setNavOpen(false)} user={user} onLogout={portalSignOut} />
 
-            <div className="ml-[260px] flex flex-1 min-h-screen">
-                <div className={cn('flex-1 flex flex-col min-h-screen transition-all duration-300', railOpen ? 'mr-[280px]' : 'mr-[48px]')}>
-                    <Header initials={initials} onSignOut={portalSignOut} />
-                    <main className="flex-1 p-6 overflow-y-auto">{children}</main>
+            <div className="lg:ml-[260px] flex flex-1 min-w-0 min-h-screen">
+                <div className={cn('flex-1 min-w-0 flex flex-col min-h-screen transition-all duration-300', railOpen ? 'xl:mr-[280px]' : 'xl:mr-[48px]')}>
+                    <Header initials={initials} onSignOut={portalSignOut} onMenu={() => setNavOpen(true)} />
+                    <main className="flex-1 min-w-0 p-4 sm:p-6 overflow-y-auto">{children}</main>
                 </div>
 
                 <div
                     className={cn(
-                        'fixed top-0 right-0 h-screen bg-white border-l border-grey-100 flex flex-col transition-all duration-300 z-20',
+                        'fixed top-0 right-0 h-screen bg-white border-l border-grey-100 hidden xl:flex flex-col transition-all duration-300 z-20',
                         railOpen ? 'w-[280px]' : 'w-[48px]'
                     )}
                 >

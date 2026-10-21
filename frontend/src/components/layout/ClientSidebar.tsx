@@ -9,8 +9,10 @@ const clientNav = toNavGroups(CLIENT_NAV);
 interface ClientSidebarProps {
     user: { name: string; email: string; role: string };
     onLogout: () => void;
+    mobileOpen?: boolean;
+    onClose?: () => void;
 }
 
-export function ClientSidebar({ user, onLogout }: ClientSidebarProps) {
-    return <Sidebar navGroups={clientNav} user={user} onLogout={onLogout} />;
+export function ClientSidebar({ user, onLogout, mobileOpen, onClose }: ClientSidebarProps) {
+    return <Sidebar navGroups={clientNav} user={user} onLogout={onLogout} mobileOpen={mobileOpen} onClose={onClose} />;
 }
