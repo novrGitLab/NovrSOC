@@ -30,7 +30,13 @@ export interface NavItem {
     // show the item to every authenticated role; when present, ANDed with adminOnly/managerOnly
     // if those are also set (they aren't, on any item that sets `roles`, in practice).
     roles?: NavRole[];
+    // Other route prefixes that belong to this item (its sub-pages), so it stays highlighted there.
+    match?: string[];
 }
+
+/** Whether `item` is the current page: its own route, or one of its sub-page prefixes. */
+export const isNavItemActive = (item: NavItem, pathname: string) =>
+    pathname === item.href || !!item.match?.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 
 export interface NavGroup {
     section: string;
@@ -87,7 +93,7 @@ export function Sidebar({ navGroups, user, onLogout }: SidebarProps) {
         // current route, matching the old accordion's "auto-expand where you are" behavior.
         if (Object.keys(stored).length === 0) {
             for (const group of visibleGroups) {
-                if (group.collapsible && group.items.some((item) => pathname.startsWith(item.href))) {
+                if (group.collapsible && group.items.some((item) => pathname.startsWith(item.href) || isNavItemActive(item, pathname))) {
                     stored = { [group.section]: true };
                     break;
                 }
@@ -133,7 +139,7 @@ export function Sidebar({ navGroups, user, onLogout }: SidebarProps) {
                         {!group.collapsible &&
                             group.items.map((item) => {
                                 const Icon = item.icon;
-                                const isActive = pathname === item.href;
+                                const isActive = isNavItemActive(item, pathname);
                                 return (
                                     <Link
                                         key={item.href}
@@ -173,7 +179,7 @@ export function Sidebar({ navGroups, user, onLogout }: SidebarProps) {
                                     <div className="mt-1 mb-2">
                                         {group.items.map((item) => {
                                             const Icon = item.icon;
-                                            const isActive = pathname === item.href;
+                                            const isActive = isNavItemActive(item, pathname);
                                             return (
                                                 <Link
                                                     key={item.href}

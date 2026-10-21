@@ -92,7 +92,11 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
         e.weight += SEV_W[f.scanner_severity] ?? 0; e.max_risk = Math.max(e.max_risk, Number(f.risk_score ?? 0));
         perAsset.set(f.asset_id, e);
     }
-    const mostVulnerable = [...perAsset.values()].sort((a, b) => b.weight - a.weight || b.max_risk - a.max_risk).slice(0, 5).map(({ weight: _w, ...x }) => x);
+    const ranked = [...perAsset.values()].sort((a, b) => b.weight - a.weight || b.max_risk - a.max_risk).slice(0, 8);
+    // Exposure context for the ranking: the asset's type, exposure and criticality (read-only).
+    const ctx = ranked.length ? await supabase.from('vms_assets').select('id, asset_type, exposure, criticality').eq('org_id', org).in('id', ranked.map((r) => r.asset_id)) : { data: [] };
+    const ctxById = new Map((ctx.data ?? []).map((a) => [a.id, a]));
+    const mostVulnerable = ranked.map(({ weight: _w, ...x }) => ({ ...x, asset_type: ctxById.get(x.asset_id)?.asset_type ?? null, exposure: ctxById.get(x.asset_id)?.exposure ?? null, criticality: ctxById.get(x.asset_id)?.criticality ?? null }));
     const reached = (assessed30.data ?? []).filter((a) => /^reachable/.test(String((a.last_assessment as { outcome?: string } | null)?.outcome ?? ''))).length;
     const described = assessments30.error ? [] : await describe((assessments30.data ?? []) as AssessmentRow[]);
     res.json({
@@ -109,6 +113,8 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
         },
         recent_scans: scans.data ?? [],
         most_vulnerable_assets: openFindings.error ? null : mostVulnerable,
+        // Assets with at least one open critical or high finding (all of them, not only the ranked top 8).
+        high_risk_assets: openFindings.error ? null : [...perAsset.values()].filter((a) => (a.by_severity.critical ?? 0) + (a.by_severity.high ?? 0) > 0).length,
         // Scanner workers are shared infrastructure, not tenant data: client roles get the state only.
         worker: {
             state: scanner.state, source: scanner.source, last_heartbeat_at: scanner.last_seen_at, seen_recently: scanner.state === 'online',
@@ -193,11 +199,25 @@ router.post('/scopes/:id/revoke', requirePermission('vms:scope'), async (req: Au
 
 // ── Scans ───────────────────────────────────────────────────────────────────────────────────
 router.get('/scans', requirePermission('vms:read'), async (req: AuthRequest, res) => {
-    const { data, error } = await getSupabase()!.from('vms_scan_jobs').select('*').eq('org_id', requestOrg(req)).order('requested_at', { ascending: false }).limit(100);
+    const supabase = getSupabase()!;
+    const org = requestOrg(req);
+    const q = req.query;
+    const limit = Math.min(Math.max(Math.round(Number(q.limit) || 100), 1), 500);
+    let query = supabase.from('vms_scan_jobs').select('*').eq('org_id', org);
+    if (typeof q.status === 'string' && ['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(q.status)) query = query.eq('status', q.status);
+    if (typeof q.kind === 'string' && /^[a-z_]{1,40}$/.test(q.kind)) query = query.eq('kind', q.kind);
+    const { data, error } = await query.order('requested_at', { ascending: false }).limit(limit);
     if (error) { fail(res, error); return; }
     // Queued scans that no connected worker can take (kind, or a private target with no route) say why.
     const scanner = (data ?? []).some((j) => j.status === 'queued') ? await loadScannerStatus() : null;
-    res.json({ scans: (data ?? []).map((j) => ({ ...j, attention: scanner ? jobAttention(j, scanner) : null })) });
+    // Findings each scan produced evidence for (distinct findings, this organisation only).
+    const perJob = new Map<string, Set<string>>();
+    const ids = (data ?? []).map((j) => j.id);
+    for (let i = 0; i < ids.length; i += 200) {
+        const { data: ev } = await supabase.from('vms_finding_evidence').select('job_id, finding_id').eq('org_id', org).in('job_id', ids.slice(i, i + 200)).limit(20_000);
+        for (const e of ev ?? []) { const s = perJob.get(e.job_id) ?? new Set<string>(); s.add(e.finding_id); perJob.set(e.job_id, s); }
+    }
+    res.json({ scans: (data ?? []).map((j) => ({ ...j, attention: scanner ? jobAttention(j, scanner) : null, findings_count: perJob.get(j.id)?.size ?? 0 })) });
 });
 
 // Raw tool output kept for a scan (redacted, at most 30 days old).
@@ -322,7 +342,17 @@ router.get('/assets', requirePermission('vms:read'), async (req: AuthRequest, re
     if (text) query = query.ilike('value', `*${text}*`);
     const { data, error } = await query.order('last_seen', { ascending: false }).limit(1000);
     if (error) { fail(res, error); return; }
-    res.json({ assets: data ?? [] });
+    // Open findings per asset: count, by severity, and the highest risk score (stored values only).
+    const { data: open } = await getSupabase()!.from('vms_findings').select('asset_id, scanner_severity, risk_score')
+        .eq('org_id', requestOrg(req)).in('status', ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened']).not('asset_id', 'is', null).limit(20_000);
+    const per = new Map<string, { open: number; by_severity: Record<string, number>; max_risk: number | null }>();
+    for (const f of open ?? []) {
+        const e = per.get(f.asset_id) ?? { open: 0, by_severity: {}, max_risk: null };
+        e.open++; e.by_severity[f.scanner_severity] = (e.by_severity[f.scanner_severity] ?? 0) + 1;
+        if (typeof f.risk_score === 'number') e.max_risk = Math.max(e.max_risk ?? 0, f.risk_score);
+        per.set(f.asset_id, e);
+    }
+    res.json({ assets: (data ?? []).map((a) => ({ ...a, findings: per.get(a.id) ?? { open: 0, by_severity: {}, max_risk: null } })) });
 });
 
 // Relationships around an asset, from stored records only, each labelled confirmed/observed/inferred.
@@ -375,7 +405,7 @@ router.patch('/assets/:id', requirePermission('vms:manage'), async (req: AuthReq
 
 router.get('/events', requirePermission('vms:read'), async (req: AuthRequest, res) => {
     const n = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
-    const { data, error } = await getSupabase()!.from('vms_asset_events').select('*, vms_assets(value, asset_type)').eq('org_id', requestOrg(req)).gte('at', days(n)).order('at', { ascending: false }).limit(500);
+    const { data, error } = await getSupabase()!.from('vms_asset_events').select('*, vms_assets(value, asset_type, exposure)').eq('org_id', requestOrg(req)).gte('at', days(n)).order('at', { ascending: false }).limit(500);
     if (error) { fail(res, error); return; }
     res.json({ events: data ?? [] });
 });

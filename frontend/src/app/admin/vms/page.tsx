@@ -1,5 +1,5 @@
-import { VmsOverview } from '@/components/features/vms/VmsOverview';
+import { VmsDashboard } from '@/components/features/vms/VmsDashboard';
 
 export default function Page() {
-    return <VmsOverview />;
+    return <VmsDashboard />;
 }

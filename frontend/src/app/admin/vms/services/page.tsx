@@ -1,5 +1,10 @@
+import { Suspense } from 'react';
 import { VmsServices } from '@/components/features/vms/VmsServices';
 
 export default function Page() {
-    return <VmsServices />;
+    return (
+        <Suspense>
+            <VmsServices />
+        </Suspense>
+    );
 }

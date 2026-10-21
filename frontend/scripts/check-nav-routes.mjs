@@ -12,20 +12,27 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const navSource = join(root, 'src', 'config', 'nav.ts');
 const appDir = join(root, 'src', 'app');
 
 // Transpile into node_modules/.cache so `lucide-react` resolves from the project's node_modules.
-const out = ts.transpileModule(readFileSync(navSource, 'utf8'), {
-    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020, verbatimModuleSyntax: false },
-    fileName: navSource,
-});
+// nav.ts imports the VMS section list (config/vmsSections.ts), so that is transpiled alongside it.
 const cacheDir = join(root, 'node_modules', '.cache', 'nav-check');
 mkdirSync(cacheDir, { recursive: true });
-const compiled = join(cacheDir, 'nav.mjs');
-writeFileSync(compiled, out.outputText);
+function transpile(name) {
+    const source = join(root, 'src', 'config', `${name}.ts`);
+    const out = ts.transpileModule(readFileSync(source, 'utf8'), {
+        compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020, verbatimModuleSyntax: false },
+        fileName: source,
+    });
+    const file = join(cacheDir, `${name}.mjs`);
+    writeFileSync(file, out.outputText.replace(/from '\.\/vmsSections'/g, "from './vmsSections.mjs'"));
+    return file;
+}
+transpile('vmsSections');
+const compiled = transpile('nav');
 
 const { ADMIN_NAV, CLIENT_NAV } = await import(pathToFileURL(compiled).href);
+const { VMS_SECTIONS } = await import(pathToFileURL(join(cacheDir, 'vmsSections.mjs')).href);
 
 const PAGE_FILES = ['page.tsx', 'page.ts', 'page.jsx', 'page.js'];
 const isDir = (p) => existsSync(p) && statSync(p).isDirectory();
@@ -65,9 +72,13 @@ for (const item of items) {
     if (!resolveRoute(item.href)) missing.push(`${item.id}: ${item.href} has no page under src/app`);
 }
 
+// Every VMS section page (the tabs in app/admin/vms/layout.tsx) must exist too.
+const vmsPages = VMS_SECTIONS.flatMap((s) => s.pages);
+for (const p of vmsPages) if (!resolveRoute(p.href)) missing.push(`vms page "${p.label}": ${p.href} has no page under src/app`);
+
 if (missing.length > 0) {
     console.error(`check-nav-routes: ${missing.length} problem(s):`);
     for (const m of missing) console.error(`  - ${m}`);
     process.exit(1);
 }
-console.log(`check-nav-routes: all ${items.length} nav hrefs resolve to a page.`);
+console.log(`check-nav-routes: all ${items.length} nav hrefs and ${vmsPages.length} VMS section pages resolve to a page.`);

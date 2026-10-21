@@ -71,8 +71,8 @@ export function VmsEndpoints() {
         <div className="space-y-5">
             <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div>
-                    <h1 className="text-lg font-black text-foreground flex items-center gap-2"><MonitorSmartphone className="w-5 h-5" /> Managed Endpoints</h1>
-                    <p className="text-xs text-foreground-muted max-w-3xl">Endpoints enrolled in Wazuh. Each is assessed automatically by an enabled assessment policy when its address is inside the organisation&apos;s agreed coverage (<Link href="/admin/vms/scope" className="text-purple font-bold">Authorised Scope</Link>) and a scanner can reach it. An address seen in telemetry alone never authorises a scan.</p>
+                    <h2 className="text-sm font-bold text-foreground flex items-center gap-2"><MonitorSmartphone className="w-4 h-4" /> Managed Endpoints</h2>
+                    <p className="text-xs text-foreground-muted max-w-3xl">Endpoints enrolled in Wazuh. Each is assessed automatically by an enabled assessment policy when its address is inside the organisation&apos;s agreed coverage (<Link href="/admin/vms/discovery" className="text-purple font-bold">Authorised Scope</Link>) and a scanner can reach it. An address seen in telemetry alone never authorises a scan.</p>
                 </div>
                 {canRun && <button onClick={() => void reevaluate()} className="flex items-center gap-1 text-[11px] font-bold border border-border rounded-lg px-3 py-1.5"><RefreshCw className="w-3.5 h-3.5" /> Re-evaluate</button>}
             </div>
@@ -138,7 +138,7 @@ export function VmsEndpoints() {
                                         ) : <span className="text-foreground-muted">Not evaluated</span>}
                                     </td>
                                     <td className="p-2">
-                                        {e.last_assessment ? <Link href={`/admin/vms/assessments?id=${e.last_assessment.id}`} className="text-purple font-bold">{fmtWat(e.last_assessment.requested_at)}</Link> : <span className="text-foreground-muted">Never</span>}
+                                        {e.last_assessment ? <Link href={`/admin/vms/scans?id=${e.last_assessment.id}`} className="text-purple font-bold">{fmtWat(e.last_assessment.requested_at)}</Link> : <span className="text-foreground-muted">Never</span>}
                                         {e.last_assessment && <p className="text-foreground-muted">{PROFILE_LABEL[e.last_assessment.profile] ?? e.last_assessment.profile} at {e.last_assessment.target}</p>}
                                         {e.last_assessed_at && !e.assessed_recently && <p className="text-amber">No scan reached it in 30 days</p>}
                                     </td>

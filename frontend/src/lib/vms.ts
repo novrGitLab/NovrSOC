@@ -5,10 +5,12 @@ export interface VmsScope {
     authorization_reference: string; notes: string | null; status: 'active' | 'revoked'; approved_by: string; approved_at: string; expires_at: string;
     /** Hosts, .subdomains, IPs or CIDRs never touched (P13). */
     exclusions?: string[];
+    /** false = passive-only scope (P15): no active discovery. Absent before that SQL. */
+    allow_discovery?: boolean;
     revoked_by: string | null; revoked_at: string | null;
 }
 export interface VmsScan {
-    id: string; scope_id: string; kind: 'discovery' | 'ports' | 'vuln_nuclei' | 'vuln_openvas'; targets: string[]; options: { ports?: string };
+    id: string; scope_id: string; kind: 'passive_osint' | 'discovery' | 'ports' | 'vuln_nuclei' | 'vuln_openvas'; targets: string[]; options: { ports?: string };
     status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; requested_by: string; requested_at: string; started_at: string | null; finished_at: string | null;
     progress: { phase?: string; done?: number; total?: number; message?: string }; error: string | null; summary: Record<string, unknown> | null;
     worker_id: string | null; heartbeat_at: string | null; cancel_requested: boolean; purpose?: string;
@@ -35,7 +37,7 @@ export interface VmsReachAssessment {
 export interface VmsEvidence { id: string; target: string; tool: string; content: string; truncated: boolean; bytes: number; sha256: string; created_at: string; expires_at: string }
 export interface VmsService { id: string; port: number; protocol: string; service: string | null; product: string | null; version: string | null; source: string; first_seen: string; last_seen: string; status: string }
 export interface VmsTech { id: string; name: string; version: string; source: string; first_seen: string; last_seen: string }
-export interface VmsEvent { id: string; at: string; event: string; details: Record<string, unknown>; asset_id: string | null; vms_assets?: { value: string; asset_type: string } | null }
+export interface VmsEvent { id: string; at: string; event: string; details: Record<string, unknown>; asset_id: string | null; vms_assets?: { value: string; asset_type: string; exposure?: string } | null }
 
 export const fmtWat = (iso: string | null | undefined) =>
     iso ? new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso)) + ' WAT' : '—';
@@ -45,7 +47,7 @@ export const SCAN_STATUS_STYLE: Record<VmsScan['status'], string> = {
     failed: 'bg-red/10 text-red', cancelled: 'bg-card-muted text-foreground-muted',
 };
 export const SCAN_KIND_LABEL: Record<VmsScan['kind'], string> = {
-    discovery: 'Discovery (subdomains, DNS, HTTP)', ports: 'Ports & services (Nmap)', vuln_nuclei: 'Vulnerabilities (Nuclei)', vuln_openvas: 'Vulnerabilities (OpenVAS)',
+    passive_osint: 'Passive lookup (no traffic to target)', discovery: 'Discovery (subdomains, DNS, HTTP)', ports: 'Ports & services (Nmap)', vuln_nuclei: 'Vulnerabilities (Nuclei)', vuln_openvas: 'Vulnerabilities (OpenVAS)',
 };
 export const EVENT_LABEL: Record<string, string> = {
     asset_new: 'New asset', asset_changed: 'Asset changed', asset_gone: 'Asset gone', service_new: 'New service',

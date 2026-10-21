@@ -8,6 +8,8 @@ import Link from 'next/link';
 import { FileBarChart, Printer } from 'lucide-react';
 import { loadJson } from '@/lib/alerts';
 import { fmtWat } from '@/lib/vms';
+import { ExportButton } from '@/components/shared/ExportButton';
+import { PageHeader, Segmented, btn } from './kit';
 
 interface Report {
     period: { from: string; to: string; days: number };
@@ -51,17 +53,24 @@ export function VmsReport() {
         return () => { active = false; };
     }, [days]);
 
-    const section = 'bg-card border border-border rounded-xl p-4 text-xs space-y-1';
+    const section = 'bg-card border border-border rounded-2xl p-4 text-xs space-y-1';
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-                <h1 className="text-lg font-black text-foreground flex items-center gap-2"><FileBarChart className="w-5 h-5" /> Vulnerability Management report</h1>
-                <div className="flex items-center gap-2 print:hidden">
-                    <div className="flex gap-1 bg-card border border-border rounded-lg p-1">{[7, 30, 90].map((d) => <button key={d} onClick={() => setDays(d)} className={`text-[11px] font-bold px-2.5 py-1 rounded-md ${days === d ? 'bg-blue text-white' : 'text-foreground-muted'}`}>{d} days</button>)}</div>
-                    <button onClick={() => window.print()} className="text-[11px] font-bold border border-border rounded-lg px-3 py-1.5 flex items-center gap-1"><Printer className="w-3.5 h-3.5" /> Print / PDF</button>
+            <PageHeader icon={FileBarChart} title="Reports" description="What happened in vulnerability management over the period, counted from stored records, with the sources used and what the report cannot see."
+                actions={<div className="flex flex-wrap items-center gap-2 print:hidden">
+                    <Segmented label="Period" value={String(days) as '7' | '30' | '90'} onChange={(v) => setDays(Number(v))} options={[['7', '7 days'], ['30', '30 days'], ['90', '90 days']]} />
+                    <ExportButton elementId="vms-report" filename={`vms-report-${days}d-${new Date().toISOString().slice(0, 10)}`} title={`Vulnerability Management report — last ${days} days`} />
+                    <button onClick={() => window.print()} className={btn('secondary', 'md')}><Printer className="w-3.5 h-3.5" aria-hidden /> Print</button>
+                </div>} />
+            <div className="bg-card border border-border rounded-2xl p-4 text-xs print:hidden">
+                <p className="font-bold text-foreground mb-2">Data exports (CSV)</p>
+                <p className="text-foreground-muted mb-2">Each list exports exactly the rows its filters show.</p>
+                <div className="flex flex-wrap gap-2">
+                    {[['/admin/vms/findings', 'Findings'], ['/admin/vms/assets', 'Assets'], ['/admin/vms/remediation?view=table', 'Remediation tasks'], ['/admin/vms/risk', 'Risk queue'], ['/admin/vms/scans/history', 'Scan history'], ['/admin/vms/audit', 'Audit trail']].map(([h, l]) => <Link key={h} href={h} className={btn('secondary')}>{l}</Link>)}
                 </div>
             </div>
             {error && <p role="alert" className="text-xs text-red font-semibold">{error}</p>}
+            <div id="vms-report" className="space-y-4">
             {data && (
                 <>
                     <p className="text-xs text-foreground-muted">Period: {fmtWat(data.period.from)} to {fmtWat(data.period.to)} ({data.period.days} days). Counted from stored records when this page was opened.</p>
@@ -120,6 +129,7 @@ export function VmsReport() {
                     </div>
                 </>
             )}
+            </div>
         </div>
     );
 }

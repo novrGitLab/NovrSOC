@@ -294,10 +294,14 @@ test('overview: most vulnerable assets ranked by open severity, then risk; close
         f('a4', 'mail-01', 'high', { risk_score: 90 }),
         { ...f('b1', 'other-org', 'critical'), org_id: B },
     );
+    db.tables.vms_assets.push({ id: 'a2', org_id: A, asset_type: 'ip', value: 'web-01', exposure: 'internet', criticality: 'high', status: 'active' });
     const o = await http('GET', '/api/vms/overview', AN);
     const mv = o.data.most_vulnerable_assets as Row[];
     assert.deepEqual(mv.map((x) => [x.value, x.open]), [['db-01', 2], ['web-01', 3], ['mail-01', 1]]);
     assert.deepEqual(mv[0].by_severity, { critical: 1, low: 1 });
+    assert.equal(o.data.high_risk_assets, 3, 'db-01, web-01 and mail-01 carry an open critical or high finding');
+    assert.deepEqual([mv[0].exposure, mv[0].criticality, mv[0].asset_type], [null, null, null], 'context is null when the asset row is absent, never guessed');
+    assert.deepEqual([mv[1].exposure, mv[1].criticality, mv[1].asset_type], ['internet', 'high', 'ip'], 'exposure context from the asset');
 });
 
 test('production before the P19 SQL: sync, eligibility, manual and policy assessments and the new pages all work; nothing P19-only is written', async () => {
@@ -324,4 +328,30 @@ test('production before the P19 SQL: sync, eligibility, manual and policy assess
     const en = await http('GET', '/api/vms/endpoints', AN);
     assert.deepEqual([en.status, en.data.eligibility_stored, ((en.data.endpoints as Row[])[0].eligibility as Row).status], [200, false, 'eligible']);
     for (const path of ['/api/vms/operations', '/api/vms/services', '/api/vms/profiles', '/api/vms/overview']) assert.equal((await http('GET', path, AN)).status, 200, path);
+});
+
+test('P20: asset list carries open findings per asset; scan list counts findings and filters by status', async () => {
+    const a = randomUUID();
+    db.tables.vms_assets.push({ id: a, org_id: A, asset_type: 'host', value: 'web.example.test', status: 'active', exposure: 'internet', criticality: 'high', last_seen: now() });
+    const f1 = randomUUID();
+    db.tables.vms_findings.push(
+        { id: f1, org_id: A, asset_id: a, scanner_severity: 'high', risk_score: 70, status: 'open' },
+        { id: randomUUID(), org_id: A, asset_id: a, scanner_severity: 'low', risk_score: 20, status: 'in_progress' },
+        { id: randomUUID(), org_id: A, asset_id: a, scanner_severity: 'critical', risk_score: 95, status: 'verified' },
+        { id: randomUUID(), org_id: B, asset_id: a, scanner_severity: 'critical', risk_score: 99, status: 'open' },
+    );
+    const assets = await http('GET', '/api/vms/assets', AN);
+    const row = (assets.data.assets as Row[]).find((x) => x.id === a)!;
+    assert.deepEqual(row.findings, { open: 2, by_severity: { high: 1, low: 1 }, max_risk: 70 });
+    const j1 = randomUUID();
+    db.tables.vms_scan_jobs.push(
+        { id: j1, org_id: A, kind: 'vuln_nuclei', status: 'succeeded', targets: [], requested_at: now() },
+        { id: randomUUID(), org_id: A, kind: 'ports', status: 'failed', targets: [], requested_at: now() },
+    );
+    db.tables.vms_finding_evidence.push({ id: randomUUID(), org_id: A, finding_id: f1, job_id: j1, source: 'nuclei' }, { id: randomUUID(), org_id: A, finding_id: f1, job_id: j1, source: 'nuclei' });
+    const all = await http('GET', '/api/vms/scans', AN);
+    assert.equal((all.data.scans as Row[]).find((s) => s.id === j1)!.findings_count, 1);
+    const failed = await http('GET', '/api/vms/scans?status=failed', AN);
+    assert.deepEqual((failed.data.scans as Row[]).map((s) => s.kind), ['ports']);
+    assert.equal(((await http('GET', '/api/vms/scans', AN_B)).data.scans as Row[]).length, 0);
 });

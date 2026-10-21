@@ -1,10 +1,10 @@
-import { Suspense } from 'react';
-import { VmsAssessments } from '@/components/features/vms/VmsAssessments';
+import { redirect } from 'next/navigation';
 
-export default function Page() {
-    return (
-        <Suspense>
-            <VmsAssessments />
-        </Suspense>
-    );
+// Moved in the VMS redesign (P20); kept so existing links and bookmarks still work.
+export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(await searchParams)) if (typeof v === 'string') q.set(k, v);
+    const target = '/admin/vms/scans';
+    const extra = q.toString();
+    redirect(extra ? `${target}${target.includes('?') ? '&' : '?'}${extra}` : target);
 }

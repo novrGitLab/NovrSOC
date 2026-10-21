@@ -66,7 +66,7 @@ export function VmsScope() {
         <div className="space-y-4">
             <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
-                    <h1 className="text-lg font-black text-foreground flex items-center gap-2"><ShieldCheck className="w-5 h-5" /> Authorised Scope</h1>
+                    <h2 className="text-sm font-bold text-foreground flex items-center gap-2"><ShieldCheck className="w-4 h-4" /> Authorised Scope</h2>
                     <p className="text-xs text-foreground-muted">Nothing outside this list is ever scanned. Each entry records the authorisation that permits testing and when it expires.</p>
                 </div>
                 {canApprove && <button onClick={() => setAdding((a) => !a)} className="flex items-center gap-1.5 text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1.5"><Plus className="w-3.5 h-3.5" /> Add scope</button>}

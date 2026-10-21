@@ -97,10 +97,10 @@ export async function runDueSchedules(now = Date.now()): Promise<ScheduleRun[]> 
 }
 
 // ── Snapshots and trends ──────────────────────────────────────────────────────────────────────
-type FindingRow = { id: string; priority: string | null; status: string; due_at: string | null; cve_ids: string[] | null; asset_id: string | null; first_seen: string; verified_at: string | null; rule_id: string; title: string; asset_value: string };
+type FindingRow = { id: string; priority: string | null; status: string; due_at: string | null; cve_ids: string[] | null; asset_id: string | null; first_seen: string; verified_at: string | null; rule_id: string; title: string; asset_value: string; risk_score?: number | null; scanner_severity?: string | null };
 
 async function openFindings(org: string): Promise<FindingRow[]> {
-    const { data, error } = await getSupabase()!.from('vms_findings').select('id, priority, status, due_at, cve_ids, asset_id, first_seen, verified_at, rule_id, title, asset_value').eq('org_id', org).in('status', [...OPEN_STATUSES]).limit(20_000);
+    const { data, error } = await getSupabase()!.from('vms_findings').select('id, priority, status, due_at, cve_ids, asset_id, first_seen, verified_at, rule_id, title, asset_value, risk_score, scanner_severity').eq('org_id', org).in('status', [...OPEN_STATUSES]).limit(20_000);
     if (error) throw new Error(`findings unreadable: ${error.message}`);
     return (data ?? []) as FindingRow[];
 }
@@ -137,9 +137,23 @@ export async function snapshotOrg(org: string, now = new Date()): Promise<Record
         assets_active: (assets ?? []).length, assets_internet: internetIds.size,
         new_findings: newF, verified, reopened,
     };
-    const { error } = await supabase.from('vms_risk_snapshots').upsert(row, { onConflict: 'org_id,day' });
+    // P20: risk and exposure history (sql/2026-10-26_p20_vms_insights.sql). Informational findings
+    // are left out of the mean so a pile of "info" items does not dilute it.
+    const scored = open.filter((f) => f.scanner_severity !== 'info' && typeof f.risk_score === 'number').map((f) => Number(f.risk_score));
+    const bySeverity: Record<string, number> = {};
+    for (const f of open) if (f.scanner_severity) bySeverity[f.scanner_severity] = (bySeverity[f.scanner_severity] ?? 0) + 1;
+    const insights = {
+        risk_mean: scored.length ? Math.round((scored.reduce((a, b) => a + b, 0) / scored.length) * 10) / 10 : null,
+        risk_max: scored.length ? Math.max(...scored) : null,
+        critical_exposures: open.filter((f) => (f.scanner_severity === 'critical' || f.scanner_severity === 'high') && f.asset_id && internetIds.has(f.asset_id)).length,
+        open_by_severity: bySeverity,
+    };
+    let stored: Record<string, unknown> = { ...row, ...insights };
+    let { error } = await supabase.from('vms_risk_snapshots').upsert(stored, { onConflict: 'org_id,day' });
+    // Before the P20 SQL those columns do not exist: keep the P7 snapshot.
+    if (error && (error.code === 'PGRST204' || error.code === '42703')) { stored = row; ({ error } = await supabase.from('vms_risk_snapshots').upsert(row, { onConflict: 'org_id,day' })); }
     if (error) throw new Error(`snapshot write failed: ${error.message}`);
-    return row;
+    return stored;
 }
 
 /** Hours from first seen to verified, by priority, for findings verified in the window. */

@@ -1,10 +1,10 @@
 import { Suspense } from 'react';
-import { VmsAssets } from '@/components/features/vms/VmsAssets';
+import { VmsAssetInventory } from '@/components/features/vms/VmsAssetMgmt';
 
 export default function Page() {
     return (
         <Suspense>
-            <VmsAssets />
+            <VmsAssetInventory />
         </Suspense>
     );
 }

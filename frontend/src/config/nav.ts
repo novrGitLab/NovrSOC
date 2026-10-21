@@ -18,15 +18,15 @@
 // admin nav. Their pages may still exist; they are simply not linked.
 import {
     LayoutDashboard, FileBarChart, Globe, Users, Shield, UserCheck, Smartphone, Code,
-    Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network, ShieldCheck, Radar, ScanSearch, Wrench,
+    Crosshair, AlertTriangle, Link as LinkIcon, Building, Building2, Server, Network, ShieldCheck, Radar,
     Mail, MessageSquare, ShieldAlert, Activity, Zap, Siren,
     HardDrive, BarChart, CreditCard, Settings, BookOpen, FileText, ScrollText,
-    ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Bug, Monitor,
+    ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Monitor,
     Target, Fingerprint, CalendarRange, Droplets, Wifi, HeartPulse, GraduationCap, Swords, Truck, Wheat, Factory, Mountain, KeyRound,
     type LucideIcon,
-    Gauge, MonitorSmartphone,
 } from 'lucide-react';
 import type { NavGroup, NavItem, NavRole } from '@/components/layout/Sidebar';
+import { VMS_SECTIONS } from './vmsSections';
 
 export type NavStatus = 'WORKING' | 'PARTIAL' | 'MOCK' | 'BROKEN' | 'PLANNED';
 export type NavDomain =
@@ -41,6 +41,8 @@ export interface NavItemConfig {
     status: NavStatus;
     roles: 'all' | NavRole[];
     icon: LucideIcon;
+    /** Sub-page route prefixes that keep this item highlighted (see Sidebar isNavItemActive). */
+    match?: string[];
 }
 
 export interface NavSectionConfig {
@@ -100,24 +102,11 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         ],
     },
     {
-        // Phase P4: attack surface, authorised scope and scans. The Wazuh endpoint inventory and
-        // Wazuh vulnerability pages moved here from Infrastructure and Security Operations.
+        // VMS redesign (P20): eight sections; each section's pages are tabs in app/admin/vms/layout.tsx
+        // (config/vmsSections.ts). Scanner Operations is for managers — the backend enforces it
+        // (its data comes from vms:scope endpoints), not only this list.
         section: 'Vulnerability Management', collapsible: true, icon: Radar, groupLabel: 'Vulnerability Management',
-        items: [
-            { id: 'vms-overview', label: 'Overview', href: '/admin/vms', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Radar },
-            { id: 'vms-assessments', label: 'Assessments', href: '/admin/vms/assessments', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: ScanSearch },
-            { id: 'vms-assets', label: 'Attack Surface', href: '/admin/vms/assets', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Globe },
-            { id: 'vms-endpoints', label: 'Managed Endpoints', href: '/admin/vms/endpoints', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: MonitorSmartphone },
-            { id: 'vms-services', label: 'Services & Technology', href: '/admin/vms/services', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Server },
-            { id: 'vms-findings', label: 'Findings', href: '/admin/vms/findings', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Bug },
-            { id: 'vms-remediation', label: 'Remediation', href: '/admin/vms/remediation', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Wrench },
-            { id: 'vms-report', label: 'Reports', href: '/admin/vms/report', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: FileBarChart },
-            { id: 'vulnerabilities', label: 'Wazuh Vulnerabilities', href: '/admin/secops/vulnerabilities', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: Bug },
-            { id: 'vms-scans', label: 'Scans', href: '/admin/vms/scans', domain: 'vms', status: 'WORKING', roles: NOT_EXEC, icon: ScanSearch },
-            { id: 'vms-operations', label: 'Scanner Operations', href: '/admin/vms/operations', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: Gauge },
-            { id: 'vms-scope', label: 'Authorised Scope', href: '/admin/vms/scope', domain: 'vms', status: 'WORKING', roles: VMS_READ, icon: ShieldCheck },
-            { id: 'vms-admin', label: 'VMS Admin', href: '/admin/vms/admin', domain: 'vms', status: 'WORKING', roles: ['super_admin', 'soc_manager'], icon: ShieldCheck },
-        ],
+        items: VMS_SECTIONS.map((s): NavItemConfig => ({ id: `vms-${s.id}`, label: s.label, href: s.href, domain: 'vms', status: 'WORKING', roles: s.managerOnly ? MANAGER_ONLY : VMS_READ, icon: s.icon, match: s.pages.map((p) => p.href).filter((h) => h !== '/admin/vms') })),
     },
     {
         section: 'Threat Information System', collapsible: true, icon: Crosshair, groupLabel: 'Threat Information System',
@@ -285,7 +274,7 @@ export const CLIENT_NAV: NavSectionConfig[] = [
 export function toNavGroups(sections: NavSectionConfig[]): NavGroup[] {
     return sections.map(({ items, ...section }) => ({
         ...section,
-        items: items.map(({ label, href, icon, roles }): NavItem => (roles === 'all' ? { label, href, icon } : { label, href, icon, roles })),
+        items: items.map(({ label, href, icon, roles, match }): NavItem => ({ label, href, icon, ...(roles === 'all' ? {} : { roles }), ...(match?.length ? { match } : {}) })),
     }));
 }
 

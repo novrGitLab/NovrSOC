@@ -148,6 +148,26 @@ test('snapshotOrg counts open findings by priority, overdue, KEV and internet-fa
     assert.equal(db.tables.vms_risk_snapshots.length, 1);
 });
 
+test('snapshotOrg records P20 risk and exposure (info excluded), and still writes the P7 row before the P20 SQL', async () => {
+    const asset = { id: randomUUID(), org_id: A, status: 'active', exposure: 'internet' };
+    db.tables.vms_assets.push(asset);
+    finding({ scanner_severity: 'critical', risk_score: 90, asset_id: asset.id });
+    finding({ scanner_severity: 'medium', risk_score: 40 });
+    finding({ scanner_severity: 'info', risk_score: 5, asset_id: asset.id });
+    const row = await snapshotOrg(A);
+    assert.equal(row.risk_mean, 65);
+    assert.equal(row.risk_max, 90);
+    assert.equal(row.critical_exposures, 1);
+    assert.deepEqual(row.open_by_severity, { critical: 1, medium: 1, info: 1 });
+    db.tables.vms_risk_snapshots.length = 0;
+    db.missingColumns.vms_risk_snapshots = ['risk_mean'];
+    const p7 = await snapshotOrg(A);
+    assert.equal(p7.risk_mean, undefined);
+    assert.equal(db.tables.vms_risk_snapshots.length, 1);
+    assert.equal(db.tables.vms_risk_snapshots[0].open_total, 3);
+    delete db.missingColumns.vms_risk_snapshots;
+});
+
 test('trends say when there is not enough history; time to remediate and widespread rules are measured', async () => {
     const t0 = Date.now() - 5 * 86_400_000;
     finding({ priority: 'P1', status: 'verified', first_seen: new Date(t0).toISOString(), verified_at: new Date(t0 + 48 * H).toISOString(), due_at: new Date(t0 + 72 * H).toISOString() });

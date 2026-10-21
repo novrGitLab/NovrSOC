@@ -1,11 +1,10 @@
-import { VmsScans } from '@/components/features/vms/VmsScans';
-import { VmsSchedules } from '@/components/features/vms/VmsSchedules';
+import { Suspense } from 'react';
+import { VmsScanManagement } from '@/components/features/vms/VmsScanning';
 
 export default function Page() {
     return (
-        <div className="space-y-6">
-            <VmsScans />
-            <VmsSchedules />
-        </div>
+        <Suspense>
+            <VmsScanManagement />
+        </Suspense>
     );
 }

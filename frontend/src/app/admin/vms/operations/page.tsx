@@ -1,5 +1,10 @@
-import { VmsOperations } from '@/components/features/vms/VmsOperations';
+import { Suspense } from 'react';
+import { VmsScannerIntegrations } from '@/components/features/vms/VmsMonitorOps';
 
 export default function Page() {
-    return <VmsOperations />;
+    return (
+        <Suspense>
+            <VmsScannerIntegrations />
+        </Suspense>
+    );
 }

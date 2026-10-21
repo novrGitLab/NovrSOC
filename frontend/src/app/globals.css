@@ -47,6 +47,52 @@
   --foreground-muted: var(--brand-grey-500);
 }
 
+/* Data-visualisation tokens (VMS). Each set validated with the dataviz palette validator against
+   the card surface it renders on (light #FFFFFF, dark #14172a):
+   - severity: an ordinal heat ramp, low -> critical (--ordinal: monotone, ΔL >= 0.06, light end
+     >= 2:1, hue spread <= 40°); info is a labelled neutral, not part of the ramp;
+   - progress: a one-hue brand-purple ordinal ramp, open -> verified;
+   - status (good/warning/serious/critical): reserved meanings, always shown with an icon + label. */
+:root {
+  --vz-sev-critical: #8c1b1b;
+  --vz-sev-high: #bf3a22;
+  --vz-sev-medium: #d9602a;
+  --vz-sev-low: #e0882f;
+  --vz-sev-info: #9aa0b4;
+  --vz-prog-1: #b08ad9;
+  --vz-prog-2: #8e5ccb;
+  --vz-prog-3: #6c33b0;
+  --vz-prog-4: #520385;
+  --vz-neutral: #c4c9d8;
+  --vz-grid: #eef0f6;
+  --vz-axis: #c4c9d8;
+  --vz-good: #0ca30c;
+  --vz-warning: #fab219;
+  --vz-serious: #ec835a;
+  --vz-critical: #d03b3b;
+  /* categorical slots 1 and 3 (two-series lines; aqua needs visible labels on light: <3:1) */
+  --vz-cat-1: #2a78d6;
+  --vz-cat-3: #1baf7a;
+}
+:root.dark {
+  --vz-sev-critical: #ff8466;
+  --vz-sev-high: #e05a3a;
+  --vz-sev-medium: #bb472f;
+  --vz-sev-low: #8c3a2a;
+  --vz-sev-info: #5d6279;
+  --vz-prog-1: #6a3aa6;
+  --vz-prog-2: #8853c6;
+  --vz-prog-3: #a97ae2;
+  --vz-prog-4: #cdaaf7;
+  --vz-neutral: #3a3f58;
+  --vz-grid: rgba(255, 255, 255, 0.06);
+  --vz-axis: rgba(255, 255, 255, 0.16);
+  --vz-cat-1: #3987e5;
+  --vz-cat-3: #199e70;
+}
+
+@keyframes vzfade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
 @theme inline {
   /* Raw brand hues — always literal, used for CTAs/badges/status regardless of theme */
   --color-blue: var(--brand-blue);

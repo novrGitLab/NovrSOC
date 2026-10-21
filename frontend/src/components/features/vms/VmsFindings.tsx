@@ -1,283 +1,175 @@
 'use client';
 
-// Findings (phase P5) — one list for Nuclei, OpenVAS and Wazuh findings, prioritised by the risk
-// engine. Verified and reopened come only from scan evidence; people move findings through the
-// other states, set owners and deadlines, add tasks, request verification and open cases.
+// Vulnerability Findings (redesign, phase P20) — every finding from active scans (Nuclei, OpenVAS)
+// and Wazuh agents, prioritised by the risk engine. Status, priority, source, KEV, overdue and the
+// search run on the backend (GET /api/vms/findings, up to 1000 rows, highest risk first); severity
+// narrows the loaded rows. Bulk actions call the same per-finding endpoint for each selected row —
+// each change is permission-checked and recorded on its own — and report exactly what succeeded.
 
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { Bug, Search } from 'lucide-react';
-import { apiUrl, apiFetch } from '@/lib/api';
-import { loadJson } from '@/lib/alerts';
-import { getAdminUser } from '@/lib/admin-auth';
-import { AiPanel } from '@/components/shared/AiPanel';
+import { Bug } from 'lucide-react';
 import { fmtWat } from '@/lib/vms';
+import { PageHeader, KpiCard, SeverityBadge, PriorityBadge, RiskScore, Segmented, Select, Toggle, SearchBox, Drawer, ConfirmDialog, ErrorState, Notice, ExportCsvButton, Tag, btn, type Msg, SEVERITY_META } from './kit';
+import { DataTable, type Column } from './table';
+import { FindingDetail, STATUS_LABEL, isOverdue, type Finding } from './FindingDetail';
+import { useVmsData, useVmsCan, vmsSend } from './data';
 
-export interface Finding {
-    id: string; asset_id: string | null; asset_value: string; port: number | null; protocol: string | null; source_class: 'active_scan' | 'wazuh'; detected_by: string[];
-    rule_id: string; title: string; finding_type: string; cve_ids: string[]; scanner_severity: string; scanner_cvss: number | null; risk_score: number | null;
-    priority: 'P1' | 'P2' | 'P3' | 'P4' | null; status: string; owner: string | null; due_at: string | null; first_seen: string; last_seen: string; verified_at: string | null; case_id: string | null;
-    description?: string | null; remediation?: string | null; references_urls?: string[]; risk_factors?: Record<string, { points?: number; basis?: string; weight?: number } | string>;
-}
-interface Detail {
-    finding: Finding;
-    evidence: { id: string; source: string; observed_at: string; matched_at: string | null; evidence: unknown; job_id: string | null }[];
-    events: { id: string; at: string; actor: string; action: string; from_value: string | null; to_value: string | null; details: string | null }[];
-    cve_intel: { cve_id: string; description: string | null; cvss_score: number | null; cvss_vector: string | null; epss_score: number | null; epss_percentile: number | null; kev: boolean; kev_checked_at: string | null; kev_date_added: string | null; kev_required_action: string | null; kev_ransomware: string | null;
-        /** OSV (P16; absent before sql/2026-10-22_p16_osv.sql). */
-        osv_status?: 'found' | 'not_found' | null; osv_ids?: string[] | null; osv_fetched_at?: string | null; osv_affected?: { ecosystem: string | null; name: string | null; repo: string | null; fixed: string[] }[] | null }[];
-    /** Same CVE on the same asset (confirmed) or on a Wazuh endpoint and its reported address (inferred), P16. */
-    correlated?: Correlated[]; correlation_error?: string | null;
-    asset: { id: string; value: string; exposure: string; criticality: string; owner: string | null } | null;
-    tasks: { id: string; title: string; status: string; owner: string | null; due_at: string | null }[];
-}
-export interface Correlated {
-    cves: string[]; relation: 'same_asset' | 'same_address'; basis: 'confirmed' | 'inferred'; explanation: string;
-    other: { id: string; asset_value: string; asset_type: string | null; source_class: string; detected_by: string[]; evidence_class: string | null; status: string; scanner_severity: string | null; priority: string | null; last_seen: string | null };
-}
 interface Summary { open: number; by_severity: Record<string, number>; by_priority: Record<string, number>; known_exploited_open: number; overdue: number; by_source: Record<string, number> }
 
-export const PRIORITY_STYLE: Record<string, string> = { P1: 'bg-red-500 text-white', P2: 'bg-orange text-white', P3: 'bg-amber text-white', P4: 'bg-card-muted text-foreground-muted' };
-export const STATUS_LABEL: Record<string, string> = {
-    open: 'Open', acknowledged: 'Acknowledged', in_progress: 'In progress', fixed_pending_verification: 'Fixed — awaiting verification', verified: 'Verified fixed',
-    reopened: 'Reopened', risk_accepted: 'Risk accepted', false_positive: 'False positive',
-};
-const NEXT: Record<string, string[]> = {
-    open: ['acknowledged', 'in_progress', 'fixed_pending_verification', 'risk_accepted', 'false_positive'], reopened: ['acknowledged', 'in_progress', 'fixed_pending_verification', 'risk_accepted', 'false_positive'],
-    acknowledged: ['in_progress', 'fixed_pending_verification', 'risk_accepted', 'false_positive', 'open'], in_progress: ['fixed_pending_verification', 'acknowledged', 'risk_accepted', 'false_positive', 'open'],
-    fixed_pending_verification: ['in_progress', 'open'], verified: [], risk_accepted: ['open'], false_positive: ['open'],
-};
-const SEVS = ['critical', 'high', 'medium', 'low', 'info'];
-
-function isOverdue(f: Finding): boolean {
-    return !!f.due_at && Date.parse(f.due_at) < Date.now() && !['verified', 'risk_accepted', 'false_positive'].includes(f.status);
-}
+const STATUS_VIEWS = [['open_all', 'Open'], ['fixed_pending_verification', 'Awaiting verification'], ['verified', 'Resolved'], ['risk_accepted,false_positive', 'Accepted / FP'], ['all', 'All']] as const;
+type StatusView = (typeof STATUS_VIEWS)[number][0];
+const BULK_STATUS = ['acknowledged', 'in_progress', 'fixed_pending_verification', 'risk_accepted', 'false_positive', 'open'] as const;
+const BULK_MAX = 100;
 
 export function VmsFindings() {
     const params = useSearchParams();
-    const role = getAdminUser().role;
-    const canManage = ['super_admin', 'soc_manager', 'analyst'].includes(role);
-    const [filter, setFilter] = useState({ status: 'open_all', priority: params.get('priority') ?? '', source: ['wazuh', 'active_scan'].includes(params.get('source') ?? '') ? params.get('source')! : '', kev: false, overdue: params.get('overdue') === 'true' });
-    const [search, setSearch] = useState('');
-    const [text, setText] = useState('');
-    const [findings, setFindings] = useState<Finding[] | null>(null);
-    const [summary, setSummary] = useState<Summary | null>(null);
-    const [error, setError] = useState<string | null>(null);
-    const [detail, setDetail] = useState<Detail | null>(null);
-    const [msg, setMsg] = useState<string | null>(null);
-    const [reloadKey, setReloadKey] = useState(0);
+    const router = useRouter();
+    const can = useVmsCan();
+    const [status, setStatus] = useState<StatusView>(() => (STATUS_VIEWS.some(([v]) => v === params.get('status')) ? params.get('status') as StatusView : 'open_all'));
+    const [priority, setPriority] = useState(params.get('priority') ?? '');
+    const [severity, setSeverity] = useState(params.get('severity') ?? '');
+    const [source, setSource] = useState(['wazuh', 'active_scan'].includes(params.get('source') ?? '') ? params.get('source')! : '');
+    const [kev, setKev] = useState(params.get('kev') === 'true');
+    const [overdue, setOverdue] = useState(params.get('overdue') === 'true');
+    const [q, setQ] = useState(params.get('q') ?? '');
+    const assetId = params.get('asset_id');
+    const openId = params.get('id');
+    const [selected, setSelected] = useState<Set<string>>(new Set());
+    const [msg, setMsg] = useState<Msg>(null);
+    const [bulk, setBulk] = useState<{ status?: string } | null>(null);
+    const [bulkOwner, setBulkOwner] = useState('');
+    const [busy, setBusy] = useState(false);
 
-    useEffect(() => {
-        let active = true;
-        const p = new URLSearchParams({ status: filter.status });
-        if (filter.priority) p.set('priority', filter.priority);
-        if (filter.source) p.set('source', filter.source);
-        if (filter.kev) p.set('kev', 'true');
-        if (filter.overdue) p.set('overdue', 'true');
-        if (text) p.set('q', text);
-        // One asset's findings, when opened from Services & Technology: /admin/vms/findings?asset_id=…
-        const assetId = params.get('asset_id');
+    const query = useMemo(() => {
+        const p = new URLSearchParams({ status });
+        if (priority) p.set('priority', priority);
+        if (source) p.set('source', source);
+        if (kev) p.set('kev', 'true');
+        if (overdue) p.set('overdue', 'true');
+        if (q) p.set('q', q);
         if (assetId) p.set('asset_id', assetId);
-        void Promise.all([loadJson<{ findings: Finding[] }>(`/api/vms/findings?${p.toString()}`), loadJson<Summary>('/api/vms/findings/summary')]).then(([f, s]) => {
-            if (!active) return;
-            setFindings(f.ok ? f.data.findings : null);
-            setError(f.ok ? null : f.error);
-            setSummary(s.ok ? s.data : null);
-        });
-        return () => { active = false; };
-    }, [filter, text, reloadKey, params]);
+        return `/api/vms/findings?${p.toString()}`;
+    }, [status, priority, source, kev, overdue, q, assetId]);
+    const list = useVmsData<{ findings: Finding[]; correlation_error?: string | null }>(query);
+    const summary = useVmsData<Summary>('/api/vms/findings/summary');
+    const now = list.at ?? 0;
+    const rows = useMemo(() => list.data?.findings.filter((f) => !severity || f.scanner_severity === severity) ?? null, [list.data, severity]);
 
-    // Opened from a link (e.g. the remediation queue): /admin/vms/findings?id=…
-    useEffect(() => {
-        const id = params.get('id');
-        if (!id) return;
-        let active = true;
-        void loadJson<Detail>(`/api/vms/findings/${id}`).then((r) => { if (active && r.ok) setDetail(r.data); });
-        return () => { active = false; };
-    }, [params]);
+    const setOpen = (id: string | null) => {
+        const p = new URLSearchParams(params.toString());
+        if (id) p.set('id', id); else p.delete('id');
+        router.replace(`/admin/vms/findings${p.toString() ? `?${p.toString()}` : ''}`, { scroll: false });
+    };
+    const reloadAll = () => { list.reload(); summary.reload(); };
 
-    async function open(id: string) {
+    async function applyBulk(body: Record<string, unknown>, label: string) {
+        const ids = [...selected].slice(0, BULK_MAX);
+        setBusy(true);
         setMsg(null);
-        const r = await loadJson<Detail>(`/api/vms/findings/${id}`);
-        setDetail(r.ok ? r.data : null);
-    }
-    async function call(method: string, path: string, body: unknown, done: string) {
-        setMsg(null);
-        const r = await apiFetch(apiUrl(path), { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        const d = await r.json().catch(() => null);
-        if (!r.ok) { setMsg(d?.error ?? `HTTP ${r.status}`); return null; }
-        setMsg(d?.message ?? done);
-        if (detail) await open(detail.finding.id);
-        setReloadKey((k) => k + 1);
-        return d;
-    }
-    async function setStatus(next: string) {
-        if (!detail) return;
-        const needsReason = next === 'risk_accepted' || next === 'false_positive';
-        const note = needsReason ? window.prompt(`Reason for ${STATUS_LABEL[next].toLowerCase()} (required)`) : window.prompt('Note (optional)') ?? undefined;
-        if (needsReason && !note) return;
-        await call('PATCH', `/api/vms/findings/${detail.finding.id}`, { status: next, ...(note ? { note } : {}) }, `Marked ${STATUS_LABEL[next].toLowerCase()}`);
-    }
-    async function tasksFromPlan() {
-        if (!detail) return;
-        const r = await loadJson<{ artifacts: { id: string; purpose: string; status: string; content: { steps?: { order: number; action: string; details: string; owner_suggestion: string; proposed_deadline_days: number }[] } }[] }>(`/api/ai/artifacts?subject_type=finding&subject_id=${detail.finding.id}`);
-        const plan = r.ok ? r.data.artifacts.find((a) => a.purpose === 'remediation_plan' && a.status === 'accepted') : undefined;
-        if (!plan?.content.steps?.length) { setMsg('Mark an AI remediation plan as "Useful" first; tasks are created only from a plan a person accepted.'); return; }
-        for (const s of [...plan.content.steps].sort((a, b) => a.order - b.order)) {
-            const due = Number.isFinite(s.proposed_deadline_days) && s.proposed_deadline_days > 0 ? new Date(Date.now() + s.proposed_deadline_days * 86_400_000).toISOString() : undefined;
-            await apiFetch(apiUrl(`/api/vms/findings/${detail.finding.id}/tasks`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: s.action.slice(0, 300), details: s.details?.slice(0, 4000), owner: s.owner_suggestion?.slice(0, 200), due_at: due, ai_artifact_id: plan.id }) });
+        let ok = 0;
+        const failures: string[] = [];
+        for (const id of ids) {
+            const r = await vmsSend('PATCH', `/api/vms/findings/${id}`, body);
+            if (r.ok) ok++; else failures.push(r.error);
         }
-        setMsg(`Created ${plan.content.steps.length} task(s) from the accepted plan`);
-        await open(detail.finding.id);
+        setBusy(false);
+        setMsg(failures.length ? { ok: false, text: `${label}: ${ok} updated, ${failures.length} refused (${[...new Set(failures)].slice(0, 2).join('; ')})` } : { ok: true, text: `${label}: ${ok} finding(s) updated` });
+        setSelected(new Set());
+        reloadAll();
     }
 
-    const f = detail?.finding;
-    const chip = (on: boolean) => `text-[11px] font-bold px-2.5 py-1 rounded-md ${on ? 'bg-blue text-white' : 'text-foreground-muted hover:text-foreground'}`;
+    const columns: Column<Finding>[] = [
+        { key: 'priority', header: 'Priority', render: (f) => <PriorityBadge priority={f.priority} />, sort: (f) => f.priority ?? 'P9' },
+        {
+            key: 'title', header: 'Finding', className: 'min-w-[220px] max-w-[360px]', sort: (f) => f.title.toLowerCase(),
+            render: (f) => (
+                <div className="min-w-0">
+                    <p className="font-semibold text-foreground truncate">{f.title}</p>
+                    <p className="text-[11px] text-foreground-muted truncate">{f.cve_ids.slice(0, 2).join(', ') || f.rule_id}{f.cve_ids.length > 2 ? ` +${f.cve_ids.length - 2}` : ''}</p>
+                </div>
+            ),
+        },
+        { key: 'severity', header: 'Severity', render: (f) => <SeverityBadge severity={f.scanner_severity} />, sort: (f) => -(SEVERITY_META[f.scanner_severity]?.rank ?? 9) },
+        { key: 'risk', header: 'Risk', render: (f) => <RiskScore score={f.risk_score} />, sort: (f) => f.risk_score },
+        { key: 'asset', header: 'Asset', hideBelow: 'md', render: (f) => <span title={f.asset_value} className="block max-w-[200px] truncate font-mono text-[11px] text-foreground">{f.asset_value}{f.port ? `:${f.port}` : ''}</span>, sort: (f) => f.asset_value },
+        { key: 'source', header: 'Source', hideBelow: 'lg', render: (f) => <span className="text-[11px] text-foreground-muted">{f.source_class === 'wazuh' ? 'Wazuh' : f.detected_by.join(', ')}</span> },
+        { key: 'status', header: 'Status', render: (f) => <span className="text-[11px] font-semibold text-foreground whitespace-nowrap">{STATUS_LABEL[f.status] ?? f.status}</span>, sort: (f) => f.status },
+        { key: 'owner', header: 'Owner', hideBelow: 'lg', render: (f) => <span className="text-[11px] text-foreground-muted">{f.owner ?? 'Unassigned'}</span>, sort: (f) => f.owner ?? '~' },
+        { key: 'due', header: 'Due', hideBelow: 'md', render: (f) => <span className={`text-[11px] whitespace-nowrap ${isOverdue(f, now) ? 'font-bold text-foreground' : 'text-foreground-muted'}`}>{f.due_at ? fmtWat(f.due_at).replace(/,? \d\d:\d\d WAT$/, '') : '—'}{isOverdue(f, now) && <> <Tag>Overdue</Tag></>}</span>, sort: (f) => f.due_at ?? '9999' },
+        { key: 'last', header: 'Last seen', hideBelow: 'lg', render: (f) => <span className="text-[11px] text-foreground-muted whitespace-nowrap">{fmtWat(f.last_seen).replace(/ WAT$/, '')}</span>, sort: (f) => f.last_seen },
+    ];
+    const s = summary.data;
+
     return (
-        <div className="space-y-4">
-            <div>
-                <h1 className="text-lg font-black text-foreground flex items-center gap-2"><Bug className="w-5 h-5" /> Findings</h1>
-                <p className="text-xs text-foreground-muted">Vulnerabilities from active scans (Nuclei, OpenVAS) and Wazuh endpoints, prioritised by severity, exploitation evidence, exposure and asset criticality.</p>
+        <div className="space-y-5">
+            <PageHeader icon={Bug} title="Vulnerability Findings"
+                description="Findings from active scans (Nuclei, OpenVAS) and Wazuh agents, ranked by the risk engine. A finding is resolved only when a rescan or Wazuh shows it is gone."
+                actions={<ExportCsvButton filename={`vms-findings-${new Date().toISOString().slice(0, 10)}.csv`} rows={rows as unknown as Record<string, unknown>[]} columns={[
+                    { key: 'priority', header: 'Priority' }, { key: 'risk_score', header: 'Risk score' }, { key: 'scanner_severity', header: 'Severity' }, { key: 'title', header: 'Title' }, { key: 'cve_ids', header: 'CVEs' },
+                    { key: 'asset_value', header: 'Asset' }, { key: 'port', header: 'Port' }, { key: 'source_class', header: 'Source' }, { key: 'status', header: 'Status' }, { key: 'owner', header: 'Owner' }, { key: 'due_at', header: 'Due' }, { key: 'first_seen', header: 'First seen' }, { key: 'last_seen', header: 'Last seen' },
+                ]} />}
+            />
+            <section aria-label="Summary" className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                <KpiCard label="Open" value={s?.open} reason={summary.load.state === 'error' ? summary.load.error : 'Loading'} />
+                <KpiCard label="Known exploited (KEV)" value={s?.known_exploited_open} tone={s?.known_exploited_open ? 'critical' : undefined} reason="Loading" />
+                <KpiCard label="Overdue" value={s?.overdue} tone={s?.overdue ? 'warning' : undefined} reason="Loading" />
+                <KpiCard label="P1" value={s ? s.by_priority.P1 ?? 0 : undefined} reason="Loading" sub="Fix within 2 days" />
+                <KpiCard label="P2" value={s ? s.by_priority.P2 ?? 0 : undefined} reason="Loading" sub="Fix within 7 days" />
+                <KpiCard label="Reported by Wazuh" value={s ? s.by_source.wazuh ?? 0 : undefined} reason="Loading" sub="Open, from endpoint agents" />
+            </section>
+
+            <div className="flex flex-wrap items-center gap-2">
+                <Segmented label="Status" value={status} onChange={(v) => { setStatus(v); setSelected(new Set()); }} options={STATUS_VIEWS} />
+                <Select label="Priority" value={priority} onChange={setPriority} options={[['', 'Any priority'], ['P1', 'P1'], ['P2', 'P2'], ['P3', 'P3'], ['P4', 'P4']]} />
+                <Select label="Severity" value={severity} onChange={setSeverity} options={[['', 'Any severity'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low'], ['info', 'Info']]} />
+                <Select label="Source" value={source} onChange={setSource} options={[['', 'All sources'], ['active_scan', 'Active scans'], ['wazuh', 'Wazuh']]} />
+                <Toggle on={kev} onChange={setKev}>Known exploited</Toggle>
+                <Toggle on={overdue} onChange={setOverdue}>Overdue</Toggle>
+                <SearchBox value={q} onSubmit={setQ} placeholder="CVE, title or asset" label="Search findings" />
             </div>
-            {summary && (
-                <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
-                    {[['Open', summary.open], ['Known exploited (KEV)', summary.known_exploited_open], ['Overdue', summary.overdue], ['P1', summary.by_priority.P1 ?? 0], ['P2', summary.by_priority.P2 ?? 0], ['Wazuh-reported', summary.by_source.wazuh ?? 0]].map(([k, v]) => (
-                        <div key={String(k)} className="bg-card border border-border rounded-xl p-3"><p className="text-[10px] font-bold text-foreground-muted uppercase">{k}</p><p className="text-xl font-black text-foreground">{v}</p></div>
-                    ))}
+            {assetId && <p className="text-xs text-foreground">Showing one asset&apos;s findings. <Link href="/admin/vms/findings" className="font-semibold text-purple dark:text-[var(--vz-prog-4)]">Show all</Link></p>}
+            {list.load.state === 'error' && <ErrorState error={list.load.error} status={list.load.status} onRetry={list.reload} />}
+            {list.data?.correlation_error && <p className="text-[11px] text-foreground-muted">{list.data.correlation_error}</p>}
+            <Notice msg={msg} />
+
+            {can.manage && selected.size > 0 && (
+                <div className="sticky top-2 z-20 flex flex-wrap items-center gap-2 bg-card border border-purple/40 rounded-xl px-3 py-2 shadow-lg">
+                    <span className="text-xs font-bold text-foreground">{selected.size} selected{selected.size > BULK_MAX ? ` (first ${BULK_MAX} will be changed)` : ''}</span>
+                    <select aria-label="Set status of selected" value="" disabled={busy} onChange={(e) => e.target.value && setBulk({ status: e.target.value })} className="bg-card border border-border rounded-lg px-2 py-1.5 text-[11px] text-foreground">
+                        <option value="">Set status…</option>
+                        {BULK_STATUS.map((v) => <option key={v} value={v}>{STATUS_LABEL[v]}</option>)}
+                    </select>
+                    <form className="flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); void applyBulk({ owner: bulkOwner.trim() || null }, bulkOwner.trim() ? `Assigned to ${bulkOwner.trim()}` : 'Owner cleared'); setBulkOwner(''); }}>
+                        <input aria-label="Assign selected to" value={bulkOwner} onChange={(e) => setBulkOwner(e.target.value)} maxLength={200} placeholder="Assign to…" className="w-32 bg-card border border-border rounded-lg px-2 py-1.5 text-[11px] text-foreground" />
+                        <button type="submit" disabled={busy} className={btn('secondary')}>Assign</button>
+                    </form>
+                    <label className="inline-flex items-center gap-1 text-[11px] text-foreground-muted">Deadline
+                        <input type="date" disabled={busy} onChange={(e) => e.target.value && void applyBulk({ due_at: new Date(`${e.target.value}T23:59:59Z`).toISOString() }, 'Deadline set')} className="bg-card border border-border rounded-lg px-2 py-1 text-[11px] text-foreground" />
+                    </label>
+                    <button onClick={() => setSelected(new Set())} className={`${btn('ghost')} ml-auto`}>Clear</button>
                 </div>
             )}
-            {summary && summary.open > 0 && (
-                <div className="bg-card border border-border rounded-xl p-3">
-                    <p className="text-[10px] font-bold text-foreground-muted uppercase mb-2">Open findings by scanner severity</p>
-                    <div className="flex h-3 rounded overflow-hidden" role="img" aria-label="Severity distribution">
-                        {SEVS.map((s) => (summary.by_severity[s] ? <div key={s} title={`${s}: ${summary.by_severity[s]}`} style={{ width: `${(summary.by_severity[s] / summary.open) * 100}%` }} className={{ critical: 'bg-red-500', high: 'bg-orange', medium: 'bg-amber', low: 'bg-blue', info: 'bg-grey-300' }[s]} /> : null))}
-                    </div>
-                    <p className="text-[10px] text-foreground-muted mt-1">{SEVS.filter((s) => summary.by_severity[s]).map((s) => `${s} ${summary.by_severity[s]}`).join(' · ')}</p>
-                </div>
-            )}
-            <div className="flex flex-wrap gap-2 items-center">
-                <div className="flex gap-1 bg-card border border-border rounded-lg p-1">{[['open_all', 'Open'], ['fixed_pending_verification', 'Awaiting verification'], ['verified', 'Verified'], ['risk_accepted,false_positive', 'Accepted / FP'], ['all', 'All']].map(([v, l]) => <button key={v} onClick={() => setFilter({ ...filter, status: v })} className={chip(filter.status === v)}>{l}</button>)}</div>
-                <div className="flex gap-1 bg-card border border-border rounded-lg p-1">{['', 'P1', 'P2', 'P3', 'P4'].map((v) => <button key={v || 'any'} onClick={() => setFilter({ ...filter, priority: v })} className={chip(filter.priority === v)}>{v || 'Any priority'}</button>)}</div>
-                <div className="flex gap-1 bg-card border border-border rounded-lg p-1">{[['', 'All sources'], ['active_scan', 'Active scans'], ['wazuh', 'Wazuh']].map(([v, l]) => <button key={v || 'all'} onClick={() => setFilter({ ...filter, source: v })} className={chip(filter.source === v)}>{l}</button>)}</div>
-                <button onClick={() => setFilter({ ...filter, kev: !filter.kev })} className={`${chip(filter.kev)} border border-border`}>Known exploited</button>
-                <button onClick={() => setFilter({ ...filter, overdue: !filter.overdue })} className={`${chip(filter.overdue)} border border-border`}>Overdue</button>
-                <form onSubmit={(e) => { e.preventDefault(); setText(search.trim()); }} className="flex items-center gap-1 bg-card border border-border rounded-lg px-2 py-1">
-                    <Search className="w-3.5 h-3.5 text-foreground-muted" />
-                    <input aria-label="Search findings" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="CVE, title or asset" className="bg-transparent text-[11px] outline-none w-40" />
-                </form>
-            </div>
-            {error && <p role="alert" className="text-xs text-red font-semibold">{error}</p>}
-            {params.get('asset_id') && <p className="text-xs text-foreground">Showing one asset&apos;s findings. <Link href="/admin/vms/findings" className="text-purple font-bold">Show all</Link></p>}
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-                <div className="lg:col-span-2 bg-card border border-border rounded-xl overflow-hidden">
-                    {findings && findings.length === 0 && <p className="text-sm text-foreground-muted text-center py-10">No data — no findings for these filters.</p>}
-                    <div className="max-h-[700px] overflow-y-auto divide-y divide-border">
-                        {findings?.map((x) => (
-                            <button key={x.id} onClick={() => void open(x.id)} className={`w-full text-left p-3 hover:bg-card-muted ${f?.id === x.id ? 'bg-card-muted' : ''}`}>
-                                <div className="flex items-center gap-2">
-                                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${PRIORITY_STYLE[x.priority ?? 'P4']}`}>{x.priority ?? '—'}</span>
-                                    <span className="text-[10px] text-foreground-muted">risk {x.risk_score ?? '—'}</span>
-                                    {isOverdue(x) && <span className="text-[9px] font-bold text-red uppercase">overdue</span>}
-                                </div>
-                                <p className="text-xs font-bold text-foreground mt-1">{x.title}</p>
-                                <p className="text-[10px] text-foreground-muted">{x.asset_value}{x.port ? `:${x.port}` : ''} · {x.detected_by.join(', ')} · {STATUS_LABEL[x.status] ?? x.status}</p>
-                            </button>
-                        ))}
-                    </div>
-                </div>
-                <div className="lg:col-span-3 bg-card border border-border rounded-xl p-4">
-                    {!detail || !f ? <p className="text-xs text-foreground-muted text-center py-10">Select a finding.</p> : (
-                        <div className="space-y-4 text-xs">
-                            <div>
-                                <div className="flex items-center gap-2 flex-wrap">
-                                    <span className={`text-[10px] font-black px-2 py-0.5 rounded ${PRIORITY_STYLE[f.priority ?? 'P4']}`}>{f.priority}</span>
-                                    <span className="text-foreground-muted">risk {f.risk_score} · scanner severity {f.scanner_severity}{f.scanner_cvss !== null ? ` · CVSS ${f.scanner_cvss}` : ''}</span>
-                                    <span className="font-bold text-foreground">{STATUS_LABEL[f.status]}</span>
-                                </div>
-                                <h2 className="text-sm font-black text-foreground mt-1">{f.title}</h2>
-                                <p className="text-foreground-muted">{detail.asset ? <Link className="underline" href={`/admin/vms/assets`}>{f.asset_value}</Link> : f.asset_value}{f.port ? ` port ${f.port}/${f.protocol}` : ''} · {f.source_class === 'wazuh' ? 'reported by Wazuh' : `found by ${f.detected_by.join(' and ')}`} · first seen {fmtWat(f.first_seen)} · last seen {fmtWat(f.last_seen)}</p>
-                            </div>
-                            {msg && <p role="status" className="font-semibold text-foreground">{msg}</p>}
-                            {canManage && (
-                                <div className="flex flex-wrap gap-2">
-                                    {(NEXT[f.status] ?? []).map((s) => <button key={s} onClick={() => void setStatus(s)} className="text-[11px] font-bold border border-border rounded-lg px-2.5 py-1 hover:bg-card-muted">{STATUS_LABEL[s]}</button>)}
-                                    {f.status === 'fixed_pending_verification' && <button onClick={() => void call('POST', `/api/vms/findings/${f.id}/verify`, {}, 'Verification scan queued')} className="text-[11px] font-bold text-white bg-purple rounded-lg px-2.5 py-1">Verify with a rescan</button>}
-                                    {f.case_id ? <Link href={`/admin/secops/cases?case=${f.case_id}`} className="text-[11px] font-bold text-purple border border-purple/40 rounded-lg px-2.5 py-1">Open case</Link>
-                                        : <button onClick={() => void call('POST', `/api/vms/findings/${f.id}/case`, {}, 'Case opened')} className="text-[11px] font-bold border border-border rounded-lg px-2.5 py-1">Promote to case</button>}
-                                </div>
-                            )}
-                            {canManage && (
-                                <div className="flex flex-wrap gap-3 items-end">
-                                    <label className="text-[11px] font-bold text-foreground-muted">Owner
-                                        <input key={`o-${f.id}`} defaultValue={f.owner ?? ''} onBlur={(e) => { if (e.target.value !== (f.owner ?? '')) void call('PATCH', `/api/vms/findings/${f.id}`, { owner: e.target.value.trim() || null }, 'Owner saved'); }} className="block bg-card-muted border border-border rounded px-2 py-1" />
-                                    </label>
-                                    <label className="text-[11px] font-bold text-foreground-muted">Due ({f.due_at ? fmtWat(f.due_at) : 'none'})
-                                        <input type="date" onChange={(e) => { if (e.target.value) void call('PATCH', `/api/vms/findings/${f.id}`, { due_at: new Date(`${e.target.value}T23:59:59Z`).toISOString() }, 'Deadline saved'); }} className="block bg-card-muted border border-border rounded px-2 py-1" />
-                                    </label>
-                                </div>
-                            )}
-                            {f.risk_factors && (
-                                <div><p className="text-[10px] font-bold text-foreground-muted uppercase">Why this priority</p>
-                                    {Object.entries(f.risk_factors).map(([k, v]) => <p key={k} className="text-foreground-muted">{k}: {typeof v === 'string' ? v : `${v.basis} (${v.points} pts × ${v.weight})`}</p>)}
-                                </div>
-                            )}
-                            {detail.cve_intel.map((c) => (
-                                <div key={c.cve_id} className="border border-border rounded-lg p-2">
-                                    <p className="font-bold">{c.cve_id}{c.kev ? <span className="ml-2 text-[10px] font-black text-white bg-red-500 rounded px-1.5">KNOWN EXPLOITED (CISA KEV)</span> : null}</p>
-                                    <p className="text-foreground-muted">CVSS {c.cvss_score ?? 'unknown'} · EPSS {c.epss_score !== null ? `${(c.epss_score * 100).toFixed(1)}% (percentile ${c.epss_percentile !== null ? (c.epss_percentile * 100).toFixed(0) : '?'})` : 'unknown'} · KEV {c.kev_checked_at ? (c.kev ? `yes, added ${c.kev_date_added}${c.kev_ransomware === 'Known' ? ', used in ransomware' : ''}` : 'no') : 'not checked yet'}</p>
-                                    {c.kev_required_action && <p className="text-foreground">CISA required action: {c.kev_required_action}</p>}
-                                    {c.description && <p className="text-foreground mt-1">{c.description}</p>}
-                                    {c.osv_status === 'found' && (
-                                        <div className="mt-1 text-foreground-muted">
-                                            <p>OSV ({fmtWat(c.osv_fetched_at ?? null)}): also known as {(c.osv_ids ?? []).filter((x) => x !== c.cve_id).slice(0, 6).join(', ') || 'no other id'}</p>
-                                            {(c.osv_affected ?? []).filter((a) => a.fixed.length).slice(0, 6).map((a, i) => <p key={i}>Fixed in {a.fixed.join(', ')} — {a.name ? `${a.name}${a.ecosystem ? ` (${a.ecosystem})` : ''}` : a.repo}</p>)}
-                                        </div>
-                                    )}
-                                    {c.osv_status === 'not_found' && <p className="mt-1 text-foreground-muted">OSV has no record for this CVE.</p>}
-                                </div>
-                            ))}
-                            {(detail.correlated ?? []).length > 0 && (
-                                <div>
-                                    <p className="text-[10px] font-bold text-foreground-muted uppercase">Same CVE elsewhere</p>
-                                    {detail.correlated!.map((c) => (
-                                        <div key={c.other.id} className="border-t border-border py-1">
-                                            <p><span className={`text-[10px] font-bold uppercase px-1.5 rounded ${c.basis === 'confirmed' ? 'bg-green/10 text-green' : 'bg-amber/10 text-amber'}`}>{c.basis}</span>{' '}
-                                                <a href={`/admin/vms/findings?id=${c.other.id}`} className="font-semibold text-purple">{c.other.asset_value}</a>{' '}
-                                                <span className="text-foreground-muted">· {c.other.source_class === 'wazuh' ? 'Wazuh' : (c.other.detected_by.join(', ') || 'scanner')}{c.other.evidence_class ? ` (${c.other.evidence_class.replace(/_/g, ' ')})` : ''} · {STATUS_LABEL[c.other.status] ?? c.other.status} · {c.cves.join(', ')}</span></p>
-                                            <p className="text-foreground-muted">{c.explanation}</p>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                            {detail.correlation_error && <p className="text-amber">{detail.correlation_error}</p>}
-                            {f.description && <div><p className="text-[10px] font-bold text-foreground-muted uppercase">Scanner description</p><p className="whitespace-pre-wrap">{f.description}</p></div>}
-                            {f.remediation && <div><p className="text-[10px] font-bold text-foreground-muted uppercase">Scanner remediation</p><p className="whitespace-pre-wrap">{f.remediation}</p></div>}
-                            <AiPanel key={f.id} purpose="finding_explanation" subjectId={f.id} title="AI analysis"
-                                purposes={[{ value: 'finding_explanation', label: 'Explain this vulnerability' }, { value: 'remediation_plan', label: 'Remediation plan' }, { value: 'rescan_interpretation', label: 'Interpret the rescan' }]} />
-                            <div>
-                                <div className="flex items-center justify-between"><p className="text-[10px] font-bold text-foreground-muted uppercase">Remediation tasks</p>
-                                    {canManage && <button onClick={() => void tasksFromPlan()} className="text-[11px] font-bold text-purple">Create tasks from accepted AI plan</button>}</div>
-                                {detail.tasks.length === 0 ? <p className="text-foreground-muted">None yet.</p> : detail.tasks.map((t) => (
-                                    <div key={t.id} className="flex items-center gap-2 border-t border-border py-1">
-                                        <span className="flex-1">{t.title}</span><span className="text-foreground-muted">{t.owner ?? '—'} · {t.due_at ? fmtWat(t.due_at) : 'no deadline'}</span>
-                                        {canManage ? <select aria-label="Task status" value={t.status} onChange={(e) => void call('PATCH', `/api/vms/tasks/${t.id}`, { status: e.target.value }, 'Task updated')} className="bg-card-muted border border-border rounded px-1 py-0.5 text-[11px]">{['todo', 'doing', 'done', 'cancelled'].map((s) => <option key={s}>{s}</option>)}</select> : <span>{t.status}</span>}
-                                    </div>
-                                ))}
-                                {canManage && <button onClick={() => { const t = window.prompt('Task'); if (t) void call('POST', `/api/vms/findings/${f.id}/tasks`, { title: t }, 'Task added'); }} className="text-[11px] font-bold text-foreground-muted mt-1">+ Add task</button>}
-                            </div>
-                            <div>
-                                <p className="text-[10px] font-bold text-foreground-muted uppercase">Evidence ({detail.evidence.length})</p>
-                                {detail.evidence.map((e) => <div key={e.id} className="border-t border-border py-1"><p className="text-foreground-muted">{fmtWat(e.observed_at)} · {e.source} · {e.matched_at ?? ''}</p><pre className="text-[10px] font-mono whitespace-pre-wrap break-all text-foreground-muted max-h-40 overflow-y-auto">{JSON.stringify(e.evidence, null, 2)}</pre></div>)}
-                            </div>
-                            <div>
-                                <p className="text-[10px] font-bold text-foreground-muted uppercase">History</p>
-                                {detail.events.map((e) => <p key={e.id} className="text-foreground-muted">{fmtWat(e.at)} · {e.actor} · {e.action}{e.to_value ? `: ${e.from_value ? `${e.from_value} → ` : ''}${e.to_value}` : ''}{e.details ? ` — ${e.details}` : ''}</p>)}
-                            </div>
-                        </div>
-                    )}
-                </div>
-            </div>
+
+            {list.load.state !== 'error' && <DataTable caption="Vulnerability findings" rows={rows} columns={columns} rowKey={(f) => f.id} onRowClick={(f) => setOpen(f.id)} activeKey={openId}
+                selected={can.manage ? selected : undefined} onSelectedChange={can.manage ? setSelected : undefined}
+                initialSort={{ key: 'risk', dir: 'desc' }}
+                empty={q || priority || severity || source || kev || overdue ? 'No findings match these filters' : status === 'open_all' ? 'No open findings' : 'No findings in this view'} />}
+            {list.data && list.data.findings.length >= 1000 && <p className="text-[11px] text-foreground-muted">Showing the 1000 highest-risk findings for these filters. Narrow the filters to see the rest.</p>}
+
+            <Drawer open={!!openId} onClose={() => setOpen(null)} title="Finding" subtitle={openId ? <span className="font-mono">{openId}</span> : null}>
+                {openId && <FindingDetail key={openId} id={openId} onChanged={reloadAll} />}
+            </Drawer>
+            <ConfirmDialog
+                open={!!bulk?.status}
+                title={bulk?.status ? `Mark ${Math.min(selected.size, BULK_MAX)} finding(s) as ${STATUS_LABEL[bulk.status].toLowerCase()}?` : ''}
+                body="Each finding is changed through its own request and recorded in its history. Findings whose current status does not allow this change are refused and counted."
+                confirmLabel="Apply"
+                reason={bulk?.status ? { label: 'Reason', required: bulk.status === 'risk_accepted' || bulk.status === 'false_positive' } : undefined}
+                onCancel={() => setBulk(null)}
+                onConfirm={async (reason) => { const st = bulk!.status!; setBulk(null); await applyBulk({ status: st, ...(reason ? { note: reason } : {}) }, STATUS_LABEL[st]); }}
+            />
         </div>
     );
 }
