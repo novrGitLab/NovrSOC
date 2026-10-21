@@ -1,0 +1,152 @@
+<get_reports_response status="200" status_text="OK">
+  <!-- Test fixture: the shape of a GMP 22.x get_reports response (XML report format) for a
+       NovrSOC task. Synthetic data on RFC 5737 documentation addresses; no scan produced it.
+       Covers current-format CVSS v3.1 results, an older-format CVSS v2 result (cvss_base_vector
+       tag, comma-separated <cve>), several CVEs on one NVT, log / false-positive results, a result
+       without an NVT OID, a general/icmp result without a port, and a host that was not submitted. -->
+  <report id="rep-fixture-0001" format_id="a994b278-1f62-11e1-96ac-406186ea4fc5" content_type="text/xml">
+    <name>2026-10-21T09:00:00Z</name>
+    <task id="task-fixture-0001"><name>novrsoc-11111111-2222-3333-4444-555555555555</name></task>
+    <report id="rep-fixture-0001">
+      <scan_run_status>Done</scan_run_status>
+      <scan_start>2026-10-21T09:00:04Z</scan_start>
+      <scan_end>2026-10-21T09:41:37Z</scan_end>
+      <results start="1" max="-1">
+        <result id="res-0001">
+          <name>SSL/TLS: Report Vulnerable Cipher Suites for HTTPS</name>
+          <creation_time>2026-10-21T09:12:10Z</creation_time>
+          <host>192.0.2.10<asset asset_id="as-1"/><hostname>app.qa-alpha.test</hostname></host>
+          <port>443/tcp</port>
+          <nvt oid="1.3.6.1.4.1.25623.1.0.108031">
+            <type>nvt</type>
+            <name>SSL/TLS: Report Vulnerable Cipher Suites for HTTPS</name>
+            <family>SSL and TLS</family>
+            <cvss_base>7.5</cvss_base>
+            <severities score="7.5">
+              <severity type="cvss_base_v3">
+                <origin/>
+                <date>2026-01-10T00:00:00Z</date>
+                <score>7.5</score>
+                <value>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N</value>
+              </severity>
+            </severities>
+            <tags>summary=The remote service is using vulnerable cipher suites.|insight=3DES and RC4 ciphers are affected by the SWEET32 and Bar Mitzvah attacks.|solution_type=Mitigation</tags>
+            <solution type="Mitigation">Disable the reported vulnerable cipher suites in the TLS configuration of the service.</solution>
+            <refs>
+              <ref type="cve" id="CVE-2016-2183"/>
+              <ref type="cve" id="CVE-2016-6329"/>
+              <ref type="url" id="https://sweet32.info/"/>
+              <ref type="cert-bund" id="CB-K17/1750"/>
+            </refs>
+          </nvt>
+          <threat>High</threat>
+          <severity>7.5</severity>
+          <qod><value>98</value><type>remote_app</type></qod>
+          <description>'Vulnerable' cipher suites accepted by this service via the TLSv1.2 protocol:
+TLS_RSA_WITH_3DES_EDE_CBC_SHA (SWEET32)</description>
+        </result>
+        <result id="res-0002">
+          <name>OpenSSH ssh-agent Remote Code Execution Vulnerability</name>
+          <creation_time>2026-10-21T09:20:31Z</creation_time>
+          <host>192.0.2.10<hostname>app.qa-alpha.test</hostname></host>
+          <port>22/tcp</port>
+          <nvt oid="1.3.6.1.4.1.25623.1.0.104879">
+            <type>nvt</type>
+            <name>OpenSSH ssh-agent Remote Code Execution Vulnerability</name>
+            <family>General</family>
+            <severities score="9.8">
+              <severity type="cvss_base_v3">
+                <score>9.8</score>
+                <value>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H</value>
+              </severity>
+            </severities>
+            <solution type="VendorFix">Update to version 9.3p2 or later.</solution>
+            <refs><ref type="cve" id="CVE-2023-38408"/><ref type="url" id="https://www.openssh.com/txt/release-9.3p2"/></refs>
+          </nvt>
+          <threat>High</threat>
+          <severity>9.8</severity>
+          <qod><value>80</value></qod>
+          <description>Installed version: 8.9p1
+Fixed version:     9.3p2</description>
+        </result>
+        <result id="res-0003">
+          <name>OS Detection Consolidation and Reporting</name>
+          <host>192.0.2.10</host>
+          <port>general/tcp</port>
+          <nvt oid="1.3.6.1.4.1.25623.1.0.105937"><name>OS Detection Consolidation and Reporting</name><cvss_base>0.0</cvss_base></nvt>
+          <threat>Log</threat>
+          <severity>0.0</severity>
+          <qod><value>80</value></qod>
+          <description>Best matching OS: Ubuntu 22.04</description>
+        </result>
+        <result id="res-0004">
+          <name>jQuery &lt; 3.5.0 Multiple XSS Vulnerabilities</name>
+          <creation_time>2026-10-21T09:31:02Z</creation_time>
+          <host>192.0.2.20</host>
+          <port>80/tcp</port>
+          <nvt oid="1.3.6.1.4.1.25623.1.0.143812">
+            <name>jQuery &lt; 3.5.0 Multiple XSS Vulnerabilities</name>
+            <family>Web application abuses</family>
+            <cvss_base>4.3</cvss_base>
+            <cve>CVE-2020-11022, CVE-2020-11023</cve>
+            <tags>cvss_base_vector=AV:N/AC:M/Au:N/C:N/I:P/A:N|summary=jQuery is prone to multiple cross-site scripting vulnerabilities.|solution_type=VendorFix</tags>
+            <solution type="VendorFix">Update to version 3.5.0 or later.</solution>
+          </nvt>
+          <threat>Medium</threat>
+          <severity>4.3</severity>
+          <qod><value>80</value></qod>
+          <description>Installed version: 3.4.1
+Fixed version:     3.5.0
+Installation path / port: /js/jquery.min.js</description>
+        </result>
+        <result id="res-0005">
+          <name>ICMP Timestamp Reply Information Disclosure</name>
+          <host>192.0.2.20</host>
+          <port>general/icmp</port>
+          <nvt oid="1.3.6.1.4.1.25623.1.0.103190">
+            <name>ICMP Timestamp Reply Information Disclosure</name>
+            <severities score="2.1"><severity type="cvss_base_v2"><score>2.1</score><value>AV:L/AC:L/Au:N/C:P/I:N/A:N</value></severity></severities>
+            <solution type="Mitigation">Disable the ICMP timestamp responses.</solution>
+            <refs><ref type="cve" id="CVE-1999-0524"/></refs>
+          </nvt>
+          <threat>Low</threat>
+          <severity>2.1</severity>
+          <qod><value>80</value></qod>
+          <description>The following response / ICMP packet has been received: ICMP Type: 14</description>
+        </result>
+        <result id="res-0006">
+          <name>False positive marked by an override</name>
+          <host>192.0.2.20</host>
+          <port>8080/tcp</port>
+          <nvt oid="1.3.6.1.4.1.25623.1.0.999999"><name>Dismissed check</name></nvt>
+          <threat>False Positive</threat>
+          <severity>-1.0</severity>
+        </result>
+        <result id="res-0007">
+          <name>Result without an NVT OID</name>
+          <host>192.0.2.20</host>
+          <port>443/tcp</port>
+          <nvt oid=""><name>broken</name></nvt>
+          <threat>Medium</threat>
+          <severity>5.0</severity>
+        </result>
+        <result id="res-0008">
+          <name>Telnet Unencrypted Cleartext Login</name>
+          <host>203.0.113.99</host>
+          <port>23/tcp</port>
+          <nvt oid="1.3.6.1.4.1.25623.1.0.108522">
+            <name>Telnet Unencrypted Cleartext Login</name>
+            <severities score="4.8"><severity type="cvss_base_v3"><score>4.8</score><value>CVSS:3.1/AV:A/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N</value></severity></severities>
+            <solution type="Mitigation">Replace Telnet with SSH.</solution>
+          </nvt>
+          <threat>Medium</threat>
+          <severity>4.8</severity>
+          <qod><value>70</value></qod>
+          <description>A host OpenVAS found that was not submitted (e.g. from a certificate).</description>
+        </result>
+      </results>
+      <host><ip>192.0.2.10</ip><detail><name>hostname</name><value>app.qa-alpha.test</value></detail><detail><name>ports</name><value>22,443</value></detail></host>
+      <host><ip>192.0.2.20</ip><detail><name>tcp_ports</name><value>80,8080</value></detail></host>
+    </report>
+  </report>
+</get_reports_response>

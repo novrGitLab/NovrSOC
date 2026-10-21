@@ -125,7 +125,15 @@ router.get('/findings/:id', requirePermission('vms:read'), async (req: AuthReque
     let correlated: unknown[] = [];
     let correlation_error: string | null = null;
     try { correlated = (await correlateFindings(org, [f as CorrFinding])).get(f.id) ?? []; } catch { correlation_error = 'Correlations could not be computed'; }
-    res.json({ finding: f, evidence: evidence.data ?? [], events: events.data ?? [], cve_intel: intel.data ?? [], asset: asset.data ?? null, tasks: tasks.data ?? [], correlated, correlation_error });
+    // The scanner's own CVSS (P22): score from the finding, version and vector from the newest
+    // detection that reported them. Separate from risk_score, NovrSOC's contextual score.
+    const cvssEv = (evidence.data ?? []).find((e) => { const x = e.evidence as Record<string, unknown> | null; return !!(x && (x.cvss_version || x.cvss_vector)); });
+    const cx = (cvssEv?.evidence ?? {}) as Record<string, unknown>;
+    const scanner_cvss = f.scanner_cvss === null && !cvssEv ? null : {
+        score: f.scanner_cvss === null ? null : Number(f.scanner_cvss), version: (cx.cvss_version as string | undefined) ?? null, vector: (cx.cvss_vector as string | undefined) ?? null,
+        source: cvssEv?.source ?? (f.detected_by ?? [])[0] ?? null, observed_at: cvssEv?.observed_at ?? null,
+    };
+    res.json({ finding: f, scanner_cvss, evidence: evidence.data ?? [], events: events.data ?? [], cve_intel: intel.data ?? [], asset: asset.data ?? null, tasks: tasks.data ?? [], correlated, correlation_error });
 });
 
 const Patch = z.object({

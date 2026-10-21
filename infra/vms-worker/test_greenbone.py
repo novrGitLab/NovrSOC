@@ -139,6 +139,10 @@ class FakeGmp:
         self._c('get_feeds')
         return ET.fromstring(f'<get_feeds_response status="200">{self.w.feeds}</get_feeds_response>')
 
+    def get_reports(self, filter_string=None, details=None):
+        self._c('get_reports', filter_string)
+        return ET.fromstring('<get_reports_response status="200"><report id="rep-old"><creation_time>2026-10-20T10:00:00Z</creation_time></report></get_reports_response>')
+
     def get_scan_config(self, oid):
         self._c('get_scan_config', oid)
         return ET.fromstring(self.w.config)
@@ -401,7 +405,7 @@ class Failures(Base):
         self.assertEqual(api.completed['status'], 'succeeded')
         self.assertEqual(r.summary['openvas']['incomplete'], 2)
         by_oid = {f['rule_id']: f for f in api.results}
-        self.assertEqual((by_oid['1.2.4']['port'], by_oid['1.2.4']['title'], by_oid['1.2.4']['severity'], by_oid['1.2.4']['cvss']), (None, '1.2.4', 'info', None))
+        self.assertEqual((by_oid['1.2.4']['port'], by_oid['1.2.4']['title'], by_oid['1.2.4']['severity'], by_oid['1.2.4']['cvss']), (None, '1.2.4', 'medium', None))
         self.assertEqual((by_oid['1.2.5']['port'], by_oid['1.2.5']['cvss']), (None, None))
 
 

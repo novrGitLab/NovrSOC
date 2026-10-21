@@ -36,6 +36,7 @@ import { ingestObservations, markGoneServices } from '../services/vmsIngest';
 import { ingestFindings, concludeVerification } from '../services/vmsFindings';
 import { activeScopes } from './vms';
 import { logAudit } from '../lib/audit';
+import { openvasAllowed } from '../lib/openvasPolicy';
 import { recordWorkerSeen, WORKER_ONLINE_SECONDS, PRESENCE_MISSING_MESSAGE } from '../services/vmsWorkers';
 import { parseCidr } from '../lib/cidr';
 import { parseTarget } from '../lib/vmsScope';
@@ -162,6 +163,18 @@ router.post('/claim', async (req, res) => {
     }
     const job = (Array.isArray(data) ? data[0] : data) as Job | undefined;
     const now = new Date().toISOString();
+    // OpenVAS policy (lib/openvasPolicy.ts), again at hand-out: a job queued before the policy was
+    // tightened fails here, with the reason, and never reaches a scanner.
+    if (job && (job as Job & { kind?: string }).kind === 'vuln_openvas') {
+        const pol = openvasAllowed((job as Job & { scope_id?: string }).scope_id);
+        if (!pol.allowed) {
+            await supabase.from('vms_scan_jobs').update({ status: 'failed', finished_at: now, error: `Not run: ${pol.reason}` }).eq('id', job.id).eq('status', 'running');
+            logAudit({ user: `worker:${workerId}`, action: 'VMS_SCAN_REFUSED', resource: 'vms_scan_job', resource_id: job.id, org_id: job.org_id, ip: 'n/a', result: 'failed', severity: 'warning', details: `vuln_openvas at claim: ${pol.reason}` });
+            await recordWorkerSeen(workerId, { kinds, last_claim_at: now });
+            res.json({ job: null, notice: pol.reason });
+            return;
+        }
+    }
     // A job whose scope carves out exclusions goes only to a worker that enforces them: an older
     // worker would probe excluded names it discovers. Put it straight back, as it was.
     if (job) {

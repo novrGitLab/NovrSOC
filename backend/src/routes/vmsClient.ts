@@ -126,13 +126,16 @@ router.get('/findings/:id', can, async (req: AuthRequest, res) => {
     const org = requestOrg(req);
     const { data: f } = await supabase.from('vms_findings').select(`${FINDING_COLUMNS}, description, remediation, references_urls`).eq('id', req.params.id).eq('org_id', org).maybeSingle();
     if (!f) { res.status(404).json({ error: 'Not found' }); return; }
-    const [intel, tasks, events] = await Promise.all([
+    const [intel, tasks, events, cvssEv] = await Promise.all([
         f.cve_ids?.length ? supabase.from('cve_intel').select('cve_id, description, cvss_score, epss_score, kev, kev_date_added, kev_required_action').in('cve_id', f.cve_ids) : Promise.resolve({ data: [] }),
         supabase.from('vms_remediation_tasks').select('id, title, status, owner, due_at, completed_at').eq('finding_id', f.id).eq('org_id', org).neq('status', 'cancelled').order('created_at'),
         // Status changes only, without who made them or internal notes.
         supabase.from('vms_finding_events').select('at, action, from_value, to_value').eq('finding_id', f.id).eq('org_id', org).in('action', ['detected', 'status', 'verified', 'reopened']).order('at').limit(200),
+        // Only the scanner's CVSS version and vector are read from the evidence; never the raw output.
+        supabase.from('vms_finding_evidence').select('source, evidence').eq('finding_id', f.id).eq('org_id', org).order('observed_at', { ascending: false }).limit(20),
     ]);
-    res.json({ finding: { ...f, status_label: CLIENT_STATUS[f.status] ?? f.status }, cve_intel: intel.data ?? [], tasks: tasks.data ?? [], history: (events.data ?? []).map((e) => ({ at: e.at, action: e.action, from: e.from_value ? CLIENT_STATUS[e.from_value] ?? e.from_value : null, to: e.to_value ? CLIENT_STATUS[e.to_value] ?? e.to_value : null })) });
+    const cx = ((cvssEv.data ?? []).map((e) => e.evidence as Record<string, unknown> | null).find((x) => x && (x.cvss_version || x.cvss_vector)) ?? {}) as Record<string, unknown>;
+    res.json({ finding: { ...f, status_label: CLIENT_STATUS[f.status] ?? f.status }, scanner_cvss: { score: f.scanner_cvss === null ? null : Number(f.scanner_cvss), version: (cx.cvss_version as string | undefined) ?? null, vector: (cx.cvss_vector as string | undefined) ?? null }, cve_intel: intel.data ?? [], tasks: tasks.data ?? [], history: (events.data ?? []).map((e) => ({ at: e.at, action: e.action, from: e.from_value ? CLIENT_STATUS[e.from_value] ?? e.from_value : null, to: e.to_value ? CLIENT_STATUS[e.to_value] ?? e.to_value : null })) });
 });
 
 router.get('/tasks', can, async (req: AuthRequest, res) => {

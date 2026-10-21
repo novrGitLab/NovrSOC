@@ -27,6 +27,7 @@ interface Summary {
 interface CFinding { id: string; asset_id: string | null; asset_value: string; port: number | null; title: string; cve_ids: string[]; scanner_severity: string; scanner_cvss: number | null; risk_score: number | null; priority: string | null; status: string; status_label: string; due_at: string | null; first_seen: string; last_seen: string; verified_at: string | null }
 interface CDetail {
     finding: CFinding & { description: string | null; remediation: string | null; references_urls: string[] | null };
+    scanner_cvss?: { score: number | null; version: string | null; vector: string | null };
     cve_intel: { cve_id: string; description: string | null; cvss_score: number | null; epss_score: number | null; kev: boolean; kev_date_added: string | null; kev_required_action: string | null }[];
     tasks: { id: string; title: string; status: string; owner: string | null; due_at: string | null; completed_at: string | null }[];
     history: { at: string; action: string; from: string | null; to: string | null }[];
@@ -165,6 +166,7 @@ function ClientFinding({ id }: { id: string }) {
             <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2"><PriorityBadge priority={f.priority} /><SeverityBadge severity={f.scanner_severity} /><RiskScore score={f.risk_score} wide />{data.cve_intel.some((c) => c.kev) && <Tag strong>Known exploited</Tag>}<span className="ml-auto font-semibold text-foreground">{f.status_label}</span></div>
                 <p className="text-base font-black text-foreground">{f.title}</p>
+                <p className="text-foreground-muted">Scanner CVSS: <b className="text-foreground">{data.scanner_cvss?.score ?? 'not reported'}</b>{data.scanner_cvss?.version ? ` (CVSS v${data.scanner_cvss.version})` : ''} · NovrSOC risk score <b className="text-foreground">{f.risk_score ?? '—'}</b> / 100, which also weighs exploitation evidence, exposure and asset criticality.</p>
                 <p className="text-foreground-muted"><span className="font-mono">{f.asset_value}{f.port ? `:${f.port}` : ''}</span> · first seen {fmtWat(f.first_seen)} · last seen {fmtWat(f.last_seen)}{f.due_at ? ` · fix by ${fmtWat(f.due_at)}` : ''}</p>
             </div>
             {f.description && <section><h3 className="text-[11px] font-bold uppercase tracking-wide text-foreground-muted mb-1">What it is</h3><p className="whitespace-pre-wrap leading-relaxed text-foreground">{f.description}</p></section>}

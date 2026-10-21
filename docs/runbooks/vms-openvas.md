@@ -1,4 +1,4 @@
-# Greenbone / OpenVAS on the VMS worker (worker 1.8.0)
+# Greenbone / OpenVAS on the VMS worker (worker 1.8.1)
 
 **Status:** Greenbone Community Edition runs in Docker Compose on the VPS (`/root/greenbone-community-container`). Its GMP socket is mounted for the worker at `/run/novrsoc-gvm/gvmd.sock`, and the worker uses `/opt/novrsoc-vms/gvm-venv/bin/python` (python-gvm 27.10.1, GMP 22.7) with the dedicated `novrsoc-worker` account. Connectivity, authentication and read access (scanners, scan configurations, port lists) are verified. Task creation, the worker integration and an end-to-end scan are **not** verified yet; that is steps 5 and 6 of [deploy-p19-vms-automation.md](deploy-p19-vms-automation.md). Worker 1.8.0 is not deployed, and `vuln_openvas` is not in `VMS_WORKER_KINDS`.
 
@@ -76,6 +76,31 @@ For a verification rescan, the finding's own port must have answered. Otherwise 
 | `GVM_ALIVE_TEST` | unset (configuration default) | e.g. `Consider Alive` for hosts that drop ping. Unknown values fail the self-test |
 
 Nothing is configured on Railway for OpenVAS: no new Railway variable, no backend change and no database change.
+
+## Activation requirements (P22)
+
+OpenVAS runs only when **all** of these hold. Each is a separate decision; none implies another.
+
+1. **Scanner host authorised** — the hosting provider (Contabo) permits vulnerability scanning from the VPS.
+2. **Target authorised** — the scope's owner signed an authorisation for intrusive vulnerability scans,
+   recorded as the scope's `authorization_reference`, with `allow_vuln_scan` on.
+3. **Backend switch** — on the backend: `VMS_OPENVAS_ENABLED=true` and the approved scope ids in
+   `VMS_OPENVAS_SCOPE_IDS=<uuid>,<uuid>` (lib/openvasPolicy.ts). Without both, every OpenVAS scan is refused
+   when queued (audited `VMS_SCAN_REFUSED`) and any OpenVAS job already queued fails when a worker claims it.
+4. **Worker** — `vuln_openvas` in `VMS_WORKER_KINDS`, `GVM_SOCKET` pointing at the gvmd socket, a dedicated
+   non-admin `GVM_USER` / `GVM_PASSWORD`, `GVM_CONFIG_ID` set to the safe scan configuration and
+   `GVM_PORT_LIST_ID` to the restricted port list.
+
+### Read-only validation before activation (no scan, no task, no target)
+
+```
+sudo -u novrsoc-vms bash -c 'set -a; . /opt/novrsoc-vms/worker.env; set +a;   /opt/novrsoc-vms/gvm-venv/bin/python /opt/novrsoc-vms/worker.py --health'
+```
+
+Rows to expect: `greenbone reachability` (GMP version), `authentication`, `scanner` (gvmd verified it),
+`scan configuration` (safe checks on, vhost expansion off), `port list`, each `feed` and its age,
+`reports` (the report list can be read) and `NovrSOC tasks` (leftovers). It sends one heartbeat to the
+backend and prints no secret. `end_to_end` stays `not_checked` until an authorised job has run.
 
 ## Setup (on the VPS, with approval: each step changes the host)
 

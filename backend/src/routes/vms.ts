@@ -28,6 +28,7 @@ import { logAudit } from '../lib/audit';
 import { loadScannerStatus, jobAttention } from '../services/vmsWorkers';
 import { assetGraph } from '../services/vmsGraph';
 import { isStaffRole } from '../lib/resolveOrg';
+import { openvasAllowed } from '../lib/openvasPolicy';
 import { validateScopeValue, parseTarget, coveringScope, normalizeExclusion, type ScopeEntry, type Activity } from '../lib/vmsScope';
 import { describe, RETRYABLE, type AssessmentRow } from '../services/vmsAssessments';
 import { resolveAddresses, pinsSatisfied } from '../lib/dnsResolve';
@@ -298,6 +299,14 @@ export async function queueScan(org: string, by: string, input: z.infer<typeof N
     const v = await validateScan(org, input, extra.options);
     if (!v.ok) return v;
     const { scope: entry, targets: uniq, options } = v;
+    // OpenVAS runs only when switched on and only against scopes approved for it (lib/openvasPolicy.ts).
+    if (input.kind === 'vuln_openvas') {
+        const pol = openvasAllowed(entry.id);
+        if (!pol.allowed) {
+            logAudit({ user: by, action: 'VMS_SCAN_REFUSED', resource: 'vms_scope', resource_id: entry.id, org_id: org, ip: 'n/a', result: 'failed', severity: 'warning', details: `vuln_openvas: ${pol.reason}` });
+            return { ok: false, status: 409, error: pol.reason };
+        }
+    }
     // The same scan already waiting or running: return it instead of queueing a duplicate.
     const { data: open } = await supabase.from('vms_scan_jobs').select('*').eq('org_id', org).eq('scope_id', entry.id).eq('kind', input.kind).in('status', ['queued', 'running']);
     const dup = (open ?? []).find((j) => JSON.stringify(j.targets) === JSON.stringify(uniq) && JSON.stringify(j.options ?? {}) === JSON.stringify(options));

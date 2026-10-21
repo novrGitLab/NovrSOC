@@ -131,8 +131,13 @@ test('vuln scans need vuln authorisation; findings dedupe across scanners and ke
     assert.equal((await http('POST', '/api/vms/scans', AN, { scope_id: s.id, kind: 'vuln_nuclei' })).status, 201);
     const r1 = await runJob('vuln_nuclei', [nuclei(), nuclei({ host: 'evil.test' }), { type: 'host', host: 'api.example.test', source: 'httpx' }]);
     assert.deepEqual([r1.results.accepted, r1.results.new_findings, r1.results.rejected_out_of_scope, r1.results.rejected_invalid], [1, 1, 1, 1]);
+    // OpenVAS needs the server switch and an approved scope (lib/openvasPolicy.ts, P22).
+    process.env.VMS_OPENVAS_ENABLED = 'true';
+    process.env.VMS_OPENVAS_SCOPE_IDS = s.id;
     await http('POST', '/api/vms/scans', AN, { scope_id: s.id, kind: 'vuln_openvas' });
     await runJob('vuln_openvas', [{ ...nuclei(), scanner: 'openvas', rule_id: '1.3.6.1.4.1.25623.1.0.9', title: 'Same issue (OpenVAS)', severity: 'high' }]);
+    delete process.env.VMS_OPENVAS_ENABLED;
+    delete process.env.VMS_OPENVAS_SCOPE_IDS;
     assert.equal(db.tables.vms_findings.length, 1, 'same asset + port + CVE = one finding');
     const f = db.tables.vms_findings[0];
     assert.deepEqual([...(f.detected_by as string[])].sort(), ['nuclei', 'openvas']);

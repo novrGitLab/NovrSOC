@@ -24,6 +24,7 @@ import { getSupabase } from '../services/geoEnrichment';
 import { isUuid } from '../services/cases';
 import { logAudit } from '../lib/audit';
 import { isStaffRole } from '../lib/resolveOrg';
+import { openvasEnabled } from '../lib/openvasPolicy';
 import { loadScannerStatus, type WorkerView } from '../services/vmsWorkers';
 import { profileCatalogue } from '../services/vmsProfiles';
 import { refreshEligibility, type Eligibility } from '../services/vmsEligibility';
@@ -67,6 +68,10 @@ export function engineStatus(workers: WorkerView[]) {
         else if (workers.some((w) => has(w))) { state = 'not_enabled'; note = `Installed, but no worker has ${e.kind} in VMS_WORKER_KINDS`; }
         else { state = workers.length ? 'not_installed' : 'no_worker'; note = workers.length ? `No worker reports ${e.tools.join(', ')}` : 'No scanner worker has connected'; }
         const versions = [...new Set(workers.filter(has).map((w) => (w.tool_versions ?? {})[e.tools[0]]).filter((v): v is string => !!v))];
+        // OpenVAS also needs the server's own switch (lib/openvasPolicy.ts): never "available" while it is off.
+        if (e.kind === 'vuln_openvas' && !openvasEnabled()) {
+            return { id: e.id, label: e.label, kind: e.kind, state: (state === 'available' ? 'not_enabled' : state) as EngineState, note: `Switched off on this server (VMS_OPENVAS_ENABLED) until the scanner host and targets are authorised · worker: ${note}`, versions };
+        }
         return { id: e.id, label: e.label, kind: e.kind, state, note, versions };
     });
 }

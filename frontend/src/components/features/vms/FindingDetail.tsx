@@ -23,6 +23,8 @@ export interface Finding {
 }
 interface Detail {
     finding: Finding;
+    /** The scanner's own CVSS (P22): score, version and vector as reported. Not the NovrSOC risk score. */
+    scanner_cvss?: { score: number | null; version: string | null; vector: string | null; source: string | null; observed_at: string | null } | null;
     evidence: { id: string; source: string; observed_at: string; matched_at: string | null; evidence: unknown; job_id: string | null }[];
     events: { id: string; at: string; actor: string; action: string; from_value: string | null; to_value: string | null; details: string | null }[];
     cve_intel: { cve_id: string; description: string | null; cvss_score: number | null; cvss_vector: string | null; epss_score: number | null; epss_percentile: number | null; kev: boolean; kev_checked_at: string | null; kev_date_added: string | null; kev_required_action: string | null; kev_ransomware: string | null; osv_status?: 'found' | 'not_found' | null; osv_ids?: string[] | null; osv_fetched_at?: string | null; osv_affected?: { ecosystem: string | null; name: string | null; repo: string | null; fixed: string[] }[] | null }[];
@@ -89,7 +91,10 @@ export function FindingDetail({ id, onChanged }: { id: string; onChanged?: () =>
                     <Fact k="Asset" v={f.asset_id ? <Link className="font-mono font-semibold text-purple dark:text-[var(--vz-prog-4)] hover:underline break-all" href={`/admin/vms/assets/${f.asset_id}`}>{f.asset_value}{f.port ? `:${f.port}` : ''}</Link> : <span className="font-mono break-all">{f.asset_value}</span>} />
                     <Fact k="Source" v={f.source_class === 'wazuh' ? 'Wazuh agent' : (f.detected_by.join(', ') || 'Active scan')} />
                     <Fact k="Evidence" v={f.evidence_class ? f.evidence_class.replace(/_/g, ' ') : '—'} />
-                    <Fact k="CVSS" v={f.scanner_cvss ?? '—'} />
+                    <Fact k="Scanner CVSS (severity)" v={data.scanner_cvss?.score !== null && data.scanner_cvss?.score !== undefined
+                        ? <span title={data.scanner_cvss.vector ?? undefined}>{data.scanner_cvss.score}{data.scanner_cvss.version ? ` · CVSS v${data.scanner_cvss.version}` : ' · version not reported'}{data.scanner_cvss.source ? ` · ${data.scanner_cvss.source}` : ''}{data.scanner_cvss.vector && <span className="block font-mono text-[10px] text-foreground-muted break-all">{data.scanner_cvss.vector}</span>}</span>
+                        : f.scanner_cvss ?? 'Not reported'} />
+                    <Fact k="NovrSOC risk (contextual)" v={f.risk_score !== null ? `${f.risk_score} / 100 · ${f.priority ?? '—'}` : '—'} />
                     <Fact k="CVE" v={f.cve_ids.length ? f.cve_ids.join(', ') : '—'} />
                     <Fact k="Rule" v={<span className="font-mono break-all">{f.rule_id}</span>} />
                     <Fact k="First seen" v={fmtWat(f.first_seen)} />

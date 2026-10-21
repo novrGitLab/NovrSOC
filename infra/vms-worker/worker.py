@@ -79,7 +79,7 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
-VERSION = '1.8.0'
+VERSION = '1.8.1'
 # What this worker enforces itself; the backend only gives jobs that need a feature to workers announcing it.
 FEATURES = ['exclusions', 'pinned_addresses']
 # Networks this worker can actually reach besides the public internet (comma-separated CIDRs), e.g.
@@ -582,6 +582,7 @@ def parse_nuclei(lines: Iterable[str]) -> list[dict]:
 
 _GVM_PORT = re.compile(r'^(\d{1,5})/(tcp|udp)$')
 _NOT_FINDINGS = ('Log', 'Debug', 'False Positive')
+_GVM_THREAT_SEVERITY = {'Critical': 'critical', 'High': 'high', 'Medium': 'medium', 'Low': 'low'}
 
 
 def _gvm_score(*texts) -> Optional[float]:
@@ -593,6 +594,31 @@ def _gvm_score(*texts) -> Optional[float]:
         if 0 <= v <= 10:
             return v
     return None
+
+
+_CVSS_TAG = re.compile(r'cvss_base_vector=([^|]+)')
+
+
+def _gvm_cvss(nvt) -> tuple[Optional[str], Optional[str]]:
+    """(version, vector) of an NVT's CVSS, from what the report states — never guessed.
+    Current GMP: nvt/severities/severity type="cvss_base_v3|cvss_base_v2" with the vector in <value>;
+    older GMP: a cvss_base_vector=… entry in nvt/tags (CVSS v2). (None, None) when absent."""
+    sev = nvt.find('severities/severity')
+    vector = ((sev.findtext('value') if sev is not None else '') or '').strip()
+    kind = ((sev.get('type') if sev is not None else '') or '').strip()
+    if not vector:
+        m = _CVSS_TAG.search(nvt.findtext('tags') or '')
+        vector = m.group(1).strip() if m else ''
+    for prefix, version in (('CVSS:4.0/', '4.0'), ('CVSS:3.1/', '3.1'), ('CVSS:3.0/', '3.0')):
+        if vector.startswith(prefix):
+            return version, vector[:200]
+    if vector and vector.startswith('AV:'):
+        return '2.0', vector[:200]
+    if kind == 'cvss_base_v2':
+        return '2.0', vector[:200] or None
+    if kind == 'cvss_base_v3':
+        return '3.x', vector[:200] or None
+    return None, vector[:200] or None
 
 
 def _result_host(r) -> tuple[str, str]:
@@ -616,6 +642,8 @@ def openvas_results(xml_text: str, attribute=None, context: Optional[dict] = Non
     out: list[dict] = []
     stats = {'results': 0, 'not_findings': 0, 'incomplete': 0, 'unattributed': 0}
     root = ET.fromstring(xml_text)
+    # When OpenVAS ran the scan, as the report states (GMP <scan_start>/<scan_end>).
+    scan_times = {'scan_started_at': (root.findtext('.//scan_start') or '').strip() or None, 'scan_ended_at': (root.findtext('.//scan_end') or '').strip() or None}
     for r in root.iter('result'):
         if r.find('nvt') is None and r.find('host') is None:
             continue   # a <result> reference elsewhere in the report, not a result
@@ -643,11 +671,14 @@ def openvas_results(xml_text: str, attribute=None, context: Optional[dict] = Non
         cves = sorted(c for c in cve_ids if CVE_RE.match(c))
         refs = [ref.get('id') for ref in nvt.iter('ref') if ref.get('type') == 'url' and ref.get('id')][:50]
         solution = nvt.find('solution')
+        cvss_version, cvss_vector = _gvm_cvss(nvt)
         out.append({
             'type': 'finding', 'host': host, 'port': int(m.group(1)) if m and int(m.group(1)) <= 65535 else None,
             'protocol': m.group(2) if m else None, 'scanner': 'openvas',
-            'rule_id': oid[:200], 'title': (nvt.findtext('name') or oid).strip()[:300] or oid[:300], 'severity': _sev_from_score(score),
-            'cve_ids': cves, 'cvss': score,
+            'rule_id': oid[:200], 'title': (nvt.findtext('name') or oid).strip()[:300] or oid[:300],
+            # The score decides; without one, Greenbone's own threat level (reported, not guessed).
+            'severity': _sev_from_score(score) if score is not None else _GVM_THREAT_SEVERITY.get(threat, 'info'),
+            'cve_ids': cves, 'cvss': score, 'cvss_version': cvss_version, 'cvss_vector': cvss_vector,
             'description': (r.findtext('description') or '').strip()[:8000] or None,
             'remediation': ((solution.text if solution is not None else '') or '').strip()[:8000] or None,
             'references': refs, 'matched_at': f'{host}:{port_txt}'[:2048] if port_txt else host, 'finding_type': 'vulnerability',
@@ -656,6 +687,8 @@ def openvas_results(xml_text: str, attribute=None, context: Optional[dict] = Non
                 'result_id': r.get('id'), 'scanned_ip': ip or None, 'reported_hostname': hostname or None, 'port': port_txt or None,
                 'solution_type': solution.get('type') if solution is not None else None,
                 'detected_at': (r.findtext('creation_time') or '').strip() or None,
+                'cvss_version': cvss_version, 'cvss_vector': cvss_vector, 'nvt_family': (nvt.findtext('family') or '').strip() or None,
+                **{k: v for k, v in scan_times.items() if v},
                 **{k: v for k, v in context.items() if v},
             },
         })
@@ -1472,6 +1505,8 @@ def health_report(api_factory=None, gmp_factory=None, conf_reader=read_openvas_c
                 ('port list', lambda: g.get_port_list(GVM_PORT_LIST_ID)),
                 ('feeds', lambda: g.get_feeds()),
                 ('NovrSOC tasks', lambda: g.get_tasks(filter_string=f'name~"{GVM_TASK_PREFIX}" rows=-1')),
+                # Report retrieval, read-only: lists the newest reports (no report content, no task change).
+                ('reports', lambda: g.get_reports(filter_string='rows=5 sort-reverse=date', details=False)),
             ):
                 try:
                     el = fn()
@@ -1488,6 +1523,10 @@ def health_report(api_factory=None, gmp_factory=None, conf_reader=read_openvas_c
                 elif name == 'feeds':
                     for f in gvm_feed_rows(el):
                         row('greenbone feed', 'functional', f['status'], f['detail'])
+                elif name == 'reports':
+                    reps = [r for r in el.findall('report') if r.get('id')]
+                    newest = next(((r.findtext('creation_time') or r.findtext('report/timestamp') or '').strip() for r in reps), '')
+                    row('greenbone reports', 'functional', 'ok', f'report list readable: {len(reps)} shown (newest first){f", newest {newest}" if newest else ""}' if reps else 'report list readable: no reports yet')
                 else:
                     tasks = [t for t in el.findall('task') if (t.findtext('name') or '').startswith(GVM_TASK_PREFIX)]
                     states: dict[str, int] = {}
