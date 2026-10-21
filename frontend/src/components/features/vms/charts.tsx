@@ -114,7 +114,7 @@ export function Donut({ slices, centerLabel, label, size = 168 }: { slices: Slic
                     <span className="text-[10px] text-foreground-muted">{centerLabel}</span>
                 </div>
             </div>
-            <ul className="w-full grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
+            <ul className="w-full space-y-0.5">
                 {slices.map((s) => {
                     const row = (
                         <>

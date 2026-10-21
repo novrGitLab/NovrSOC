@@ -60,45 +60,50 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
     const count = (q: PromiseLike<{ count: number | null; error: { message: string } | null }>) => q;
     const assets = () => supabase.from('vms_assets').select('id', { count: 'exact', head: true }).eq('org_id', org);
     const ev = (e: string) => supabase.from('vms_asset_events').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('event', e).gte('at', days(7));
-    const [active, internet, gone, services, newA, changedA, goneA, newSvc, scans, scopes, scanner] = await Promise.all([
+    // Coverage (P14): Wazuh-managed vs external, and what was actually assessed — never counting a
+    // check that did not run as an assessment. last_assessed_at is stamped for every outcome
+    // (no route and unreachable too), so "assessed" means the last outcome reached the target; a
+    // check that did not run or was inconclusive is counted from the derived step status.
+    // Every query is independent, so all run in one round trip; only the assessment step details
+    // (describe) follow their assessment list. The time is network round trips, not query work.
+    const since30 = days(30);
+    const OPEN_STATUSES = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'];
+    const SEV_W: Record<string, number> = { critical: 1000, high: 100, medium: 10, low: 1 };
+    type Vuln = { asset_id: string; value: string; open: number; by_severity: Record<string, number>; weight: number; max_risk: number };
+    // P19: the assets carrying the most open risk, from stored findings (severity first, then risk
+    // score), then the exposure context of the top 8 — chained, but alongside the other queries.
+    const ranking = Promise.resolve(supabase.from('vms_findings').select('asset_id, asset_value, scanner_severity, risk_score').eq('org_id', org).in('status', OPEN_STATUSES).limit(20_000)).then(async (openFindings) => {
+        const perAsset = new Map<string, Vuln>();
+        for (const f of openFindings.data ?? []) {
+            if (!f.asset_id) continue;
+            const e: Vuln = perAsset.get(f.asset_id) ?? { asset_id: f.asset_id, value: f.asset_value, open: 0, by_severity: {}, weight: 0, max_risk: 0 };
+            e.open++; e.by_severity[String(f.scanner_severity)] = (e.by_severity[String(f.scanner_severity)] ?? 0) + 1;
+            e.weight += SEV_W[f.scanner_severity] ?? 0; e.max_risk = Math.max(e.max_risk, Number(f.risk_score ?? 0));
+            perAsset.set(f.asset_id, e);
+        }
+        const ranked = [...perAsset.values()].sort((a, b) => b.weight - a.weight || b.max_risk - a.max_risk).slice(0, 8);
+        const ctx = ranked.length ? await supabase.from('vms_assets').select('id, asset_type, exposure, criticality').eq('org_id', org).in('id', ranked.map((r) => r.asset_id)) : { data: [] };
+        return { error: openFindings.error, perAsset, ranked, ctx: new Map((ctx.data ?? []).map((a) => [a.id, a])) };
+    });
+    const assessments30 = supabase.from('vms_assessments').select('*').eq('org_id', org).gte('requested_at', since30).order('requested_at', { ascending: false }).limit(500);
+    const [active, internet, gone, services, newA, changedA, goneA, newSvc, scans, scopes, scanner, endpoints, external, assessed30, assessed, ranks] = await Promise.all([
         count(assets().eq('status', 'active')), count(assets().eq('status', 'active').eq('exposure', 'internet')), count(assets().eq('status', 'gone')),
         count(supabase.from('vms_services').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('status', 'active')),
         count(ev('asset_new')), count(ev('asset_changed')), count(ev('asset_gone')), count(ev('service_new')),
         supabase.from('vms_scan_jobs').select('id, kind, status, requested_at, finished_at, error, summary, progress').eq('org_id', org).order('requested_at', { ascending: false }).limit(10),
         supabase.from('vms_scopes').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('status', 'active').gt('expires_at', new Date().toISOString()),
         loadScannerStatus(),
-    ]);
-    if (active.error) { fail(res, active.error); return; }
-    // Coverage (P14): Wazuh-managed vs external, and what was actually assessed — never counting a
-    // check that did not run as an assessment. last_assessed_at is stamped for every outcome
-    // (no route and unreachable too), so "assessed" means the last outcome reached the target; a
-    // check that did not run or was inconclusive is counted from the derived step status.
-    const since30 = days(30);
-    const [endpoints, external, assessed30, assessments30, openFindings] = await Promise.all([
         count(assets().eq('status', 'active').eq('asset_type', 'endpoint')),
         count(assets().eq('status', 'active').in('asset_type', ['host', 'ip', 'domain'])),
         supabase.from('vms_assets').select('id, last_assessment').eq('org_id', org).eq('status', 'active').gte('last_assessed_at', since30).limit(5000),
-        supabase.from('vms_assessments').select('*').eq('org_id', org).gte('requested_at', since30).order('requested_at', { ascending: false }).limit(500),
-        // P19: the assets carrying the most open risk, from stored findings (severity first, then risk score).
-        supabase.from('vms_findings').select('asset_id, asset_value, scanner_severity, risk_score').eq('org_id', org).in('status', ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened']).limit(20_000),
+        assessments30.then(async (r) => ({ error: r.error, described: r.error ? [] : await describe((r.data ?? []) as AssessmentRow[]) })),
+        ranking,
     ]);
-    const SEV_W: Record<string, number> = { critical: 1000, high: 100, medium: 10, low: 1 };
-    type Vuln = { asset_id: string; value: string; open: number; by_severity: Record<string, number>; weight: number; max_risk: number };
-    const perAsset = new Map<string, Vuln>();
-    for (const f of openFindings.data ?? []) {
-        if (!f.asset_id) continue;
-        const e: Vuln = perAsset.get(f.asset_id) ?? { asset_id: f.asset_id, value: f.asset_value, open: 0, by_severity: {}, weight: 0, max_risk: 0 };
-        e.open++; e.by_severity[String(f.scanner_severity)] = (e.by_severity[String(f.scanner_severity)] ?? 0) + 1;
-        e.weight += SEV_W[f.scanner_severity] ?? 0; e.max_risk = Math.max(e.max_risk, Number(f.risk_score ?? 0));
-        perAsset.set(f.asset_id, e);
-    }
-    const ranked = [...perAsset.values()].sort((a, b) => b.weight - a.weight || b.max_risk - a.max_risk).slice(0, 8);
-    // Exposure context for the ranking: the asset's type, exposure and criticality (read-only).
-    const ctx = ranked.length ? await supabase.from('vms_assets').select('id, asset_type, exposure, criticality').eq('org_id', org).in('id', ranked.map((r) => r.asset_id)) : { data: [] };
-    const ctxById = new Map((ctx.data ?? []).map((a) => [a.id, a]));
+    if (active.error) { fail(res, active.error); return; }
+    const { perAsset, ranked, ctx: ctxById } = ranks;
     const mostVulnerable = ranked.map(({ weight: _w, ...x }) => ({ ...x, asset_type: ctxById.get(x.asset_id)?.asset_type ?? null, exposure: ctxById.get(x.asset_id)?.exposure ?? null, criticality: ctxById.get(x.asset_id)?.criticality ?? null }));
     const reached = (assessed30.data ?? []).filter((a) => /^reachable/.test(String((a.last_assessment as { outcome?: string } | null)?.outcome ?? ''))).length;
-    const described = assessments30.error ? [] : await describe((assessments30.data ?? []) as AssessmentRow[]);
+    const described = assessed.described;
     res.json({
         assets: { active: active.count ?? 0, internet_facing: internet.count ?? 0, gone: gone.count ?? 0, open_services: services.count ?? 0 },
         last_7_days: { new_assets: newA.count ?? 0, changed_assets: changedA.count ?? 0, gone_assets: goneA.count ?? 0, new_services: newSvc.count ?? 0 },
@@ -108,13 +113,13 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
             external_assets: external.count ?? 0,
             // null when the P12 column is missing: unknown, not zero.
             assessed_last_30_days: assessed30.error ? null : reached,
-            assessments_last_30_days: assessments30.error ? null : described.length,
-            checks_not_run_last_30_days: assessments30.error ? null : described.reduce((n, a) => n + a.steps.filter((s) => RETRYABLE.has(s.status)).length, 0),
+            assessments_last_30_days: assessed.error ? null : described.length,
+            checks_not_run_last_30_days: assessed.error ? null : described.reduce((n, a) => n + a.steps.filter((s) => RETRYABLE.has(s.status)).length, 0),
         },
         recent_scans: scans.data ?? [],
-        most_vulnerable_assets: openFindings.error ? null : mostVulnerable,
+        most_vulnerable_assets: ranks.error ? null : mostVulnerable,
         // Assets with at least one open critical or high finding (all of them, not only the ranked top 8).
-        high_risk_assets: openFindings.error ? null : [...perAsset.values()].filter((a) => (a.by_severity.critical ?? 0) + (a.by_severity.high ?? 0) > 0).length,
+        high_risk_assets: ranks.error ? null : [...perAsset.values()].filter((a) => (a.by_severity.critical ?? 0) + (a.by_severity.high ?? 0) > 0).length,
         // Scanner workers are shared infrastructure, not tenant data: client roles get the state only.
         worker: {
             state: scanner.state, source: scanner.source, last_heartbeat_at: scanner.last_seen_at, seen_recently: scanner.state === 'online',
