@@ -1,5 +1,5 @@
-import { CniiOverview } from '@/components/features/cnii/CniiOverview';
+import { CniiNationalOverview } from '@/components/features/cnii/CniiNational';
 
 export default function Page() {
-    return <CniiOverview />;
+    return <CniiNationalOverview />;
 }

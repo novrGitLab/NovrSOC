@@ -1,9 +1,9 @@
 'use client';
 
 import { useParams } from 'next/navigation';
-import { CniiSector } from '@/components/features/cnii/CniiSector';
+import { CniiNationalSector } from '@/components/features/cnii/CniiNational';
 
 export default function Page() {
     const { sector } = useParams<{ sector: string }>();
-    return <CniiSector sectorId={sector} />;
+    return <CniiNationalSector sectorId={sector} />;
 }

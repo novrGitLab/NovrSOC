@@ -43,6 +43,7 @@ import vmsAdminRouter from './routes/vmsAdmin';
 import vmsOperationsRouter from './routes/vmsOperations';
 import vmsInsightsRouter from './routes/vmsInsights';
 import vmsClientRouter from './routes/vmsClient';
+import cniiNationalRouter from './routes/cniiNational';
 import { adminRouter as orgAssignmentsRouter, mineRouter as orgAccessRouter } from './routes/orgAccess';
 import insightsRouter from './routes/insights';
 import wazuhGroupMapRouter from './routes/wazuhGroupMap';
@@ -372,6 +373,8 @@ app.use('/api/dashboard', requireAuth, dashboardRouter);
 app.use('/api/handover', requireAuth, handoverRouter);
 app.use('/api/org-cti', requireAuth, requireOrg, orgCTIRouter);
 // CNII Watch — admin-only (no client-portal page uses it). Role checks per route inside.
+// CNII national intelligence (P23): read-only drill-down over profiled organisations the caller may view.
+app.use('/api/cnii/national', requireAuth, cniiNationalRouter);
 app.use('/api/cnii', requireAuth, cniiRouter);
 // super_admin only — platform infra health is explicitly out of scope for soc_manager per that
 // role's spec ("Cannot access platform settings").
