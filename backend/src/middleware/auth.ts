@@ -21,6 +21,10 @@ export interface AuthRequest extends Request {
 // role is introduced.
 export type UserRole = 'super_admin' | 'soc_manager' | 'analyst' | 'executive' | 'portal_user';
 
+/** The only API paths a portal_user token may reach (phase P21). */
+export const PORTAL_API_PREFIXES = ['/api/client/'] as const;
+export const isPortalPath = (url: string) => PORTAL_API_PREFIXES.some((p) => url.split('?')[0].startsWith(p));
+
 export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
     const header = req.headers.authorization;
     if (!header?.startsWith('Bearer ')) {
@@ -42,6 +46,11 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
             role: String(payload.role ?? ''),
             org_id: payload.org_id ? String(payload.org_id) : undefined,
         };
+        // Client portal accounts (phase P21) are confined to the client API, whatever a route's own
+        // checks are: fail closed for any route not written for them.
+        if (req.user.role === 'portal_user' && !isPortalPath(req.originalUrl || req.url)) {
+            return res.status(403).json({ error: 'Client portal accounts can only use the client portal' });
+        }
         next();
     } catch {
         return res.status(401).json({ error: 'Unauthorised — invalid or expired token' });

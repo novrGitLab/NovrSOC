@@ -19,6 +19,8 @@ export default function SetPasswordPage() {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [done, setDone] = useState<string | null>(null);
+    // Client portal accounts (P21) sign in at /client/login.
+    const [portal, setPortal] = useState(false);
 
     useEffect(() => {
         const t = new URLSearchParams(window.location.hash.slice(1)).get('token');
@@ -38,6 +40,7 @@ export default function SetPasswordPage() {
             const r = await apiFetch(apiUrl('/api/auth/set-password'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, password }) });
             const d = await r.json().catch(() => null);
             if (!r.ok) { setError(d?.error ?? `Could not set the password (HTTP ${r.status}).`); return; }
+            setPortal(d?.portal === true);
             setDone(d?.email ?? 'your account');
         } catch {
             setError('Could not reach the server. Try again.');
@@ -54,7 +57,7 @@ export default function SetPasswordPage() {
                     <div className="space-y-3">
                         <h1 className="text-lg font-black text-foreground">Password set</h1>
                         <p className="text-sm text-foreground-muted">You can now sign in as {done}.</p>
-                        <Link href="/login" className="inline-block text-sm font-bold text-white bg-purple rounded-lg px-4 py-2">Go to sign in</Link>
+                        <Link href={portal ? '/client/login' : '/login'} className="inline-block text-sm font-bold text-white bg-purple rounded-lg px-4 py-2">{portal ? 'Go to the client portal' : 'Go to sign in'}</Link>
                     </div>
                 ) : token === '' ? (
                     <div className="space-y-2">

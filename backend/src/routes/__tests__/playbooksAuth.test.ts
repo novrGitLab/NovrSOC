@@ -53,7 +53,8 @@ function fakeClient(): SupabaseClient {
 
 let base = '';
 let server: Server;
-const tok = (role: string, org?: string) => jwt.sign({ sub: randomUUID(), email: `${role}@${org ?? 'none'}.test`, role, ...(org ? { org_id: org } : {}) }, process.env.JWT_SECRET!);
+// sub is stable per role and org, so the org-a analyst can be assigned to org-b (P21).
+const tok = (role: string, org?: string) => jwt.sign({ sub: `${role}-${org ?? 'none'}`, email: `${role}@${org ?? 'none'}.test`, role, ...(org ? { org_id: org } : {}) }, process.env.JWT_SECRET!);
 async function call(method: string, path: string, opts: { role?: string; org?: string; body?: unknown; asOrg?: string } = {}) {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (opts.role) headers.Authorization = `Bearer ${tok(opts.role, opts.org)}`;
@@ -68,7 +69,7 @@ const orgRows = (org: string) => tables.playbooks.filter((p) => p.org_id === org
 let orgDb: FakePostgrest;
 
 before(async () => {
-    orgDb = await startFakePostgrest({ organisations: [{ id: 'oa', slug: 'org-a', name: 'Org A' }, { id: 'ob', slug: 'org-b', name: 'Org B' }] });
+    orgDb = await startFakePostgrest({ organisations: [{ id: 'oa', slug: 'org-a', name: 'Org A' }, { id: 'ob', slug: 'org-b', name: 'Org B' }], staff_org_assignments: [{ id: 'as-1', user_id: 'analyst-org-a', user_email: 'analyst@org-a.test', org_slug: 'org-b', assigned_by: 'root', assigned_at: '2026-10-21T00:00:00Z' }] });
     process.env.SUPABASE_URL = orgDb.url;
     process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
     setPlaybooksClient(fakeClient());

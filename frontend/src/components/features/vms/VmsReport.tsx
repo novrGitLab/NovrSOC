@@ -38,20 +38,21 @@ interface Report {
 }
 const pairs = (o: Record<string, number>) => Object.entries(o).length ? Object.entries(o).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`).join(' · ') : 'none';
 
-export function VmsReport() {
+/** endpoint: the report API (the client portal reads /api/client/vms/report); exports: the staff CSV links. */
+export function VmsReport({ endpoint = '/api/vms/report', exports = true, findingsPath = '/admin/vms/findings' }: { endpoint?: string; exports?: boolean; findingsPath?: string } = {}) {
     const [days, setDays] = useState(30);
     const [data, setData] = useState<Report | null>(null);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
         let active = true;
-        void loadJson<Report>(`/api/vms/report?days=${days}`).then((r) => {
+        void loadJson<Report>(`${endpoint}?days=${days}`).then((r) => {
             if (!active) return;
             setData(r.ok ? r.data : null);
             setError(r.ok ? null : r.error);
         });
         return () => { active = false; };
-    }, [days]);
+    }, [days, endpoint]);
 
     const section = 'bg-card border border-border rounded-2xl p-4 text-xs space-y-1';
     return (
@@ -62,13 +63,13 @@ export function VmsReport() {
                     <ExportButton elementId="vms-report" filename={`vms-report-${days}d-${new Date().toISOString().slice(0, 10)}`} title={`Vulnerability Management report — last ${days} days`} />
                     <button onClick={() => window.print()} className={btn('secondary', 'md')}><Printer className="w-3.5 h-3.5" aria-hidden /> Print</button>
                 </div>} />
-            <div className="bg-card border border-border rounded-2xl p-4 text-xs print:hidden">
+            {exports && <div className="bg-card border border-border rounded-2xl p-4 text-xs print:hidden">
                 <p className="font-bold text-foreground mb-2">Data exports (CSV)</p>
                 <p className="text-foreground-muted mb-2">Each list exports exactly the rows its filters show.</p>
                 <div className="flex flex-wrap gap-2">
                     {[['/admin/vms/findings', 'Findings'], ['/admin/vms/assets', 'Assets'], ['/admin/vms/remediation?view=table', 'Remediation tasks'], ['/admin/vms/risk', 'Risk queue'], ['/admin/vms/scans/history', 'Scan history'], ['/admin/vms/audit', 'Audit trail']].map(([h, l]) => <Link key={h} href={h} className={btn('secondary')}>{l}</Link>)}
                 </div>
-            </div>
+            </div>}
             {error && <p role="alert" className="text-xs text-red font-semibold">{error}</p>}
             <div id="vms-report" className="space-y-4">
             {data && (
@@ -98,7 +99,7 @@ export function VmsReport() {
                                     <p>Marked fixed by people: {data.closure.marked_fixed_by_people} — a claim until verified; {data.closure.awaiting_verification_now ?? 'unknown'} awaiting verification now; {data.closure.verification_inconclusive} verification attempt(s) proved nothing (scan failed or did not reach the target).</p>
                                     <p>Remediation tasks completed: {data.closure.tasks_completed.total} on {data.closure.tasks_completed.findings} finding(s), of which {data.closure.tasks_completed.findings_verified} verified and {data.closure.tasks_completed.findings_not_verified} not verified. A completed task is not a verified fix.</p>
                                     <p>Closed without a fix: {data.closure.closed_without_fix.risk_accepted} risk accepted, {data.closure.closed_without_fix.false_positive} false positive. Reopened after verification: {data.closure.reopened_after_verification}.</p>
-                                    {data.closure.verified_examples.slice(0, 10).map((e) => <p key={`${e.finding_id}-${e.at}`} className="text-foreground-muted">✓ <Link href={`/admin/vms/findings?id=${e.finding_id}`} className="text-blue">{e.title ?? e.finding_id}</Link>{e.asset ? ` · ${e.asset}` : ''} · {e.how === 'rescan' ? 'rescan' : e.how === 'wazuh' ? 'Wazuh' : e.how} · {fmtWat(e.at)}{e.evidence ? ` — ${e.evidence}` : ''}</p>)}
+                                    {data.closure.verified_examples.slice(0, 10).map((e) => <p key={`${e.finding_id}-${e.at}`} className="text-foreground-muted">✓ <Link href={`${findingsPath}?id=${e.finding_id}`} className="text-blue">{e.title ?? e.finding_id}</Link>{e.asset ? ` · ${e.asset}` : ''} · {e.how === 'rescan' ? 'rescan' : e.how === 'wazuh' ? 'Wazuh' : e.how} · {fmtWat(e.at)}{e.evidence ? ` — ${e.evidence}` : ''}</p>)}
                                 </>
                             )}
                         </div>
@@ -115,7 +116,7 @@ export function VmsReport() {
                     )}
                     <div className={section}>
                         <h2 className="text-sm font-black text-foreground">Open P1 / P2</h2>
-                        {data.top_open.length === 0 ? <p className="text-foreground-muted">None.</p> : data.top_open.map((f) => <p key={f.id}><span className="font-bold">{f.priority}</span> <Link href={`/admin/vms/findings?id=${f.id}`} className="text-blue">{f.title}</Link> · {f.asset} · {f.status} · due {fmtWat(f.due_at)}</p>)}
+                        {data.top_open.length === 0 ? <p className="text-foreground-muted">None.</p> : data.top_open.map((f) => <p key={f.id}><span className="font-bold">{f.priority}</span> <Link href={`${findingsPath}?id=${f.id}`} className="text-blue">{f.title}</Link> · {f.asset} · {f.status} · due {fmtWat(f.due_at)}</p>)}
                     </div>
                     <div className={section}>
                         <h2 className="text-sm font-black text-foreground">Recurring</h2>

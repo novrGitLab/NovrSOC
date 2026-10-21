@@ -44,11 +44,54 @@ export function issueToken(payload: Record<string, unknown>): string {
 
 const clientIp = (req: { ip?: string }) => req.ip || 'unknown';
 
-interface AccountRow {
+export interface AccountRow {
     id: string; email: string; name: string | null; role: string; status: string | null;
     password_hash: string | null; failed_logins: number | null; locked_until: string | null;
     organisations: { slug?: string; name?: string } | null;
 }
+
+/**
+ * Checks an account's password with the lockout rules (phase P2). Shared by staff sign-in and
+ * client portal sign-in (routes/portal.ts) so both apply exactly the same checks.
+ *   'no_password'  no account, or one without a password (staff sign-in may then try break-glass)
+ *   'fail'         wrong password, locked, disabled, or no organisation
+ *   'ok'           the account and its organisation
+ */
+export type AccountCheck =
+    | { kind: 'no_password'; account: AccountRow | null }
+    | { kind: 'fail'; status: number; error: string; reason: string }
+    | { kind: 'ok'; account: AccountRow; org: { slug: string; name?: string } };
+export async function checkAccountPassword(email: string, password: string): Promise<AccountCheck> {
+    const supabase = getSupabase();
+    let account: AccountRow | null = null;
+    if (supabase) {
+        const { data, error } = await supabase.from('platform_users')
+            .select('id, email, name, role, status, password_hash, failed_logins, locked_until, organisations(slug, name)')
+            .ilike('email', email).maybeSingle();
+        // Before the P2 SQL runs the credential columns don't exist; only break-glass works then.
+        if (!error) account = data as unknown as AccountRow | null;
+        else if (!/password_hash|failed_logins|locked_until/.test(error.message)) console.error('[auth] account lookup failed:', error.message.slice(0, 160));
+    }
+    if (!account?.password_hash) return { kind: 'no_password', account };
+    if (account.locked_until && Date.parse(account.locked_until) > Date.now()) return { kind: 'fail', status: 429, error: 'Account temporarily locked after repeated failed sign-ins. Try again later.', reason: 'account locked' };
+    const ok = await bcrypt.compare(password, account.password_hash);
+    if (!ok) {
+        const failures = (account.failed_logins ?? 0) + 1;
+        const lock = failures >= MAX_FAILED_LOGINS;
+        await supabase!.from('platform_users').update({
+            failed_logins: lock ? 0 : failures,
+            locked_until: lock ? new Date(Date.now() + LOCK_MINUTES * 60_000).toISOString() : account.locked_until,
+        }).eq('id', account.id);
+        return { kind: 'fail', status: 401, error: 'Invalid email or password', reason: lock ? `wrong password; account locked for ${LOCK_MINUTES} min` : 'wrong password' };
+    }
+    if (!ACTIVE_STATUSES.has(account.status ?? '')) return { kind: 'fail', status: 403, error: 'This account is disabled', reason: `account status ${account.status}` };
+    const org = account.organisations;
+    if (!org?.slug) return { kind: 'fail', status: 403, error: 'This account has no organisation', reason: 'no organisation' };
+    await supabase!.from('platform_users').update({ failed_logins: 0, locked_until: null }).eq('id', account.id);
+    return { kind: 'ok', account, org: { slug: org.slug, name: org.name } };
+}
+/** A wrong-email miss costs about the same as a wrong password. */
+export const equaliseTiming = (password: string) => bcrypt.compare(password, DUMMY_HASH);
 
 // POST /api/auth/signin { email, password }
 router.post('/signin', async (req, res) => {
@@ -62,34 +105,12 @@ router.post('/signin', async (req, res) => {
     if (!signingSecret()) { console.error('[auth] JWT_SECRET / DEV_TOKEN_SECRET not set — sign-in disabled'); fail(503, 'Sign-in is not configured', 'no signing secret'); return; }
 
     // 1. Account sign-in.
-    const supabase = getSupabase();
-    let account: AccountRow | null = null;
-    if (supabase) {
-        const { data, error } = await supabase.from('platform_users')
-            .select('id, email, name, role, status, password_hash, failed_logins, locked_until, organisations(slug, name)')
-            .ilike('email', email).maybeSingle();
-        // Before the P2 SQL runs the credential columns don't exist; only break-glass works then.
-        if (!error) account = data as unknown as AccountRow | null;
-        else if (!/password_hash|failed_logins|locked_until/.test(error.message)) console.error('[auth] account lookup failed:', error.message.slice(0, 160));
-    }
-
-    if (account?.password_hash) {
-        if (account.locked_until && Date.parse(account.locked_until) > Date.now()) { fail(429, 'Account temporarily locked after repeated failed sign-ins. Try again later.', 'account locked'); return; }
-        const ok = await bcrypt.compare(password, account.password_hash);
-        if (!ok) {
-            const failures = (account.failed_logins ?? 0) + 1;
-            const lock = failures >= MAX_FAILED_LOGINS;
-            await supabase!.from('platform_users').update({
-                failed_logins: lock ? 0 : failures,
-                locked_until: lock ? new Date(Date.now() + LOCK_MINUTES * 60_000).toISOString() : account.locked_until,
-            }).eq('id', account.id);
-            fail(401, 'Invalid email or password', lock ? `wrong password; account locked for ${LOCK_MINUTES} min` : 'wrong password');
-            return;
-        }
-        if (!ACTIVE_STATUSES.has(account.status ?? '')) { fail(403, 'This account is disabled', `account status ${account.status}`); return; }
-        const org = account.organisations;
-        if (!org?.slug) { fail(403, 'This account has no organisation', 'no organisation'); return; }
-        await supabase!.from('platform_users').update({ failed_logins: 0, locked_until: null }).eq('id', account.id);
+    const check = await checkAccountPassword(email, password);
+    if (check.kind === 'fail') { fail(check.status, check.error, check.reason); return; }
+    if (check.kind === 'ok') {
+        const { account, org } = check;
+        // Client accounts (P21) sign in at the client portal; they get no admin session.
+        if (account.role === 'portal_user') { fail(403, 'This is a client portal account. Sign in at /client/login.', 'client portal account at staff sign-in'); return; }
         const now = Math.floor(Date.now() / 1000);
         const user = { email: account.email, name: account.name || account.email, company: org.name || org.slug, role: account.role };
         const token = issueToken({ sub: account.id, ...user, org_id: org.slug, iat: now, exp: now + TOKEN_TTL_SECONDS });
@@ -98,6 +119,7 @@ router.post('/signin', async (req, res) => {
         res.json({ token, user });
         return;
     }
+    const account = check.account;
 
     // 2. Break-glass environment account.
     const devEmail = (process.env.DEV_ADMIN_EMAIL ?? '').trim().toLowerCase();
@@ -141,7 +163,7 @@ router.post('/set-password', async (req, res) => {
     const { data: link, error } = await supabase.from('auth_links').select('id, user_id, purpose')
         .eq('token_hash', hash).is('used_at', null).gt('expires_at', now).maybeSingle();
     if (error || !link) { invalid(); return; }
-    const { data: user } = await supabase.from('platform_users').select('id, email, status').eq('id', link.user_id).maybeSingle();
+    const { data: user } = await supabase.from('platform_users').select('id, email, status, role').eq('id', link.user_id).maybeSingle();
     if (!user || user.status === 'disabled') { invalid(); return; }
     if (password.toLowerCase().includes(String(user.email).split('@')[0].toLowerCase())) { res.status(400).json({ error: 'Password must not contain your email name' }); return; }
     const consumed = await supabase.from('auth_links').update({ used_at: now }).eq('id', link.id).is('used_at', null).select('id').maybeSingle();
@@ -149,7 +171,8 @@ router.post('/set-password', async (req, res) => {
     const upd = await supabase.from('platform_users').update({ password_hash: await bcrypt.hash(password, 12), password_set_at: now, status: 'active', failed_logins: 0, locked_until: null }).eq('id', user.id);
     if (upd.error) { res.status(502).json({ error: 'Could not save the password' }); return; }
     logAudit({ user: user.email, action: link.purpose === 'reset' ? 'PASSWORD_RESET' : 'PASSWORD_SET', resource: 'platform_user', resource_id: user.id, ip: req.ip || 'unknown', result: 'success', severity: 'warning' });
-    res.json({ success: true, email: user.email });
+    // The set-password page sends client accounts (P21) to the client portal's sign-in.
+    res.json({ success: true, email: user.email, portal: user.role === 'portal_user' });
 });
 
 // POST /api/auth/google — Google OAuth sign-in proxy. Stubbed ahead of the downstream

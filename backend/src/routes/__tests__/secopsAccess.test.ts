@@ -45,8 +45,9 @@ let server: Server;
 let base = '';
 const realFetch = globalThis.fetch;
 
+// sub is stable per role and org, so the org-a analyst can be assigned to org-b (P21).
 const tok = (role: string, org?: string) =>
-    jwt.sign({ sub: randomUUID(), email: `${role}@${org ?? 'none'}.test`, role, ...(org ? { org_id: org } : {}) }, process.env.JWT_SECRET!);
+    jwt.sign({ sub: `${role}-${org ?? 'none'}`, email: `${role}@${org ?? 'none'}.test`, role, ...(org ? { org_id: org } : {}) }, process.env.JWT_SECRET!);
 
 async function call(method: string, path: string, opts: { role?: string; org?: string; body?: unknown; asOrg?: string } = {}) {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -58,6 +59,8 @@ async function call(method: string, path: string, opts: { role?: string; org?: s
 
 before(async () => {
     db = await startFakePostgrest({
+        // P21: the org-a analyst is assigned to org-b.
+        staff_org_assignments: [{ id: 'as-1', user_id: 'analyst-org-a', user_email: 'analyst@org-a.test', org_slug: 'org-b', assigned_by: 'root', assigned_at: '2026-10-21T00:00:00Z' }],
         organisations: [
             { id: 'oa', slug: A, name: 'Org A', is_active: true, contact_name: 'Ann', contact_email: 'contact@a.test', ciso_name: 'Ada', ciso_email: 'ciso@a.test' },
             { id: 'ob', slug: B, name: 'Org B', is_active: true, contact_name: 'Bob', contact_email: 'contact@b.test', ciso_name: 'Bea', ciso_email: 'ciso@b.test' },
@@ -159,7 +162,8 @@ for (const [router, routes] of Object.entries(ROUTES)) {
             for (const [m, p, body] of routes) {
                 const r = await call(m, p, { role, org: A, body });
                 assert.equal(r.status, 403, `${role} ${m} ${p}`);
-                assert.equal(r.data.error, 'Insufficient permissions');
+                // portal_user tokens are refused before any route check (middleware/auth.ts, P21).
+                assert.equal(r.data.error, role === 'portal_user' ? 'Client portal accounts can only use the client portal' : 'Insufficient permissions');
             }
         }
     });

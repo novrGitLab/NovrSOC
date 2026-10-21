@@ -66,7 +66,7 @@ export default function ClientLoginPage() {
                 return;
             }
             setPortalSession(data.token, data.user);
-            router.push('/client/dashboard');
+            router.push('/client/vms');
         } catch {
             setError('Invalid credentials. Contact your security team.');
         } finally {
@@ -88,7 +88,7 @@ export default function ClientLoginPage() {
                 return;
             }
             setPortalSession(data.token, data.user);
-            router.push('/client/dashboard');
+            router.push('/client/vms');
         } catch {
             setError('Google sign-in failed. Please try again.');
         }

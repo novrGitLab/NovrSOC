@@ -5,6 +5,9 @@
 //   Staff roles (super_admin, soc_manager, analyst): the token's org_id, or another organisation
 //   named in the X-Org-Id header. That organisation must exist in `organisations` (by slug,
 //   which is what token org_ids carry) — otherwise 400. There is no "all orgs" mode.
+//   Analysts (P21) may name only an organisation they are assigned to (staff_org_assignments,
+//   keyed by the token's sub); anything else is 403 and audited. With the table missing or
+//   unreadable, analysts are limited to their own organisation (fail closed).
 //   No org_id on the token: 403, never a default organisation.
 //
 // Every staff request for an organisation other than their own is recorded: in the in-process
@@ -56,6 +59,19 @@ async function recordCrossOrgAccess(req: AuthRequest, own: string, target: strin
     }
 }
 
+/**
+ * Whether an analyst (token sub) is assigned to an organisation: true / false, or the reason it
+ * could not be checked (then the caller must deny — fail closed).
+ */
+export async function isAssigned(userId: string | undefined, orgSlug: string): Promise<boolean | string> {
+    if (!userId) return false;
+    const supabase = getSupabase();
+    if (!supabase) return 'database not configured';
+    const { data, error } = await supabase.from('staff_org_assignments').select('id').eq('user_id', userId).eq('org_slug', orgSlug).limit(1);
+    if (error) return /staff_org_assignments/.test(error.message) ? 'staff_org_assignments table missing' : 'lookup failed';
+    return (data ?? []).length > 0;
+}
+
 export async function resolveOrg(req: AuthRequest): Promise<OrgResolution> {
     const own = req.user?.org_id;
     if (!own) return { ok: false, status: 403, error: 'No organisation on this account — tenant data cannot be accessed' };
@@ -68,6 +84,18 @@ export async function resolveOrg(req: AuthRequest): Promise<OrgResolution> {
     const { data, error } = await supabase.from('organisations').select('slug').eq('slug', requested).maybeSingle();
     if (error) return { ok: false, status: 503, error: 'Cannot verify the requested organisation' };
     if (!data) return { ok: false, status: 400, error: `Unknown organisation: ${requested.slice(0, 100)}` };
+
+    if (req.user?.role === 'analyst') {
+        const assigned = await isAssigned(req.user.sub, requested);
+        if (assigned !== true) {
+            logAudit({
+                user: req.user.email ?? 'unknown', action: 'CROSS_ORG_DENIED', resource: `${req.method} ${(req.originalUrl || req.url).split('?')[0].slice(0, 300)}`, resource_id: requested,
+                ip: req.ip ?? 'unknown', result: 'failed', severity: 'warning',
+                details: assigned === false ? `analyst from ${own} is not assigned to ${requested}` : `assignments unavailable (${assigned}); analyst limited to ${own}`,
+            });
+            return { ok: false, status: 403, error: `You are not assigned to organisation ${requested.slice(0, 100)}` };
+        }
+    }
 
     await recordCrossOrgAccess(req, own, requested);
     return { ok: true, orgId: requested, crossOrg: true };

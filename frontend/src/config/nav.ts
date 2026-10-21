@@ -221,6 +221,17 @@ export const CLIENT_NAV: NavSectionConfig[] = [
         ],
     },
     {
+        // Client VMS portal (P21): the client's own organisation, read from /api/client/vms.
+        section: 'Vulnerability Management', collapsible: true, icon: Radar, groupLabel: 'Vulnerability Management',
+        items: [
+            { id: 'client-vms-overview', label: 'Overview', href: '/client/vms', domain: 'vms', status: 'WORKING', roles: 'all', icon: Radar },
+            { id: 'client-vms-assets', label: 'Assets', href: '/client/vms/assets', domain: 'vms', status: 'WORKING', roles: 'all', icon: Server },
+            { id: 'client-vms-findings', label: 'Vulnerabilities', href: '/client/vms/findings', domain: 'vms', status: 'WORKING', roles: 'all', icon: ShieldAlert },
+            { id: 'client-vms-remediation', label: 'Remediation', href: '/client/vms/remediation', domain: 'vms', status: 'WORKING', roles: 'all', icon: ClipboardCheck },
+            { id: 'client-vms-reports', label: 'Reports', href: '/client/vms/reports', domain: 'vms', status: 'WORKING', roles: 'all', icon: FileBarChart },
+        ],
+    },
+    {
         section: 'Brand Protection', collapsible: true, icon: Shield, groupLabel: 'Brand Protection',
         items: [
             { id: 'client-domain-suite', label: 'Domain Suite', href: '/client/brand/domain', domain: 'brand', status: 'BROKEN', roles: 'all', icon: Globe },

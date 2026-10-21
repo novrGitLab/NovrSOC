@@ -1,5 +1,6 @@
 // lib/resolveOrg.ts through requirePermission / requireOrg: which organisation each role acts on,
-// X-Org-Id for staff only, unknown orgs, and the cross-org audit trail. `organisations` and
+// X-Org-Id for staff only (analysts only for organisations they are assigned to, P21), unknown
+// orgs, and the cross-org audit trail. `organisations` and
 // `org_access_audit` live in a local fake PostgREST — no real database.
 process.env.JWT_SECRET = 'resolve-org-test-secret';
 
@@ -19,8 +20,9 @@ let db: FakePostgrest;
 let server: Server;
 let base = '';
 
-const tok = (role: string, org?: string) =>
-    jwt.sign({ sub: randomUUID(), email: `${role}@${org ?? 'none'}.test`, role, ...(org ? { org_id: org } : {}) }, process.env.JWT_SECRET!);
+// sub is stable per role and org so an analyst can be assigned (staff_org_assignments.user_id).
+const tok = (role: string, org?: string, sub = `${role}-${org ?? 'none'}`) =>
+    jwt.sign({ sub, email: `${role}@${org ?? 'none'}.test`, role, ...(org ? { org_id: org } : {}) }, process.env.JWT_SECRET!);
 
 async function get(path: string, role: string, org?: string, asOrg?: string) {
     const headers: Record<string, string> = { Authorization: `Bearer ${tok(role, org)}` };
@@ -29,14 +31,21 @@ async function get(path: string, role: string, org?: string, asOrg?: string) {
     return { status: r.status, data: await r.json().catch(() => null) };
 }
 const crossOrgAudit = () => getAuditLog(1000).filter((e) => e.action === 'CROSS_ORG_ACCESS');
+const deniedAudit = () => getAuditLog(1000).filter((e) => e.action === 'CROSS_ORG_DENIED');
 
 before(async () => {
-    db = await startFakePostgrest({ organisations: [{ id: 'oa', slug: 'org-a' }, { id: 'ob', slug: 'org-b' }], org_access_audit: [] });
+    db = await startFakePostgrest({
+        organisations: [{ id: 'oa', slug: 'org-a' }, { id: 'ob', slug: 'org-b' }, { id: 'oc', slug: 'org-c' }], org_access_audit: [],
+        // The org-a analyst is assigned to org-b only.
+        staff_org_assignments: [{ id: randomUUID(), user_id: 'analyst-org-a', user_email: 'analyst@org-a.test', org_slug: 'org-b', assigned_by: 'root', assigned_at: new Date().toISOString() }],
+    });
     process.env.SUPABASE_URL = db.url;
     process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
     const app = express();
     app.get('/perm', requirePermission('alerts:read'), (req, res) => { res.json({ org: requestOrg(req) }); });
     app.get('/any', requireAuth, requireOrg, (req, res) => { res.json({ org: requestOrg(req) }); });
+    // Client portal accounts may only reach /api/client/ (middleware/auth.ts, P21).
+    app.get('/api/client/any', requireAuth, requireOrg, (req, res) => { res.json({ org: requestOrg(req) }); });
     server = app.listen(0);
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -86,12 +95,60 @@ for (const role of ['super_admin', 'soc_manager', 'analyst']) {
 
 for (const role of ['portal_user', 'executive']) {
     test(`${role}: X-Org-Id (even an unknown one) is ignored — always the token's org, never audited`, async () => {
+        const path = role === 'portal_user' ? '/api/client/any' : '/any';
         const rowsBefore = db.tables.org_access_audit.length;
-        assert.deepEqual((await get('/any', role, 'org-a', 'org-b')).data, { org: 'org-a' });
-        assert.deepEqual((await get('/any', role, 'org-a', 'org-nope')).data, { org: 'org-a' });
+        assert.deepEqual((await get(path, role, 'org-a', 'org-b')).data, { org: 'org-a' });
+        assert.deepEqual((await get(path, role, 'org-a', 'org-nope')).data, { org: 'org-a' });
         assert.equal(db.tables.org_access_audit.length, rowsBefore);
     });
 }
+
+test('portal_user tokens are refused outside /api/client/, whatever the route checks', async () => {
+    for (const path of ['/perm', '/any']) {
+        const r = await get(path, 'portal_user', 'org-a');
+        assert.equal(r.status, 403, path);
+        assert.match(r.data.error, /client portal/);
+    }
+    assert.equal((await get('/api/client/any', 'portal_user', 'org-a')).status, 200);
+});
+
+test('analyst: an organisation it is not assigned to is 403, audited as a denial, never as access', async () => {
+    const accessBefore = crossOrgAudit().length;
+    const deniedBefore = deniedAudit().length;
+    const rowsBefore = db.tables.org_access_audit.length;
+    const r = await get('/perm', 'analyst', 'org-a', 'org-c');
+    assert.equal(r.status, 403);
+    assert.match(r.data.error, /not assigned to organisation org-c/);
+    assert.equal(crossOrgAudit().length, accessBefore);
+    assert.equal(db.tables.org_access_audit.length, rowsBefore);
+    assert.equal(deniedAudit().length, deniedBefore + 1);
+    assert.equal(deniedAudit()[0].resource_id, 'org-c');
+    // Another analyst of the same organisation has no assignment at all.
+    assert.equal((await get('/perm', 'analyst', 'org-a', 'org-b')).status, 200, 'the assigned organisation works');
+    const other = await fetch(`${base}/perm`, { headers: { Authorization: `Bearer ${tok('analyst', 'org-a', 'someone-else')}`, 'X-Org-Id': 'org-b' } });
+    assert.equal(other.status, 403);
+});
+
+test('analyst: removing the assignment takes effect on the next request', async () => {
+    const row = db.tables.staff_org_assignments[0];
+    db.tables.staff_org_assignments.length = 0;
+    try {
+        assert.equal((await get('/perm', 'analyst', 'org-a', 'org-b')).status, 403);
+        assert.deepEqual((await get('/perm', 'analyst', 'org-a')).data, { org: 'org-a' }, 'own organisation still works');
+    } finally { db.tables.staff_org_assignments.push(row); }
+});
+
+test('analyst: without the assignments table, only the own organisation (fail closed); super_admin unaffected', async () => {
+    const saved = db.tables.staff_org_assignments;
+    delete (db.tables as Record<string, unknown>).staff_org_assignments;
+    try {
+        const deniedBefore = deniedAudit().length;
+        const r = await get('/perm', 'analyst', 'org-a', 'org-b');
+        assert.equal(r.status, 403);
+        assert.equal(deniedAudit().length, deniedBefore + 1, 'the denial is audited');
+        assert.deepEqual((await get('/perm', 'super_admin', 'org-a', 'org-c')).data, { org: 'org-c' });
+    } finally { db.tables.staff_org_assignments = saved; }
+});
 
 test('an unknown role is treated as a client role', async () => {
     assert.deepEqual((await get('/any', 'viewer', 'org-a', 'org-b')).data, { org: 'org-a' });

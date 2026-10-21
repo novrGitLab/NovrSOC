@@ -26,7 +26,8 @@ let db: FakePostgrest;
 let server: Server;
 let base = '';
 const realLog = { log: console.log, warn: console.warn, error: console.error };
-const tok = (role: string, org = A) => jwt.sign({ sub: randomUUID(), email: `${role}@${org}.test`, role, org_id: org }, process.env.JWT_SECRET!);
+// sub is stable per role and org, so the org-a analyst can be assigned to org-b (P21).
+const tok = (role: string, org = A) => jwt.sign({ sub: `${role}-${org}`, email: `${role}@${org}.test`, role, org_id: org }, process.env.JWT_SECRET!);
 async function call(method: string, p: string, bearer: string | null, body?: unknown, orgHeader?: string) {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (bearer) headers.Authorization = `Bearer ${bearer}`;
@@ -36,7 +37,7 @@ async function call(method: string, p: string, bearer: string | null, body?: unk
 }
 const future = (d = 30) => new Date(Date.now() + d * 86_400_000).toISOString();
 const past = (d = 1) => new Date(Date.now() - d * 86_400_000).toISOString();
-const TABLES = ['organisations', 'org_access_audit', 'audit_log', 'cnii_org_profiles', 'cnii_profile_events', 'cnii_assets', 'vms_scopes', 'vms_scan_jobs', 'vms_assets', 'vms_asset_events', 'vms_observations', 'vms_services', 'vms_findings', 'vms_finding_evidence', 'vms_finding_events', 'cve_intel', 'ti_indicators', 'ti_matches'];
+const TABLES = ['staff_org_assignments', 'organisations', 'org_access_audit', 'audit_log', 'cnii_org_profiles', 'cnii_profile_events', 'cnii_assets', 'vms_scopes', 'vms_scan_jobs', 'vms_assets', 'vms_asset_events', 'vms_observations', 'vms_services', 'vms_findings', 'vms_finding_evidence', 'vms_finding_events', 'cve_intel', 'ti_indicators', 'ti_matches'];
 
 before(async () => {
     db = await startFakePostgrest(
@@ -64,6 +65,7 @@ after(async () => { Object.assign(console, realLog); server.close(); await db.cl
 beforeEach(() => {
     for (const t of TABLES) db.tables[t].length = 0;
     db.tables.organisations.push({ slug: A, name: 'Org A Telecom' }, { slug: B, name: 'Org B Power' });
+    db.tables.staff_org_assignments.push({ id: 'as-1', user_id: 'analyst-org-a', user_email: 'analyst@org-a.test', org_slug: 'org-b', assigned_by: 'root', assigned_at: '2026-10-21T00:00:00Z' });
 });
 
 const scope = (org: string, b: Partial<ScopeEntry> = {}) => {

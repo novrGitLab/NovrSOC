@@ -42,6 +42,8 @@ import vmsAssessmentsRouter from './routes/vmsAssessments';
 import vmsAdminRouter from './routes/vmsAdmin';
 import vmsOperationsRouter from './routes/vmsOperations';
 import vmsInsightsRouter from './routes/vmsInsights';
+import vmsClientRouter from './routes/vmsClient';
+import { adminRouter as orgAssignmentsRouter, mineRouter as orgAccessRouter } from './routes/orgAccess';
 import insightsRouter from './routes/insights';
 import wazuhGroupMapRouter from './routes/wazuhGroupMap';
 import threatManagementRouter from './routes/threatManagement';
@@ -353,6 +355,11 @@ app.use('/api/vms', requireAuth, vmsAssessmentsRouter); // asset-centric Full As
 app.use('/api/vms', requireAuth, vmsAdminRouter); // VMS administration: policies, workers, integrations (phase P14)
 app.use('/api/vms', requireAuth, vmsOperationsRouter); // profiles, scanner operations, services, endpoint eligibility (phase P19)
 app.use('/api/vms', requireAuth, vmsInsightsRouter); // read-only dashboard, risk, audit, task and AI-plan views (phase P20)
+// Client VMS portal (phase P21): a client's own organisation, read-only; the only API a portal_user may use.
+app.use('/api/client/vms', requireAuth, vmsClientRouter);
+// Analyst organisation assignments (P21): managed by super_admin; /mine lists what the caller may view.
+app.use('/api/admin/org-assignments', requireAuth, requireRole('super_admin'), orgAssignmentsRouter);
+app.use('/api/org-access', requireAuth, orgAccessRouter);
 app.use('/api/ti', requireAuth, threatInfoRouter); // Threat Information System (phase P6)
 app.use('/api/insights', requireAuth, insightsRouter); // weekly insights (phase P8)
 // Security Assessment: posture from real case data.

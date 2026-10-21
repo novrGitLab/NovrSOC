@@ -38,6 +38,9 @@ export const PERMISSIONS = [
     'cnii:read',
     'cnii:manage',
     'cnii:sector',
+    // Client VMS portal (phase P21): read one's own organisation's assets, vulnerabilities,
+    // remediation tasks and reports through /api/client/vms only.
+    'vms:client',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -53,7 +56,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<UserRole, readonly Permission[]>>
     // Executives see their organisation's attack surface and risk; they change nothing. They never
     // see other organisations, so no sector-wide view.
     executive: ['vms:read', 'intel:read', 'cnii:read'],
-    portal_user: [],
+    // Client portal accounts (P21): their own organisation's VMS view, nothing else. requireAuth
+    // also refuses their tokens on every route outside /api/client/ (middleware/auth.ts).
+    portal_user: ['vms:client'],
 };
 
 /** Permissions held by a role string from a token. Unknown roles hold none. */
