@@ -15,7 +15,7 @@ import { vmsLocate } from '@/config/vmsSections';
 import { useVmsCan, useVmsOrg } from './data';
 import { EmptyState } from './kit';
 
-interface Org { id: string; name: string; slug: string }
+interface Org { id?: string; name: string; slug: string }
 
 export function VmsShell({ children }: { children: ReactNode }) {
     const pathname = usePathname();
@@ -24,12 +24,13 @@ export function VmsShell({ children }: { children: ReactNode }) {
     const org = useVmsOrg();
     const [orgs, setOrgs] = useState<Org[] | null>(null);
     useEffect(() => {
-        if (!can.superAdmin) return;
+        if (can.readOnly) return;
         let active = true;
-        // The organisation list is available to super_admin only (GET /api/organisations).
-        void loadJson<{ organisations: Org[] }>('/api/organisations').then((r) => { if (active && r.ok) setOrgs(r.data.organisations.filter((o) => o.slug)); });
+        // Organisations this account may view (P21): all for super_admin and managers, own plus
+        // assigned for analysts. The backend checks every request regardless.
+        void loadJson<{ organisations: Org[] }>('/api/org-access/mine').then((r) => { if (active && r.ok) setOrgs(r.data.organisations.filter((o) => o.slug)); });
         return () => { active = false; };
-    }, [can.superAdmin]);
+    }, [can.readOnly]);
     const gated = here?.section.managerOnly && !can.scope;
 
     return (
@@ -47,12 +48,12 @@ export function VmsShell({ children }: { children: ReactNode }) {
                 </nav>
                 <div className="flex items-center gap-2 pb-2">
                     {can.readOnly && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-foreground-muted bg-card-muted rounded-full px-2.5 py-1"><Eye className="w-3.5 h-3.5" aria-hidden /> Read-only view</span>}
-                    {orgs && orgs.length > 0 && (
+                    {orgs && orgs.length > 1 && (
                         <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-foreground-muted">
                             <Building2 className="w-3.5 h-3.5" aria-hidden /><span className="sr-only">Organisation</span>
                             <select value={org} onChange={(e) => setVmsOrg(e.target.value)} className="bg-card border border-border rounded-lg px-2 py-1 text-[11px] text-foreground outline-none focus:ring-2 focus:ring-purple/40">
                                 <option value="">My organisation</option>
-                                {orgs.map((x) => <option key={x.id} value={x.slug}>{x.name}</option>)}
+                                {orgs.map((x) => <option key={x.slug} value={x.slug}>{x.name}</option>)}
                             </select>
                         </label>
                     )}
