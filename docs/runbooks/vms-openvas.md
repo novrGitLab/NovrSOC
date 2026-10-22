@@ -107,6 +107,7 @@ backend and prints no secret. `end_to_end` stays `not_checked` until an authoris
 **Production VPS:** steps 1–3 are already done differently, and must not be redone:
 - the client library is in `/opt/novrsoc-vms/gvm-venv`;
 - the socket is mounted at `/run/novrsoc-gvm/gvmd.sock` (no docker group, Docker directory permissions untouched);
+  [deploy-vms-worker-1.8.1.md](deploy-vms-worker-1.8.1.md) step 2 restricts it to the worker (path `/run/novrsoc-gvm/sock/gvmd.sock`, directory `0750 root:novrsoc-vms`);
 - the `novrsoc-worker` account exists.
 
 Start at step 4, and follow [deploy-p19-vms-automation.md](deploy-p19-vms-automation.md) steps 4–6.

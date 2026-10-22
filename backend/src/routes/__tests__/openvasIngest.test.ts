@@ -24,6 +24,7 @@ import vmsFindingsRouter from '../vmsFindings';
 import vmsWorkerRouter from '../vmsWorker';
 import vmsOperationsRouter, { engineStatus } from '../vmsOperations';
 import vmsClientRouter from '../vmsClient';
+import cniiNationalRouter from '../cniiNational';
 import { getAuditLog } from '../../lib/audit';
 
 const A = 'org-a';
@@ -49,7 +50,7 @@ let hostScope: { id: string }, netScope: { id: string }, betaScope: { id: string
 
 before(async () => {
     db = await startFakePostgrest(
-        { organisations: [{ id: 'oa', slug: A }, { id: 'ob', slug: B }], vms_scopes: [], vms_scan_jobs: [], vms_assets: [], vms_services: [], vms_findings: [], vms_finding_evidence: [], vms_finding_events: [], vms_remediation_tasks: [], cve_intel: [], vms_asset_events: [], vms_workers: [], vms_job_evidence: [], audit_log: [], org_access_audit: [], staff_org_assignments: [], vms_wazuh_sync: [] },
+        { organisations: [{ id: 'oa', slug: A }, { id: 'ob', slug: B }], vms_scopes: [], vms_scan_jobs: [], vms_assets: [], vms_services: [], vms_findings: [], vms_finding_evidence: [], vms_finding_events: [], vms_remediation_tasks: [], cve_intel: [], vms_asset_events: [], vms_workers: [], vms_job_evidence: [], audit_log: [], org_access_audit: [], staff_org_assignments: [], vms_wazuh_sync: [], cnii_org_profiles: [], vms_risk_snapshots: [] },
         {},
         {
             vms_scopes: { status: 'active', approved_at: new Date().toISOString(), exclusions: [] },
@@ -77,6 +78,7 @@ before(async () => {
     app.use('/api/vms', requireAuth, vmsFindingsRouter);
     app.use('/api/vms', requireAuth, vmsOperationsRouter);
     app.use('/api/client/vms', requireAuth, vmsClientRouter);
+    app.use('/api/cnii/national', requireAuth, cniiNationalRouter);
     server = app.listen(0);
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     for (const k of ['log', 'warn', 'error'] as const) console[k] = () => undefined;
@@ -294,4 +296,53 @@ test('the finding detail serves the scanner CVSS (with version) next to, not ins
     assert.equal(d.data.scanner_cvss.version, '3.1');
     assert.equal(d.data.scanner_cvss.vector, 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N');
     assert.equal(d.data.scanner_cvss.source, 'openvas');
+});
+
+// ── End to end: Greenbone report → worker observations → backend → VMS → CNII ────────────────
+test('data path: OpenVAS findings reach CNII when (and only when) the organisation has a CNII profile', async () => {
+    db.tables.cnii_org_profiles.push({ org_id: A, sector_id: 'power', subfield: 'Power Generation & Distribution', designation: 'designated' });
+    await runOpenvas(OBS);
+    const mgr = tok('soc_manager', 'soc-home');
+    const nat = await http('GET', '/api/cnii/national', mgr);
+    assert.equal(nat.status, 200);
+    assert.equal((nat.data.kpis as Row).organisations, 1);
+    assert.deepEqual(nat.data.sources, { openvas: 4 }, 'the detection source is the scanner that reported them');
+    assert.equal((nat.data.kpis as Row).critical, 1);
+    const org = await http('GET', `/api/cnii/national/orgs/${A}`, mgr);
+    const ssh = (org.data.findings as Row[]).find((f) => f.rule_id === '1.3.6.1.4.1.25623.1.0.104879')!;
+    assert.deepEqual([ssh.scanner_cvss, ssh.severity, ssh.detected_by], [9.8, 'critical', ['openvas']]);
+    const asset = await http('GET', `/api/cnii/national/orgs/${A}/assets/${ssh.asset_id}`, mgr);
+    const f = (asset.data.findings as Row[]).find((x) => x.id === ssh.id)!;
+    assert.deepEqual(f.cvss, { score: 9.8, version: '3.1', vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' });
+    assert.equal((f.evidence as Row).detections, 1);
+    assert.deepEqual((f.evidence as Row).sources, ['openvas']);
+    // Organisation B has no CNII profile: nothing of it is CNII, whatever it holds.
+    assert.equal((await http('GET', `/api/cnii/national/orgs/${B}`, mgr)).status, 404);
+});
+
+test('verification: an OpenVAS finding is rescanned only under the OpenVAS policy, and verified only when the rescan reached the host', async () => {
+    await runOpenvas(OBS);
+    const ssh = findingsOf().find((f) => f.rule_id === '1.3.6.1.4.1.25623.1.0.104879')!;
+    assert.equal((await http('PATCH', `/api/vms/findings/${ssh.id}`, tok('analyst'), { status: 'fixed_pending_verification', note: 'patched to 9.3p2' })).status, 200);
+    delete process.env.VMS_OPENVAS_ENABLED;
+    const refused = await http('POST', `/api/vms/findings/${ssh.id}/verify`, tok('analyst'), {});
+    assert.equal(refused.status, 409);
+    assert.match(refused.data.error, /switched off/);
+    process.env.VMS_OPENVAS_ENABLED = 'true';
+    const ok = await http('POST', `/api/vms/findings/${ssh.id}/verify`, tok('analyst'), {});
+    assert.equal(ok.status, 201, JSON.stringify(ok.data));
+    assert.equal(ok.data.scan.kind, 'vuln_openvas');
+    assert.equal(ok.data.scan.purpose, 'verification');
+    const c = await worker('/claim', { worker_id: 'vps-worker', kinds: ['vuln_openvas'] });
+    assert.deepEqual(c.data.job.options.finding_ids, [ssh.id]);
+    // A rescan that did not show it reached the host verifies nothing.
+    await worker(`/jobs/${c.data.job.id}/complete`, { worker_id: 'vps-worker', status: 'succeeded', summary: { outcome: 'unreachable', target_outcomes: { 'app.qa-alpha.test': { outcome: 'unreachable', reason: 'no answer' } } } });
+    assert.equal(findingsOf().find((f) => f.id === ssh.id)!.status, 'fixed_pending_verification');
+    // One that reached it and no longer detects the issue verifies it.
+    await http('POST', `/api/vms/findings/${ssh.id}/verify`, tok('analyst'), {});
+    const c2 = await worker('/claim', { worker_id: 'vps-worker', kinds: ['vuln_openvas'] });
+    await worker(`/jobs/${c2.data.job.id}/complete`, { worker_id: 'vps-worker', status: 'succeeded', summary: { outcome: 'assessed', target_outcomes: { 'app.qa-alpha.test': { outcome: 'reachable_open', reason: '22/tcp open' } } } });
+    const done = findingsOf().find((f) => f.id === ssh.id)!;
+    assert.equal(done.status, 'verified');
+    assert.ok(db.tables.vms_finding_events.some((e) => e.finding_id === ssh.id && e.action === 'verified'));
 });
