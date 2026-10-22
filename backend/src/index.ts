@@ -115,8 +115,9 @@ const PORT = Number(process.env.PORT || 8000);
 // body parsing, no rate limit — guarantees a direct 200 no matter what headers the caller did
 // or didn't send.
 app.get('/health', (_req, res) => {
-    // The deployed commit (Railway sets RAILWAY_GIT_COMMIT_SHA), so a deployment can be confirmed from outside.
-    res.status(200).json({ status: 'healthy', version: (process.env.RAILWAY_GIT_COMMIT_SHA ?? '').slice(0, 12) || null });
+    // The deployed commit (Railway sets RAILWAY_GIT_COMMIT_SHA, Render RENDER_GIT_COMMIT), so a
+    // deployment can be confirmed from outside.
+    res.status(200).json({ status: 'healthy', version: (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RENDER_GIT_COMMIT || '').slice(0, 12) || null });
 });
 app.get('/', (_req, res) => {
     res.status(200).json({ ok: true, service: 'novrsoc-backend' });

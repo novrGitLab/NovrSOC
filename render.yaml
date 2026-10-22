@@ -1,0 +1,120 @@
+# Render Blueprint — NovrSOC backend (Docker) and frontend (Next.js). Release deploy/novrsoc-render.
+# Nothing deploys on push (autoDeploy: false): every deploy is started by hand from the dashboard.
+# Secrets are never in this file: every `sync: false` value is entered in the Render dashboard.
+# Checklist, migrations and rollback: docs/runbooks/release-novrsoc-render.md.
+services:
+  - type: web
+    name: novrsoc-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    region: frankfurt
+    plan: starter
+    autoDeploy: false
+    healthCheckPath: /health
+    envVars:
+      # Required: off Railway, a backend that is not "production" refuses to start against the
+      # production Supabase database (lib/envGuard.ts), and the health check never passes.
+      - key: NOVRSOC_ENV
+        value: production
+      # Scheduled jobs (snapshots, scan schedules, policies, CVE intel, Wazuh sync, notifications) must
+      # run on ONE host only. "true" = jobs off here (Railway still runs them); "false" = this host runs
+      # them (Railway is down or its jobs are off). Decided at deploy time; see the runbook.
+      - key: NOVRSOC_DISABLE_JOBS
+        sync: false
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: JWT_SECRET            # must equal the current production value, or every session and portal token is invalidated
+        sync: false
+      - key: ENCRYPTION_KEY        # must equal the current production value (stored integration secrets)
+        sync: false
+      - key: FRONTEND_URL          # the frontend's public URL (CORS); *.vercel.app is always allowed
+        sync: false
+      - key: VMS_WORKER_TOKEN      # must equal the scanner worker's token
+        sync: false
+      - key: NVIDIA_API_KEY        # AI panels; without it they say AI is unavailable
+        sync: false
+      # OpenVAS stays off: no OpenVAS scan can be queued or claimed. Change only with approval
+      # (docs/runbooks/vms-openvas.md, "Activation requirements").
+      - key: VMS_OPENVAS_ENABLED
+        value: "false"
+      - key: VMS_OPENVAS_SCOPE_IDS
+        value: ""
+      - key: DEV_ADMIN_LOGIN_ENABLED   # break-glass login; "false" once named accounts work
+        sync: false
+      - key: DEV_ADMIN_EMAIL
+        sync: false
+      - key: DEV_ADMIN_PASSWORD
+        sync: false
+      # Wazuh manager API and indexer (alerts, agents, groups, vulnerability sync).
+      - key: WAZUH_HOST
+        sync: false
+      - key: WAZUH_PORT
+        sync: false
+      - key: WAZUH_USER
+        sync: false
+      - key: WAZUH_PASSWORD        # some code paths read WAZUH_API_PASSWORD / WAZUH_PASS: copy whichever Railway has
+        sync: false
+      - key: WAZUH_INDEXER_HOST
+        sync: false
+      - key: WAZUH_INDEXER_PORT
+        sync: false
+      - key: WAZUH_INDEXER_USER
+        sync: false
+      - key: WAZUH_INDEXER_PASSWORD
+        sync: false
+      # Alert ingest and SOAR: the forwarder's and SOAR engine's tokens must match these.
+      - key: ALERT_INGEST_TOKEN
+        sync: false
+      - key: SOAR_ENGINE_TOKEN
+        sync: false
+      - key: ALERT_STALE_MINUTES   # optional, default 60
+        sync: false
+      # Email (notifications, reports). Copy whichever provider Railway uses.
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_FROM
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: CISO_EMAIL
+        sync: false
+      - key: ALERT_EMAIL_TO
+        sync: false
+      # Threat intelligence.
+      - key: MISP_URL
+        sync: false
+      - key: MISP_API_KEY
+        sync: false
+      - key: OPENCTI_URL
+        sync: false
+      - key: OPENCTI_TOKEN
+        sync: false
+      - key: NVD_API_KEY
+        sync: false
+      # Any other variable set on Railway (other threat-intel keys, SMTP, SpiderFoot, M365, feature
+      # flags such as TI_ENABLED / VMS_INTEL_ENABLED / AUTO_CASE_ENABLED) is copied as-is from Railway.
+
+  - type: web
+    name: novrsoc-frontend
+    runtime: node
+    rootDir: frontend
+    region: frankfurt
+    plan: starter
+    autoDeploy: false
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /login
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Inlined at build time: the backend's public URL. Without it the build falls back to the
+      # Railway URL. Change it → redeploy (rebuild) the frontend.
+      - key: NEXT_PUBLIC_BACKEND_URL
+        sync: false
+      - key: NEXT_PUBLIC_GOOGLE_CLIENT_ID
+        sync: false

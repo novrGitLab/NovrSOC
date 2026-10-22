@@ -35,7 +35,7 @@ export function ownPolicyRuns(last: unknown, org: string): { at: string; result:
     if (!l?.at) return null;
     return { at: l.at, result: Array.isArray(l.result) ? l.result.filter((r: { org?: string }) => r?.org === org) : { error: 'The last policy run failed; see the backend log' } };
 }
-export const deployedVersion = () => (process.env.RAILWAY_GIT_COMMIT_SHA ?? '').slice(0, 12) || null;
+export const deployedVersion = () => (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.RENDER_GIT_COMMIT || '').slice(0, 12) || null;
 
 router.get('/admin/status', requirePermission('vms:scope'), async (req: AuthRequest, res) => {
     const supabase = getSupabase()!;

@@ -8,7 +8,8 @@ COPY tsconfig.json ./
 
 # Install dependencies
 RUN npm ci --only=production
-RUN npm install -g tsx
+# tsx is a dev dependency; pinned to package-lock.json's version so every build runs the same one.
+RUN npm install -g tsx@4.23.11
 
 # Copy source
 COPY src/ ./src/
