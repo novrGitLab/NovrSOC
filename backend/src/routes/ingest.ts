@@ -248,10 +248,10 @@ router.post('/alerts', async (req: Request, res: Response) => {
     // Already stored (same org + Wazuh alert id), or repeated within this batch.
     const duplicates = mapped - accepted;
 
-    if (rejects.length > 0) {
-        const { error } = await supabase.from('alert_ingest_rejects').insert(rejects);
-        if (error) console.error(`[ingest] could not record ${rejects.length} rejected alert(s):`, error.message?.slice(0, 200));
-    }
+    // An unmapped or ambiguous alert is recoverable only from the quarantine. If it can't be kept
+    // there, answer 503 so the forwarder keeps its checkpoint and resends the batch: a 200 here
+    // would let it move past an alert that then exists nowhere but the indexer. The writes above
+    // and below are idempotent, so the resend is harmless.
     let quarantined = 0;
     if (quarantine.size > 0) {
         const put = (q: Record<string, unknown>[]) => supabase.from('alert_quarantine').upsert(q, { onConflict: 'wazuh_alert_id' });
@@ -260,12 +260,23 @@ router.post('/alerts', async (req: Request, res: Response) => {
         if (error && /reason|check constraint/i.test(error.message ?? '')) {
             ({ error } = await put([...quarantine.values()].map((q) => (q.reason === 'unmapped_source' ? { ...q, reason: 'unmapped_group' } : q))));
         }
-        // Without the table (SQL not applied yet) the alert is still recorded as a reject, as before.
-        if (error) console.error(`[ingest] could not quarantine ${quarantine.size} alert(s):`, error.message?.slice(0, 200));
-        else quarantined = quarantine.size;
+        if (error) {
+            console.error(`[ingest] could not quarantine ${quarantine.size} alert(s) — batch refused for retry:`, error.message?.slice(0, 200));
+            res.status(503).json({ error: 'Alert quarantine unavailable — retry later' });
+            return;
+        }
+        quarantined = quarantine.size;
     }
-    console.log(`[ingest] batch of ${batch.data.alerts.length}: accepted ${accepted}, duplicates ${duplicates}, rejected ${rejects.length}, quarantined ${quarantined}`);
-    res.json({ accepted, duplicates, rejected: rejects.length, quarantined });
+    // Reasons only (no payload): a failure to record them loses no alert, so it doesn't fail the batch.
+    if (rejects.length > 0) {
+        const { error } = await supabase.from('alert_ingest_rejects').insert(rejects);
+        if (error) console.error(`[ingest] could not record ${rejects.length} rejected alert(s):`, error.message?.slice(0, 200));
+    }
+    // invalid = refused by validation (no organisation could ever be derived from them, so they are
+    // not quarantined); the forwarder logs these. The rest of `rejected` is quarantined.
+    const invalid = rejects.filter((r) => r.reason.startsWith('invalid')).length;
+    console.log(`[ingest] batch of ${batch.data.alerts.length}: accepted ${accepted}, duplicates ${duplicates}, rejected ${rejects.length} (quarantined ${quarantined}, invalid ${invalid})`);
+    res.json({ accepted, duplicates, rejected: rejects.length, quarantined, invalid });
 });
 
 // GET /api/ingest/alerts/watermark — newest stored event per org (every org in the group map),
