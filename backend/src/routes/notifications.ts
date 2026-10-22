@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { search } from '../lib/wazuh-indexer';
+import { searchStrict as search } from '../lib/wazuh-indexer';
+import { orgScope, alertScopeFilter } from '../lib/orgScope';
 import { getSupabase } from '../services/geoEnrichment';
 import type { AuthRequest } from '../middleware/auth';
 import { sendAlertCommunicationEmail, socNotificationRecipients, cisoEmail, warnNoRecipient } from '../services/email';
@@ -43,10 +44,12 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
     const notifications: Notification[] = [];
 
     try {
+        // The organisation's own alerts only (lib/orgScope.ts).
+        const scope = await orgScope(requestOrg(req));
         const result = await search<IndexerSearchResponse>('wazuh-alerts-4.x-*', {
             size: 20,
             sort: [{ timestamp: { order: 'desc' } }],
-            query: { bool: { must: [{ range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium, lt: SEVERITY_MIN_LEVEL.high } } }, { range: { timestamp: { gte: 'now-24h' } } }] } },
+            query: { bool: { must: [{ range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium, lt: SEVERITY_MIN_LEVEL.high } } }, { range: { timestamp: { gte: 'now-24h' } } }], filter: [alertScopeFilter(scope)] } },
         });
         const hits = result?.hits?.hits ?? [];
         for (const h of hits) {

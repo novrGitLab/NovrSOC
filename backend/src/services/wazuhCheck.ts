@@ -52,7 +52,7 @@ export async function checkWazuhIntegration(org: string, deps: CheckDeps = {}) {
     const supabase = getSupabase()!;
 
     const configured = {
-        manager_api: !!env.WAZUH_HOST && !!(env.WAZUH_API_PASSWORD || env.WAZUH_PASS),
+        manager_api: !!env.WAZUH_HOST && !!(env.WAZUH_API_PASSWORD || env.WAZUH_PASSWORD || env.WAZUH_PASS),
         indexer: !!env.WAZUH_INDEXER_HOST && !!(env.WAZUH_INDEXER_PASSWORD || env.WAZUH_INDEXER_PASS),
     };
 

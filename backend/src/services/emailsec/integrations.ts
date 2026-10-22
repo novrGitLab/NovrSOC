@@ -6,7 +6,8 @@
 //
 // Nothing here reports success it didn't get: an unconfigured integration says so, a failed
 // call returns its error.
-import { search } from '../../lib/wazuh-indexer';
+import { searchStrict as search } from '../../lib/wazuh-indexer';
+import { orgScope, alertScopeFilter } from '../../lib/orgScope';
 import { openctiConfigured, openctiQuery } from '../../lib/opencti';
 import { emailsecConfig } from './config';
 import { isConfigured as vtConfigured } from '../virustotal';
@@ -55,17 +56,19 @@ export async function pushDomainToOpenCti(domain: string, confidence: number, de
 
 export interface RelatedSocAlert { id: string; timestamp: string; rule: string; level: number; agent: string | null; match: string }
 
-export async function relatedSocAlerts(values: string[], days = 30): Promise<{ available: boolean; alerts: RelatedSocAlert[]; error?: string }> {
+/** The organisation's own Wazuh alerts (lib/orgScope.ts) that mention any of `values`. */
+export async function relatedSocAlerts(org: string, values: string[], days = 30): Promise<{ available: boolean; alerts: RelatedSocAlert[]; error?: string }> {
     const terms = [...new Set(values.filter(Boolean))].slice(0, 20);
     if (!terms.length) return { available: true, alerts: [] };
     if (!process.env.WAZUH_INDEXER_HOST) return { available: false, alerts: [], error: 'Wazuh indexer not configured (WAZUH_INDEXER_HOST)' };
     try {
+        const scope = await orgScope(org);
         const r = await search<{ hits?: { hits?: { _id: string; _source: { timestamp?: string; rule?: { description?: string; level?: number }; agent?: { name?: string }; data?: Record<string, unknown> } }[] } }>('wazuh-alerts-4.x-*', {
             size: 25,
             sort: [{ timestamp: 'desc' }],
             query: {
                 bool: {
-                    filter: [{ range: { timestamp: { gte: `now-${days}d` } } }],
+                    filter: [{ range: { timestamp: { gte: `now-${days}d` } } }, alertScopeFilter(scope)],
                     should: [
                         { terms: { 'data.srcip': terms } }, { terms: { 'data.dstip': terms } },
                         ...terms.map((t) => ({ multi_match: { query: t, type: 'phrase', fields: ['data.url', 'data.hostname', 'data.query', 'full_log'] } })),

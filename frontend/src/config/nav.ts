@@ -217,7 +217,7 @@ export const CLIENT_NAV: NavSectionConfig[] = [
     {
         section: '', collapsible: false,
         items: [
-            { id: 'client-dashboard', label: 'Dashboard', href: '/client/dashboard', domain: 'overview', status: 'BROKEN', roles: 'all', icon: LayoutDashboard },
+            { id: 'client-dashboard', label: 'Dashboard', href: '/client/dashboard', domain: 'overview', status: 'PARTIAL', roles: 'all', icon: LayoutDashboard },
         ],
     },
     {
@@ -254,14 +254,14 @@ export const CLIENT_NAV: NavSectionConfig[] = [
     {
         section: 'Infrastructure', collapsible: true, icon: Server, groupLabel: 'Infrastructure',
         items: [
-            { id: 'client-digital-assets', label: 'Digital Assets', href: '/client/infra/assets', domain: 'infra', status: 'BROKEN', roles: 'all', icon: Server },
+            { id: 'client-digital-assets', label: 'Digital Assets', href: '/client/infra/assets', domain: 'infra', status: 'PARTIAL', roles: 'all', icon: Server },
             { id: 'client-dns', label: 'DNS Suite', href: '/client/infra/dns', domain: 'infra', status: 'BROKEN', roles: 'all', icon: Network },
         ],
     },
     {
         section: 'SecOps & Response', collapsible: true, icon: Activity, groupLabel: 'SecOps & Response',
         items: [
-            { id: 'client-threat-management', label: 'Threat Management', href: '/client/secops/threats', domain: 'secops', status: 'BROKEN', roles: 'all', icon: Activity },
+            { id: 'client-threat-management', label: 'Security Alerts', href: '/client/secops/threats', domain: 'secops', status: 'PARTIAL', roles: 'all', icon: Activity },
             { id: 'client-cases', label: 'Cases', href: '/client/secops/cases', domain: 'secops', status: 'BROKEN', roles: 'all', icon: Siren },
             { id: 'client-report-card', label: 'Security Report Card', href: '/client/secops/security-assessment', domain: 'secops', status: 'BROKEN', roles: 'all', icon: Activity },
             { id: 'client-alert-communication', label: 'Alert Communication', href: '/client/secops/alerts', domain: 'secops', status: 'BROKEN', roles: 'all', icon: Bell },

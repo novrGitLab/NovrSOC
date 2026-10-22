@@ -43,6 +43,7 @@ import vmsAdminRouter from './routes/vmsAdmin';
 import vmsOperationsRouter from './routes/vmsOperations';
 import vmsInsightsRouter from './routes/vmsInsights';
 import vmsClientRouter from './routes/vmsClient';
+import clientSecopsRouter from './routes/clientSecops';
 import cniiNationalRouter from './routes/cniiNational';
 import { adminRouter as orgAssignmentsRouter, mineRouter as orgAccessRouter } from './routes/orgAccess';
 import insightsRouter from './routes/insights';
@@ -358,6 +359,8 @@ app.use('/api/vms', requireAuth, vmsOperationsRouter); // profiles, scanner oper
 app.use('/api/vms', requireAuth, vmsInsightsRouter); // read-only dashboard, risk, audit, task and AI-plan views (phase P20)
 // Client VMS portal (phase P21): a client's own organisation, read-only; the only API a portal_user may use.
 app.use('/api/client/vms', requireAuth, vmsClientRouter);
+// Client portal: the organisation's own alerts, firewall activity and agents (phase P24).
+app.use('/api/client/secops', requireAuth, clientSecopsRouter);
 // Analyst organisation assignments (P21): managed by super_admin; /mine lists what the caller may view.
 app.use('/api/admin/org-assignments', requireAuth, requireRole('super_admin'), orgAssignmentsRouter);
 app.use('/api/org-access', requireAuth, orgAccessRouter);

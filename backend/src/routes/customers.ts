@@ -33,6 +33,7 @@ router.get('/', async (req: AuthRequest, res) => {
 
         const customers = (data || []).map((org: Record<string, unknown>) => ({
             id: org.id,
+            slug: org.slug ?? null,
             name: org.name,
             domain: org.domain ?? null,
             industry: org.industry ?? null,
@@ -41,8 +42,10 @@ router.get('/', async (req: AuthRequest, res) => {
             // back to the pre-existing `is_active` boolean for any row read before that
             // migration runs, so this never renders blank.
             status: org.status ?? (org.is_active ? 'active' : 'suspended'),
-            agentsTotal: 0,
-            activeIncidents: 0,
+            // Not known from this table: null, never a made-up 0. Pages that show them read the
+            // organisation's own figures (X-Org-Id) from /api/wazuh/agents and /api/cases.
+            agentsTotal: null,
+            activeIncidents: null,
             wazuhGroup: org.wazuh_group ?? null,
             // Drives the dashboard's "Complete Setup" prompt — an org that was created but never
             // taken through the onboarding wizard has no Wazuh group or contacts, so its widgets

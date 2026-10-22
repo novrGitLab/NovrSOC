@@ -9,7 +9,8 @@
 // Without a decision, status is derived: Active if seen in the last 24 hours, else Monitoring.
 // A resolved threat that fires again after it was resolved shows as Active (recurred).
 import { createHash } from 'crypto';
-import { search } from '../lib/wazuh-indexer';
+import { searchStrict as search } from '../lib/wazuh-indexer';
+import { alertScopeFilter, type OrgScope } from '../lib/orgScope';
 import { getSupabase } from './geoEnrichment';
 import { dbErrorMessage } from './cases';
 import { severityFromLevel, SEVERITY_MIN_LEVEL, type Severity } from '../lib/severity';
@@ -89,11 +90,14 @@ interface AggResponse {
 
 const NO_IP = '__none__';
 
-/** Threats seen in the window, newest activity first. Throws if the indexer can't be read. */
-export async function loadThreats(rangeHours: number): Promise<Omit<Threat, 'status' | 'recurred' | 'assigned_to' | 'case_id' | 'case_number' | 'decided_at'>[]> {
+/**
+ * Threats seen in the window among the organisation's own alerts (lib/orgScope.ts), newest
+ * activity first. Throws if the indexer can't be read or answers with an error.
+ */
+export async function loadThreats(rangeHours: number, scope: OrgScope): Promise<Omit<Threat, 'status' | 'recurred' | 'assigned_to' | 'case_id' | 'case_number' | 'decided_at'>[]> {
     const r = await search<AggResponse>('wazuh-alerts-4.x-*', {
         size: 0,
-        query: { bool: { filter: [{ range: { timestamp: { gte: `now-${rangeHours}h` } } }, { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } }] } },
+        query: { bool: { filter: [{ range: { timestamp: { gte: `now-${rangeHours}h` } } }, { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } }, alertScopeFilter(scope)] } },
         aggs: {
             rules: {
                 terms: { field: 'rule.id', size: 100, order: { lvl: 'desc' } },

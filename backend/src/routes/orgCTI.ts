@@ -6,6 +6,16 @@ import {
 } from '../lib/orgCtiStore';
 import { lookupASN } from '../services/ripeStat';
 import { requestOrg } from '../lib/resolveOrg';
+import { orgScope } from '../lib/orgScope';
+
+/** The organisation's Wazuh-sighted IOCs (lib/orgScope.ts), or none with the reason. */
+async function wazuhIOCsFor(orgId: string): Promise<{ iocs: OrgIOC[]; error: string | null }> {
+    try {
+        return { iocs: wazuhIOCsForOrg(orgId, await orgScope(orgId)), error: null };
+    } catch (err) {
+        return { iocs: [], error: err instanceof Error ? err.message : 'Wazuh ownership unavailable' };
+    }
+}
 
 // Organisation CTI store — org-scoped threat intelligence (Wazuh-derived + analyst-added),
 // cross-client threat sharing, and RIPE Stat network intelligence. In-memory for now (see
@@ -28,7 +38,7 @@ router.get('/iocs', async (req, res) => {
         console.error('[org-cti] on-demand Wazuh sync failed:', err instanceof Error ? err.message : err);
     }
 
-    const wazuhIOCs = wazuhIOCsForOrg(orgId);
+    const { iocs: wazuhIOCs, error: wazuhError } = await wazuhIOCsFor(orgId);
     const manualIOCs = getManualIOCs(orgId);
     let combined = [...wazuhIOCs, ...manualIOCs];
 
@@ -39,6 +49,7 @@ router.get('/iocs', async (req, res) => {
     res.json({
         iocs: combined.slice(0, parsedLimit),
         total: combined.length,
+        wazuh_error: wazuhError,
         summary: {
             total: combined.length,
             malicious: combined.filter((i) => i.verdict === 'malicious').length,
@@ -149,9 +160,9 @@ router.get('/shared', (_req, res) => {
 });
 
 // GET /api/org-cti/stats — org CTI statistics
-router.get('/stats', (req, res) => {
+router.get('/stats', async (req, res) => {
     const orgId = requestOrg(req);
-    const wazuhIOCs = wazuhIOCsForOrg(orgId);
+    const { iocs: wazuhIOCs, error: wazuhError } = await wazuhIOCsFor(orgId);
     const manualIOCs = getManualIOCs(orgId);
     const combined = [...wazuhIOCs, ...manualIOCs];
 
@@ -170,6 +181,7 @@ router.get('/stats', (req, res) => {
         analyst_added: manualIOCs.filter((i) => i.source === 'analyst').length,
         top_tags: topTags,
         watcher: watcherStats(),
+        wazuh_error: wazuhError,
     });
 });
 

@@ -1,0 +1,41 @@
+{
+    "_comment": "SYNTHETIC OPNsense filterlog alerts in the shape Wazuh 4.x writes for syslog the manager receives itself (agent 000, location = sender address). Addresses are documentation ranges (RFC 5737). The data.* names follow the standard Wazuh static fields (action, srcip, dstip, srcport, dstport, protocol) plus direction/interface as dynamic fields; the custom decoder's real names must be confirmed against one alert from the live indexer and lib/alertNetwork.ts adjusted if they differ. timestamp is replaced with a recent time by the tests.",
+    "alerts": [
+        {
+            "timestamp": "2026-10-21T14:02:11.482+0000",
+            "rule": { "level": 5, "description": "OPNsense: firewall block", "id": "100201", "firedtimes": 3, "mail": false, "groups": ["opnsense", "firewall", "firewall_block"] },
+            "agent": { "id": "000", "name": "novrsoc-wazuh" },
+            "manager": { "name": "novrsoc-wazuh" },
+            "id": "1729519331.4471823",
+            "full_log": "Oct 21 14:02:11 OPNsense.localdomain filterlog[71234]: 92,,,fae559338f65e11c53669fc3642c93c2,vtnet0,match,block,in,4,0x0,,64,0,0,DF,6,tcp,60,198.51.100.47,203.0.113.10,51234,22,0,S,1234567,,64240,,mss;sackOK;TS;nop;wscale",
+            "predecoder": { "program_name": "filterlog", "timestamp": "Oct 21 14:02:11", "hostname": "OPNsense.localdomain" },
+            "decoder": { "name": "opnsense-filterlog" },
+            "data": { "action": "block", "direction": "in", "interface": "vtnet0", "protocol": "tcp", "srcip": "198.51.100.47", "dstip": "203.0.113.10", "srcport": "51234", "dstport": "22" },
+            "location": "10.0.0.4"
+        },
+        {
+            "timestamp": "2026-10-21T14:02:15.007+0000",
+            "rule": { "level": 3, "description": "OPNsense: firewall pass", "id": "100200", "firedtimes": 41, "mail": false, "groups": ["opnsense", "firewall"] },
+            "agent": { "id": "000", "name": "novrsoc-wazuh" },
+            "manager": { "name": "novrsoc-wazuh" },
+            "id": "1729519335.4472960",
+            "full_log": "Oct 21 14:02:15 OPNsense.localdomain filterlog[71234]: 70,,,02f4bab031b57d1e30553ce08e0ec131,igb1,match,pass,out,4,0x0,,63,51122,0,none,17,udp,76,192.0.2.20,203.0.113.53,40312,53,56",
+            "predecoder": { "program_name": "filterlog", "timestamp": "Oct 21 14:02:15", "hostname": "OPNsense.localdomain" },
+            "decoder": { "name": "opnsense-filterlog" },
+            "data": { "action": "pass", "direction": "out", "interface": "igb1", "protocol": "udp", "srcip": "192.0.2.20", "dstip": "203.0.113.53", "srcport": "40312", "dstport": "53" },
+            "location": "10.0.0.4"
+        },
+        {
+            "timestamp": "2026-10-21T14:03:02.911+0000",
+            "rule": { "level": 6, "description": "OPNsense: firewall reject", "id": "100202", "firedtimes": 1, "mail": false, "groups": ["opnsense", "firewall", "firewall_block"] },
+            "agent": { "id": "000", "name": "novrsoc-wazuh" },
+            "manager": { "name": "novrsoc-wazuh" },
+            "id": "1729519382.4473811",
+            "full_log": "Oct 21 14:03:02 OPNsense.localdomain filterlog[71234]: 95,,,c5c2a6c1a4d8e0f0b1a2c3d4e5f60718,vtnet0,match,reject,in,6,0x00,0x00000,64,tcp,6,20,2001:db8::25,2001:db8:1::10,44310,3389,0,S,987654,,64800,,mss",
+            "predecoder": { "program_name": "filterlog", "timestamp": "Oct 21 14:03:02", "hostname": "OPNsense.localdomain" },
+            "decoder": { "name": "opnsense-filterlog" },
+            "data": { "action": "reject", "direction": "in", "interface": "vtnet0", "protocol": "tcp", "srcip": "2001:db8::25", "dstip": "2001:db8:1::10", "srcport": "44310", "dstport": "3389" },
+            "location": "10.0.0.4"
+        }
+    ]
+}

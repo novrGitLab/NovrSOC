@@ -133,6 +133,13 @@ router.get('/messaging/connections/microsoft365/callback', h(async (db, req, res
 }));
 
 router.use(requireAuth, STAFF);
+// Tenant data needs the token's organisation: a token without one is refused, never served the
+// default organisation (orgOf's fallback is kept only for the pre-auth routes above, which carry
+// their organisation in a signed state token).
+router.use((req: AuthRequest, res: Response, next) => {
+    if (!req.user?.org_id) { res.status(403).json({ error: 'No organisation on this account — tenant data cannot be accessed' }); return; }
+    next();
+});
 
 // ── Overview + health ──────────────────────────────────────────────────────────────────────
 
@@ -410,7 +417,7 @@ router.get('/phishid/domains/:id', h(async (db, req, res) => {
         db.select('phishing_observations', { filters: [f.eq('org_id', org), f.eq('phishing_domain_id', row.id)], order: { col: 'created_at' }, limit: 200 }),
         indicatorSightings(db, org, [row.domain, ...ips]),
         row.alert_id ? db.select<EmailAlert>('email_alerts', { filters: [f.eq('org_id', org), f.eq('id', row.alert_id)], limit: 1 }).then((a) => a[0] ?? null) : Promise.resolve(null),
-        relatedSocAlerts([row.domain, ...ips]),
+        relatedSocAlerts(org, [row.domain, ...ips]),
     ]);
     res.json({ domain: row, timeline, related_indicators: sightings, alert, soc_alerts: soc });
 }));
@@ -588,7 +595,7 @@ router.get('/alerts/:id', h(async (db, req, res) => {
     const events = alert.related_events.length
         ? await db.select('email_events', { filters: [f.eq('org_id', org), f.in('id', alert.related_events.slice(-50))], order: { col: 'received_at' }, select: EVENT_LIST_COLS })
         : [];
-    const soc = await relatedSocAlerts(alert.indicators.filter((i) => i.type === 'ip' || i.type === 'domain').map((i) => i.value));
+    const soc = await relatedSocAlerts(org, alert.indicators.filter((i) => i.type === 'ip' || i.type === 'domain').map((i) => i.value));
     res.json({ alert, events, soc_alerts: soc });
 }));
 

@@ -13,7 +13,7 @@ interface Agent {
     status: string;
     lastSeen: string | null;
     os: string | null;
-    group: string;
+    group?: string;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -45,7 +45,7 @@ function normalizeAgents(data: unknown): Agent[] {
                 status: a.status ?? 'never_connected',
                 lastSeen: a.lastKeepAlive ?? a.last_keepalive ?? null,
                 os: a.os?.name ?? a.os?.full ?? null,
-                group: Array.isArray(a.group) ? a.group.join(', ') : (a.group ?? 'default'),
+                group: Array.isArray(a.group) ? a.group.join(', ') : (a.group ?? ''),
             };
         });
     }
@@ -59,28 +59,26 @@ export function DigitalAssets() {
     // Distinguishes "fetched successfully, zero agents enrolled" from "couldn't reach Wazuh
     // at all" — both used to render as the same "No assets registered yet." message, which
     // reads as "you have no assets" when the real story might be "we don't know."
-    const [fetchFailed, setFetchFailed] = useState(false);
+    const [fetchFailed, setFetchFailed] = useState<string | null>(null);
+    // Shared by /admin/infra/assets and /client/infra/assets. The backend decides whose agents
+    // these are (lib/orgScope.ts): the client portal reads its own organisation's agents from
+    // /api/client/secops/agents; staff read their organisation's (or the X-Org-Id one's) from
+    // /api/wazuh/agents. No group is chosen here — a client-chosen group never widens the view.
+    const isPortal = getPortalContext().isPortal;
 
     useEffect(() => {
-        // Deliberately NOT dropping the ?group= filter — this component is shared between
-        // /admin/infra/assets and /client/infra/assets (app/admin & app/client both import
-        // this same DigitalAssets). getPortalContext().wazuhGroup is already null for admin
-        // users (they authenticate via admin_token, not the portal_token that carries
-        // wazuhGroup — see lib/portal-context.ts), so admin's fetch is already unfiltered
-        // today. Removing the filter unconditionally would instead break tenant isolation for
-        // every client-portal user, who'd start seeing every other client's agents too.
-        const group = getPortalContext().wazuhGroup;
-        apiFetch(apiUrl(`/api/wazuh/agents${group ? `?group=${encodeURIComponent(group)}` : ''}`), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => {
-                if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                return r.json();
+        apiFetch(apiUrl(isPortal ? '/api/client/secops/agents' : '/api/wazuh/agents'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+            .then(async (r) => {
+                const d = await r.json().catch(() => null);
+                if (!r.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
+                return d;
             })
             .then(data => setAgents(normalizeAgents(data)))
-            .catch(() => {
+            .catch((err: unknown) => {
                 setAgents([]);
-                setFetchFailed(true);
+                setFetchFailed(err instanceof Error ? err.message : 'Could not reach the backend');
             });
-    }, []);
+    }, [isPortal]);
 
     const filtered = (agents ?? []).filter(a => {
         if (!search) return true;
@@ -134,7 +132,7 @@ export function DigitalAssets() {
                             </h3>
                             <p className="text-xs text-foreground-muted max-w-xs mx-auto">
                                 {fetchFailed
-                                    ? 'Could not reach the Wazuh Manager to list enrolled agents. This is a connectivity problem, not necessarily an empty inventory — try again shortly.'
+                                    ? `The agent inventory could not be read (${fetchFailed}). This is not an empty inventory — try again shortly.`
                                     : search
                                         ? 'No assets match your search.'
                                         : 'No agents are currently enrolled. Install the Wazuh agent on a device and point it at your organisation\'s configured Wazuh manager to see it appear here automatically.'}
@@ -158,17 +156,18 @@ export function DigitalAssets() {
                                             // router.push rather than wrapping each cell in a
                                             // <Link>, which is the only way to keep a valid
                                             // table structure (an <a> cannot wrap <td>s).
-                                            onClick={() => router.push(`/admin/infra/assets/${encodeURIComponent(a.id)}`)}
-                                            onKeyDown={(e) => { if (e.key === 'Enter') router.push(`/admin/infra/assets/${encodeURIComponent(a.id)}`); }}
-                                            tabIndex={0}
-                                            role="link"
-                                            aria-label={`Open details for ${a.name}`}
-                                            className="border-b border-border hover:bg-card-muted transition-colors cursor-pointer focus:outline-none focus:bg-card-muted"
+                                            // The detail page is staff-only; client rows don't link.
+                                            onClick={isPortal ? undefined : () => router.push(`/admin/infra/assets/${encodeURIComponent(a.id)}`)}
+                                            onKeyDown={isPortal ? undefined : (e) => { if (e.key === 'Enter') router.push(`/admin/infra/assets/${encodeURIComponent(a.id)}`); }}
+                                            tabIndex={isPortal ? undefined : 0}
+                                            role={isPortal ? undefined : 'link'}
+                                            aria-label={isPortal ? undefined : `Open details for ${a.name}`}
+                                            className={`border-b border-border hover:bg-card-muted transition-colors focus:outline-none focus:bg-card-muted ${isPortal ? '' : 'cursor-pointer'}`}
                                         >
                                             <td className="px-4 py-2.5 font-bold text-foreground whitespace-nowrap">{a.name}</td>
                                             <td className="px-4 py-2.5 font-mono text-foreground-muted text-[10px]">{a.ip ?? '—'}</td>
                                             <td className="px-4 py-2.5 text-foreground-muted text-[10px]">{a.os ?? '—'}</td>
-                                            <td className="px-4 py-2.5 text-foreground-muted">{a.group}</td>
+                                            <td className="px-4 py-2.5 text-foreground-muted">{a.group || '—'}</td>
                                             <td className="px-4 py-2.5">
                                                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${STATUS_BADGE[a.status] ?? STATUS_BADGE.disconnected}`}>{a.status}</span>
                                             </td>

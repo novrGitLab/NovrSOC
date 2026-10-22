@@ -2,7 +2,8 @@
 // POST /api/ingest/alerts. Mounted at /api/alerts beside routes/alerts.ts (whose /status, /test and
 // /incident routes don't overlap these).
 //
-//   GET   /api/alerts              alerts:read    filters + keyset (cursor) pagination
+//   GET   /api/alerts              alerts:read    filters + keyset (cursor) pagination; network and
+//                                                 firewall filters (P24): action, ip, protocol, port, firewall=1
 //   GET   /api/alerts/stats        alerts:read    counts by severity and status, newest received_at
 //   GET   /api/alerts/:id          alerts:read    404 for another org's alert (never 403)
 //   PATCH /api/alerts/:id/status   alerts:triage  audited, recorded in alert_events
@@ -21,6 +22,8 @@ import { getSupabase } from '../services/geoEnrichment';
 import { isUuid, dbErrorMessage, createCase, addTimeline, isCaseSeverity } from '../services/cases';
 import { SEVERITIES, type Severity } from '../lib/severity';
 import { logAudit } from '../lib/audit';
+import { NETWORK_COLUMNS, missingNetworkColumns } from '../lib/alertNetwork';
+import { isIP } from 'net';
 
 const router = Router();
 
@@ -28,7 +31,11 @@ export const ALERT_STATUSES = ['new', 'triaged', 'escalated', 'closed', 'false_p
 export type AlertStatus = (typeof ALERT_STATUSES)[number];
 
 // The list never carries `raw` (up to 32 KB each); the detail route does.
-const LIST_COLUMNS = 'id, org_id, wazuh_alert_id, rule_id, rule_level, rule_description, agent_id, agent_name, agent_ip, severity, mitre_ids, wazuh_groups, location, raw_truncated, event_time, received_at, status, case_id';
+const BASE_COLUMNS = 'id, org_id, wazuh_alert_id, rule_id, rule_level, rule_description, agent_id, agent_name, agent_ip, severity, mitre_ids, wazuh_groups, location, raw_truncated, event_time, received_at, status, case_id';
+// Network and firewall columns added by sql/2026-10-29_p24_wazuh_sources.sql. Until that runs,
+// reads fall back to the columns above and the network filters answer 503 saying what is missing.
+const LIST_COLUMNS = `${BASE_COLUMNS}, ${NETWORK_COLUMNS.join(', ')}`;
+const P24_MISSING = 'Network and firewall fields are not available yet (run sql/2026-10-29_p24_wazuh_sources.sql)';
 // Triage columns added by sql/2026-10-14_p3_secops_ai.sql. Until that runs, reads fall back to
 // LIST_COLUMNS and the triage-only features answer 503 saying what is missing.
 const TRIAGE_COLUMNS = `${LIST_COLUMNS}, assigned_to, acknowledged_at, acknowledged_by, triage_note, updated_at`;
@@ -94,6 +101,18 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
     const assigned = typeof q.assigned === 'string' && q.assigned ? q.assigned : null; // 'me' | 'unassigned' | an email
     if (assigned !== null && assigned !== 'me' && assigned !== 'unassigned' && !/^[^\s,()"]{3,320}$/.test(assigned)) { res.status(400).json({ error: "assigned must be 'me', 'unassigned' or an email" }); return; }
     const inCase = q.case === 'linked' ? true : q.case === 'unlinked' ? false : null;
+    // Network / firewall (P24). action: comma-separated pass|block|reject|...; ip: source or
+    // destination; firewall=1: only alerts that carry a firewall action.
+    const action = typeof q.action === 'string' && q.action ? q.action.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean) : null;
+    if (action && (action.length > 10 || action.some((a) => !/^[a-z_-]{1,32}$/.test(a)))) { res.status(400).json({ error: 'action must be a comma-separated list such as block,reject' }); return; }
+    const ip = typeof q.ip === 'string' && q.ip.trim() ? q.ip.trim() : null;
+    if (ip !== null && isIP(ip) === 0) { res.status(400).json({ error: 'ip must be an IP address' }); return; }
+    const protocol = typeof q.protocol === 'string' && q.protocol.trim() ? q.protocol.trim().toLowerCase() : null;
+    if (protocol !== null && !/^[a-z0-9._-]{1,32}$/.test(protocol)) { res.status(400).json({ error: 'protocol must be a protocol name such as tcp' }); return; }
+    const port = typeof q.port === 'string' && q.port.trim() ? Number(q.port) : null;
+    if (port !== null && !(Number.isInteger(port) && port >= 0 && port <= 65535)) { res.status(400).json({ error: 'port must be 0-65535' }); return; }
+    const firewallOnly = q.firewall === '1' || q.firewall === 'true';
+    const networkFilter = !!(action || ip || protocol || port !== null || firewallOnly);
     const cursor = typeof q.cursor === 'string' && q.cursor ? decodeCursor(q.cursor) : null;
     if (severity === false) { res.status(400).json({ error: `severity must be from ${SEVERITIES.join(', ')}` }); return; }
     if (status === false) { res.status(400).json({ error: `status must be from ${ALERT_STATUSES.join(', ')}` }); return; }
@@ -110,6 +129,11 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
         if (to) query = query.lte('event_time', to);
         if (agent) query = query.or(`agent_name.eq."${agent}",agent_id.eq."${agent}"`);
         if (text) query = query.or(`rule_description.ilike."*${text}*",rule_id.eq."${text}",agent_name.ilike."*${text}*"`);
+        if (action) query = query.in('net_action', action);
+        if (firewallOnly) query = query.not('net_action', 'is', null);
+        if (ip) query = query.or(`src_ip.eq."${ip}",dst_ip.eq."${ip}"`);
+        if (protocol) query = query.eq('protocol', protocol);
+        if (port !== null) query = query.or(`src_port.eq.${port},dst_port.eq.${port}`);
         if (inCase === true) query = query.not('case_id', 'is', null);
         if (inCase === false) query = query.is('case_id', null);
         if (assigned === 'unassigned') query = query.is('assigned_to', null);
@@ -118,9 +142,13 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
         return query.order('event_time', { ascending: false }).order('id', { ascending: false }).limit(limit + 1);
     };
     let { data, error } = await build(TRIAGE_COLUMNS);
+    if (missingNetworkColumns(error)) {
+        if (networkFilter) { res.status(503).json({ error: P24_MISSING }); return; }
+        ({ data, error } = await build(TRIAGE_COLUMNS.replace(LIST_COLUMNS, BASE_COLUMNS)));
+    }
     if (missingTriageColumns(error)) {
         if (assigned) { res.status(503).json({ error: P3_MISSING }); return; }
-        ({ data, error } = await build(LIST_COLUMNS));
+        ({ data, error } = await build(BASE_COLUMNS));
     }
     if (error) { res.status(502).json({ error: dbErrorMessage(error) }); return; }
 
@@ -134,6 +162,9 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
 // the newest received_at/event_time overall (null = nothing ever received), which the frontend
 // uses for its stale-data banner.
 const RANGE_HOURS: Record<string, number> = { '24h': 24, '7d': 168, '30d': 720 };
+/** Minutes without a newly stored alert before pages warn that data may be stale — the same
+ *  setting Platform Health uses (services/pipelineHealth.ts), so the two never disagree. */
+export const staleAfterMinutes = () => (Number(process.env.ALERT_STALE_MINUTES) > 0 ? Number(process.env.ALERT_STALE_MINUTES) : 60);
 
 router.get('/stats', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
@@ -163,6 +194,7 @@ router.get('/stats', requirePermission('alerts:read'), async (req: AuthRequest, 
             by_status: Object.fromEntries(ALERT_STATUSES.map((s, i) => [s, byStatus[i]])),
             last_received_at: newest.data?.received_at ?? null,
             last_event_time: newest.data?.event_time ?? null,
+            stale_after_minutes: staleAfterMinutes(),
             connected: true,
         });
     } catch (err) {
@@ -198,7 +230,7 @@ router.patch('/:id/status', requirePermission('alerts:triage'), async (req: Auth
     if (readErr) { res.status(502).json({ error: dbErrorMessage(readErr) }); return; }
     if (!before) { res.status(404).json({ error: 'Alert not found' }); return; }
 
-    const { data, error } = await supabase.from('alerts').update({ status }).eq('id', id).eq('org_id', org).select(LIST_COLUMNS).maybeSingle();
+    const { data, error } = await supabase.from('alerts').update({ status }).eq('id', id).eq('org_id', org).select(BASE_COLUMNS).maybeSingle();
     if (error) { res.status(502).json({ error: dbErrorMessage(error) }); return; }
     if (!data) { res.status(404).json({ error: 'Alert not found' }); return; }
 
@@ -250,7 +282,7 @@ router.patch('/:id', requirePermission('alerts:triage'), async (req: AuthRequest
     if (body.acknowledged === true && !before.acknowledged_at) { patch.acknowledged_at = patch.updated_at; patch.acknowledged_by = actor; }
     if ('triage_note' in body) patch.triage_note = body.triage_note === null ? null : String(body.triage_note).trim() || null;
 
-    const { data, error } = await supabase.from('alerts').update(patch).eq('id', id).eq('org_id', org).select(TRIAGE_COLUMNS).maybeSingle();
+    const { data, error } = await supabase.from('alerts').update(patch).eq('id', id).eq('org_id', org).select(`${BASE_COLUMNS}, assigned_to, acknowledged_at, acknowledged_by, triage_note, updated_at`).maybeSingle();
     if (error) { res.status(502).json({ error: dbErrorMessage(error) }); return; }
     if ('assigned_to' in patch && patch.assigned_to !== before.assigned_to) await recordEvent(id, org, actor, 'assign', before.assigned_to, patch.assigned_to as string | null);
     if (patch.acknowledged_at) await recordEvent(id, org, actor, 'acknowledge', null, actor);

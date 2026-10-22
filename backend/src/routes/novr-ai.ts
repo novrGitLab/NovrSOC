@@ -1,6 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { search } from '../lib/wazuh-indexer';
+import { searchStrict as search } from '../lib/wazuh-indexer';
+import { orgScope, alertScopeFilter } from '../lib/orgScope';
+import { resolveOrg } from '../lib/resolveOrg';
+import { hasPermission } from '../lib/permissions';
+import type { AuthRequest } from '../middleware/auth';
 import { SEVERITY_MIN_LEVEL } from '../lib/severity';
 import { AI_MODEL, AI_TIMEOUT_MS, nvidiaConfigured, getNvidiaClient, describeNvidiaError, completionText } from '../services/nvidia';
 
@@ -56,15 +60,24 @@ router.get('/status', (_req: Request, res: Response) => {
 
 // Same live-telemetry grounding regardless of which provider ends up answering — built once,
 // folded into whichever system prompt actually gets used below.
-async function buildTelemetryContext(): Promise<string> {
+//
+// Only for accounts that may read alerts (alerts:read), and only the organisation the request
+// acts on (lib/resolveOrg.ts: the token's org, or a staff X-Org-Id, audited) — limited to what that
+// organisation owns (lib/orgScope.ts). Other accounts get no telemetry, never another tenant's.
+async function buildTelemetryContext(req: AuthRequest): Promise<string> {
+    if (!hasPermission(req.user?.role, 'alerts:read')) return 'Live alert telemetry is not available to this account.';
+    const org = await resolveOrg(req);
+    if (!org.ok) return `Live alert telemetry is unavailable: ${org.error}`;
     try {
+        const scope = await orgScope(org.orgId);
         const indexerResult = await search<any>('wazuh-alerts-4.x-*', {
             size: 5,
-            query: { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } },
+            sort: [{ timestamp: { order: 'desc' } }],
+            query: { bool: { must: [{ range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } }], filter: [alertScopeFilter(scope)] } },
             _source: ['timestamp', 'rule.description', 'rule.level', 'agent.name', 'data.srcip'],
         });
         const hits = indexerResult?.hits?.hits ?? [];
-        if (hits.length === 0) return 'No recent critical indexer alerts.';
+        if (hits.length === 0) return 'No level 7+ alerts for this organisation.';
         return hits.map((h: any) => {
             const level = h._source?.rule?.level ?? 'N/A';
             const desc = h._source?.rule?.description ?? 'Unknown alert';
@@ -73,8 +86,9 @@ async function buildTelemetryContext(): Promise<string> {
             return `- [Level ${level}] ${desc} (Agent: ${agent}, Src IP: ${srcip})`;
         }).join('\n');
     } catch {
-        // Non-blocking fallback — an indexer outage must not take NovrAI down with it.
-        return 'No recent critical indexer alerts.';
+        // Non-blocking — an indexer outage must not take NovrAI down with it, but it is not
+        // reported as "no alerts" either.
+        return 'Live alert telemetry is unavailable (the Wazuh indexer could not be read).';
     }
 }
 
@@ -131,7 +145,7 @@ router.post('/', async (req: Request, res: Response) => {
         return;
     }
 
-    const telemetry = await buildTelemetryContext();
+    const telemetry = await buildTelemetryContext(req as AuthRequest);
     let systemPrompt = `${SYSTEM_INSTRUCTION}\n\nCurrent Live NovrSOC Telemetry Context:\n${telemetry}`;
     if (context) {
         systemPrompt += `\n\nCurrent platform context:\n- Active agents: ${context.active_agents ?? 0}\n- Open incidents: ${context.open_incidents ?? 0}`;

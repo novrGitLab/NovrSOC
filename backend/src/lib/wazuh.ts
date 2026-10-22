@@ -7,7 +7,7 @@ import https from 'https';
 const WAZUH_HOST = process.env.WAZUH_HOST || '';
 const WAZUH_PORT = Number(process.env.WAZUH_PORT || 55000);
 const WAZUH_USER = process.env.WAZUH_USER || 'wazuh-wui';
-const WAZUH_PASS = process.env.WAZUH_API_PASSWORD || process.env.WAZUH_PASS || '';
+const WAZUH_PASS = process.env.WAZUH_API_PASSWORD || process.env.WAZUH_PASSWORD || process.env.WAZUH_PASS || '';
 
 interface WazuhResponse {
     status: number;
@@ -59,7 +59,7 @@ let cachedToken: { token: string; expires: number } | null = null;
 export async function authenticate(): Promise<string> {
     if (cachedToken && cachedToken.expires > Date.now()) return cachedToken.token;
     if (!WAZUH_HOST) throw new Error('WAZUH_HOST environment variable is not set');
-    if (!WAZUH_PASS) throw new Error('WAZUH_API_PASSWORD (or WAZUH_PASS) environment variable is not set');
+    if (!WAZUH_PASS) throw new Error('WAZUH_API_PASSWORD (or WAZUH_PASSWORD / WAZUH_PASS) environment variable is not set');
 
     const url = `https://${WAZUH_HOST}:${WAZUH_PORT}/security/user/authenticate`;
     // WAZUH_HOST and the target URL only — never the credential itself. This is a real

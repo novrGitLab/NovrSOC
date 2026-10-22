@@ -12,6 +12,20 @@ import { getSupabase } from './geoEnrichment';
 import { blockAddress, isolateEndpoint, type LoggedResult } from './responseActions';
 import { addTimeline, dbErrorMessage, type CaseRow } from './cases';
 import { logAudit } from '../lib/audit';
+import { orgScope, ownsAgent } from '../lib/orgScope';
+
+/**
+ * Why an approved isolation must not run, or null when it may: the agent has to belong to the
+ * approval's organisation (lib/orgScope.ts) at the moment it executes — checked here, on the
+ * one path every isolation takes, whatever created the request.
+ */
+async function isolationRefusal(org: string, agentId: string): Promise<string | null> {
+    try {
+        return ownsAgent(await orgScope(org), agentId) ? null : `Agent ${agentId.slice(0, 32)} does not belong to this organisation — not isolated`;
+    } catch (err) {
+        return `Agent ownership could not be checked (${err instanceof Error ? err.message : String(err)}) — not isolated`;
+    }
+}
 
 export const CONSEQUENTIAL_ACTIONS = ['block_ip', 'isolate_agent'] as const;
 export type ConsequentialAction = (typeof CONSEQUENTIAL_ACTIONS)[number];
@@ -103,8 +117,11 @@ export async function decideApproval(id: string, org: string, decider: string, a
         const c = await supabase.from('cases').select('*').eq('id', row.case_id).eq('org_id', org).maybeSingle();
         caseRow = (c.data as CaseRow | null) ?? undefined;
     }
+    const refusal = row.action === 'isolate_agent' ? await isolationRefusal(org, row.target) : null;
     const result = row.action === 'block_ip'
         ? await blockAddress(row.target, { case: caseRow, reason: row.reason })
+        : refusal
+        ? { outcome: 'skipped' as const, message: refusal, affected: 0, action_id: null }
         : await isolateEndpoint(row.target, { case: caseRow, reason: row.reason, agentName: row.target_label, sourceIp: caseRow?.source_ip ?? null });
     const status: ApprovalRow['status'] = result.outcome === 'success' ? 'executed' : result.outcome === 'skipped' ? 'skipped' : 'failed';
     const done = await supabase.from('response_approvals').update({ status, result: `${result.outcome.toUpperCase()}: ${result.message}`.slice(0, 1000), executed_at: new Date().toISOString() }).eq('id', id).select('*').maybeSingle();

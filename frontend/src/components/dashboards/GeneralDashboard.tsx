@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import {
     Monitor, Siren, ShieldAlert, Shield, Clock, Laptop, Server, ChevronRight, Building2, Timer, Zap, Activity,
@@ -13,6 +13,7 @@ import { NigeriaThreatMap } from '../geo/NigeriaThreatMap';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { fetchAlertStats, loadJson, watTime, type AlertStats } from '@/lib/alerts';
 import { AlertFeedStatus } from '@/components/shared/AlertFeedStatus';
+import { usePolling } from '@/lib/usePolling';
 
 const Card = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
     <div className={`bg-card border border-border rounded-xl overflow-hidden shadow-sm ${className}`}>
@@ -365,12 +366,15 @@ function AlertsFeed({ alerts, failure, loading }: { alerts: FeedAlert[]; failure
 }
 
 /* ── Onboarded Clients Widget (kept from the previous dashboard — real /api/customers + per-client Wazuh data) ── */
-interface OnboardedClient { id: string; name: string; industry: string | null; status: string; agentsTotal: number; activeIncidents: number; wazuhGroup: string | null; setupComplete?: boolean }
+interface OnboardedClient { id: string; slug: string | null; name: string; industry: string | null; status: string; agentsTotal: number | null; activeIncidents: number | null; wazuhGroup: string | null; setupComplete?: boolean }
 
-interface ClientLiveData { endpoints: number; incidents: number }
+// null = that figure could not be read for this client (no access, or Wazuh / the alert store
+// unavailable): shown as "—", never as 0.
+interface ClientLiveData { endpoints: number | null; alerts: number | null }
 
-function clientStatusBadge(orgStatus: string, endpoints: number): { label: string; classes: string } {
+function clientStatusBadge(orgStatus: string, endpoints: number | null): { label: string; classes: string } {
     if (orgStatus !== 'active') return { label: 'Inactive', classes: 'text-foreground-muted bg-card-muted border-border' };
+    if (endpoints === null) return { label: 'Unknown', classes: 'text-foreground-muted bg-card-muted border-border' };
     if (endpoints > 0) return { label: 'Active', classes: 'text-blue bg-blue/10 border-blue/30' };
     return { label: 'Pending', classes: 'text-amber bg-grey-100 border-amber/30' };
 }
@@ -381,23 +385,25 @@ const OnboardedClientsWidget = ({ clients, loading }: { clients: OnboardedClient
 
     useEffect(() => {
         if (!clients || clients.length === 0) return;
-        const fetchGroup = async (group: string | null) => {
-            const [agentsRes, incidentsRes] = await Promise.all([
-                apiFetch(apiUrl(`/api/wazuh/agents${group ? `?group=${encodeURIComponent(group)}` : ''}`), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => r.json()).catch(() => null),
-                apiFetch(apiUrl(`/api/wazuh/incidents${group ? `?group=${encodeURIComponent(group)}` : ''}`), { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then(r => r.json()).catch(() => null),
+        // Each client's own figures, read as that organisation (X-Org-Id; the backend checks the
+        // viewer may see it and audits the access). No fallback to another group or organisation.
+        const fetchClient = async (slug: string): Promise<ClientLiveData> => {
+            const init = { cache: 'no-store' as const, signal: AbortSignal.timeout(10000), headers: { 'X-Org-Id': slug } };
+            const json = (r: Response) => (r.ok ? r.json() : null);
+            const [agentsRes, statsRes] = await Promise.all([
+                apiFetch(apiUrl('/api/wazuh/agents'), init).then(json).catch(() => null),
+                apiFetch(apiUrl('/api/alerts/stats?range=7d'), init).then(json).catch(() => null),
             ]);
             return {
-                endpoints: typeof agentsRes?.total === 'number' ? agentsRes.total : 0,
-                incidents: typeof incidentsRes?.kpis?.total === 'number' ? incidentsRes.kpis.total : 0,
+                endpoints: typeof agentsRes?.total === 'number' ? agentsRes.total : null,
+                alerts: typeof statsRes?.total === 'number' ? statsRes.total : null,
             };
         };
-        clients.forEach(async (c) => {
-            let result = await fetchGroup(c.wazuhGroup);
-            if (result.endpoints === 0 && c.wazuhGroup && c.wazuhGroup !== 'default') {
-                result = await fetchGroup('default');
-            }
+        rows.forEach(async (c) => {
+            const result = c.slug ? await fetchClient(c.slug) : { endpoints: null, alerts: null };
             setLiveData(prev => ({ ...prev, [c.id]: result }));
         });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [clients]);
 
     return (
@@ -430,15 +436,15 @@ const OnboardedClientsWidget = ({ clients, loading }: { clients: OnboardedClient
                             <tbody>
                                 {rows.map(c => {
                                     const live = liveData[c.id];
-                                    const endpoints = live?.endpoints ?? c.agentsTotal;
-                                    const incidents = live?.incidents ?? c.activeIncidents;
+                                    const endpoints = live ? live.endpoints : null;
+                                    const alerts = live ? live.alerts : null;
                                     const badge = clientStatusBadge(c.status, endpoints);
                                     return (
                                         <tr key={c.id} className="border-b border-border hover:bg-card-muted transition-colors">
                                             <td className="py-2 px-3 font-semibold text-foreground">{c.name === 'Cybernovr' ? '🛡️' : '🏢'} {c.name}</td>
                                             <td className="py-2 px-3 text-foreground-muted">{c.industry ?? '—'}</td>
-                                            <td className="py-2 px-3 text-foreground-muted">{endpoints.toLocaleString()}</td>
-                                            <td className="py-2 px-3 font-bold text-foreground">{incidents}</td>
+                                            <td className="py-2 px-3 text-foreground-muted">{live ? endpoints?.toLocaleString() ?? '—' : '…'}</td>
+                                            <td className="py-2 px-3 font-bold text-foreground">{live ? alerts?.toLocaleString() ?? '—' : '…'}</td>
                                             <td className="py-2 px-3"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${badge.classes}`}>{badge.label}</span></td>
                                         </tr>
                                     );
@@ -454,7 +460,7 @@ const OnboardedClientsWidget = ({ clients, loading }: { clients: OnboardedClient
 
 /* ── Main ── */
 export const GeneralDashboard = () => {
-    const [wazuhStatus, setWazuhStatus] = useState<{ connected: boolean; agent_count: number; active_agents: number; disconnected_agents: number } | null>(null);
+    const [wazuhStatus, setWazuhStatus] = useState<{ connected: boolean; agent_count: number | null; active_agents: number | null; disconnected_agents: number | null; error?: string } | null>(null);
     const [platformHealth, setPlatformHealth] = useState<{ overall: string; services: Array<{ name: string; status: string; latency_ms: number }> } | null>(null);
     const [alertStats, setAlertStats] = useState<AlertStats | null>(null);
     const [alertsState, setAlertsState] = useState<{ loaded: boolean; notConnected: boolean; error: string | null }>({ loaded: false, notConnected: false, error: null });
@@ -474,8 +480,8 @@ export const GeneralDashboard = () => {
     useEffect(() => {
         apiFetch(apiUrl('/api/wazuh/status'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then(r => r.json())
-            .then(data => setWazuhStatus({ connected: !!data?.connected, agent_count: data?.agent_count ?? 0, active_agents: data?.active_agents ?? 0, disconnected_agents: data?.disconnected_agents ?? 0 }))
-            .catch(() => setWazuhStatus({ connected: false, agent_count: 0, active_agents: 0, disconnected_agents: 0 }));
+            .then(data => setWazuhStatus({ connected: !!data?.connected, agent_count: data?.agent_count ?? null, active_agents: data?.active_agents ?? null, disconnected_agents: data?.disconnected_agents ?? null, error: data?.error }))
+            .catch(() => setWazuhStatus({ connected: false, agent_count: null, active_agents: null, disconnected_agents: null, error: 'Could not reach the backend' }));
     }, []);
 
     useEffect(() => {
@@ -487,12 +493,11 @@ export const GeneralDashboard = () => {
 
     // Alert counts come from the stored, org-scoped alert table (phase R2). A failure leaves them
     // null, shown as "—" with the reason — never 0.
-    useEffect(() => {
-        void fetchAlertStats('24h').then((r) => {
-            setAlertStats(r.ok ? r.data : null);
-            setAlertsState({ loaded: true, notConnected: !r.ok && r.notConnected, error: r.ok ? null : r.error });
-        });
-    }, []);
+    const loadAlertStats = useCallback(() => fetchAlertStats('24h').then((r) => {
+        setAlertStats(r.ok ? r.data : null);
+        setAlertsState({ loaded: true, notConnected: !r.ok && r.notConnected, error: r.ok ? null : r.error });
+    }), []);
+    useEffect(() => { void loadAlertStats(); }, [loadAlertStats]);
 
     useEffect(() => {
         // Real cases (analyst queue: auto-closed tier-1 excluded), newest first; unresolved only.
@@ -541,13 +546,14 @@ export const GeneralDashboard = () => {
             .finally(() => setFrameworksLoading(false));
     }, []);
 
-    useEffect(() => {
-        void loadJson<{ alerts: FeedAlert[] }>('/api/alerts?limit=10').then((r) => {
-            setFeedAlerts(r.ok ? r.data.alerts : []);
-            setFeedFailure(r.ok ? null : r.notConnected ? 'Not connected — the alert store is unavailable.' : `Alerts unavailable — ${r.error}`);
-            setFeedLoading(false);
-        });
-    }, []);
+    const loadFeed = useCallback(() => loadJson<{ alerts: FeedAlert[] }>('/api/alerts?limit=10').then((r) => {
+        setFeedAlerts(r.ok ? r.data.alerts : []);
+        setFeedFailure(r.ok ? null : r.notConnected ? 'Not connected — the alert store is unavailable.' : `Alerts unavailable — ${r.error}`);
+        setFeedLoading(false);
+    }), []);
+    useEffect(() => { void loadFeed(); }, [loadFeed]);
+    // Stored-alert KPIs and the feed stay current while the dashboard is on screen.
+    usePolling(() => Promise.all([loadAlertStats(), loadFeed()]), 60_000);
 
     const [clients, setClients] = useState<OnboardedClient[] | null>(null);
     const [clientsLoading, setClientsLoading] = useState(true);
@@ -591,11 +597,11 @@ export const GeneralDashboard = () => {
         // the card says so instead of showing 0 agents, which would read as "nothing monitored".
         {
             label: 'Agents',
-            value: wazuhStatus?.connected ? wazuhStatus.agent_count.toLocaleString() : '—',
+            value: wazuhStatus?.connected && wazuhStatus.agent_count !== null ? wazuhStatus.agent_count.toLocaleString() : '—',
             trend: '', type: 'purple', icon: Monitor,
             subValue: wazuhStatus === null ? 'checking…' : wazuhStatus.connected
-                ? `${wazuhStatus.active_agents} online · ${wazuhStatus.disconnected_agents} offline`
-                : 'Wazuh manager unreachable',
+                ? `${wazuhStatus.active_agents ?? '—'} online · ${wazuhStatus.disconnected_agents ?? '—'} offline`
+                : 'Agent inventory unavailable',
         },
         { label: 'Open Cases', value: String(incidentKpis?.total ?? 0), trend: '', type: 'orange', icon: Siren, subValue: `${incidentKpis?.critical ?? 0} critical` },
         { label: 'Critical Alerts', value: criticalAlertsCount !== null ? String(criticalAlertsCount) : '—', trend: '', type: 'red', icon: ShieldAlert, subValue: alertStats ? 'last 24 hours' : alertsUnavailable },
@@ -618,7 +624,7 @@ export const GeneralDashboard = () => {
                 </Link>
             </div>
 
-            <AlertFeedStatus loaded={alertsState.loaded} notConnected={alertsState.notConnected} error={alertsState.error} lastReceivedAt={alertStats?.last_received_at ?? null} />
+            <AlertFeedStatus loaded={alertsState.loaded} notConnected={alertsState.notConnected} error={alertsState.error} lastReceivedAt={alertStats?.last_received_at ?? null} staleAfterMinutes={alertStats?.stale_after_minutes} />
 
 
             {/* Row 1: KPI cards */}

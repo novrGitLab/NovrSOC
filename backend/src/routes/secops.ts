@@ -7,6 +7,7 @@ import { getSupabase } from '../services/geoEnrichment';
 import { enrichIOC, configuredSources, type IOCType } from '../services/iocEnrichment';
 import { isPrivateAddress } from '../services/emailsec/safeFetch';
 import { requirePermission, requestOrg } from '../lib/permissions';
+import { requireScope, ownsAgent, padAgentId } from '../lib/orgScope';
 
 const router = Router();
 
@@ -149,8 +150,13 @@ async function sendApprovalRequest(req: AuthRequest, res: import('express').Resp
 router.post('/actions/isolate', requirePermission('response:contain'), async (req: AuthRequest, res) => {
     const endpointId = typeof req.body?.endpoint_id === 'string' ? req.body.endpoint_id.trim() : '';
     if (!endpointId) { res.status(400).json({ success: false, error: 'endpoint_id is required' }); return; }
+    // Only an agent the organisation owns (lib/orgScope.ts) — the approval would otherwise run
+    // active response on another organisation's endpoint. Unknown and foreign agents look alike.
+    const scope = await requireScope(req, res);
+    if (!scope) return;
+    if (!ownsAgent(scope, endpointId)) { res.status(404).json({ success: false, error: 'Endpoint not found in this organisation' }); return; }
     const reason = typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : `Isolate agent ${endpointId} (playbook)`;
-    await sendApprovalRequest(req, res, 'isolate_agent', endpointId, typeof req.body?.endpoint_name === 'string' ? req.body.endpoint_name : null, reason);
+    await sendApprovalRequest(req, res, 'isolate_agent', padAgentId(endpointId), typeof req.body?.endpoint_name === 'string' ? req.body.endpoint_name : null, reason);
 });
 
 // POST /api/secops/actions/block-ip { ip, reason }

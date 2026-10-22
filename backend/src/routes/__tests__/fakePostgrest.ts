@@ -124,7 +124,14 @@ function parseSelect(select: string | null): { cols: string[] | null; embeds: Em
     return { cols: star ? null : cols, embeds };
 }
 
-const pick = (row: Row, cols: string[] | null) => (cols ? Object.fromEntries(cols.map((c) => [c, row[c] ?? null])) : { ...row });
+// `col->>key` / `col->key` selects one JSON key, returned under the key's name (as PostgREST does;
+// ->> as text).
+const pick = (row: Row, cols: string[] | null) => (cols ? Object.fromEntries(cols.map((c) => {
+    const j = c.match(/^(\w+)->(>?)(\w+)$/);
+    if (!j) return [c, row[c] ?? null];
+    const v = (row[j[1]] as Row | null | undefined)?.[j[3]];
+    return [j[3], v === undefined || v === null ? null : j[2] ? (typeof v === 'object' ? JSON.stringify(v) : String(v)) : v];
+})) : { ...row });
 
 /** `defaults`: per-table column defaults applied on insert, like the real tables' DEFAULTs. */
 /** A test-supplied stand-in for a Postgres function called through POST /rest/v1/rpc/<name>. */

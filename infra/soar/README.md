@@ -92,6 +92,8 @@ systemctl daemon-reload && systemctl enable --now novrsoc-forwarder
 journalctl -u novrsoc-forwarder -f
 ```
 
+Agentless syslog (OPNsense sending to the manager on UDP 514) needs no forwarder change. Those alerts belong to agent `000`, which has no group, and the forwarder already sends their `location` (the sender's address). The backend assigns them by that address (`wazuh_source_org_map`, Settings → Wazuh Groups → Syslog sources). Until the address is mapped they are quarantined as `unmapped_source`, and mapping it replays them. OPNsense "pass" events can be numerous: raise `SOAR_FORWARD_MIN_LEVEL` if only level-N+ firewall events should be stored.
+
 To replay a time range, for example after mapping a group whose alerts were rejected, stop the service, edit `last_forwarded_timestamp` in the cursor file (or delete the file to backfill again), and start it.
 
 Unit tests (no network): `cd infra/soar && python -m unittest test_forwarder -v`.

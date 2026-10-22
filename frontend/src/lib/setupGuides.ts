@@ -36,13 +36,13 @@ export const GUIDES: Record<GuideId, Guide> = {
     opnsense: {
         title: 'OPNsense Setup',
         subtitle: 'Network · Connect the perimeter firewall',
-        intro: 'OPNsense feeds Network Topology, Shadow IT and IP blocking. It enrols with the Wazuh manager as an agent through the os-wazuh-agent plugin, and NovrSOC blocks IPs through its API.',
+        intro: 'OPNsense firewall events reach NovrSOC through the Wazuh manager in one of two ways. Syslog (remote logging over WireGuard to the manager on UDP 514) arrives as the manager itself: map the firewall sender address to its organisation in Settings → Wazuh Groups → Syslog sources, or its alerts stay quarantined. Or enrol it as an agent with the os-wazuh-agent plugin (steps below) and put the agent in a group mapped to the organisation. NovrSOC blocks IPs through the OPNsense API either way.',
         matchAgents: (agents) => {
             const fw = findFirewallAgent(agents);
             return fw ? [fw] : [];
         },
         matchLabel: 'OPNsense firewall agent',
-        statusNote: 'Detected when an agent named "opnsense…" (or at 10.0.0.4) is registered with the manager.',
+        statusNote: 'Shows the firewall only when it is enrolled as an agent (named "opnsense…", or at 10.0.0.4). A firewall that sends syslog is not an agent: check its sender in Settings → Wazuh Groups instead.',
         steps: [
             {
                 title: 'Install the Wazuh agent plugin',

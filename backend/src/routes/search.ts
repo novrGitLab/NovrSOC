@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
-import { search } from '../lib/wazuh-indexer';
+import { searchStrict as search } from '../lib/wazuh-indexer';
+import { orgScope, alertScopeFilter } from '../lib/orgScope';
 import { severityFromLevel } from '../lib/severity';
 import { requirePermission, requestOrg } from '../lib/permissions';
 
@@ -51,7 +52,9 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
     const iocsP = supabase
         ? supabase.from('ioc_enrichments').select('ioc_value, ioc_type, risk_score').ilike('ioc_value', like).limit(3)
         : null;
-    const alertsP = search<{ hits?: { hits?: AlertHit[] } }>('wazuh-alerts-4.x-*', {
+    // The organisation's own alerts only (lib/orgScope.ts); when ownership can't be resolved the
+    // alert source is simply missing from the results, like any other unavailable source.
+    const alertsP = orgScope(orgId).then((scope) => search<{ hits?: { hits?: AlertHit[] } }>('wazuh-alerts-4.x-*', {
         size: 3,
         sort: [{ timestamp: { order: 'desc' } }],
         query: {
@@ -62,10 +65,11 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
                     { multi_match: { query: raw, fields: ['rule.description', 'agent.name', 'data.srcip'], lenient: true } },
                     { range: { timestamp: { gte: 'now-7d' } } },
                 ],
+                filter: [alertScopeFilter(scope)],
             },
         },
         _source: ['rule.description', 'rule.level', 'agent.name', 'timestamp'],
-    });
+    }));
 
     const [casesR, advR, iocR, alertR] = await Promise.allSettled([casesP, advisoriesP, iocsP, alertsP]);
     const results: SearchResult[] = [];

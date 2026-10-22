@@ -1,4 +1,4 @@
-import { search } from './wazuh-indexer';
+import { search, replyProblem } from './wazuh-indexer';
 
 export interface WazuhAgent {
     id: string;
@@ -26,25 +26,34 @@ interface SearchResponse {
     aggregations?: { agents?: { buckets?: { key: string; latest?: { hits?: { hits?: MonitoringHit[] } } }[] } };
 }
 
+const MONITORING_INDEX = 'wazuh-monitoring-*';
+
 /**
  * Wazuh alert/vulnerability documents only carry agent.name / agent.id — there is no
  * agent.groups field to filter on directly. Group membership only exists in the
  * wazuh-monitoring-* index, so filtering "by group" is a two-step process: resolve the
  * group's agent names here first, then filter other indices by those names.
  *
- * Agent id "000" is the Wazuh manager itself (novrsoc-wazuh) and never appears in
- * wazuh-monitoring (it doesn't check in to itself). It always belongs to "default".
+ * Agent id "000" (the manager) does not check in to itself, so it is not in wazuh-monitoring and
+ * is not listed here. It used to be added with an invented status, OS and keep-alive; it is not
+ * any organisation's endpoint, and syslog it receives is scoped by sender (lib/orgScope.ts).
+ *
+ * `strict`: an indexer error reply throws instead of reading as "no agents".
  */
-export async function getAgentsForGroup(group: string | null): Promise<WazuhAgent[]> {
-    const res = await search<SearchResponse>('wazuh-monitoring-*', {
+export async function getAgentsForGroup(group: string | null, opts: { strict?: boolean } = {}): Promise<WazuhAgent[]> {
+    const res = await search<SearchResponse>(MONITORING_INDEX, {
         size: 0,
         aggs: {
             agents: {
-                terms: { field: 'id', size: 200 },
+                terms: { field: 'id', size: 5000 },
                 aggs: { latest: { top_hits: { size: 1, sort: [{ timestamp: { order: 'desc' } }] } } },
             },
         },
     });
+    if (opts.strict) {
+        const problem = replyProblem(res, MONITORING_INDEX);
+        if (problem) throw new Error(problem);
+    }
 
     const buckets = res?.aggregations?.agents?.buckets ?? [];
     let agents: WazuhAgent[] = buckets
@@ -62,13 +71,6 @@ export async function getAgentsForGroup(group: string | null): Promise<WazuhAgen
 
     if (group) {
         agents = agents.filter((a) => a.group.includes(group));
-    }
-
-    if (!group || group === 'default') {
-        agents.unshift({
-            id: '000', name: 'novrsoc-wazuh', status: 'active', os: 'Ubuntu 22.04 LTS',
-            ip: null, lastKeepAlive: new Date().toISOString(), group: ['default'],
-        });
     }
     return agents;
 }

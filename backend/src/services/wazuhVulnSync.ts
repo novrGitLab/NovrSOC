@@ -106,8 +106,8 @@ export async function syncWazuhVulnerabilities(deps: { search?: SearchFn; agents
         };
         for (const a of mine) {
             const value = a.name.toLowerCase();
-            // lib/wazuh-group.ts adds the manager (agent 000) with a placeholder OS and keep-alive:
-            // those two are not reported by Wazuh, so they are stored as unknown.
+            // lib/wazuh-group.ts no longer lists the manager (agent 000); when a listing still
+            // supplies it, its OS and keep-alive are not reported by Wazuh and stay unknown.
             const synthetic = a.id === '000';
             const keepalive = !synthetic && a.lastKeepAlive && !Number.isNaN(Date.parse(a.lastKeepAlive)) ? new Date(a.lastKeepAlive).toISOString() : null;
             const ips = a.ip ? [a.ip] : [];
