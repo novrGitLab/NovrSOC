@@ -54,6 +54,9 @@ export const FindingObservation = z.object({
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']),
     cve_ids: z.array(z.string()).max(50).default([]),
     cvss: z.number().min(0).max(10).nullable().optional(),
+    // P22: as the scanner reported them (worker 1.8.1, OpenVAS); kept with the evidence.
+    cvss_version: z.string().trim().max(10).nullable().optional(),
+    cvss_vector: z.string().trim().max(200).nullable().optional(),
     description: z.string().max(8000).nullable().optional(),
     remediation: z.string().max(8000).nullable().optional(),
     references: z.array(z.string().max(1000)).max(50).default([]),
@@ -175,19 +178,29 @@ export async function ingestFindings(job: { id: string; org_id: string }, raw: u
             const severity = SEV_RANK[o.severity] > SEV_RANK[existing.scanner_severity as Severity] ? o.severity : existing.scanner_severity;
             // A scanner check now confirms what a passive source only claimed.
             const confirms = existing.evidence_class === 'version_match' || existing.evidence_class === 'intelligence';
+            // What the first detection did not report is filled in from a later one; reported values are never replaced.
+            const fills = {
+                ...(existing.scanner_cvss === null && typeof o.cvss === 'number' ? { scanner_cvss: o.cvss } : {}),
+                ...(!existing.description && o.description ? { description: o.description } : {}),
+                ...(!existing.remediation && o.remediation ? { remediation: o.remediation } : {}),
+                ...(!(existing.references_urls ?? []).length && o.references.length ? { references_urls: o.references.filter((u) => /^https?:\/\//.test(u)).slice(0, 25) } : {}),
+            };
             await supabase.from('vms_findings').update({
+                ...fills,
                 last_seen: now, last_job_id: job.id, detected_by: [...new Set([...(existing.detected_by ?? []), o.scanner])], scanner_severity: severity,
                 cve_ids: [...new Set([...(existing.cve_ids ?? []), ...cves])].sort(), updated_at: now,
                 ...(reopen ? { status: 'reopened', verified_at: null, closed_at: null } : {}),
                 ...(confirms ? { evidence_class: 'scanner_check', source_class: 'active_scan' } : {}),
             }).eq('id', findingId);
             if (reopen) { out.reopened++; await event(job.org_id, findingId, `scanner:${o.scanner}`, 'reopened', existing.status, 'reopened', 'Detected again after being marked fixed'); }
-            if (confirms) {
-                await event(job.org_id, findingId, `scanner:${o.scanner}`, 'evidence', existing.evidence_class, 'scanner_check', `Confirmed by ${o.scanner} (${o.rule_id})`);
-                await recomputeRisk({ ids: [findingId] });
-            }
+            if (confirms) await event(job.org_id, findingId, `scanner:${o.scanner}`, 'evidence', existing.evidence_class, 'scanner_check', `Confirmed by ${o.scanner} (${o.rule_id})`);
+            // New evidence can change the risk: a CVE or a CVSS score now known, a higher severity.
+            const newCves = cves.some((c) => !(existing.cve_ids ?? []).includes(c));
+            if (confirms || 'scanner_cvss' in fills || newCves || severity !== existing.scanner_severity) await recomputeRisk({ ids: [findingId] });
         }
-        await supabase.from('vms_finding_evidence').insert({ org_id: job.org_id, finding_id: findingId, source: o.scanner, job_id: job.id, observed_at: now, matched_at: o.matched_at ?? null, evidence: capEvidence(o.evidence) });
+        // One evidence row per detection: the finding's history across scans.
+        const ev = o.cvss_version || o.cvss_vector ? { ...(typeof o.evidence === 'object' && o.evidence ? o.evidence as Record<string, unknown> : {}), cvss: o.cvss ?? null, cvss_version: o.cvss_version ?? null, cvss_vector: o.cvss_vector ?? null } : o.evidence;
+        await supabase.from('vms_finding_evidence').insert({ org_id: job.org_id, finding_id: findingId, source: o.scanner, job_id: job.id, observed_at: now, matched_at: o.matched_at ?? null, evidence: capEvidence(ev) });
         out.accepted++;
     }
     if (reasons.size) {

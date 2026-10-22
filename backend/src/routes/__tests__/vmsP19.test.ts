@@ -208,6 +208,9 @@ test('engines: available only from a connected worker running the kind with its 
 });
 
 test('operations: queue and 7-day outcomes per kind (ran-but-unreachable is inconclusive, not success); tenant-scoped; workers for staff only', async () => {
+    // The OpenVAS engine is "available" only with the server switch on (lib/openvasPolicy.ts, P22).
+    process.env.VMS_OPENVAS_ENABLED = 'true';
+    after(() => { delete process.env.VMS_OPENVAS_ENABLED; });
     const job = (org: string, kind: string, status: string, b: Row = {}) => ({ id: randomUUID(), org_id: org, scope_id: S_PUB, kind, status, targets: ['8.8.8.1'], options: {}, requested_at: ago(2), requested_by: 'x', attempts: 1, progress: {}, cancel_requested: false, ...b });
     db.tables.vms_scan_jobs.push(
         job(A, 'ports', 'succeeded', { started_at: ago(2), finished_at: ago(1.9), summary: { outcome: 'assessed' } }),
