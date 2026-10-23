@@ -68,7 +68,7 @@ beforeEach(() => {
 test('unmapped and ambiguous alerts are quarantined with their stored fields, not dropped', async () => {
     const r = await ingest([alert(['acme']), alert(['default']), alert([]), alert(['acme', 'beta'])]);
     assert.equal(r.status, 200);
-    assert.deepEqual(r.data, { accepted: 1, duplicates: 0, rejected: 3, quarantined: 3 });
+    assert.deepEqual(r.data, { accepted: 1, duplicates: 0, rejected: 3, quarantined: 3, invalid: 0 });
     assert.equal(db.tables.alerts.length, 1);
     assert.deepEqual(db.tables.alert_quarantine.map((q) => q.reason).sort(), ['ambiguous_org', 'unmapped_group', 'unmapped_group']);
     const q = db.tables.alert_quarantine.find((x) => (x.wazuh_groups as string[])[0] === 'default')!;
@@ -78,6 +78,87 @@ test('unmapped and ambiguous alerts are quarantined with their stored fields, no
     assert.equal(stored.severity, 'high');
     assert.deepEqual(stored.raw, { full_log: `Failed password ${seq - 2}` });
     assert.equal(db.tables.alert_ingest_rejects.length, 3, 'rejects are still recorded');
+});
+
+// ── Acknowledgement: never 2xx unless every alert is stored, quarantined, or refused as invalid ──
+
+test('quarantine unavailable: the batch is refused (503) and nothing is acknowledged as kept', async () => {
+    const batch = [alert(['acme']), alert(['default']), alert(['acme', 'beta'])];
+    const saved = db.tables.alert_quarantine;
+    (db.tables as Record<string, unknown>).alert_quarantine = null; // table unreachable
+    try {
+        const r = await ingest(batch);
+        assert.equal(r.status, 503, 'a 200 would let the forwarder move past alerts kept nowhere');
+        assert.match(r.data.error, /quarantine unavailable/i);
+        assert.equal(r.data.accepted, undefined, 'no counts are reported for a refused batch');
+        assert.equal(db.tables.alert_ingest_rejects.length, 0, 'reasons are recorded only once the alerts are kept');
+    } finally {
+        db.tables.alert_quarantine = saved;
+    }
+});
+
+test('quarantine write error (e.g. a column the table lacks): 503, not a silent drop', async () => {
+    db.missingColumns.alert_quarantine = ['alert'];
+    try {
+        const r = await ingest([alert(['default'])]);
+        assert.equal(r.status, 503);
+        assert.equal(db.tables.alert_quarantine.length, 0);
+    } finally {
+        db.missingColumns.alert_quarantine = [];
+    }
+});
+
+test('retry after a refused batch: everything is kept once, with no duplicate alert or quarantine row', async () => {
+    const batch = [alert(['acme']), alert(['default']), alert(['acme', 'beta'])];
+    const saved = db.tables.alert_quarantine;
+    (db.tables as Record<string, unknown>).alert_quarantine = null;
+    try {
+        assert.equal((await ingest(batch)).status, 503);
+    } finally {
+        db.tables.alert_quarantine = saved;
+    }
+    assert.equal(db.tables.alerts.length, 1, 'the mapped alert was stored before the refusal');
+    const retry = await ingest(batch); // the forwarder resends the same batch from its checkpoint
+    assert.equal(retry.status, 200);
+    assert.deepEqual(retry.data, { accepted: 0, duplicates: 1, rejected: 2, quarantined: 2, invalid: 0 });
+    assert.equal(db.tables.alerts.length, 1);
+    assert.equal(db.tables.alert_quarantine.length, 2);
+    const again = await ingest(batch); // and once more (e.g. the late sweep)
+    assert.equal(again.status, 200);
+    assert.equal(db.tables.alerts.length, 1);
+    assert.equal(db.tables.alert_quarantine.length, 2, 'quarantine rows are keyed by alert id: no duplicates');
+});
+
+test('mixed batch: stored, quarantined and invalid alerts are each counted and kept where they belong', async () => {
+    const invalid = { ...alert(['acme']), rule: { id: '1', level: 99 } }; // level out of range
+    const r = await ingest([alert(['acme']), alert(['beta']), alert(['default']), alert([]), alert(['acme', 'beta']), invalid]);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.data, { accepted: 2, duplicates: 0, rejected: 4, quarantined: 3, invalid: 1 });
+    assert.deepEqual(db.tables.alerts.map((a) => a.org_id).sort(), [A, B]);
+    assert.deepEqual(db.tables.alert_quarantine.map((q) => q.reason).sort(), ['ambiguous_org', 'unmapped_group', 'unmapped_group']);
+    assert.deepEqual(db.tables.alert_ingest_rejects.map((x) => String(x.reason)).sort(), ['ambiguous_org', 'invalid: rule.level', 'unmapped_group', 'unmapped_group']);
+});
+
+test('failing to record reject reasons (no payload) does not fail an otherwise kept batch', async () => {
+    const saved = db.tables.alert_ingest_rejects;
+    (db.tables as Record<string, unknown>).alert_ingest_rejects = null;
+    try {
+        const r = await ingest([alert(['default'])]);
+        assert.equal(r.status, 200);
+        assert.equal(r.data.quarantined, 1);
+        assert.equal(db.tables.alert_quarantine.length, 1, 'the alert itself is kept');
+    } finally {
+        db.tables.alert_ingest_rejects = saved;
+    }
+});
+
+test('alert store write failure: 502, the forwarder resends', async () => {
+    db.missingColumns.alerts = ['raw'];
+    try {
+        assert.equal((await ingest([alert(['acme'])])).status, 502);
+    } finally {
+        db.missingColumns.alerts = [];
+    }
 });
 
 test('a retried batch overwrites, never duplicates, a quarantined alert', async () => {

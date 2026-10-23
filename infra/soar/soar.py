@@ -466,11 +466,12 @@ def process_alert(alert: dict):
 # The integratord path above only ever sees one alert at a time and keeps no state, so anything
 # missed while it was down would be lost. The forwarder instead reads alerts from the Wazuh
 # Indexer, resolves each agent's groups through the Wazuh API, and POSTs batches to
-# NOVRSOC_BACKEND/api/ingest/alerts. It persists a cursor (the timestamp of the last alert the
-# backend accepted) so a restart or an outage resumes where it stopped and missed alerts are
-# replayed; on first run it backfills SOAR_BACKFILL_HOURS. The backend de-duplicates on the Wazuh
-# alert id, so resending is harmless — each cycle re-reads a short overlap window to catch alerts
-# the indexer stored late.
+# NOVRSOC_BACKEND/api/ingest/alerts. It persists a checkpoint — the (timestamp, alert id) sort
+# position of the last alert the backend acknowledged — so a restart or an outage resumes exactly
+# where it stopped, and no burst of alerts can stall it (forward_once). On first run it backfills
+# SOAR_BACKFILL_HOURS. Late-indexed alerts are caught by reading only settled alerts
+# (SOAR_FORWARD_SETTLE_SECONDS) and by a bounded periodic sweep of the overlap window; the backend
+# de-duplicates on the Wazuh alert id, so what that re-sends is harmless.
 #
 # It shares no code path with the response actions: a forwarding failure can't block a response
 # and a response failure can't block forwarding. ALERT_INGEST_TOKEN is sent only in the
@@ -493,11 +494,19 @@ def _int_env(name: str, default: int, lo: int, hi: int) -> int:
 BACKFILL_HOURS = _int_env('SOAR_BACKFILL_HOURS', 24, 0, 24 * 30)
 FORWARD_INTERVAL = _int_env('SOAR_FORWARD_INTERVAL', 30, 5, 3600)          # seconds between cycles
 FORWARD_BATCH = _int_env('SOAR_FORWARD_BATCH', 100, 1, 100)                # the backend's batch cap
-FORWARD_OVERLAP = _int_env('SOAR_FORWARD_OVERLAP_SECONDS', 120, 0, 3600)   # re-read window for late-indexed alerts
+FORWARD_OVERLAP = _int_env('SOAR_FORWARD_OVERLAP_SECONDS', 120, 0, 3600)   # late-sweep window behind the checkpoint
+# Alerts are read only once they are at least this old, so ones the indexer stores a little late are
+# still read in order by the main pass.
+FORWARD_SETTLE = _int_env('SOAR_FORWARD_SETTLE_SECONDS', 60, 0, 3600)
+FORWARD_LATE_EVERY = _int_env('SOAR_FORWARD_LATE_EVERY', 10, 0, 10_000)     # late sweep every N cycles; 0 = never
+FORWARD_LATE_MAX_PAGES = _int_env('SOAR_FORWARD_LATE_MAX_PAGES', 5, 1, 50)
 FORWARD_MIN_LEVEL = _int_env('SOAR_FORWARD_MIN_LEVEL', 0, 0, 16)           # 0 = everything the indexer holds
 MAX_PAGES_PER_CYCLE = 50
 GROUP_CACHE_SECONDS = 300
 RETRY_DELAYS = (2, 4, 8, 16, 32)
+# Deterministic total order: timestamp, then Wazuh's own alert id (unique per manager). The checkpoint
+# is a position in this order, so equal timestamps never stall or skip.
+SORT = [{'timestamp': {'order': 'asc'}}, {'id': {'order': 'asc', 'unmapped_type': 'keyword', 'missing': '_last'}}]
 
 
 def parse_ts(ts: str) -> Optional[datetime]:
@@ -514,24 +523,77 @@ def parse_ts(ts: str) -> Optional[datetime]:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def load_cursor() -> Optional[datetime]:
+# ── Checkpoint ───────────────────────────────────────────────────────────────────────────────
+# The cursor file holds the position of the last alert the backend acknowledged:
+#
+#   {"last_forwarded_timestamp": "<ISO>",          # as before; still written, still read
+#    "search_after": [<timestamp ms>, "<alert id>"], # version 2: the exact Indexer sort position
+#    "version": 2, "saved_at": "<ISO>"}
+#
+# Reading resumes strictly after `search_after` in the deterministic (timestamp, id) order, so a
+# cycle always moves forward whatever the volume. A version-1 file (timestamp only) resumes once
+# from timestamp - overlap, as before; the first acknowledged page writes version 2.
+
+def _valid_sort(value) -> Optional[list]:
+    """[timestamp ms, alert id] as the Indexer returns it for SORT, else None."""
+    if not isinstance(value, list) or len(value) != 2:
+        return None
+    ms, alert_id = value
+    if isinstance(ms, bool) or not isinstance(ms, (int, float)) or not isinstance(alert_id, str) or not alert_id:
+        return None
+    return [int(ms), alert_id]
+
+
+def _ms_to_dt(ms: int) -> datetime:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+
+class Checkpoint:
+    def __init__(self, ts: datetime, sort: Optional[list] = None):
+        self.ts, self.sort = ts, sort
+
+
+def load_checkpoint() -> Optional[Checkpoint]:
     try:
         with open(CURSOR_FILE, encoding='utf-8') as f:
-            return parse_ts(json.load(f).get('last_forwarded_timestamp', ''))
+            data = json.load(f)
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as e:
         log.error(f'Forwarder: cursor file unreadable ({e}) — treating as first run')
         return None
+    if not isinstance(data, dict):
+        log.error('Forwarder: cursor file is not an object — treating as first run')
+        return None
+    sort = _valid_sort(data.get('search_after'))
+    ts = _ms_to_dt(sort[0]) if sort else parse_ts(str(data.get('last_forwarded_timestamp') or ''))
+    if ts is None:
+        log.error('Forwarder: cursor file has no usable position — treating as first run')
+        return None
+    return Checkpoint(ts, sort)
 
 
-def save_cursor(ts: datetime):
+def save_checkpoint(cp: Checkpoint):
     """Atomic write: a crash mid-write must not leave a corrupt cursor."""
     os.makedirs(os.path.dirname(CURSOR_FILE) or '.', exist_ok=True)
     tmp = f'{CURSOR_FILE}.tmp'
+    body: dict = {'last_forwarded_timestamp': cp.ts.isoformat(), 'saved_at': now_iso()}
+    if cp.sort:
+        body.update({'search_after': cp.sort, 'version': 2})
     with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump({'last_forwarded_timestamp': ts.isoformat(), 'saved_at': now_iso()}, f)
+        json.dump(body, f)
     os.replace(tmp, CURSOR_FILE)
+
+
+def load_cursor() -> Optional[datetime]:
+    """The checkpoint's timestamp (kept for callers and tooling that read only the time)."""
+    cp = load_checkpoint()
+    return cp.ts if cp else None
+
+
+def save_cursor(ts: datetime):
+    """A timestamp-only (version 1) checkpoint, e.g. to replay from a chosen time."""
+    save_checkpoint(Checkpoint(ts))
 
 
 class AgentGroups:
@@ -572,12 +634,15 @@ class AgentGroups:
         return self.groups.get(str(agent_id), [])
 
 
-def search_alerts(since: datetime, search_after: Optional[list]) -> Optional[list]:
-    """One page of alerts at or after `since`, oldest first. None on failure."""
-    query: dict = {'bool': {'filter': [{'range': {'timestamp': {'gte': since.isoformat()}}}]}}
+def search_alerts(since: datetime, search_after: Optional[list], until: Optional[datetime] = None) -> Optional[list]:
+    """One page of alerts in [since, until], in SORT order after `search_after`. None on failure."""
+    rng: dict = {'gte': since.isoformat()}
+    if until is not None:
+        rng['lte'] = until.isoformat()
+    query: dict = {'bool': {'filter': [{'range': {'timestamp': rng}}]}}
     if FORWARD_MIN_LEVEL > 0:
         query['bool']['filter'].append({'range': {'rule.level': {'gte': FORWARD_MIN_LEVEL}}})
-    body: dict = {'size': FORWARD_BATCH, 'sort': [{'timestamp': 'asc'}, {'id': 'asc'}], 'query': query}
+    body: dict = {'size': FORWARD_BATCH, 'sort': SORT, 'query': query}
     if search_after:
         body['search_after'] = search_after
     try:
@@ -589,7 +654,17 @@ def search_alerts(since: datetime, search_after: Optional[list]) -> Optional[lis
     if not resp.ok:
         log.error(f'Forwarder: indexer search failed: HTTP {resp.status_code}')
         return None
-    return (resp.json().get('hits') or {}).get('hits') or []
+    try:
+        data = resp.json()
+    except ValueError:
+        log.error('Forwarder: indexer answered with something other than JSON')
+        return None
+    shards = data.get('_shards') or {}
+    if data.get('error') is not None or (shards.get('failed') or 0) > 0:
+        # A partial answer would let the checkpoint jump over alerts on the shards that failed.
+        log.error(f"Forwarder: indexer search incomplete ({shards.get('failed') or 0} shard(s) failed) — not advancing")
+        return None
+    return (data.get('hits') or {}).get('hits') or []
 
 
 def to_ingest(alert: dict, groups: AgentGroups) -> dict:
@@ -634,7 +709,12 @@ def post_batch(alerts: list) -> bool:
                 r = resp.json()
             except ValueError:
                 r = {}
-            log.info(f"Forwarder: {len(alerts)} sent — accepted {r.get('accepted')}, duplicates {r.get('duplicates')}, rejected {r.get('rejected')}")
+            log.info(f"Forwarder: {len(alerts)} sent — accepted {r.get('accepted')}, duplicates {r.get('duplicates')}, "
+                     f"rejected {r.get('rejected')} (quarantined {r.get('quarantined')}, invalid {r.get('invalid')})")
+            if r.get('invalid'):
+                # Refused by validation and not recoverable from the backend: their reasons are in
+                # alert_ingest_rejects; replay this time range once the cause is fixed.
+                log.warning(f"Forwarder: {r.get('invalid')} alert(s) failed validation and were not stored — see alert_ingest_rejects")
             return True
         if resp.status_code == 429 or resp.status_code >= 500:
             log.warning(f'Forwarder: ingest returned HTTP {resp.status_code} (attempt {attempt + 1})')
@@ -647,31 +727,69 @@ def post_batch(alerts: list) -> bool:
     return False
 
 
-def forward_once(groups: AgentGroups) -> int:
-    """One cycle. Returns the number of alerts the backend took."""
-    cursor = load_cursor()
-    if cursor is None:
-        since = datetime.now(timezone.utc) - timedelta(hours=BACKFILL_HOURS)
+def forward_once(groups: AgentGroups, cycle: int = 0) -> int:
+    """One cycle. Returns the number of alerts the backend took.
+
+    Main pass: alerts at least FORWARD_SETTLE seconds old, strictly after the checkpoint in SORT
+    order, at most MAX_PAGES_PER_CYCLE pages. The checkpoint moves to the last alert of each page
+    the backend acknowledged — never past a page it did not — so the next cycle (or a restart)
+    continues exactly there, however many alerts share one timestamp or one overlap window.
+
+    Every FORWARD_LATE_EVERY cycles, a late sweep re-reads the FORWARD_OVERLAP seconds behind the
+    checkpoint (at most FORWARD_LATE_MAX_PAGES pages) for alerts the indexer stored after the main
+    pass had passed their time. It never moves the checkpoint, so it cannot hold forwarding back;
+    what it re-sends the backend counts as duplicates."""
+    cp = load_checkpoint()
+    now = datetime.now(timezone.utc)
+    until = now - timedelta(seconds=FORWARD_SETTLE)
+    if cp is None:
+        since, after = now - timedelta(hours=BACKFILL_HOURS), None
         log.info(f'Forwarder: no cursor — backfilling from {since.isoformat()} ({BACKFILL_HOURS}h)')
+    elif cp.sort is None:
+        # Version-1 cursor: the time only. Re-read the overlap once; the first acknowledged page
+        # stores the exact sort position and every later cycle resumes from that.
+        since, after = cp.ts - timedelta(seconds=FORWARD_OVERLAP), None
     else:
-        since = cursor - timedelta(seconds=FORWARD_OVERLAP)
-    sent, search_after = 0, None
+        since, after = cp.ts, cp.sort
+
+    sent = 0
     for _ in range(MAX_PAGES_PER_CYCLE):
-        hits = search_alerts(since, search_after)
+        hits = search_alerts(since, after, until)
+        if hits is None or not hits:
+            break
+        position = next((s for s in (_valid_sort(h.get('sort')) for h in reversed(hits)) if s), None)
+        if position is None:
+            log.error('Forwarder: indexer returned a page without sort values — not advancing')
+            break
+        if not post_batch([to_ingest(h.get('_source') or {}, groups) for h in hits]):
+            break  # nothing past the last acknowledged page is skipped: the next cycle replays it
+        sent += len(hits)
+        cp = Checkpoint(_ms_to_dt(position[0]), position)
+        save_checkpoint(cp)
+        after = position
+        if len(hits) < FORWARD_BATCH:
+            break
+
+    if cp is not None and cp.sort and FORWARD_LATE_EVERY and cycle % FORWARD_LATE_EVERY == 0:
+        late_sweep(cp, groups)
+    return sent
+
+
+def late_sweep(cp: Checkpoint, groups: AgentGroups) -> int:
+    """Re-send the FORWARD_OVERLAP seconds up to the checkpoint (bounded; never moves it)."""
+    since, after, sent = cp.ts - timedelta(seconds=FORWARD_OVERLAP), None, 0
+    for _ in range(FORWARD_LATE_MAX_PAGES):
+        hits = search_alerts(since, after, cp.ts)
         if not hits:
-            break
-        batch = [to_ingest(h.get('_source') or {}, groups) for h in hits]
-        if not post_batch(batch):
-            break
-        sent += len(batch)
-        stamps = [t for t in (parse_ts((h.get('_source') or {}).get('timestamp', '')) for h in hits) if t]
-        newest = max(stamps) if stamps else None
-        if newest and (cursor is None or newest > cursor):
-            cursor = newest
-            save_cursor(cursor)
-        search_after = hits[-1].get('sort')
-        if len(hits) < FORWARD_BATCH or not search_after:
-            break
+            return sent
+        if not post_batch([to_ingest(h.get('_source') or {}, groups) for h in hits]):
+            return sent
+        sent += len(hits)
+        after = _valid_sort(hits[-1].get('sort'))
+        if len(hits) < FORWARD_BATCH or after is None:
+            return sent
+    log.warning(f'Forwarder: late sweep stopped after {FORWARD_LATE_MAX_PAGES} page(s); the overlap window holds more '
+                f'alerts than that, so a late-indexed alert in its newer part may be missed (raise SOAR_FORWARD_SETTLE_SECONDS)')
     return sent
 
 
@@ -683,9 +801,11 @@ def forward_loop():
         sys.exit(1)
     log.info(f'Forwarder: started — {INDEXER_URL}/{ALERTS_INDEX} -> {BACKEND_URL}/api/ingest/alerts every {FORWARD_INTERVAL}s, cursor {CURSOR_FILE}')
     groups = AgentGroups()
+    cycle = 0
     while True:
+        cycle += 1
         try:
-            forward_once(groups)
+            forward_once(groups, cycle)
         except Exception as e:  # noqa: BLE001 — one bad cycle must not stop the service
             log.exception(f'Forwarder cycle failed: {e}')
         time.sleep(FORWARD_INTERVAL)
