@@ -10,6 +10,7 @@
 
 import { getSupabase } from './geoEnrichment';
 import { isMISPConfigured, mispEventSearch } from './misp';
+import { mispWindowStart, mispPages, lastFetchMeta, type FetchCtx } from './mispSync';
 import { tlpFromTags, type Tlp } from './tiPolicy';
 
 export interface ReportRecord {
@@ -91,18 +92,20 @@ export function fromMispEvents(json: unknown, excludeEvent: string | null): Repo
         });
 }
 
-export const REPORT_FEEDS: Record<string, { fetch: () => Promise<ReportRecord[]> }> = {
-    misp_events: { fetch: async () => {
+export const REPORT_FEEDS: Record<string, { fetch: (ctx?: FetchCtx) => Promise<ReportRecord[]> }> = {
+    // Incremental (phase P26): events changed since the last successful sync (MISP `timestamp`),
+    // paged; the first run (or a manager's backfill) reads MISP_BACKFILL_DAYS.
+    misp_events: { fetch: async (ctx?: FetchCtx) => {
         if (!isMISPConfigured()) throw new Error('MISP is not configured (MISP_URL, MISP_API_KEY)');
         const exclude = (process.env.MISP_NIGERIA_EVENT_ID || '1').trim() || null;
-        const out: ReportRecord[] = [];
-        for (let page = 1; page <= 5; page++) {
-            const json = await mispEventSearch({ returnFormat: 'json', last: '30d', metadata: true, limit: 200, page });
-            const batch = fromMispEvents(json, exclude);
-            out.push(...batch);
-            if (((json as { response?: unknown[] }).response ?? []).length < 200) break;
-        }
-        return out;
+        const w = mispWindowStart(ctx);
+        const r = await mispPages((b) => mispEventSearch(b), { returnFormat: 'json', timestamp: String(w.from), metadata: true }, (json) => {
+            const rows = (json as { response?: unknown })?.response;
+            if (!Array.isArray(rows)) throw new Error('MISP: unexpected response');
+            return rows;
+        });
+        lastFetchMeta.misp_events = { mode: w.mode, window_from: new Date(w.from * 1000).toISOString(), pages: r.pages, truncated: r.truncated };
+        return fromMispEvents({ response: r.items }, exclude);
     } },
 };
 

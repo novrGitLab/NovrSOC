@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { getSupabase } from './geoEnrichment';
 import { redactValue } from '../lib/redact';
+import { tiContextFor, TI_CONTEXT_RULE } from './tiAiContext';
 import type { Permission } from '../lib/permissions';
 import type { SourceRef } from './ai';
 
@@ -66,6 +67,9 @@ async function buildAlert(org: string, id: string): Promise<BuiltContext | null>
         const { data: c } = await supabase.from('cases').select('id, case_number, title, status, severity').eq('id', a.case_id).eq('org_id', org).maybeSingle();
         if (c) { records.push({ ref: `case:${c.id}`, kind: 'case', ...c }); refs.push({ ref: `case:${c.id}`, type: 'case', id: c.id, label: c.case_number }); }
     }
+    // Stored threat intelligence this alert matched (phase P26), within the provider's marking ceiling.
+    const ti = await tiContextFor(org, [{ type: 'alert', id: a.id }]);
+    records.push(...ti.records); refs.push(...ti.refs);
     return { records, refs };
 }
 
@@ -93,12 +97,15 @@ async function buildCase(org: string, id: string): Promise<BuiltContext | null> 
     };
     add('note', notes.data); add('task', tasks.data); add('timeline', timeline.data); add('alert', alerts.data);
     add('soar_action', soar.data); add('approval', approvals.error ? null : approvals.data);
+    // Stored threat intelligence the case or its alerts matched (phase P26).
+    const ti = await tiContextFor(org, [{ type: 'case', id: c.id }, ...(alerts.data ?? []).map((a) => ({ type: 'alert' as const, id: String(a.id) }))]);
+    records.push(...ti.records); refs.push(...ti.refs);
     return { records, refs };
 }
 
 registerAiPurpose('alert_summary', {
     permission: 'alerts:read', subjectType: 'alert', build: buildAlert,
-    task: 'Explain this alert to an analyst: what happened, why it matters, how severe it really is given the evidence, what to check next, and what response to consider. Use the measured count if present; do not estimate counts.',
+    task: 'Explain this alert to an analyst: what happened, why it matters, how severe it really is given the evidence, what to check next, and what response to consider. Use the measured count if present; do not estimate counts.' + TI_CONTEXT_RULE,
     schema: z.object({
         summary: z.string(),
         what_happened: z.string(),
@@ -125,17 +132,17 @@ const CaseSummary = z.object({
 });
 registerAiPurpose('case_summary', {
     permission: 'cases:read', subjectType: 'case', build: buildCase,
-    task: 'Summarise this case for the analyst working it: what is known, what has actually been done (only what the records show, with each action\'s recorded outcome), what is still open, and evidence-based next steps.',
+    task: 'Summarise this case for the analyst working it: what is known, what has actually been done (only what the records show, with each action\'s recorded outcome), what is still open, and evidence-based next steps.' + TI_CONTEXT_RULE,
     schema: CaseSummary,
 });
 registerAiPurpose('case_handover', {
     permission: 'cases:read', subjectType: 'case', build: buildCase,
-    task: 'Write a shift-handover summary for the next analyst: current state, what was done and its recorded outcome, what is pending (including approvals waiting), and the first things to do. Only what the records show.',
+    task: 'Write a shift-handover summary for the next analyst: current state, what was done and its recorded outcome, what is pending (including approvals waiting), and the first things to do. Only what the records show.' + TI_CONTEXT_RULE,
     schema: CaseSummary,
 });
 registerAiPurpose('incident_report', {
     permission: 'cases:read', subjectType: 'case', build: buildCase,
-    task: 'Draft an incident report for this case: an executive summary for non-technical leaders, then the technical timeline, impact as far as the records show it, actions taken (only those recorded, with their outcomes), and recommendations. Say clearly what is not known.',
+    task: 'Draft an incident report for this case: an executive summary for non-technical leaders, then the technical timeline, impact as far as the records show it, actions taken (only those recorded, with their outcomes), and recommendations. Say clearly what is not known.' + TI_CONTEXT_RULE,
     schema: z.object({
         title: z.string(),
         executive_summary: z.string(),

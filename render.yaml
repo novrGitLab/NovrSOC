@@ -94,6 +94,10 @@ services:
         sync: false
       - key: MISP_WRITE_ENABLED    # NovrSOC never writes to MISP unless "true"
         value: "false"
+      - key: MISP_CF_ACCESS_CLIENT_ID      # Cloudflare Access service token, if MISP's tunnel is behind Access
+        sync: false
+      - key: MISP_CF_ACCESS_CLIENT_SECRET
+        sync: false
       - key: THREATFOX_API_KEY     # abuse.ch Auth-Key, also used for URLhaus
         sync: false
       - key: NVD_API_KEY

@@ -30,6 +30,8 @@ import { parseKev, KEV_URL, CVE_RE } from './cveIntel';
 import { isMISPConfigured, mispAttributeSearch } from './misp';
 import { tlpFromTags, type Tlp } from './tiPolicy';
 import { REPORT_FEEDS, storeReports } from './tiReports';
+import { mispWindowStart, mispPages, lastFetchMeta, type FetchCtx } from './mispSync';
+export { mispWindowStart, mispPages, lastFetchMeta, type FetchCtx };
 
 export type IndicatorType = 'ip' | 'domain' | 'url' | 'md5' | 'sha1' | 'sha256' | 'cve';
 export interface SourceRecord {
@@ -197,11 +199,25 @@ export function fromMisp(json: unknown, excludeEvent: string | null): SourceReco
         // With includeEventTags the attribute's Tag list also carries its event's tags (TLP is
         // usually set on the event).
         const tags = Array.isArray(a.Tag) ? (a.Tag as { name?: string }[]).map((t) => String(t.name ?? '').slice(0, 80)).filter(Boolean).slice(0, 30) : [];
+        // MISP attributes carry no confidence of their own; confidence-style taxonomy tags are kept
+        // as the source's labels (confidence_tags), never converted into a number.
+        const iso = (v: unknown) => (typeof v === 'string' && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null);
+        const orgc = (ev.Orgc ?? ev.Org ?? {}) as Record<string, unknown>;
         return {
-            type, value, source_ref: String(a.uuid ?? a.id ?? ''), confidence: null, first_seen: ts, last_seen: ts,
+            type, value, source_ref: String(a.uuid ?? a.id ?? ''), confidence: null,
+            first_seen: iso(a.first_seen) ?? ts, last_seen: iso(a.last_seen) ?? ts,
             tags, malware: null, threat_type: typeof a.category === 'string' ? a.category.slice(0, 60) : null,
             tlp: tlpFromTags(tags, 'amber'), distribution: mispDistribution(a, ev),
-            context: { event_id: a.event_id ?? null, event_uuid: typeof ev.uuid === 'string' ? ev.uuid : null, event_info: typeof ev.info === 'string' ? ev.info.slice(0, 200) : null, comment: typeof a.comment === 'string' ? a.comment.slice(0, 300) : null, techniques: tags.map((t) => /T\d{4}(\.\d{3})?/.exec(t)?.[0]).filter((t): t is string => !!t) },
+            context: {
+                event_id: a.event_id ?? null, event_uuid: typeof ev.uuid === 'string' ? ev.uuid : null, event_info: typeof ev.info === 'string' ? ev.info.slice(0, 200) : null,
+                comment: typeof a.comment === 'string' ? a.comment.slice(0, 300) : null, techniques: tags.map((t) => /T\d{4}(\.\d{3})?/.exec(t)?.[0]).filter((t): t is string => !!t),
+                misp_type: typeof a.type === 'string' ? a.type : null, category: typeof a.category === 'string' ? a.category : null, to_ids: a.to_ids === true || a.to_ids === '1' || a.to_ids === 1,
+                object_relation: typeof a.object_relation === 'string' ? a.object_relation : null, modified_at: ts,
+                event_org: typeof orgc.name === 'string' ? orgc.name.slice(0, 120) : null,
+                event_threat_level: ev.threat_level_id !== undefined ? ({ '1': 'high', '2': 'medium', '3': 'low', '4': 'undefined' } as Record<string, string>)[String(ev.threat_level_id)] ?? null : null,
+                event_analysis: ev.analysis !== undefined ? ({ '0': 'initial', '1': 'ongoing', '2': 'completed' } as Record<string, string>)[String(ev.analysis)] ?? null : null,
+                confidence_tags: tags.filter((t) => /^(admiralty-scale|estimative-language|misp:confidence)/i.test(t)),
+            },
         } as SourceRecord;
     });
 }
@@ -212,7 +228,13 @@ export const RETIRED_FEEDS = new Set(['opencti']);
 export const FEED_CONFIGURED: Record<string, () => boolean> = { misp: isMISPConfigured, misp_events: isMISPConfigured };
 export const feedConfigured = (id: string) => (RETIRED_FEEDS.has(id) ? false : FEED_CONFIGURED[id] ? FEED_CONFIGURED[id]() : true);
 
-export const FEEDS: Record<string, { fetch: () => Promise<SourceRecord[]> }> = {
+const mispAttributeRows = (json: unknown): unknown[] => {
+    const attrs = (json as { response?: { Attribute?: unknown } })?.response?.Attribute;
+    if (!Array.isArray(attrs)) throw new Error('MISP: unexpected response');
+    return attrs;
+};
+
+export const FEEDS: Record<string, { fetch: (ctx?: FetchCtx) => Promise<SourceRecord[]> }> = {
     threatfox: { fetch: async () => {
         const key = process.env.THREATFOX_API_KEY?.trim();
         if (!key) throw new Error('THREATFOX_API_KEY is not set (abuse.ch Auth-Key)');
@@ -237,10 +259,17 @@ export const FEEDS: Record<string, { fetch: () => Promise<SourceRecord[]> }> = {
         if (!r.ok) throw new Error(`CISA KEV: HTTP ${r.status}`);
         return fromKev(await r.json());
     } },
-    // Event tags are included so the event's TLP marking reaches each attribute.
-    misp: { fetch: async () => {
-        const json = await mispAttributeSearch({ returnFormat: 'json', to_ids: true, last: '1d', type: MISP_FEED_TYPES, limit: 5000, includeEventTags: true, includeEventUuid: true });
-        return fromMisp(json, (process.env.MISP_NIGERIA_EVENT_ID || '1').trim() || null);
+    // Incremental (phase P26): attributes changed since the last successful sync (MISP `timestamp`
+    // is the attribute's last modification), paged, deleted ones and warning-listed values left
+    // out. Event tags are included so the event's TLP marking reaches each attribute.
+    misp: { fetch: async (ctx?: FetchCtx) => {
+        const w = mispWindowStart(ctx);
+        const r = await mispPages((b) => mispAttributeSearch(b), {
+            returnFormat: 'json', to_ids: true, timestamp: String(w.from), type: MISP_FEED_TYPES, deleted: false, enforceWarninglist: true,
+            includeEventTags: true, includeEventUuid: true,
+        }, mispAttributeRows);
+        lastFetchMeta.misp = { mode: w.mode, window_from: new Date(w.from * 1000).toISOString(), pages: r.pages, truncated: r.truncated };
+        return fromMisp({ response: { Attribute: r.items } }, (process.env.MISP_NIGERIA_EVENT_ID || '1').trim() || null);
     } },
 };
 
@@ -342,27 +371,52 @@ export function exportedChange(before: StoredIndicator, after: StoredIndicator):
     return before.valid_until !== null && after.valid_until !== null && Math.abs(Date.parse(after.valid_until) - Date.parse(before.valid_until)) > DAY_MS;
 }
 
-/** Runs one feed end to end and records the outcome (ok or failed with the reason). */
-export async function runFeed(feedId: string, fetcher = FEEDS[feedId]?.fetch): Promise<{ status: 'ok' | 'failed'; counts?: RunCounts; error?: string }> {
+// Feeds running in this process: a scheduled run and a manager's "run now" never overlap.
+const runningFeeds = new Set<string>();
+export const feedRunning = (id: string) => runningFeeds.has(id);
+
+/**
+ * Runs one feed end to end and records the outcome (ok or failed with the reason). Refused while
+ * the same feed is already running here. last_success_at is the START of the successful run, so
+ * an incremental source re-reads anything changed while it ran. `opts.backfillDays` widens one
+ * MISP run (a manager's one-time backfill, at most 90 days).
+ */
+export async function runFeed(feedId: string, fetcher = FEEDS[feedId]?.fetch, opts: { backfillDays?: number | null } = {}): Promise<{ status: 'ok' | 'failed' | 'busy'; counts?: RunCounts; error?: string; meta?: Record<string, unknown> }> {
     const supabase = getSupabase();
     if (!supabase) return { status: 'failed', error: 'database not configured' };
-    const { data: feed } = await supabase.from('ti_feeds').select('id, enabled, validity_days').eq('id', feedId).maybeSingle();
-    const report = REPORT_FEEDS[feedId];
-    if (!feed || RETIRED_FEEDS.has(feedId) || (!fetcher && !report)) return { status: 'failed', error: 'unknown feed' };
-    const started = new Date().toISOString();
-    const run = await supabase.from('ti_feed_runs').insert({ feed_id: feedId, started_at: started, status: 'running' }).select('id').single();
+    if (runningFeeds.has(feedId)) return { status: 'busy', error: 'This feed is already running' };
+    runningFeeds.add(feedId);
     try {
-        const counts = report && !fetcher ? await storeReports(feedId, await report.fetch()) : await storeRecords(feedId, await fetcher!(), feed.validity_days);
-        if (feedId === 'cisa_kev') await syncKevToCveIntel();
-        const finished = new Date().toISOString();
-        await supabase.from('ti_feed_runs').update({ status: 'ok', finished_at: finished, ...counts }).eq('id', run.data?.id);
-        await supabase.from('ti_feeds').update({ last_run_at: finished, last_success_at: finished, last_error: null, last_counts: counts }).eq('id', feedId);
-        return { status: 'ok', counts };
-    } catch (err) {
-        const msg = (err instanceof Error ? err.message : String(err)).slice(0, 500);
-        await supabase.from('ti_feed_runs').update({ status: 'failed', finished_at: new Date().toISOString(), error: msg }).eq('id', run.data?.id);
-        await supabase.from('ti_feeds').update({ last_run_at: new Date().toISOString(), last_error: msg }).eq('id', feedId);
-        return { status: 'failed', error: msg };
+        const { data: feed } = await supabase.from('ti_feeds').select('id, enabled, validity_days, last_success_at').eq('id', feedId).maybeSingle();
+        const report = REPORT_FEEDS[feedId];
+        if (!feed || RETIRED_FEEDS.has(feedId) || (!fetcher && !report)) return { status: 'failed', error: 'unknown feed' };
+        const ctx: FetchCtx = { since: (feed.last_success_at as string | null) ?? null, backfillDays: opts.backfillDays ?? null };
+        const started = new Date().toISOString();
+        const run = await supabase.from('ti_feed_runs').insert({ feed_id: feedId, started_at: started, status: 'running' }).select('id').single();
+        delete lastFetchMeta[feedId];
+        try {
+            const counts = report && !fetcher ? await storeReports(feedId, await report.fetch(ctx)) : await storeRecords(feedId, await fetcher!(ctx), feed.validity_days);
+            if (feedId === 'cisa_kev') await syncKevToCveIntel();
+            const finished = new Date().toISOString();
+            const meta = lastFetchMeta[feedId];
+            await supabase.from('ti_feed_runs').update({ status: 'ok', finished_at: finished, ...counts }).eq('id', run.data?.id);
+            // A run that stopped at the page limit stored what it read, but must not advance the sync
+            // window: the next run re-reads it (idempotently) instead of skipping the remainder.
+            const truncated = meta?.truncated === true;
+            await supabase.from('ti_feeds').update({
+                last_run_at: finished, last_success_at: truncated ? (feed.last_success_at ?? null) : started,
+                last_error: truncated ? `Stopped at the page limit (MISP_MAX_PAGES) after ${String(meta?.pages)} page(s): the sync window was not advanced. Raise MISP_MAX_PAGES or run a shorter backfill.` : null,
+                last_counts: { ...counts, ...(meta ?? {}) },
+            }).eq('id', feedId);
+            return { status: 'ok', counts, ...(meta ? { meta } : {}) };
+        } catch (err) {
+            const msg = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+            await supabase.from('ti_feed_runs').update({ status: 'failed', finished_at: new Date().toISOString(), error: msg }).eq('id', run.data?.id);
+            await supabase.from('ti_feeds').update({ last_run_at: new Date().toISOString(), last_error: msg }).eq('id', feedId);
+            return { status: 'failed', error: msg };
+        }
+    } finally {
+        runningFeeds.delete(feedId);
     }
 }
 

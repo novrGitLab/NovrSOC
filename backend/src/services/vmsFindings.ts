@@ -266,10 +266,16 @@ export async function ingestPassiveClaims(org: string, jobId: string | null, ass
  * worker reports per-target outcomes (reachable_open / reachable_no_open / unreachable / no_route /
  * insufficient_evidence); a scan that reports none proves nothing about reachability.
  */
-export function verificationReach(summary: unknown, target: string): { reached: boolean; detail: string } {
+export function verificationReach(summary: unknown, target: string, jobTargets?: unknown[]): { reached: boolean; detail: string } {
     const s = (summary ?? {}) as { outcome?: unknown; target_outcomes?: Record<string, { outcome?: unknown }> };
     const per = s.target_outcomes?.[target]?.outcome ?? s.target_outcomes?.[target.toLowerCase()]?.outcome;
     if (typeof per === 'string') return { reached: per.startsWith('reachable'), detail: per.replace(/_/g, ' ') };
+    // The job-level "assessed" means every target that REPORTED an outcome answered; it says
+    // nothing about a submitted target that reported none. Trust it only when the job had a
+    // single target (phase P26) — otherwise one reached host could verify another's findings.
+    if (s.outcome === 'assessed' && jobTargets !== undefined && jobTargets.length !== 1) {
+        return { reached: false, detail: `the job reported its answering targets as reachable, but no outcome for ${target} itself` };
+    }
     if (s.outcome === 'assessed') return { reached: true, detail: 'assessed' };
     return { reached: false, detail: typeof s.outcome === 'string' ? `job outcome ${s.outcome.replace(/_/g, ' ')}` : 'the scan did not report whether it reached the target (worker before 1.6.0)' };
 }
@@ -280,7 +286,7 @@ export function verificationReach(summary: unknown, target: string): { reached: 
  * cancelled job, or one that cannot show it reached the target, verifies nothing: the finding
  * stays fixed-pending-verification and the history says why.
  */
-export async function concludeVerification(job: { id: string; org_id: string; options: unknown }, status: 'succeeded' | 'failed' | 'cancelled', summary: unknown = null): Promise<{ verified: number; still_present: number; inconclusive: number }> {
+export async function concludeVerification(job: { id: string; org_id: string; options: unknown; targets?: unknown }, status: 'succeeded' | 'failed' | 'cancelled', summary: unknown = null): Promise<{ verified: number; still_present: number; inconclusive: number }> {
     const supabase = getSupabase()!;
     const ids = ((job.options as { finding_ids?: unknown })?.finding_ids);
     const out = { verified: 0, still_present: 0, inconclusive: 0 };
@@ -295,7 +301,7 @@ export async function concludeVerification(job: { id: string; org_id: string; op
             continue;
         }
         if (f.status !== 'fixed_pending_verification') { out.inconclusive++; continue; }
-        const reach = verificationReach(summary, String(f.asset_value ?? ''));
+        const reach = verificationReach(summary, String(f.asset_value ?? ''), Array.isArray(job.targets) ? job.targets : undefined);
         if (!reach.reached) {
             out.inconclusive++;
             await event(job.org_id, f.id, 'NovrSOC verification', 'verification', null, null, `Verification scan ${job.id} detected nothing but did not show it reached ${f.asset_value} (${reach.detail}); the finding stays fixed pending verification`);

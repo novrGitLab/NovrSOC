@@ -7,7 +7,7 @@
 import { createHash } from 'crypto';
 import { z } from 'zod';
 import { getSupabase } from './geoEnrichment';
-import { registerAiPurpose, Confidence, type BuiltContext } from './aiPurposes';
+import { registerAiPurpose, Confidence, Recommendation, type BuiltContext } from './aiPurposes';
 import { providerFor, type SourceRef } from './ai';
 import { weeklyFacts } from './weeklyInsights';
 import { TLP_ORDER, isTlp, type Tlp } from './tiPolicy';
@@ -209,12 +209,13 @@ registerAiPurpose('nigeria_briefing', {
 
 registerAiPurpose('investigation_summary', {
     permission: 'intel:read', subjectType: 'indicator', group: 'ti', build: buildInvestigation,
-    task: 'Summarise the investigation of this indicator for an analyst: what each source record says (as that source\'s claim), related indicators and why they are related (only the link stated in each record), source reports that mention it, where it was seen in this organisation, analyst verdicts, and open questions. Mark every statement as platform_record, source_claim or ai_assessment. Never attribute it to a threat actor unless a source record or report names one, and then say which. Propose next investigative steps; never propose that an action has been or will be taken automatically.',
+    task: 'Summarise the investigation of this indicator for an analyst: what each source record says (as that source\'s claim), related indicators and why they are related (only the link stated in each record), source reports that mention it, where it was seen in this organisation, analyst verdicts, and open questions. Mark every statement as platform_record, source_claim or ai_assessment. Never attribute it to a threat actor unless a source record or report names one, and then say which. Propose next investigative steps, and defensive actions (block, isolate, reset, patch, hunt): every action that changes a system has requires_approval true and is for a person to decide; never propose that an action has been or will be taken automatically. Tie each step and action to the records that justify it.',
     schema: z.object({
         summary: z.string(),
         statements: z.array(Statement),
         related: z.array(z.object({ indicator: z.string(), relationship: z.string(), evidence_refs: z.array(z.string()) })),
         next_steps: z.array(z.object({ step: z.string(), rationale: z.string(), evidence_refs: z.array(z.string()) })),
+        defensive_actions: z.array(Recommendation),
         open_questions: z.array(z.string()),
         confidence: Confidence,
     }),

@@ -20,6 +20,7 @@
 //     just "unreachable". It starts returning real data the moment a working key is set.
 
 import { parsePin, pinnedFetch } from '../lib/pinnedTls';
+import { TLP_ORDER, tlpFromTags, type Tlp } from './tiPolicy';
 
 function normalizeBase(): string {
     const raw = (process.env.MISP_URL || '').trim().replace(/\/+$/, '');
@@ -94,19 +95,56 @@ export async function checkMISPBrowseRedirect(): Promise<{ ok: boolean; detail: 
 }
 
 // All MISP traffic goes through here: pinned to MISP_CA_CERT when set, normal TLS otherwise.
+// Certificate checks are never switched off. API calls never follow redirects (phase P26): behind
+// Cloudflare Access a missing or wrong service token answers with a redirect to a login page,
+// which must be reported as such rather than followed and parsed as an HTML "result".
+let fetchOverride: typeof fetch | null = null;
+/** Test hook: the fetch MISP requests use (null restores the real one). */
+export function setMispFetchForTests(f: typeof fetch | null): void { fetchOverride = f; }
 function mispRequest(url: string, init: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs: number; manualRedirect?: boolean }): Promise<Response> {
+    if (fetchOverride) return fetchOverride(url, { method: init.method, headers: init.headers, body: init.body, redirect: 'manual', signal: AbortSignal.timeout(init.timeoutMs) });
     const pin = parsePin(process.env.MISP_CA_CERT);
     if (pin && url.startsWith('https://')) return pinnedFetch(url, init, pin);
-    return fetch(url, { method: init.method, headers: init.headers, body: init.body, redirect: init.manualRedirect ? 'manual' : 'follow', signal: AbortSignal.timeout(init.timeoutMs) });
+    return fetch(url, { method: init.method, headers: init.headers, body: init.body, redirect: 'manual', signal: AbortSignal.timeout(init.timeoutMs) });
 }
 
 function mispHeaders(): Record<string, string> {
-    return {
+    const h: Record<string, string> = {
         Authorization: getKey(),
         'Content-Type': 'application/json',
         Accept: 'application/json',
     };
+    // Cloudflare Access service token, when MISP is published through an Access-protected tunnel.
+    const id = process.env.MISP_CF_ACCESS_CLIENT_ID?.trim();
+    const secret = process.env.MISP_CF_ACCESS_CLIENT_SECRET?.trim();
+    if (id && secret) { h['CF-Access-Client-Id'] = id; h['CF-Access-Client-Secret'] = secret; }
+    return h;
 }
+
+/**
+ * Why a MISP answer is unusable, in words an operator can act on, or null when it is a JSON
+ * success. Never includes headers, keys or the body (which may echo the request).
+ */
+export function mispAnswerProblem(res: Response): string | null {
+    const ct = res.headers.get('content-type') ?? '';
+    if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get('location') ?? '';
+        return /cloudflareaccess\.com|cdn-cgi\/access/i.test(loc)
+            ? `Cloudflare Access redirected to its login page (HTTP ${res.status}) — set MISP_CF_ACCESS_CLIENT_ID / MISP_CF_ACCESS_CLIENT_SECRET to a service token allowed by the Access policy`
+            : `MISP redirected (HTTP ${res.status}); check MISP_URL is the exact https base URL`;
+    }
+    if (res.status === 401 || res.status === 403) return `MISP refused the API key (HTTP ${res.status})`;
+    if (res.status === 530 || res.status === 1033) return `The Cloudflare Tunnel to MISP is down (HTTP ${res.status}) — check cloudflared on the MISP host`;
+    if (res.status >= 520 && res.status <= 527) return `Cloudflare could not reach MISP behind the tunnel (HTTP ${res.status})`;
+    if (!res.ok) return `MISP answered HTTP ${res.status}`;
+    if (!/json/i.test(ct)) return `MISP answered with ${ct.split(';')[0] || 'no content type'} instead of JSON (a tunnel or login page?)`;
+    return null;
+}
+const RETRYABLE = (status: number) => status === 429 || status === 500 || status === 502 || status === 503 || status === 504 || (status >= 520 && status <= 530);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+let retryDelayScale = 1;
+/** Test hook: shrink retry waits (1 = real seconds). */
+export function setMispRetryScaleForTests(s: number): void { retryDelayScale = s; }
 
 // Every call funnels through here so auth failures are logged once, consistently, and never
 // bubble up as exceptions into a route handler or a background job.
@@ -119,12 +157,9 @@ async function mispFetch<T>(path: string, init: RequestInit = {}, timeoutMs = 80
             headers: { ...mispHeaders(), ...(init.headers as Record<string, string> | undefined) },
             timeoutMs,
         });
-        if (res.status === 401 || res.status === 403) {
-            console.warn(`[MISP] Auth rejected on ${path} — check MISP_API_KEY belongs to an API-enabled user`);
-            return null;
-        }
-        if (!res.ok) {
-            console.warn(`[MISP] ${path} -> HTTP ${res.status}`);
+        const problem = mispAnswerProblem(res);
+        if (problem) {
+            console.warn(`[MISP] ${path}: ${problem}`);
             return null;
         }
         return (await res.json()) as T;
@@ -166,13 +201,20 @@ export interface MISPSearchResult {
     source: 'misp';
 }
 
-// Search MISP for a single IOC value (IP, domain, hash, URL).
-export async function searchMISP(value: string): Promise<MISPSearchResult | null> {
-    const data = await mispFetch<{ response?: { Attribute?: MISPSearchResult['attributes'] } }>(
+// Search MISP for a single IOC value (IP, domain, hash, URL). With `tlpCeiling`, attributes whose
+// TLP (attribute or event tag; untagged = AMBER) is above it are left out (phase P26), so a
+// client-role viewer never sees partner content marked AMBER+STRICT or RED.
+export async function searchMISP(value: string, opts: { tlpCeiling?: Tlp } = {}): Promise<MISPSearchResult | null> {
+    const data = await mispFetch<{ response?: { Attribute?: (MISPSearchResult['attributes'][number] & { Tag?: { name?: string }[] })[] } }>(
         '/attributes/restSearch',
-        { method: 'POST', body: JSON.stringify({ returnFormat: 'json', value, limit: 10 }) }
+        { method: 'POST', body: JSON.stringify({ returnFormat: 'json', value, limit: 10, includeEventTags: true }) }
     );
-    const attrs = data?.response?.Attribute ?? [];
+    let attrs = data?.response?.Attribute ?? [];
+    if (opts.tlpCeiling) {
+        const ceiling = TLP_ORDER.indexOf(opts.tlpCeiling);
+        attrs = attrs.filter((a) => TLP_ORDER.indexOf(tlpFromTags((a.Tag ?? []).map((t) => String(t.name ?? '')), 'amber')) <= ceiling);
+    }
+    attrs = attrs.map(({ Tag: _t, ...rest }) => rest);
     if (attrs.length === 0) return null;
     return {
         found: true,
@@ -298,17 +340,40 @@ export async function mispEventSearch(body: Record<string, unknown>, timeoutMs =
     return mispStrict('/events/restSearch', { method: 'POST', body: JSON.stringify(body) }, timeoutMs);
 }
 
+/** The integration is read-only: a GET, or a POST to a restSearch endpoint — nothing else is ever sent. */
+export const isReadOnlyMispCall = (method: string, path: string) => method === 'GET' || (method === 'POST' && /^\/(attributes|events)\/restSearch$/.test(path));
+
+/**
+ * Strict MISP call for ingestion and checks: throws with an operator-readable reason. Up to
+ * MISP_MAX_ATTEMPTS (default 3) attempts for network errors, timeouts, 429 and 5xx/Cloudflare
+ * errors, waiting 1 s, 3 s … (or Retry-After, at most 30 s); never retried on 401/403 or redirects.
+ */
 async function mispStrict(path: string, init: { method?: string; body?: string }, timeoutMs: number): Promise<unknown> {
     if (!isMISPConfigured()) throw new Error('MISP is not configured (MISP_URL, MISP_API_KEY)');
-    let res: Response;
-    try {
-        res = await mispRequest(`${normalizeBase()}${path}`, { method: init.method ?? 'GET', headers: mispHeaders(), body: init.body, timeoutMs });
-    } catch (err) {
-        throw new Error(`MISP could not be reached: ${err instanceof Error ? err.message : String(err)}`);
+    const method = init.method ?? 'GET';
+    if (!isReadOnlyMispCall(method, path)) throw new Error(`Refused: ${method} ${path} is not a read-only MISP call`);
+    const attempts = Math.min(Math.max(Number(process.env.MISP_MAX_ATTEMPTS) || 3, 1), 5);
+    let last = 'MISP could not be reached';
+    for (let i = 1; i <= attempts; i++) {
+        let res: Response | null = null;
+        try {
+            res = await mispRequest(`${normalizeBase()}${path}`, { method, headers: mispHeaders(), body: init.body, timeoutMs });
+        } catch (err) {
+            const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+            last = timedOut ? `MISP did not answer within ${Math.round(timeoutMs / 1000)} s` : `MISP could not be reached: ${err instanceof Error ? err.message : String(err)}`.slice(0, 300);
+        }
+        if (res) {
+            const problem = mispAnswerProblem(res);
+            if (!problem) return res.json().catch(() => { throw new Error('MISP returned malformed JSON'); });
+            last = problem;
+            if (!RETRYABLE(res.status)) throw new Error(problem);
+        }
+        if (i < attempts) {
+            const ra = Number(res?.headers.get('retry-after'));
+            await sleep(Math.min(Number.isFinite(ra) && ra > 0 ? ra * 1000 : (i === 1 ? 1000 : 3000 * (i - 1)), 30_000) * retryDelayScale);
+        }
     }
-    if (res.status === 401 || res.status === 403) throw new Error(`MISP refused the API key (HTTP ${res.status})`);
-    if (!res.ok) throw new Error(`MISP answered HTTP ${res.status}`);
-    return res.json().catch(() => { throw new Error('MISP returned no JSON'); });
+    throw new Error(attempts > 1 ? `${last} (after ${attempts} attempts)` : last);
 }
 
 export interface MISPCapabilities {

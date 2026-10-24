@@ -34,10 +34,16 @@ export function TiSources() {
     const [maxTlp, setMaxTlp] = useState<'clear' | 'green' | 'amber'>('clear');
     const now = src.at ?? 0;
     const d = src.data;
+    // What the last MISP run covered (phase P26): its window, pages, and whether it stopped at the page limit.
+    const mispMeta = (f: TiFeed) => {
+        const c = f.last_counts as (TiFeed['last_counts'] & { mode?: string; window_from?: string; pages?: number; truncated?: boolean }) | null;
+        if (!c?.window_from) return '';
+        return ` · ${c.mode === 'backfill' ? 'backfill' : 'changes'} since ${fmtWat(c.window_from)} · ${c.pages} page(s)${c.truncated ? ' · STOPPED AT THE PAGE LIMIT — window not advanced; raise MISP_MAX_PAGES' : ''}`;
+    };
 
-    async function runFeed(f: TiFeed) {
+    async function runFeed(f: TiFeed, backfillDays?: number) {
         setBusy(f.id);
-        const r = await vmsSend<{ status: string; counts?: Record<string, number>; error?: string }>('POST', `/api/ti/feeds/${f.id}/run`);
+        const r = await vmsSend<{ status: string; counts?: Record<string, number>; error?: string }>('POST', `/api/ti/feeds/${f.id}/run`, backfillDays ? { backfill_days: backfillDays } : {});
         setBusy(null);
         setMsg(r.ok ? { ok: true, text: `${FEED_NAME[f.id] ?? f.name}: ${JSON.stringify(r.data.counts ?? {})}` } : { ok: false, text: r.error });
         src.reload();
@@ -82,9 +88,10 @@ export function TiSources() {
         { key: 'name', header: 'Source', render: (f) => <span className="text-xs font-semibold">{FEED_NAME[f.id] ?? f.name}</span>, sort: (f) => f.id },
         { key: 'state', header: 'State', render: (f) => <Freshness lastSuccess={f.last_success_at} stale={f.stale} failing={f.failing} configured={f.configured} retired={f.retired} enabled={f.enabled} now={now} /> },
         { key: 'last', header: 'Last run', render: (f) => <span className="text-[11px] text-foreground-muted" title={f.last_run_at ? fmtWat(f.last_run_at) : ''}>{ago(f.last_run_at, now)}</span>, hideBelow: 'md' },
-        { key: 'counts', header: 'Last counts', render: (f) => f.last_counts ? <span className="text-[11px] text-foreground-muted tabular-nums">{f.last_counts.fetched} fetched · {f.last_counts.new} new · {f.last_counts.updated} updated · {f.last_counts.duplicates} dup · {f.last_counts.invalid} invalid</span> : <span className="text-[11px] text-foreground-muted">—</span>, hideBelow: 'lg' },
+        { key: 'counts', header: 'Last counts', render: (f) => f.last_counts ? <span className="text-[11px] text-foreground-muted tabular-nums">{f.last_counts.fetched} fetched · {f.last_counts.new} new · {f.last_counts.updated} updated · {f.last_counts.duplicates} dup · {f.last_counts.invalid} invalid{mispMeta(f)}</span> : <span className="text-[11px] text-foreground-muted">—</span>, hideBelow: 'lg' },
         { key: 'error', header: 'Last error', render: (f) => f.last_error ? <span className="text-[11px] text-red break-words">{f.last_error.slice(0, 160)}</span> : <span className="text-[11px] text-foreground-muted">none</span>, hideBelow: 'md' },
         { key: 'run', header: '', render: (f) => manager && !f.retired && f.configured !== false ? <button type="button" className={btn('ghost')} disabled={!!busy} onClick={(e) => { e.stopPropagation(); void runFeed(f); }}><Play className="w-3.5 h-3.5" /> Run now</button> : null },
+        { key: 'backfill', header: '', render: (f) => manager && (f.id === 'misp' || f.id === 'misp_events') && f.configured !== false ? <button type="button" className={btn('ghost')} disabled={!!busy} title="One run that reads the last 30 days from MISP (read-only)" onClick={(e) => { e.stopPropagation(); void runFeed(f, 30); }}>Backfill 30 d</button> : null, hideBelow: 'md' },
     ];
     const runCols: Column<TiRun>[] = [
         { key: 'feed', header: 'Source', render: (r) => <span className="text-xs">{FEED_NAME[r.feed_id] ?? r.feed_id}</span> },
