@@ -88,13 +88,27 @@ services:
       # Threat intelligence.
       - key: MISP_URL
         sync: false
-      - key: MISP_API_KEY
+      - key: MISP_API_KEY          # a read-only key (Threat Intelligence V1)
         sync: false
-      - key: OPENCTI_URL
+      - key: MISP_CA_CERT
         sync: false
-      - key: OPENCTI_TOKEN
+      - key: MISP_WRITE_ENABLED    # NovrSOC never writes to MISP unless "true"
+        value: "false"
+      - key: THREATFOX_API_KEY     # abuse.ch Auth-Key, also used for URLhaus
         sync: false
       - key: NVD_API_KEY
+        sync: false
+      # AI Intelligence Analyst on the self-hosted Ollama (behind a TLS proxy with a bearer token;
+      # docs/runbooks/ti-v1.md). Leave TI_AI_PROVIDER empty to keep the TI analyst on NVIDIA.
+      - key: TI_AI_PROVIDER
+        sync: false
+      - key: OLLAMA_URL
+        sync: false
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: OLLAMA_CA_CERT
+        sync: false
+      - key: OLLAMA_MODEL
         sync: false
       # Any other variable set on Railway (other threat-intel keys, SMTP, SpiderFoot, M365, feature
       # flags such as TI_ENABLED / VMS_INTEL_ENABLED / AUTO_CASE_ENABLED) is copied as-is from Railway.

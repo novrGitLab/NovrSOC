@@ -1,118 +1,124 @@
 'use client';
 
-// Threat Information System overview (phase P6): indicator counts, this organisation's new matches,
-// feed health with the last runs, and an AI threat briefing grounded in those records only.
+// Threat Intelligence — Overview (phase P25). Headline counts, source freshness, what is new for
+// Nigeria (source-reported targeting only), this organisation's new matches, newly listed known
+// exploited vulnerabilities, and an AI briefing grounded in those records. Every figure comes from
+// /api/ti; a figure that could not be read says so instead of showing 0.
 
-import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Crosshair, AlertTriangle, RefreshCw } from 'lucide-react';
-import { apiUrl, apiFetch } from '@/lib/api';
-import { loadJson } from '@/lib/alerts';
-import { fmtWat } from '@/lib/vms';
+import { Crosshair, Target, Fingerprint, Map as MapIcon, ShieldAlert, Radio } from 'lucide-react';
+import { PageHeader, KpiCard, EmptyState, ErrorState, Tag, btn } from '@/components/features/vms/kit';
+import { Card, SectionTitle, Skeleton } from '@/components/features/vms/ui';
+import { useVmsData } from '@/components/features/vms/data';
 import { AiPanel } from '@/components/shared/AiPanel';
-import type { TiFeed, TiRun } from '@/lib/ti';
+import { fmtWat } from '@/lib/vms';
+import { TlpBadge, Freshness, Citation } from './common';
+import { FEED_NAME, ago, type TiFeed, type TiMatch, type MapData, type TiVulnerability } from '@/lib/ti';
 
-interface Overview {
-    indicators: { active: number; new_last_24h: number; by_type: Record<string, number> };
-    matches: { new: number; total: number };
-    feeds: TiFeed[];
-}
-
-function Tile({ label, value, href }: { label: string; value: number | string; href?: string }) {
-    const body = (
-        <div className="bg-card border border-border rounded-xl p-4">
-            <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">{label}</p>
-            <p className="text-2xl font-black text-foreground mt-1">{value}</p>
-        </div>
-    );
-    return href ? <Link href={href}>{body}</Link> : body;
-}
+interface Overview { indicators: { active: number; new_last_24h: number; by_type: Record<string, number> }; matches: { new: number; total: number }; feeds: TiFeed[] }
 
 export function TiOverview() {
-    const [data, setData] = useState<Overview | null>(null);
-    const [runs, setRuns] = useState<TiRun[]>([]);
-    const [error, setError] = useState<string | null>(null);
-    const [msg, setMsg] = useState<string | null>(null);
-    const [busy, setBusy] = useState<string | null>(null);
-    const [reload, setReload] = useState(0);
-    const [period, setPeriod] = useState<'7d' | '30d'>('7d');
-
-    useEffect(() => {
-        let active = true;
-        void Promise.all([loadJson<Overview>('/api/ti/overview'), loadJson<{ runs: TiRun[] }>('/api/ti/feeds')]).then(([o, f]) => {
-            if (!active) return;
-            setData(o.ok ? o.data : null);
-            setError(o.ok ? null : o.error);
-            setRuns(f.ok ? f.data.runs.slice(0, 20) : []);
-        });
-        return () => { active = false; };
-    }, [reload]);
-
-    async function run(id: string) {
-        setBusy(id);
-        setMsg(null);
-        const r = await apiFetch(apiUrl(`/api/ti/feeds/${id}/run`), { method: 'POST' });
-        const d = await r.json().catch(() => null);
-        setBusy(null);
-        setMsg(r.ok ? `${id}: ${d.counts.new} new, ${d.counts.updated} updated, ${d.counts.invalid} invalid` : `${id}: ${d?.error ?? `HTTP ${r.status}`}`);
-        setReload((x) => x + 1);
-    }
+    const ov = useVmsData<Overview>('/api/ti/overview');
+    const map = useVmsData<MapData>('/api/ti/map?days=30');
+    const matches = useVmsData<{ matches: TiMatch[] }>('/api/ti/matches?status=new');
+    const kev = useVmsData<{ total: number; vulnerabilities: TiVulnerability[] }>('/api/ti/vulnerabilities?days=30&page_size=5');
+    const now = ov.at ?? 0;
+    const feeds = (ov.data?.feeds ?? []).filter((f) => f.id !== 'opencti');
+    const healthy = feeds.filter((f) => f.configured !== false && f.enabled && !f.failing && !f.stale).length;
+    const live = feeds.filter((f) => f.configured !== false && f.enabled).length;
 
     return (
         <div className="space-y-5">
-            <div>
-                <h1 className="text-lg font-black text-foreground flex items-center gap-2"><Crosshair className="w-5 h-5" /> Threat Information System</h1>
-                <p className="text-xs text-foreground-muted">Indicators from abuse.ch (ThreatFox, URLhaus, Feodo Tracker) and CISA KEV, matched against your alerts, assets, findings and cases. Labels and confidence are what each source reported.</p>
-            </div>
-            {error && <p role="alert" className="text-xs text-red font-semibold">{error}</p>}
-            {data && (
-                <>
-                    {data.feeds.some((f) => f.enabled && f.configured !== false && (f.failing || f.stale)) && (
-                        <div className="rounded-xl p-3 border border-amber/30 bg-amber/10 text-xs text-amber font-semibold flex items-center gap-2">
-                            <AlertTriangle className="w-4 h-4" />
-                            Coverage gap: {data.feeds.filter((f) => f.enabled && f.configured !== false && (f.failing || f.stale)).map((f) => f.name).join(', ')} {data.feeds.filter((f) => f.enabled && f.configured !== false && (f.failing || f.stale)).length === 1 ? 'is' : 'are'} failing or out of date. Matches from those sources may be missing.
-                        </div>
-                    )}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <Tile label="Active indicators" value={data.indicators.active} href="/admin/ti/indicators" />
-                        <Tile label="New in 24 h" value={data.indicators.new_last_24h} href="/admin/ti/indicators" />
-                        <Tile label="New matches in your environment" value={data.matches.new} href="/admin/ti/matches" />
-                        <Tile label="All matches" value={data.matches.total} href="/admin/ti/matches" />
-                    </div>
-                    <p className="text-[11px] text-foreground-muted">By type: {Object.entries(data.indicators.by_type).map(([t, n]) => `${t} ${n}`).join(' · ')}</p>
-                    <div className="bg-card border border-border rounded-xl p-4">
-                        <h2 className="text-sm font-black text-foreground mb-2">Feeds</h2>
-                        {msg && <p className="text-[11px] text-foreground-muted mb-2">{msg}</p>}
-                        <table className="w-full text-xs">
-                            <thead><tr className="text-left text-[10px] uppercase text-foreground-muted"><th className="py-1">Feed</th><th>Last success</th><th>Last run</th><th>State</th><th /></tr></thead>
-                            <tbody>
-                                {data.feeds.map((f) => (
-                                    <tr key={f.id} className="border-t border-border">
-                                        <td className="py-1.5 font-semibold">{f.name}</td>
-                                        <td>{fmtWat(f.last_success_at)}</td>
-                                        <td className="text-foreground-muted">{f.last_counts ? `${f.last_counts.fetched} fetched · ${f.last_counts.new} new · ${f.last_counts.invalid} invalid` : '—'}</td>
-                                        <td className={f.configured === false ? 'text-foreground-muted' : f.failing ? 'text-red' : f.stale ? 'text-amber' : 'text-green'}>{!f.enabled ? 'off' : f.configured === false ? 'not configured' : f.failing ? `failing: ${f.last_error}` : f.stale ? 'stale' : 'current'}</td>
-                                        <td className="text-right"><button disabled={busy !== null} onClick={() => void run(f.id)} className="text-[11px] font-bold text-blue disabled:opacity-50 inline-flex items-center gap-1"><RefreshCw className={`w-3 h-3 ${busy === f.id ? 'animate-spin' : ''}`} /> Run now</button></td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                        <p className="text-[10px] text-foreground-muted mt-2">Run now is for SOC managers. Feeds run every 6 hours (KEV daily); ThreatFox and URLhaus need an abuse.ch Auth-Key on the server.</p>
-                    </div>
-                    {runs.length > 0 && (
-                        <div className="bg-card border border-border rounded-xl p-4">
-                            <h2 className="text-sm font-black text-foreground mb-2">Recent runs</h2>
-                            {runs.map((r) => <p key={r.id} className="text-[11px] text-foreground-muted">{fmtWat(r.started_at)} · {r.feed_id} · <span className={r.status === 'failed' ? 'text-red' : ''}>{r.status}</span>{r.status === 'ok' ? ` · ${r.fetched} fetched, ${r.new} new, ${r.updated} updated, ${r.duplicates} duplicate, ${r.invalid} invalid` : r.error ? ` · ${r.error}` : ''}</p>)}
-                        </div>
-                    )}
-                    <div className="space-y-2">
-                        <div className="flex gap-1 bg-card border border-border rounded-lg p-1 w-fit">
-                            {(['7d', '30d'] as const).map((p) => <button key={p} onClick={() => setPeriod(p)} className={`text-[11px] font-bold px-2.5 py-1 rounded-md ${period === p ? 'bg-blue text-white' : 'text-foreground-muted'}`}>Last {p === '7d' ? '7' : '30'} days</button>)}
-                        </div>
-                        <AiPanel key={period} purpose="threat_briefing" subjectId={period} title={`AI threat briefing — last ${period === '7d' ? '7' : '30'} days`} />
-                    </div>
-                </>
+            <PageHeader title="Threat Intelligence" icon={Crosshair}
+                description="Indicators from public feeds and partner sharing, matched against this organisation's alerts, assets, findings and cases. Every claim is shown with its source."
+                actions={<Link href="/admin/ti/analyst" className={btn('primary')}>Ask the AI analyst</Link>} />
+
+            {ov.load.state === 'error' ? <ErrorState error={ov.load.error} status={ov.load.status} onRetry={ov.reload} /> : (
+                <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+                    <KpiCard label="Active indicators" value={ov.data?.indicators.active} reason="Loading" icon={Fingerprint} href="/admin/ti/indicators" hint="Indicators within their source's validity window" />
+                    <KpiCard label="New in 24 h" value={ov.data?.indicators.new_last_24h} reason="Loading" href="/admin/ti/indicators?sort=created_at" />
+                    <KpiCard label="Your new matches" value={ov.data?.matches.new} reason="Loading" icon={Target} href="/admin/ti/matches" tone={ov.data && ov.data.matches.new > 0 ? 'serious' : undefined} hint="Indicators seen in your records, not yet reviewed" />
+                    <KpiCard label="Nigeria-targeting reports, 30 d" value={map.data ? map.data.targeting.filter((t) => t.kind === 'source_report').length : map.load.state === 'error' ? null : undefined} reason={map.load.state === 'error' ? map.load.error : 'Loading'} icon={MapIcon} href="/admin/ti/map" hint="Source reports that explicitly tag Nigeria as a target" />
+                    <KpiCard label="KEV added, 30 d" value={kev.data?.total ?? (kev.load.state === 'error' ? null : undefined)} reason={kev.load.state === 'error' ? kev.load.error : 'Loading'} icon={ShieldAlert} href="/admin/ti/vulnerabilities" />
+                    <KpiCard label="Sources current" text={ov.data ? `${healthy} / ${live}` : undefined} value={ov.data ? undefined : null} reason="Loading" icon={Radio} href="/admin/ti/sources" tone={ov.data ? (healthy === live ? 'good' : healthy === 0 ? 'critical' : 'warning') : undefined} />
+                </div>
             )}
+
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                <Card className="xl:col-span-2">
+                    <SectionTitle title="Nigeria — reported this week" hint="Only source reports that tag Nigeria as a target, and Nigerian advisories" action={<Link href="/admin/ti/map" className={btn('ghost')}>Open the map</Link>} />
+                    {map.load.state === 'loading' ? <Skeleton className="h-32" /> : map.load.state === 'error' ? <ErrorState error={map.load.error} status={map.load.status} onRetry={map.reload} /> : (() => {
+                        const week = map.data!.targeting.filter((t) => t.published_at && Date.parse(t.published_at) > now - 7 * 86_400_000).slice(0, 6);
+                        return week.length ? (
+                            <ul className="divide-y divide-border">
+                                {week.map((t) => (
+                                    <li key={t.id} className="py-2.5 flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <p className="text-xs font-semibold text-foreground truncate">{t.title}</p>
+                                            <p className="text-[11px] text-foreground-muted mt-0.5">{t.kind === 'advisory' ? 'Advisory' : 'Source report'} · {t.source}{t.actors.length ? ` · actor named by the source: ${t.actors.join(', ')}` : ''}</p>
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0"><TlpBadge tlp={t.tlp} /><span className="text-[11px] text-foreground-muted" title={t.published_at ? fmtWat(t.published_at) : ''}>{ago(t.published_at, now)}</span></div>
+                                    </li>
+                                ))}
+                            </ul>
+                        ) : <EmptyState compact title="Nothing reported for Nigeria this week" body="No source tagged Nigeria as a target in the last 7 days, and no Nigerian advisory was published." />;
+                    })()}
+                </Card>
+
+                <Card>
+                    <SectionTitle title="Source freshness" action={<Link href="/admin/ti/sources" className={btn('ghost')}>Sources</Link>} />
+                    {ov.load.state === 'loading' ? <Skeleton className="h-32" /> : (
+                        <ul className="space-y-2">
+                            {feeds.map((f) => (
+                                <li key={f.id} className="flex items-center justify-between gap-2">
+                                    <span className="text-xs font-semibold text-foreground">{FEED_NAME[f.id] ?? f.name}</span>
+                                    <Freshness lastSuccess={f.last_success_at} stale={f.stale} failing={f.failing} configured={f.configured} enabled={f.enabled} now={now} />
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </Card>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <Card>
+                    <SectionTitle title="Your new matches" hint="Indicators seen in this organisation's records" action={<Link href="/admin/ti/matches" className={btn('ghost')}>All matches</Link>} />
+                    {matches.load.state === 'loading' ? <Skeleton className="h-28" /> : matches.load.state === 'error' ? <ErrorState error={matches.load.error} status={matches.load.status} onRetry={matches.reload} /> : matches.data!.matches.length ? (
+                        <ul className="divide-y divide-border">
+                            {matches.data!.matches.slice(0, 6).map((m) => (
+                                <li key={m.id} className="py-2 flex items-center justify-between gap-3">
+                                    <span className="min-w-0">
+                                        <Link href={`/admin/ti/indicators?id=${m.indicator_id}`} className="text-xs font-mono font-semibold text-foreground hover:text-purple truncate block">{m.ti_indicators?.value ?? m.matched_value}</Link>
+                                        <span className="text-[11px] text-foreground-muted">in {m.entity_type} · {m.matched_field}</span>
+                                    </span>
+                                    <span className="text-[11px] text-foreground-muted shrink-0" title={fmtWat(m.first_matched_at)}>{ago(m.first_matched_at, now)}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : <EmptyState compact title="No new matches" body="None of the active indicators has been seen in your records since the last review." />}
+                </Card>
+
+                <Card>
+                    <SectionTitle title="Known exploited, newly listed" hint="CISA KEV additions in the last 30 days" action={<Link href="/admin/ti/vulnerabilities" className={btn('ghost')}>Vulnerabilities</Link>} />
+                    {kev.load.state === 'loading' ? <Skeleton className="h-28" /> : kev.load.state === 'error' ? <ErrorState error={kev.load.error} status={kev.load.status} onRetry={kev.reload} /> : kev.data!.vulnerabilities.length ? (
+                        <ul className="divide-y divide-border">
+                            {kev.data!.vulnerabilities.map((v) => (
+                                <li key={v.cve} className="py-2 flex items-center justify-between gap-3">
+                                    <span className="min-w-0">
+                                        <span className="text-xs font-mono font-semibold text-foreground">{v.cve}</span>
+                                        <span className="block text-[11px] text-foreground-muted truncate">{[v.kev.vendor, v.kev.product].filter(Boolean).join(' ')}{v.kev.name ? ` — ${v.kev.name}` : ''}</span>
+                                    </span>
+                                    {v.your_open_findings ? <Tag strong>{v.your_open_findings} open finding{v.your_open_findings > 1 ? 's' : ''}</Tag> : <Citation feed="cisa_kev" at={v.added} now={now} />}
+                                </li>
+                            ))}
+                        </ul>
+                    ) : <EmptyState compact title="No new KEV entries" body="CISA added nothing to the catalogue in the last 30 days (or the KEV feed has not run)." />}
+                </Card>
+            </div>
+
+            <AiPanel purpose="threat_briefing" subjectId="7d" title="AI briefing" purposes={[
+                { value: 'threat_briefing', label: 'Threat briefing' }, { value: 'nigeria_briefing', label: 'Nigeria briefing' },
+            ]} />
         </div>
     );
 }

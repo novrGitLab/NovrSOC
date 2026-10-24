@@ -18,6 +18,8 @@ export interface AiPurpose {
     task: string;
     schema: z.ZodTypeAny;
     maxTokens?: number;
+    /** 'ti' purposes may use their own AI provider (TI_AI_PROVIDER, services/ai.ts). */
+    group?: 'ti';
 }
 const registry = new Map<string, AiPurpose>();
 export function registerAiPurpose(name: string, p: AiPurpose): void { registry.set(name, p); }

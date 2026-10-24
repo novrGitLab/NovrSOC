@@ -6,12 +6,17 @@
 //   urlhaus    abuse.ch URLhaus — recent malware distribution URLs (same key)
 //   feodo      abuse.ch Feodo Tracker — botnet C2 IP blocklist (public)
 //   cisa_kev   CISA Known Exploited Vulnerabilities catalogue (public), also feeding cve_intel
-//   opencti    this platform's own OpenCTI: indicators with a simple STIX pattern (phase P9; needs
-//              OPENCTI_URL + OPENCTI_TOKEN). OpenCTI's confidence and labels are kept as its claims.
 //   misp       this platform's own MISP: to_ids attributes of the last day (phase P9; needs MISP_URL
-//              + MISP_API_KEY). The event NovrSOC itself writes to (MISP_NIGERIA_EVENT_ID) is left
-//              out, so the platform does not read its own collection back as a second source.
+//              + MISP_API_KEY, a read-only key is enough). The event NovrSOC itself writes to
+//              (MISP_NIGERIA_EVENT_ID) is left out, so the platform does not read its own
+//              collection back as a second source. Each record keeps the TLP and distribution MISP
+//              gave it (phase P25); an untagged record is AMBER, so it is never shared by accident.
+//   misp_events  MISP event reports (services/tiReports.ts, phase P25): titles and the galaxy and
+//              taxonomy tags the source attached — targeted countries and sectors, actors, malware.
+//   opencti    retired in P25 (OpenCTI is no longer used). Its stored provenance is kept; the feed
+//              is never configured and never runs.
 // A feed whose connector is not configured is not run and shows as "not configured", not failing.
+// Public feeds are TLP:CLEAR (services/tiPolicy.ts decides what may be exported).
 // Each source record is kept as provenance (ti_indicator_sources) with exactly what that source
 // said: its own confidence (or none), its malware/threat labels, reporter and reference. An
 // indicator's ATT&CK techniques are only ids a source itself listed. Nothing is attributed to a
@@ -22,14 +27,23 @@
 import { isIP } from 'net';
 import { getSupabase } from './geoEnrichment';
 import { parseKev, KEV_URL, CVE_RE } from './cveIntel';
-import { openctiConfigured, openctiQuery } from '../lib/opencti';
 import { isMISPConfigured, mispAttributeSearch } from './misp';
+import { tlpFromTags, type Tlp } from './tiPolicy';
+import { REPORT_FEEDS, storeReports } from './tiReports';
 
 export type IndicatorType = 'ip' | 'domain' | 'url' | 'md5' | 'sha1' | 'sha256' | 'cve';
 export interface SourceRecord {
     type: IndicatorType; value: string; source_ref: string; confidence: number | null; first_seen: string | null; last_seen: string | null;
     tags: string[]; malware: string | null; threat_type: string | null; context: Record<string, unknown>;
+    /** The marking the source applied; absent = the feed's default (FEED_DEFAULT_TLP, else AMBER). */
+    tlp?: Tlp;
+    /** MISP distribution level, when the source has one. */
+    distribution?: number | null;
 }
+
+/** Public feeds publish openly; anything else without a marking is treated as AMBER. */
+export const FEED_DEFAULT_TLP: Record<string, Tlp> = { threatfox: 'clear', urlhaus: 'clear', feodo: 'clear', cisa_kev: 'clear' };
+const tlpOf = (feedId: string, r: SourceRecord): Tlp => r.tlp ?? FEED_DEFAULT_TLP[feedId] ?? 'amber';
 
 const HEX = { md5: /^[a-f0-9]{32}$/, sha1: /^[a-f0-9]{40}$/, sha256: /^[a-f0-9]{64}$/ } as const;
 const DOMAIN = /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -107,8 +121,9 @@ export function fromKev(json: unknown): SourceRecord[] {
     });
 }
 
-// ── OpenCTI and MISP (phase P9) ──────────────────────────────────────────────────────────────
+// ── STIX patterns, OpenCTI (retired in P25) and MISP (phase P9) ──────────────────────────────
 // Only single-comparison STIX patterns are indicators here; anything else is counted invalid.
+// fromOpenCti is kept as a parser for stored OpenCTI exports; the OpenCTI feed no longer runs.
 const STIX = /^\[\s*(ipv4-addr|ipv6-addr|domain-name|url|file)\s*:\s*(value|hashes\s*\.\s*'?(MD5|SHA-1|SHA1|SHA-256|SHA256)'?)\s*=\s*'((?:[^'\\]|\\.)*)'\s*\]$/i;
 export function stixToIndicator(pattern: string | null | undefined): { type: IndicatorType; value: string } | null {
     const m = STIX.exec((pattern ?? '').trim());
@@ -121,20 +136,6 @@ export function stixToIndicator(pattern: string | null | undefined): { type: Ind
     const h = (m[3] ?? '').toUpperCase().replace('-', '');
     return h === 'MD5' ? { type: 'md5', value } : h === 'SHA1' ? { type: 'sha1', value } : h === 'SHA256' ? { type: 'sha256', value } : null;
 }
-
-export const OPENCTI_INDICATORS_QUERY = `
-query NovrsocIndicators($filters: FilterGroup, $first: Int, $after: ID) {
-  indicators(first: $first, after: $after, filters: $filters, orderBy: updated_at, orderMode: desc) {
-    pageInfo { hasNextPage endCursor }
-    edges { node {
-      id standard_id name pattern pattern_type confidence revoked valid_from valid_until created updated_at
-      x_opencti_score indicator_types
-      createdBy { name }
-      objectLabel { value }
-      killChainPhases { kill_chain_name phase_name }
-    } }
-  }
-}`;
 
 interface OctiIndicator {
     id: string; standard_id?: string; name?: string; pattern?: string; pattern_type?: string; confidence?: number | null; revoked?: boolean;
@@ -171,6 +172,18 @@ const MISP_TYPES: Record<string, IndicatorType> = {
 };
 export const MISP_FEED_TYPES = Object.keys(MISP_TYPES);
 
+/**
+ * MISP distribution of an attribute: its own level, or its event's when it inherits (5). An
+ * unresolved inherit stays 5, which the sharing policy never exports.
+ */
+export function mispDistribution(attr: unknown, event: unknown): number | null {
+    const num = (v: unknown) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+    const own = num((attr as Record<string, unknown>)?.distribution);
+    if (own !== 5) return own;
+    const ev = num((event as Record<string, unknown>)?.distribution);
+    return ev ?? 5;
+}
+
 /** MISP restSearch attributes → records. `excludeEvent` is the event NovrSOC itself writes to. */
 export function fromMisp(json: unknown, excludeEvent: string | null): SourceRecord[] {
     const attrs = (json as { response?: { Attribute?: unknown } })?.response?.Attribute;
@@ -181,18 +194,23 @@ export function fromMisp(json: unknown, excludeEvent: string | null): SourceReco
         const value = String(a.type).endsWith('|port') ? raw.split('|')[0] : raw;
         const ts = typeof a.timestamp === 'string' || typeof a.timestamp === 'number' ? new Date(Number(a.timestamp) * 1000).toISOString() : null;
         const ev = (a.Event ?? {}) as Record<string, unknown>;
+        // With includeEventTags the attribute's Tag list also carries its event's tags (TLP is
+        // usually set on the event).
         const tags = Array.isArray(a.Tag) ? (a.Tag as { name?: string }[]).map((t) => String(t.name ?? '').slice(0, 80)).filter(Boolean).slice(0, 30) : [];
         return {
             type, value, source_ref: String(a.uuid ?? a.id ?? ''), confidence: null, first_seen: ts, last_seen: ts,
             tags, malware: null, threat_type: typeof a.category === 'string' ? a.category.slice(0, 60) : null,
-            context: { event_id: a.event_id ?? null, event_info: typeof ev.info === 'string' ? ev.info.slice(0, 200) : null, comment: typeof a.comment === 'string' ? a.comment.slice(0, 300) : null, techniques: tags.map((t) => /T\d{4}(\.\d{3})?/.exec(t)?.[0]).filter((t): t is string => !!t) },
+            tlp: tlpFromTags(tags, 'amber'), distribution: mispDistribution(a, ev),
+            context: { event_id: a.event_id ?? null, event_uuid: typeof ev.uuid === 'string' ? ev.uuid : null, event_info: typeof ev.info === 'string' ? ev.info.slice(0, 200) : null, comment: typeof a.comment === 'string' ? a.comment.slice(0, 300) : null, techniques: tags.map((t) => /T\d{4}(\.\d{3})?/.exec(t)?.[0]).filter((t): t is string => !!t) },
         } as SourceRecord;
     });
 }
 
+/** Feeds retired from the platform: their history is kept, they never run. */
+export const RETIRED_FEEDS = new Set(['opencti']);
 /** Feeds that need a connector, and whether it is configured. Others are always runnable. */
-export const FEED_CONFIGURED: Record<string, () => boolean> = { opencti: openctiConfigured, misp: isMISPConfigured };
-export const feedConfigured = (id: string) => (FEED_CONFIGURED[id] ? FEED_CONFIGURED[id]() : true);
+export const FEED_CONFIGURED: Record<string, () => boolean> = { misp: isMISPConfigured, misp_events: isMISPConfigured };
+export const feedConfigured = (id: string) => (RETIRED_FEEDS.has(id) ? false : FEED_CONFIGURED[id] ? FEED_CONFIGURED[id]() : true);
 
 export const FEEDS: Record<string, { fetch: () => Promise<SourceRecord[]> }> = {
     threatfox: { fetch: async () => {
@@ -219,30 +237,18 @@ export const FEEDS: Record<string, { fetch: () => Promise<SourceRecord[]> }> = {
         if (!r.ok) throw new Error(`CISA KEV: HTTP ${r.status}`);
         return fromKev(await r.json());
     } },
-    // Indicators updated in the last 2 days (the feed runs every 6 h), up to 5 pages of 500.
-    opencti: { fetch: async () => {
-        if (!openctiConfigured()) throw new Error('OpenCTI is not configured (OPENCTI_URL, OPENCTI_TOKEN)');
-        const since = new Date(Date.now() - 2 * 86_400_000).toISOString();
-        const filters = { mode: 'and', filters: [{ key: ['updated_at'], values: [since], operator: 'gt' }], filterGroups: [] };
-        const out: SourceRecord[] = [];
-        let after: string | null = null;
-        for (let page = 0; page < 5; page++) {
-            const data: { indicators?: { pageInfo?: { hasNextPage?: boolean; endCursor?: string } } } = await openctiQuery(OPENCTI_INDICATORS_QUERY, { filters, first: 500, after });
-            out.push(...fromOpenCti(data));
-            const info = data.indicators?.pageInfo;
-            if (!info?.hasNextPage || !info.endCursor) break;
-            after = info.endCursor;
-        }
-        return out;
-    } },
+    // Event tags are included so the event's TLP marking reaches each attribute.
     misp: { fetch: async () => {
-        const json = await mispAttributeSearch({ returnFormat: 'json', to_ids: true, last: '1d', type: MISP_FEED_TYPES, limit: 5000, includeEventTags: false });
+        const json = await mispAttributeSearch({ returnFormat: 'json', to_ids: true, last: '1d', type: MISP_FEED_TYPES, limit: 5000, includeEventTags: true, includeEventUuid: true });
         return fromMisp(json, (process.env.MISP_NIGERIA_EVENT_ID || '1').trim() || null);
     } },
 };
 
 /** A feed is stale when it has not succeeded for this long (runs every 6 h; KEV daily). */
-export const FEED_STALE_HOURS: Record<string, number> = { threatfox: 12, urlhaus: 12, feodo: 12, cisa_kev: 48, opencti: 12, misp: 12 };
+export const FEED_STALE_HOURS: Record<string, number> = { threatfox: 12, urlhaus: 12, feodo: 12, cisa_kev: 48, misp: 12, misp_events: 12 };
+
+/** Every feed that can run: indicator feeds and report feeds. */
+export const isRunnableFeed = (id: string) => !RETIRED_FEEDS.has(id) && (!!FEEDS[id] || !!REPORT_FEEDS[id]);
 
 export interface RunCounts { fetched: number; new: number; updated: number; duplicates: number; invalid: number }
 
@@ -265,7 +271,7 @@ export async function storeRecords(feedId: string, records: SourceRecord[], vali
         const ofType = clean.filter((r) => r.type === type);
         for (let i = 0; i < ofType.length; i += 200) {
             const chunk = ofType.slice(i, i + 200);
-            const { data: existing, error } = await supabase.from('ti_indicators').select('id, value, max_confidence, tags, malware_families, threat_types, mitre_techniques, first_seen, last_seen, valid_until').eq('type', type).in('value', [...new Set(chunk.map((c) => c.norm))]);
+            const { data: existing, error } = await supabase.from('ti_indicators').select('id, value, max_confidence, tags, malware_families, threat_types, mitre_techniques, first_seen, last_seen, valid_until, status').eq('type', type).in('value', [...new Set(chunk.map((c) => c.norm))]);
             if (error) throw new Error(`indicator read failed: ${error.message}`);
             const byValue = new Map((existing ?? []).map((e) => [e.value as string, e]));
             for (const r of chunk) {
@@ -277,27 +283,38 @@ export async function storeRecords(feedId: string, records: SourceRecord[], vali
                     const ins = await supabase.from('ti_indicators').insert({
                         type, value: r.norm, first_seen: r.first_seen ?? now, last_seen: seenAt, valid_until: validUntil, status: 'active', max_confidence: r.confidence,
                         tags: r.tags, malware_families: r.malware ? [r.malware] : [], threat_types: r.threat_type ? [r.threat_type] : [], mitre_techniques: techniques, source_count: 0,
-                    }).select('id, value, max_confidence, tags, malware_families, threat_types, mitre_techniques, first_seen, last_seen, valid_until').single();
+                        created_at: now, updated_at: now,
+                    }).select('id, value, max_confidence, tags, malware_families, threat_types, mitre_techniques, first_seen, last_seen, valid_until, status').single();
                     if (ins.error) throw new Error(`indicator insert failed: ${ins.error.message}`);
                     ind = ins.data;
                     byValue.set(r.norm, ind);
                     counts.new++;
                 } else {
                     const merge = (a: string[] | null, b: string[]) => [...new Set([...(a ?? []), ...b])].slice(0, 50);
-                    await supabase.from('ti_indicators').update({
+                    const next = {
                         last_seen: Date.parse(seenAt) > Date.parse(ind.last_seen) ? seenAt : ind.last_seen, status: 'active',
                         // the longest validity any source gives (none = no expiry)
                         valid_until: validUntil === null || ind.valid_until === null ? null : (Date.parse(validUntil) > Date.parse(ind.valid_until) ? validUntil : ind.valid_until),
                         max_confidence: r.confidence !== null ? Math.max(r.confidence, ind.max_confidence ?? 0) : ind.max_confidence,
                         tags: merge(ind.tags, r.tags), malware_families: merge(ind.malware_families, r.malware ? [r.malware] : []),
                         threat_types: merge(ind.threat_types, r.threat_type ? [r.threat_type] : []), mitre_techniques: merge(ind.mitre_techniques, techniques),
-                    }).eq('id', ind.id);
+                    };
+                    // updated_at is the exported object's version (STIX modified): it moves only
+                    // when what an export carries changes, not on every re-sighting.
+                    const changed = exportedChange(ind, next);
+                    await supabase.from('ti_indicators').update(changed ? { ...next, updated_at: now } : next).eq('id', ind.id);
+                    Object.assign(ind, next);
                     counts.updated++;
                 }
+                const ref = r.source_ref.slice(0, 200);
+                // A source record first seen now is a change to the exported object too.
+                const { data: had } = await supabase.from('ti_indicator_sources').select('id').eq('indicator_id', ind!.id).eq('feed_id', feedId).eq('source_ref', ref).maybeSingle();
                 const src = await supabase.from('ti_indicator_sources').upsert({
-                    indicator_id: ind!.id, feed_id: feedId, source_ref: r.source_ref.slice(0, 200), confidence: r.confidence, first_seen: r.first_seen, last_seen: seenAt,
+                    indicator_id: ind!.id, feed_id: feedId, source_ref: ref, confidence: r.confidence, first_seen: r.first_seen, last_seen: seenAt,
+                    tlp: tlpOf(feedId, r), distribution: r.distribution ?? null,
                     context: { ...r.context, tags: r.tags, malware: r.malware, threat_type: r.threat_type },
                 }, { onConflict: 'indicator_id,feed_id,source_ref' });
+                if (!had && !src.error) await supabase.from('ti_indicators').update({ updated_at: now }).eq('id', ind!.id);
                 if (src.error) throw new Error(`provenance write failed: ${src.error.message}`);
             }
         }
@@ -314,16 +331,28 @@ export async function storeRecords(feedId: string, records: SourceRecord[], vali
     return counts;
 }
 
+const DAY_MS = 86_400_000;
+type StoredIndicator = { tags: string[] | null; malware_families: string[] | null; threat_types: string[] | null; mitre_techniques: string[] | null; valid_until: string | null; status?: string };
+/** Did a refresh change what an export of this indicator carries? (valid_until counts past a day.) */
+export function exportedChange(before: StoredIndicator, after: StoredIndicator): boolean {
+    const same = (a: string[] | null, b: string[] | null) => JSON.stringify([...(a ?? [])].sort()) === JSON.stringify([...(b ?? [])].sort());
+    if (!same(before.tags, after.tags) || !same(before.malware_families, after.malware_families) || !same(before.threat_types, after.threat_types) || !same(before.mitre_techniques, after.mitre_techniques)) return true;
+    if (before.status !== undefined && after.status !== undefined && before.status !== after.status) return true;
+    if ((before.valid_until === null) !== (after.valid_until === null)) return true;
+    return before.valid_until !== null && after.valid_until !== null && Math.abs(Date.parse(after.valid_until) - Date.parse(before.valid_until)) > DAY_MS;
+}
+
 /** Runs one feed end to end and records the outcome (ok or failed with the reason). */
 export async function runFeed(feedId: string, fetcher = FEEDS[feedId]?.fetch): Promise<{ status: 'ok' | 'failed'; counts?: RunCounts; error?: string }> {
     const supabase = getSupabase();
     if (!supabase) return { status: 'failed', error: 'database not configured' };
     const { data: feed } = await supabase.from('ti_feeds').select('id, enabled, validity_days').eq('id', feedId).maybeSingle();
-    if (!feed || !fetcher) return { status: 'failed', error: 'unknown feed' };
+    const report = REPORT_FEEDS[feedId];
+    if (!feed || RETIRED_FEEDS.has(feedId) || (!fetcher && !report)) return { status: 'failed', error: 'unknown feed' };
     const started = new Date().toISOString();
     const run = await supabase.from('ti_feed_runs').insert({ feed_id: feedId, started_at: started, status: 'running' }).select('id').single();
     try {
-        const counts = await storeRecords(feedId, await fetcher(), feed.validity_days);
+        const counts = report && !fetcher ? await storeReports(feedId, await report.fetch()) : await storeRecords(feedId, await fetcher!(), feed.validity_days);
         if (feedId === 'cisa_kev') await syncKevToCveIntel();
         const finished = new Date().toISOString();
         await supabase.from('ti_feed_runs').update({ status: 'ok', finished_at: finished, ...counts }).eq('id', run.data?.id);
@@ -352,7 +381,8 @@ async function syncKevToCveIntel(): Promise<void> {
 export async function expireIndicators(): Promise<number> {
     const supabase = getSupabase();
     if (!supabase) return 0;
-    const { data } = await supabase.from('ti_indicators').update({ status: 'expired' }).eq('status', 'active').lt('valid_until', new Date().toISOString()).select('id');
+    const now = new Date().toISOString();
+    const { data } = await supabase.from('ti_indicators').update({ status: 'expired', updated_at: now }).eq('status', 'active').lt('valid_until', now).select('id');
     return (data ?? []).length;
 }
 

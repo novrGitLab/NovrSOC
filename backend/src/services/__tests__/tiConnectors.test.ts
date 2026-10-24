@@ -10,7 +10,7 @@ import express from 'express';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { startFakePostgrest, type FakePostgrest } from '../../routes/__tests__/fakePostgrest';
-import { stixToIndicator, fromOpenCti, fromMisp, FEEDS, feedConfigured, storeRecords, correlateOrg } from '../threatInfo';
+import { stixToIndicator, fromOpenCti, fromMisp, FEEDS, feedConfigured, storeRecords, correlateOrg, runFeed } from '../threatInfo';
 
 let db: FakePostgrest;
 let octi: Server;
@@ -71,20 +71,19 @@ test('OpenCTI records: revoked dropped, its confidence and labels kept as its cl
     assert.throws(() => fromOpenCti({ nope: true }), /unexpected response/);
 });
 
-test('OpenCTI feed: bearer token, recent indicators only, follows pages; not run when unconfigured', async () => {
-    assert.equal(feedConfigured('opencti'), false);
-    await assert.rejects(FEEDS.opencti.fetch(), /not configured/);
+// Phase P25: OpenCTI is no longer used. The feed is retired — never configured, never run, never
+// contacted — even with its credentials still set; stored OpenCTI provenance is left in place.
+test('OpenCTI feed is retired: not configured with credentials set, not runnable, never contacted', async () => {
     process.env.OPENCTI_URL = `http://127.0.0.1:${(octi.address() as AddressInfo).port}`;
     process.env.OPENCTI_TOKEN = 'octi-test-token';
     try {
-        assert.equal(feedConfigured('opencti'), true);
-        const recs = await FEEDS.opencti.fetch();
-        assert.equal(gql.auth, 'Bearer octi-test-token');
-        assert.deepEqual(recs.map((r) => r.type), ['ip', 'sha256']);
-        assert.equal(gql.variables.length, 2);
-        const f = (gql.variables[0].filters as { filters: { key: string[]; operator: string; values: string[] }[] }).filters[0];
-        assert.deepEqual([f.key, f.operator], [['updated_at'], 'gt']);
-        assert.ok(Date.now() - Date.parse(f.values[0]) < 3 * 86_400_000);
+        assert.equal(feedConfigured('opencti'), false);
+        assert.equal(FEEDS.opencti, undefined);
+        db.tables.ti_feeds.push({ id: 'opencti', name: 'OpenCTI', url: 'x', enabled: false, validity_days: 30 });
+        const r = await runFeed('opencti');
+        assert.deepEqual(r, { status: 'failed', error: 'unknown feed' });
+        assert.equal(gql.variables.length, 0, 'OpenCTI was not contacted');
+        assert.equal(db.tables.ti_feed_runs?.length ?? 0, 0, 'no run recorded');
     } finally { delete process.env.OPENCTI_URL; delete process.env.OPENCTI_TOKEN; }
 });
 

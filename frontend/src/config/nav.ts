@@ -23,6 +23,7 @@ import {
     HardDrive, BarChart, CreditCard, Settings, BookOpen, FileText, ScrollText,
     ClipboardCheck, Bot, Map, Landmark, Radio, Cloud, Eye, Bell, Monitor,
     Target, Fingerprint, CalendarRange, Droplets, Wifi, HeartPulse, GraduationCap, Swords, Truck, Wheat, Factory, Mountain, KeyRound,
+    Sparkles,
     type LucideIcon,
 } from 'lucide-react';
 import type { NavGroup, NavItem, NavRole } from '@/components/layout/Sidebar';
@@ -109,18 +110,18 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         items: VMS_SECTIONS.map((s): NavItemConfig => ({ id: `vms-${s.id}`, label: s.label, href: s.href, domain: 'vms', status: 'WORKING', roles: s.managerOnly ? MANAGER_ONLY : VMS_READ, icon: s.icon, match: s.pages.map((p) => p.href).filter((h) => h !== '/admin/vms') })),
     },
     {
-        section: 'Threat Information System', collapsible: true, icon: Crosshair, groupLabel: 'Threat Information System',
+        // Threat Intelligence V1 (P25): eight pages. The external IOC lookup and the URL & web
+        // scanner are tools linked from Indicators & Investigation; the older pages redirect here.
+        section: 'Threat Intelligence', collapsible: true, icon: Crosshair, groupLabel: 'Threat Intelligence',
         items: [
             { id: 'ti-overview', label: 'Overview', href: '/admin/ti', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Crosshair },
-            { id: 'ti-matches', label: 'Matches', href: '/admin/ti/matches', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Target },
-            { id: 'ti-indicators', label: 'Indicators', href: '/admin/ti/indicators', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Fingerprint },
-            { id: 'ti-kev', label: 'Known Exploited CVEs', href: '/admin/ti/kev', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: ShieldAlert },
-            { id: 'nigeria-threat-map', label: 'Nigeria Threat Map', href: '/admin/threat/nigeria', domain: 'threat-intel', status: 'PARTIAL', roles: NOT_EXEC, icon: Map },
-            { id: 'ioc-lookup', label: 'IOC Lookup', href: '/admin/threat/cti', domain: 'threat-intel', status: 'PARTIAL', roles: NOT_EXEC, icon: Crosshair },
-            { id: 'live-ioc', label: 'Live IOC Feed', href: '/admin/threat/live-ioc', domain: 'threat-intel', status: 'WORKING', roles: NOT_EXEC, icon: Radio },
-            { id: 'threat-advisory', label: 'Threat Advisory', href: '/admin/threat/advisory', domain: 'threat-intel', status: 'WORKING', roles: NOT_EXEC, icon: AlertTriangle },
-            { id: 'threat-actors', label: 'Threat Actors', href: '/admin/threat/actors', domain: 'threat-intel', status: 'WORKING', roles: NOT_EXEC, icon: Users },
-            { id: 'url-web-scanner', label: 'URL & Web Scanner', href: '/admin/threat/urlscan', domain: 'threat-intel', status: 'WORKING', roles: NOT_EXEC, icon: LinkIcon },
+            { id: 'ti-map', label: 'Nigeria Threat Map', href: '/admin/ti/map', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Map },
+            { id: 'ti-indicators', label: 'Indicators & Investigation', href: '/admin/ti/indicators', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Fingerprint, match: ['/admin/threat/cti', '/admin/threat/urlscan', '/admin/threat/webscan'] },
+            { id: 'ti-actors', label: 'Threat Actors', href: '/admin/ti/actors', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Users },
+            { id: 'ti-matches', label: 'Organisation Matches', href: '/admin/ti/matches', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Target },
+            { id: 'ti-vulnerabilities', label: 'Vulnerabilities & Advisories', href: '/admin/ti/vulnerabilities', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: ShieldAlert },
+            { id: 'ti-analyst', label: 'AI Intelligence Analyst', href: '/admin/ti/analyst', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Sparkles },
+            { id: 'ti-sources', label: 'Sources & Exchange', href: '/admin/ti/sources', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Radio },
         ],
     },
     {

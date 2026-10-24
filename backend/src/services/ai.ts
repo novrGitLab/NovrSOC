@@ -21,6 +21,11 @@
 //
 // Model: AI_MODEL (see services/nvidia.ts). If the model refuses and AI_FALLBACK_MODEL is set,
 // the request is retried once on the fallback model.
+//
+// Provider (phase P25): NVIDIA by default. AI_PROVIDER=ollama sends every purpose to the
+// platform's own Ollama server (services/ollama.ts); TI_AI_PROVIDER does the same for the Threat
+// Intelligence purposes only (group 'ti'), so the TI analyst can run on Ollama while other modules
+// keep their provider. The rules above hold for every provider.
 
 import { z } from 'zod';
 import { getSupabase } from './geoEnrichment';
@@ -28,20 +33,37 @@ import {
     AI_MODEL, AI_FALLBACK_MODEL, AI_TIMEOUT_MS, nvidiaConfigured, getNvidiaClient, setNvidiaClientForTests,
     describeNvidiaError, isProviderError, isRateLimit, completionText, probeNvidia, type NvidiaClient,
 } from './nvidia';
+import { ollamaClient, ollamaConfigured, OLLAMA_MODEL, probeOllama, isOllamaError } from './ollama';
+import { aiPurpose } from './aiPurposes';
 
 export { AI_MODEL, AI_FALLBACK_MODEL };
 const MAX_CONTEXT_CHARS = 120_000;
 
-export function aiConfigured(): boolean { return nvidiaConfigured(); }
+export type AiProvider = 'nvidia' | 'ollama';
+/** The provider for a purpose: TI purposes may have their own (TI_AI_PROVIDER). */
+export function providerFor(purpose?: string): AiProvider {
+    const group = purpose ? aiPurpose(purpose)?.group : undefined;
+    const chosen = (group === 'ti' ? process.env.TI_AI_PROVIDER?.trim() || process.env.AI_PROVIDER?.trim() : process.env.AI_PROVIDER?.trim()) ?? '';
+    return chosen.toLowerCase() === 'ollama' ? 'ollama' : 'nvidia';
+}
+const modelFor = (p: AiProvider) => (p === 'ollama' ? OLLAMA_MODEL() : AI_MODEL());
+
+export function aiConfigured(purpose?: string): boolean { return providerFor(purpose) === 'ollama' ? ollamaConfigured() : nvidiaConfigured(); }
 
 export type AiClient = NvidiaClient;
-/** Test hook: route calls to a fake client (null restores the real one). */
-export function setAiClientForTests(c: AiClient | null): void { setNvidiaClientForTests(c); }
+let clientOverride: AiClient | null = null;
+/** Test hook: route calls to a fake client, whatever the provider (null restores the real ones). */
+export function setAiClientForTests(c: AiClient | null): void { clientOverride = c; setNvidiaClientForTests(c); }
+function clientFor(p: AiProvider): AiClient | null {
+    if (clientOverride) return clientOverride;
+    return p === 'ollama' ? (ollamaConfigured() ? (ollamaClient as unknown as AiClient) : null) : getNvidiaClient();
+}
 
-/** A safe server-side check: proves the key is accepted for the model; no generation, no cost. */
-export async function aiHealth(): Promise<{ configured: boolean; model: string; reachable: boolean; detail: string }> {
-    const { configured, model, reachable, detail } = await probeNvidia();
-    return { configured, model, reachable, detail };
+/** A safe server-side check of the provider a purpose (or the platform default) uses; generates nothing. */
+export async function aiHealth(purpose?: string): Promise<{ provider: AiProvider; configured: boolean; model: string; reachable: boolean; detail: string }> {
+    const provider = providerFor(purpose);
+    const { configured, model, reachable, detail } = provider === 'ollama' ? await probeOllama() : await probeNvidia();
+    return { provider, configured, model, reachable, detail };
 }
 
 const SYSTEM = `You are NovrAI, the analysis assistant inside NovrSOC, a security operations platform.
@@ -126,12 +148,13 @@ async function logRequest(row: Record<string, unknown>) {
 }
 
 export async function generate<T extends z.ZodTypeAny>(input: GenerateInput<T>): Promise<GenerateResult<z.infer<T>>> {
-    const c = getNvidiaClient();
-    const model = AI_MODEL();
+    const provider = providerFor(input.purpose);
+    const c = clientFor(provider);
+    const model = modelFor(provider);
     const base = { org_id: input.orgId, actor: input.actor, purpose: input.purpose, model, source_refs: input.sourceRefs.map((r) => r.ref) };
     if (!c) {
         await logRequest({ ...base, status: 'unavailable', error: 'not configured' });
-        return { ok: false, status: 503, unavailable: true, error: 'AI is not configured (NVIDIA_API_KEY). Everything else keeps working.' };
+        return { ok: false, status: 503, unavailable: true, error: `AI is not configured (${provider === 'ollama' ? 'OLLAMA_URL' : 'NVIDIA_API_KEY'}). Everything else keeps working.` };
     }
     let recordsJson = JSON.stringify(input.records);
     if (recordsJson.length > MAX_CONTEXT_CHARS) recordsJson = JSON.stringify(input.records.slice(0, Math.max(1, Math.floor(input.records.length * MAX_CONTEXT_CHARS / recordsJson.length))));
@@ -153,7 +176,7 @@ export async function generate<T extends z.ZodTypeAny>(input: GenerateInput<T>):
         };
         let res = await ask(model);
         let answer = completionText(res);
-        const fallback = AI_FALLBACK_MODEL();
+        const fallback = provider === 'nvidia' ? AI_FALLBACK_MODEL() : null;
         if (answer.refusal && fallback && fallback !== model) {
             res = await ask(fallback);
             answer = completionText(res);
@@ -186,9 +209,11 @@ export async function generate<T extends z.ZodTypeAny>(input: GenerateInput<T>):
         }
         return { ok: true, artifact: { id, purpose: input.purpose, content, model: res.model ?? model, created_at, source_refs: input.sourceRefs } };
     } catch (err) {
-        const detail = describeNvidiaError(err);
-        await logRequest({ ...base, latency_ms: Date.now() - started, status: isProviderError(err) ? 'unavailable' : 'error', error: detail });
-        return { ok: false, status: isRateLimit(err) ? 429 : 503, unavailable: true, error: `AI unavailable: ${detail}. Nothing was generated.` };
+        const ollama = isOllamaError(err);
+        const detail = ollama ? err.message : describeNvidiaError(err);
+        const rateLimited = ollama ? err.kind === 'rate_limit' : isRateLimit(err);
+        await logRequest({ ...base, latency_ms: Date.now() - started, status: ollama || isProviderError(err) ? 'unavailable' : 'error', error: detail });
+        return { ok: false, status: rateLimited ? 429 : 503, unavailable: true, error: `AI unavailable: ${detail}. Nothing was generated.` };
     }
 }
 
