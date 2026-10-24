@@ -1,4 +1,5 @@
 import https from 'https';
+import { isIP } from 'net';
 
 // Wazuh Manager REST API (port 55000)
 const WAZUH_HOST = process.env.WAZUH_HOST || '';
@@ -169,6 +170,21 @@ export interface WazuhPackage {
     architecture: string | null;
     vendor: string | null;
     description: string | null;
+}
+
+/**
+ * GET /syscollector/{agent_id}/netaddr — the addresses on an agent's network interfaces (phase P27
+ * IP discovery for the Wazuh asset import). Loopback and link-local addresses are left out.
+ */
+export async function getAgentAddresses(agentId: string): Promise<{ address: string; iface: string | null; proto: string | null }[]> {
+    const { json } = await authedGet(`/syscollector/${encodeURIComponent(agentId)}/netaddr?limit=100`);
+    const out = new Map<string, { address: string; iface: string | null; proto: string | null }>();
+    for (const r of affectedItems(json)) {
+        const address = String(r.address ?? '').trim().toLowerCase().replace(/%.*$/, '');
+        if (!isIP(address) || /^(127\.|169\.254\.)/.test(address) || address === '::1' || address.startsWith('fe80:')) continue;
+        if (!out.has(address)) out.set(address, { address, iface: (r.iface as string) ?? null, proto: (r.proto as string) ?? null });
+    }
+    return [...out.values()];
 }
 
 /** GET /syscollector/{agent_id}/packages — installed software inventory for one agent. */

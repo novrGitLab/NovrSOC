@@ -12,6 +12,7 @@ import { randomUUID } from 'crypto';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { requireAuth } from '../../middleware/auth';
+import { approveIfPending } from './vmsApproveHelper';
 import { startFakePostgrest, type FakePostgrest, type Row } from './fakePostgrest';
 import vmsRouter from '../vms';
 import vmsFindingsRouter from '../vmsFindings';
@@ -45,7 +46,7 @@ const ts = () => new Date(Date.now() + ++seq).toISOString();
 before(async () => {
     let caseNo = 0;
     db = await startFakePostgrest(
-        { vms_scopes: [], vms_scan_jobs: [], vms_assets: [], vms_services: [], vms_findings: [], vms_finding_evidence: [], vms_finding_events: [], vms_remediation_tasks: [], cve_intel: [], cases: [], case_timeline: [], wazuh_group_org_map: [], vms_wazuh_sync: [], vms_asset_events: [] },
+        { vms_scopes: [], vms_scan_jobs: [], vms_assets: [], vms_services: [], vms_findings: [], vms_finding_evidence: [], vms_finding_events: [], vms_remediation_tasks: [], cve_intel: [], cases: [], case_timeline: [], wazuh_group_org_map: [], vms_wazuh_sync: [], vms_asset_events: [], vms_scope_approvals: [], vms_scan_schedules: [] },
         {},
         {
             vms_scopes: { status: 'active', approved_at: new Date().toISOString() },
@@ -81,7 +82,7 @@ after(async () => { Object.assign(console, realLog); server.close(); await db.cl
 beforeEach(() => { for (const t of Object.keys(db.tables)) db.tables[t].length = 0; });
 
 async function scope(over: Row = {}) {
-    return (await http('POST', '/api/vms/scopes', MGR, { kind: 'domain', value: 'example.test', allow_port_scan: true, allow_vuln_scan: true, authorization_reference: 'LOA-1', expires_at: future, ...over })).data.scope;
+    return (await approveIfPending(http, await http('POST', '/api/vms/scopes', MGR, { kind: 'domain', value: 'example.test', allow_port_scan: true, allow_vuln_scan: true, authorization_reference: 'LOA-1', expires_at: future, ...over }), tok('executive'))).data.scope;
 }
 async function runJob(kind: string, obs: Row[], status: 'succeeded' | 'failed' = 'succeeded', summary: Row | null = null) {
     const c = await worker('/claim', { worker_id: 'w1', kinds: [kind] });

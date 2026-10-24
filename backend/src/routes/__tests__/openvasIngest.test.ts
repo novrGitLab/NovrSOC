@@ -18,6 +18,7 @@ import { randomUUID } from 'crypto';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { requireAuth } from '../../middleware/auth';
+import { approveIfPending } from './vmsApproveHelper';
 import { startFakePostgrest, type FakePostgrest, type Row } from './fakePostgrest';
 import vmsRouter from '../vms';
 import vmsFindingsRouter from '../vmsFindings';
@@ -50,7 +51,7 @@ let hostScope: { id: string }, netScope: { id: string }, betaScope: { id: string
 
 before(async () => {
     db = await startFakePostgrest(
-        { organisations: [{ id: 'oa', slug: A }, { id: 'ob', slug: B }], vms_scopes: [], vms_scan_jobs: [], vms_assets: [], vms_services: [], vms_findings: [], vms_finding_evidence: [], vms_finding_events: [], vms_remediation_tasks: [], cve_intel: [], vms_asset_events: [], vms_workers: [], vms_job_evidence: [], audit_log: [], org_access_audit: [], staff_org_assignments: [], vms_wazuh_sync: [], cnii_org_profiles: [], vms_risk_snapshots: [] },
+        { organisations: [{ id: 'oa', slug: A }, { id: 'ob', slug: B }], vms_scopes: [], vms_scan_jobs: [], vms_assets: [], vms_services: [], vms_findings: [], vms_finding_evidence: [], vms_finding_events: [], vms_remediation_tasks: [], cve_intel: [], vms_asset_events: [], vms_workers: [], vms_job_evidence: [], audit_log: [], org_access_audit: [], staff_org_assignments: [], vms_wazuh_sync: [], cnii_org_profiles: [], vms_risk_snapshots: [], vms_scope_approvals: [], vms_scan_schedules: [] },
         {},
         {
             vms_scopes: { status: 'active', approved_at: new Date().toISOString(), exclusions: [] },
@@ -86,7 +87,7 @@ before(async () => {
 after(async () => { Object.assign(console, realLog); server.close(); await db.close(); });
 beforeEach(async () => {
     for (const t of Object.keys(db.tables)) if (t !== 'organisations') db.tables[t].length = 0;
-    const mk = async (org: string, kind: string, value: string) => (await http('POST', '/api/vms/scopes', tok('soc_manager', org), { kind, value, allow_port_scan: true, allow_vuln_scan: true, authorization_reference: 'LOA-2026-07 signed by asset owner', expires_at: future })).data.scope;
+    const mk = async (org: string, kind: string, value: string) => (await approveIfPending(http, await http('POST', '/api/vms/scopes', tok('soc_manager', org), { kind, value, allow_port_scan: true, allow_vuln_scan: true, authorization_reference: 'LOA-2026-07 signed by asset owner', expires_at: future }), tok('executive', org))).data.scope;
     hostScope = await mk(A, 'domain', 'app.qa-alpha.test');
     netScope = await mk(A, 'cidr', '192.0.2.0/24');
     betaScope = await mk(B, 'cidr', '198.51.100.0/24');
@@ -148,7 +149,7 @@ test('policy: the engine never shows as available while OpenVAS is switched off'
 });
 
 test('policy: a scope that does not allow vulnerability scans is refused even when approved for OpenVAS', async () => {
-    const passive: { id: string } = (await http('POST', '/api/vms/scopes', tok('soc_manager'), { kind: 'ip', value: '192.0.2.50', allow_port_scan: true, allow_vuln_scan: false, authorization_reference: 'LOA ports only', expires_at: future })).data.scope;
+    const passive: { id: string } = (await approveIfPending(http, await http('POST', '/api/vms/scopes', tok('soc_manager'), { kind: 'ip', value: '192.0.2.50', allow_port_scan: true, allow_vuln_scan: false, authorization_reference: 'LOA ports only', expires_at: future }), tok('executive'))).data.scope;
     process.env.VMS_OPENVAS_SCOPE_IDS = passive.id;
     assert.ok((await queue(passive.id, ['192.0.2.50'])).status >= 400);
 });

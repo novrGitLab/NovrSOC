@@ -41,6 +41,7 @@ import { recordWorkerSeen, WORKER_ONLINE_SECONDS, PRESENCE_MISSING_MESSAGE } fro
 import { parseCidr } from '../lib/cidr';
 import { parseTarget } from '../lib/vmsScope';
 import { redactString } from '../lib/redact';
+import { inScanWindow, describeScanWindows, type ScanWindows } from '../lib/scanWindows';
 
 const router = Router();
 const digest = (s: string) => createHash('sha256').update(s).digest();
@@ -179,6 +180,20 @@ router.post('/claim', async (req, res) => {
     // worker would probe excluded names it discovers. Put it straight back, as it was.
     if (job) {
         const { data: sc } = await supabase.from('vms_scopes').select('*').eq('id', (job as Job & { scope_id?: string }).scope_id ?? '').maybeSingle();
+        // P27, again at hand-out: the scope must still be active and unexpired, and the moment inside
+        // its approved scan windows. Otherwise the job is cancelled with the reason and never reaches
+        // a scanner (a schedule queues it again in the next window).
+        const refusal = !sc || sc.status !== 'active' ? 'its scope is no longer active (revoked, pending or rejected)'
+            : Date.parse(String(sc.expires_at)) <= Date.now() ? 'its scope authorisation has expired'
+                : !inScanWindow((sc.scan_windows ?? null) as ScanWindows | null) ? `it is outside the approved scan windows (${describeScanWindows((sc.scan_windows ?? null) as ScanWindows | null)})`
+                    : null;
+        if (refusal) {
+            await supabase.from('vms_scan_jobs').update({ status: 'cancelled', finished_at: now, error: `Not run: ${refusal}` }).eq('id', job.id).eq('status', 'running');
+            logAudit({ user: `worker:${workerId}`, action: 'VMS_SCAN_REFUSED', resource: 'vms_scan_job', resource_id: job.id, org_id: job.org_id, ip: 'n/a', result: 'failed', severity: 'warning', details: `at claim: ${refusal}`.slice(0, 200) });
+            await recordWorkerSeen(workerId, { kinds, last_claim_at: now });
+            res.json({ job: null, notice: `A queued job was not run: ${refusal}` });
+            return;
+        }
         // The same for a CNII authorisation pinned to approved addresses (P18): worker 1.7.0 or later.
         const needs = [...(((sc?.exclusions as string[] | undefined) ?? []).length ? ['exclusions'] : []), ...(((sc?.pinned_addresses as string[] | undefined) ?? []).length ? ['pinned_addresses'] : [])];
         const has = needs.length ? await workerFeatures(workerId) : [];

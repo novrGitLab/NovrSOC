@@ -14,6 +14,7 @@ import { queueScan } from '../routes/vms';
 import { isEmailEnabled, sendVmsDigestEmail, socNotificationRecipients } from './email';
 import { wazuhFreshness } from './wazuhVulnSync';
 import { describe, createAssessment, type AssessmentRow } from './vmsAssessments';
+import { runVerificationSchedule } from './vmsVerification';
 
 export const OPEN_STATUSES = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'] as const;
 const PRIORITIES = ['P1', 'P2', 'P3', 'P4'] as const;
@@ -21,7 +22,9 @@ const DAY = 86_400_000;
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 
 // ── Schedules ─────────────────────────────────────────────────────────────────────────────────
-export interface ScheduleRun { id: string; org: string; outcome: 'queued' | 'existing' | 'skipped_in_progress' | 'disabled' | 'failed'; detail: string }
+export interface ScheduleRun { id: string; org: string; outcome: 'queued' | 'existing' | 'skipped_in_progress' | 'disabled' | 'failed' | 'waiting'; detail: string }
+/** How soon a schedule held back by a job limit tries again (P27). */
+export const LIMIT_RETRY_MS = 30 * 60_000;
 
 /** The first run time after `now` on the schedule's cadence (missed runs are not caught up). */
 export function nextRunAfter(nextRunAt: string, intervalHours: number, now = Date.now()): string {
@@ -68,6 +71,27 @@ export async function runDueSchedules(now = Date.now()): Promise<ScheduleRun[]> 
             }
             continue;
         }
+        // Verification rescans (P27): findings marked fixed inside the schedule's scope.
+        if (s.kind === 'verification') {
+            const v = await runVerificationSchedule(s);
+            const after = s.ends_at && Date.parse(next) > Date.parse(s.ends_at) ? s.ends_at : next;
+            if (v.blocked && v.retry_at !== undefined) {
+                // A window or a job limit: wait for it, without losing the run.
+                const wait = v.retry_at ?? new Date(now + LIMIT_RETRY_MS).toISOString();
+                const detail = `Waiting: ${v.blocked}${v.queued ? ` (${v.queued} queued first)` : ''}`;
+                await supabase.from('vms_scan_schedules').update({ next_run_at: wait, last_result: detail, updated_at: at }).eq('id', s.id);
+                out.push({ id: s.id, org: s.org_id, outcome: 'waiting', detail });
+            } else if (v.blocked) {
+                const detail = `Disabled: ${v.blocked}`;
+                await supabase.from('vms_scan_schedules').update({ enabled: false, last_result: detail, updated_at: at }).eq('id', s.id);
+                out.push({ id: s.id, org: s.org_id, outcome: 'disabled', detail });
+            } else {
+                const detail = `${v.queued} verification rescan(s) queued${v.skipped ? `, ${v.skipped} already waiting or not rescannable` : ''}`;
+                await supabase.from('vms_scan_schedules').update({ next_run_at: after, last_run_at: at, last_result: detail, updated_at: at }).eq('id', s.id);
+                out.push({ id: s.id, org: s.org_id, outcome: 'queued', detail });
+            }
+            continue;
+        }
         if (s.last_job_id) {
             const { data: prev } = await supabase.from('vms_scan_jobs').select('status').eq('id', s.last_job_id).maybeSingle();
             if (prev && (prev.status === 'queued' || prev.status === 'running')) {
@@ -82,6 +106,13 @@ export async function runDueSchedules(now = Date.now()): Promise<ScheduleRun[]> 
             const detail = r.existing ? 'The same scan was already queued; linked to it' : 'Queued';
             await supabase.from('vms_scan_schedules').update({ next_run_at: next, last_run_at: at, last_job_id: r.job.id, last_result: detail, updated_at: at }).eq('id', s.id);
             out.push({ id: s.id, org: s.org_id, outcome: r.existing ? 'existing' : 'queued', detail });
+        } else if ((r.status === 409 && r.retry_at !== undefined) || r.status === 429) {
+            // P27: outside the approved scan window, or a job limit reached — wait for the window (or
+            // retry shortly for a limit) instead of losing a whole interval.
+            const wait = r.retry_at ?? new Date(now + LIMIT_RETRY_MS).toISOString();
+            const detail = `Waiting: ${r.error}`;
+            await supabase.from('vms_scan_schedules').update({ next_run_at: wait, last_result: detail, updated_at: at }).eq('id', s.id);
+            out.push({ id: s.id, org: s.org_id, outcome: 'waiting', detail });
         } else if (r.status === 400 || r.status === 403) {
             // The scope no longer allows it: stop, say why, and let a person decide.
             const detail = `Disabled: ${r.error}`;

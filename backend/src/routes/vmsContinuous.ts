@@ -39,7 +39,35 @@ router.get('/schedules', requirePermission('vms:read'), async (req: AuthRequest,
     res.json({ schedules: data ?? [] });
 });
 
+// Verification rescans on a schedule (phase P27): findings marked fixed inside the scope entry.
+const NewVerificationSchedule = z.object({
+    scope_id: z.string().uuid(), kind: z.literal('verification'),
+    targets: z.array(z.string().max(253)).max(256).optional(),
+    interval_hours: z.number().int().min(24).max(2160),
+    first_run_at: z.string().datetime().optional(),
+}).strict();
+
 router.post('/schedules', requirePermission('vms:scope'), async (req: AuthRequest, res) => {
+    if (req.body?.kind === 'verification') {
+        const pv = NewVerificationSchedule.safeParse(req.body);
+        if (!pv.success) { res.status(400).json({ error: 'Body must be { scope_id, kind: "verification", targets?, interval_hours: 24..2160, first_run_at? (ISO) }' }); return; }
+        const org = requestOrg(req);
+        const { data: scope } = await getSupabase()!.from('vms_scopes').select('*').eq('id', pv.data.scope_id).eq('org_id', org).maybeSingle();
+        if (!scope || scope.status !== 'active' || Date.parse(scope.expires_at) <= Date.now()) { res.status(400).json({ error: 'That scope is not active (pending, revoked, expired or not found)' }); return; }
+        if (!scope.allow_vuln_scan) { res.status(403).json({ error: 'This scope does not authorise vulnerability scanning' }); return; }
+        const first = pv.data.first_run_at ? Date.parse(pv.data.first_run_at) : Date.now();
+        if (first > Date.parse(scope.expires_at)) { res.status(400).json({ error: 'The first run would be after the scope expires' }); return; }
+        const { data, error } = await getSupabase()!.from('vms_scan_schedules').insert({
+            org_id: org, scope_id: scope.id, kind: 'verification', targets: pv.data.targets ?? [], interval_hours: pv.data.interval_hours, next_run_at: new Date(first).toISOString(), created_by: actor(req),
+        }).select('*').single();
+        if (error) {
+            if (/kind_check/.test(error.message)) { res.status(503).json({ error: 'Verification schedules are not set up yet (run sql/2026-11-01_p27_vms_onboarding.sql)' }); return; }
+            fail(res, error); return;
+        }
+        logAudit({ user: actor(req), action: 'VMS_SCHEDULE_CREATED', resource: 'vms_scan_schedule', resource_id: data.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', details: `verification every ${pv.data.interval_hours} h on scope ${scope.id}` });
+        res.status(201).json({ schedule: data });
+        return;
+    }
     const p = NewSchedule.safeParse(req.body);
     if (!p.success) { res.status(400).json({ error: 'Body must be { scope_id, kind, targets?, ports?, interval_hours: 24..2160, first_run_at? (ISO) }' }); return; }
     const org = requestOrg(req);
@@ -69,8 +97,14 @@ router.patch('/schedules/:id', requirePermission('vms:scope'), async (req: AuthR
     if (!s) { res.status(404).json({ error: 'Schedule not found' }); return; }
     const patch: Record<string, unknown> = { ...p.data, updated_at: new Date().toISOString() };
     if (p.data.enabled === true && !s.enabled) {
-        const v = await validateScan(org, { scope_id: s.scope_id, kind: s.kind, targets: s.targets?.length ? s.targets : undefined, ports: s.ports ?? undefined });
-        if (!v.ok) { res.status(v.status).json({ error: `Cannot re-enable: ${v.error}` }); return; }
+        if (s.kind === 'verification') {
+            // P27: a verification schedule needs an active scope that permits vulnerability testing.
+            const { data: sc } = await supabase.from('vms_scopes').select('status, expires_at, allow_vuln_scan').eq('id', s.scope_id).eq('org_id', org).maybeSingle();
+            if (!sc || sc.status !== 'active' || Date.parse(sc.expires_at) <= Date.now() || !sc.allow_vuln_scan) { res.status(400).json({ error: 'Cannot re-enable: its scope is not active or does not permit vulnerability testing' }); return; }
+        } else {
+            const v = await validateScan(org, { scope_id: s.scope_id, kind: s.kind, targets: s.targets?.length ? s.targets : undefined, ports: s.ports ?? undefined });
+            if (!v.ok) { res.status(v.status).json({ error: `Cannot re-enable: ${v.error}` }); return; }
+        }
         if (Date.parse(s.next_run_at) < Date.now()) patch.next_run_at = new Date().toISOString();
         patch.last_result = `Re-enabled by ${actor(req)}`;
     }

@@ -21,7 +21,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import type { AuthRequest } from '../middleware/auth';
-import { requirePermission, requestOrg } from '../lib/permissions';
+import { randomUUID } from 'crypto';
+import { requirePermission, requestOrg, hasPermission } from '../lib/permissions';
+import { parseScanWindows, inScanWindow, nextScanWindow, describeScanWindows, type ScanWindows } from '../lib/scanWindows';
+import { permitsActiveScanning, pendingGroup, decideGroup, DECLARATION_VERSION, sha256 } from '../services/vmsAuthorisation';
+import { authorisationFor, scanTargetOf, scopesForAuthorisation } from '../services/vmsImport';
 import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid } from '../services/cases';
 import { logAudit } from '../lib/audit';
@@ -46,6 +50,12 @@ const missing = (e: { message?: string } | null) => !!e && /vms_/.test(e.message
 const fail = (res: import('express').Response, e: { message?: string }) => res.status(missing(e) ? 503 : 502).json({ error: missing(e) ? P4_MISSING : dbErrorMessage(e) });
 const actor = (req: AuthRequest) => req.user?.email ?? 'unknown';
 const days = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+
+/** Where an asset came from, as labels: Wazuh, manual / CSV import, or scanning. */
+export function sourceLabels(sources: string[]): string[] {
+    const map: Record<string, string> = { wazuh: 'Wazuh', manual: 'Manual', csv: 'CSV import' };
+    return [...new Set(sources.map((s) => map[s] ?? 'Discovered'))];
+}
 
 export async function activeScopes(org: string): Promise<ScopeEntry[]> {
     const { data, error } = await getSupabase()!.from('vms_scopes').select('*').eq('org_id', org).eq('status', 'active');
@@ -131,8 +141,13 @@ router.get('/overview', requirePermission('vms:read'), async (req: AuthRequest, 
 });
 
 // ── Scope ───────────────────────────────────────────────────────────────────────────────────
+// Phase P27: an entry that permits active scanning is created `pending` and authorises nothing
+// until the organisation's administrator approves it (services/vmsAuthorisation.ts). Passive-only
+// entries (CNII Watch monitoring registrations, AS numbers) are registered at once, as before.
 router.get('/scopes', requirePermission('vms:read'), async (req: AuthRequest, res) => {
-    const { data, error } = await getSupabase()!.from('vms_scopes').select('*').eq('org_id', requestOrg(req)).order('approved_at', { ascending: false });
+    let q = getSupabase()!.from('vms_scopes').select('*').eq('org_id', requestOrg(req));
+    if (typeof req.query.status === 'string' && ['pending', 'active', 'revoked', 'rejected'].includes(req.query.status)) q = q.eq('status', req.query.status);
+    const { data, error } = await q.order('approved_at', { ascending: false, nullsFirst: true });
     if (error) { fail(res, error); return; }
     res.json({ scopes: data ?? [] });
 });
@@ -149,45 +164,150 @@ const NewScope = z.object({
     authorization_reference: z.string().trim().min(3).max(300),
     expires_at: z.string().refine((v) => !Number.isNaN(Date.parse(v)), 'expires_at must be a date'),
     notes: z.string().trim().max(2000).optional(),
+    // P27: when scans may run, and how many may be queued or running at once under this entry.
+    scan_windows: z.unknown().optional(),
+    max_active_jobs: z.number().int().min(1).max(20).optional(),
 }).strict();
+type NewScopeT = z.infer<typeof NewScope>;
+
+/** Validates and stores one request's entries: passive-only at once, active ones pending approval. */
+async function createScopes(req: AuthRequest, items: NewScopeT[]): Promise<{ ok: true; scopes: Record<string, unknown>[]; groupId: string; pending: boolean } | { ok: false; status: number; error: string }> {
+    const org = requestOrg(req);
+    const rows: Record<string, unknown>[] = [];
+    const groupId = randomUUID();
+    const now = new Date().toISOString();
+    const seen = new Set<string>();
+    for (const item of items) {
+        const v = validateScopeValue(item.kind, item.value);
+        if (!v.ok) return { ok: false, status: 400, error: v.error };
+        if (seen.has(`${item.kind}:${v.value}`)) return { ok: false, status: 400, error: `${v.value} is listed twice` };
+        seen.add(`${item.kind}:${v.value}`);
+        const exclusions: string[] = [];
+        for (const raw of item.exclusions) {
+            const x = normalizeExclusion(raw);
+            if (!x) return { ok: false, status: 400, error: `Not a valid exclusion (host, .subdomain, IP or CIDR): ${String(raw).slice(0, 80)}` };
+            exclusions.push(x);
+        }
+        // An AS number covers no host or address: it registers the network for passive monitoring.
+        const allowDiscovery = item.kind === 'asn' ? false : item.allow_discovery;
+        if (item.kind === 'asn' && (item.allow_port_scan || item.allow_vuln_scan)) return { ok: false, status: 400, error: 'An AS number is registered for passive monitoring only; add its ranges as CIDR entries to scan them' };
+        const exp = Date.parse(item.expires_at);
+        if (exp <= Date.now()) return { ok: false, status: 400, error: 'expires_at must be in the future' };
+        if (exp > Date.now() + MAX_SCOPE_DAYS * 86_400_000) return { ok: false, status: 400, error: `Authorisation can last at most ${MAX_SCOPE_DAYS} days; renew it when it expires` };
+        const w = parseScanWindows(item.scan_windows);
+        if (!w.ok) return { ok: false, status: 400, error: w.error };
+        const active = permitsActiveScanning({ kind: item.kind, allow_discovery: allowDiscovery, allow_port_scan: item.allow_port_scan, allow_vuln_scan: item.allow_vuln_scan });
+        rows.push({
+            org_id: org, kind: item.kind, value: v.value, include_subdomains: item.kind === 'domain' ? item.include_subdomains : false,
+            allow_port_scan: item.allow_port_scan, allow_vuln_scan: item.allow_vuln_scan, authorization_reference: item.authorization_reference,
+            // Only written when false: rows without the column (before sql/2026-10-17_p9_cnii.sql) mean true.
+            ...(allowDiscovery ? {} : { allow_discovery: false }),
+            ...(exclusions.length ? { exclusions: [...new Set(exclusions)] } : {}),
+            notes: item.notes ?? null, expires_at: new Date(exp).toISOString(),
+            ...(active
+                // Pending: authorises nothing until the organisation approves it.
+                ? { status: 'pending', approved_by: null, approved_at: null, requested_by: actor(req), requested_at: now, request_group_id: groupId, ...(w.value ? { scan_windows: w.value } : {}), ...(item.max_active_jobs ? { max_active_jobs: item.max_active_jobs } : {}) }
+                // Passive-only: registered at once, as before P27 (written without the P27 columns, so it
+                // also works before the migration).
+                : { approved_by: actor(req), approved_at: now }),
+        });
+    }
+    const pending = rows.some((r) => r.status === 'pending');
+    if (pending && rows.some((r) => r.status !== 'pending')) return { ok: false, status: 400, error: 'Request passive-only and active entries separately' };
+    // One open request per target: a second would leave the approver two declarations for the same systems.
+    if (pending) {
+        const { data: open } = await getSupabase()!.from('vms_scopes').select('kind, value').eq('org_id', org).eq('status', 'pending').in('value', rows.map((r) => r.value as string));
+        const clash = (open ?? []).find((o) => rows.some((r) => r.kind === o.kind && r.value === o.value));
+        if (clash) return { ok: false, status: 409, error: `${clash.value} is already waiting for approval; approve or reject that request first` };
+    }
+    const { data, error } = await getSupabase()!.from('vms_scopes').insert(rows).select('*');
+    if (error) {
+        if (/duplicate|23505/.test(error.message)) return { ok: false, status: 409, error: 'That target is already in active scope' };
+        if (/status_check|requested_by|request_group_id|scan_windows|max_active_jobs/.test(error.message)) return { ok: false, status: 503, error: 'Scan authorisation requests are not set up yet (run sql/2026-11-01_p27_vms_onboarding.sql)' };
+        return { ok: false, status: missing(error) ? 503 : 502, error: missing(error) ? P4_MISSING : dbErrorMessage(error) };
+    }
+    for (const s of data ?? []) {
+        logAudit({ user: actor(req), action: pending ? 'VMS_SCOPE_REQUESTED' : 'VMS_SCOPE_REGISTERED_PASSIVE', resource: 'vms_scope', resource_id: s.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', severity: pending ? 'info' : 'warning',
+            details: `${s.kind} ${s.value} discovery=${s.allow_discovery !== false} ports=${s.allow_port_scan} vuln=${s.allow_vuln_scan} ref=${s.authorization_reference}${pending ? ` group=${groupId}` : ''}`.slice(0, 200) });
+    }
+    if (!pending) reevaluate(org);
+    return { ok: true, scopes: data ?? [], groupId, pending };
+}
 
 router.post('/scopes', requirePermission('vms:scope'), async (req: AuthRequest, res) => {
     const p = NewScope.safeParse(req.body);
     if (!p.success) { res.status(400).json({ error: `Invalid scope: ${p.error.issues[0]?.path.join('.') || ''} ${p.error.issues[0]?.message ?? ''}`.trim() }); return; }
-    const v = validateScopeValue(p.data.kind, p.data.value);
-    if (!v.ok) { res.status(400).json({ error: v.error }); return; }
-    const exclusions: string[] = [];
-    for (const raw of p.data.exclusions) {
-        const x = normalizeExclusion(raw);
-        if (!x) { res.status(400).json({ error: `Not a valid exclusion (host, .subdomain, IP or CIDR): ${String(raw).slice(0, 80)}` }); return; }
-        exclusions.push(x);
-    }
-    // An AS number covers no host or address: it registers the network for passive monitoring.
-    const allowDiscovery = p.data.kind === 'asn' ? false : p.data.allow_discovery;
-    if (p.data.kind === 'asn' && (p.data.allow_port_scan || p.data.allow_vuln_scan)) { res.status(400).json({ error: 'An AS number is registered for passive monitoring only; add its ranges as CIDR entries to scan them' }); return; }
-    const exp = Date.parse(p.data.expires_at);
-    if (exp <= Date.now()) { res.status(400).json({ error: 'expires_at must be in the future' }); return; }
-    if (exp > Date.now() + MAX_SCOPE_DAYS * 86_400_000) { res.status(400).json({ error: `Authorisation can last at most ${MAX_SCOPE_DAYS} days; renew it when it expires` }); return; }
-    const org = requestOrg(req);
-    const { data, error } = await getSupabase()!.from('vms_scopes').insert({
-        org_id: org, kind: p.data.kind, value: v.value, include_subdomains: p.data.kind === 'domain' ? p.data.include_subdomains : false,
-        allow_port_scan: p.data.allow_port_scan, allow_vuln_scan: p.data.allow_vuln_scan, authorization_reference: p.data.authorization_reference,
-        // Only written when false: rows without the column (before sql/2026-10-17_p9_cnii.sql) mean true.
-        ...(allowDiscovery ? {} : { allow_discovery: false }),
-        ...(exclusions.length ? { exclusions: [...new Set(exclusions)] } : {}),
-        notes: p.data.notes ?? null, approved_by: actor(req), expires_at: new Date(exp).toISOString(),
-    }).select('*').single();
-    if (error) {
-        if (/duplicate|23505/.test(error.message)) { res.status(409).json({ error: 'That target is already in active scope' }); return; }
-        fail(res, error); return;
-    }
-    logAudit({ user: actor(req), action: 'VMS_SCOPE_APPROVED', resource: 'vms_scope', resource_id: data.id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', severity: 'warning',
-        details: `${p.data.kind} ${v.value} discovery=${allowDiscovery} ports=${p.data.allow_port_scan} vuln=${p.data.allow_vuln_scan}${exclusions.length ? ` excl=${exclusions.length}` : ''} ref=${p.data.authorization_reference}`.slice(0, 200) });
-    reevaluate(org);
-    res.status(201).json({ scope: data });
+    const r = await createScopes(req, [p.data]);
+    if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+    res.status(201).json({ scope: r.scopes[0], ...(r.pending ? { approval_required: true, request_group_id: r.groupId } : {}) });
 });
 
-router.post('/scopes/:id/revoke', requirePermission('vms:scope'), async (req: AuthRequest, res) => {
+// Several entries approved together (one declaration): { entries: [scope, …] }.
+router.post('/scope-requests', requirePermission('vms:scope'), async (req: AuthRequest, res) => {
+    const list = z.object({ entries: z.array(NewScope).min(1).max(50) }).strict().safeParse(req.body);
+    if (!list.success) { res.status(400).json({ error: `Invalid request: ${list.error.issues[0]?.path.join('.') || ''} ${list.error.issues[0]?.message ?? ''}`.trim() }); return; }
+    const r = await createScopes(req, list.data.entries);
+    if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+    res.status(201).json({ scopes: r.scopes, approval_required: r.pending, request_group_id: r.pending ? r.groupId : null });
+});
+
+// A request as its approver sees it, with the exact declaration they would accept.
+router.get('/scope-requests/:group', requirePermission('vms:read'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.group)) { res.status(404).json({ error: 'Scope request not found' }); return; }
+    const g = await pendingGroup(requestOrg(req), req.params.group);
+    if (!g.ok) { res.status(g.status).json({ error: g.error }); return; }
+    res.json({ entries: g.entries, organisation_name: g.orgName, declaration: g.declaration, declaration_version: DECLARATION_VERSION, declaration_sha256: sha256(g.declaration) });
+});
+
+const Approve = z.object({
+    method: z.enum(['in_platform', 'offline_document']).default('in_platform'),
+    authority_name: z.string().trim().min(3).max(120),
+    authority_title: z.string().trim().min(2).max(120),
+    organisation_name: z.string().trim().min(1).max(200),
+    declaration_version: z.string(),
+    declaration_accepted: z.literal(true),
+    signed_document_ref: z.string().trim().max(300).optional(),
+}).strict();
+const decider = (req: AuthRequest) => ({ userId: req.user?.sub ?? 'unknown', email: req.user?.email ?? 'unknown', role: req.user?.role ?? 'unknown', org: req.user?.org_id ?? '', ip: req.ip ?? 'unknown', userAgent: req.get('user-agent') ?? '' });
+
+router.post('/scope-requests/:group/approve', requirePermission('vms:authorize'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.group)) { res.status(404).json({ error: 'Scope request not found' }); return; }
+    const p = Approve.safeParse(req.body);
+    if (!p.success) { res.status(400).json({ error: 'Body must be { method?, authority_name, authority_title, organisation_name, declaration_version, declaration_accepted: true, signed_document_ref? }' }); return; }
+    const org = requestOrg(req);
+    const r = await decideGroup(org, req.params.group, decider(req), 'approved', p.data);
+    if (!r.ok) {
+        logAudit({ user: actor(req), action: 'VMS_SCOPE_APPROVAL_REFUSED', resource: 'vms_scope_request', resource_id: req.params.group, org_id: org, ip: req.ip ?? 'unknown', result: 'failed', severity: 'warning', details: r.error.slice(0, 200) });
+        res.status(r.status).json({ error: r.error }); return;
+    }
+    logAudit({ user: actor(req), action: 'VMS_SCOPE_APPROVED', resource: 'vms_scope_request', resource_id: req.params.group, org_id: org, ip: req.ip ?? 'unknown', result: 'success', severity: 'warning',
+        details: `${r.scopes.length} entr${r.scopes.length === 1 ? 'y' : 'ies'} by ${p.data.authority_name} (${p.data.authority_title}), ${p.data.method}, approval ${r.approvalId}${r.superseded.length ? `, superseding ${r.superseded.length}` : ''}`.slice(0, 200) });
+    reevaluate(org);
+    res.json({ approval_id: r.approvalId, scopes: r.scopes, superseded: r.superseded });
+});
+
+router.post('/scope-requests/:group/reject', requirePermission('vms:authorize'), async (req: AuthRequest, res) => {
+    if (!isUuid(req.params.group)) { res.status(404).json({ error: 'Scope request not found' }); return; }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : '';
+    const org = requestOrg(req);
+    const r = await decideGroup(org, req.params.group, decider(req), 'rejected', { reason, method: req.body?.method === 'offline_document' ? 'offline_document' : 'in_platform', signed_document_ref: typeof req.body?.signed_document_ref === 'string' ? req.body.signed_document_ref : undefined });
+    if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+    logAudit({ user: actor(req), action: 'VMS_SCOPE_REJECTED', resource: 'vms_scope_request', resource_id: req.params.group, org_id: org, ip: req.ip ?? 'unknown', result: 'success', details: reason.slice(0, 200) });
+    res.json({ approval_id: r.approvalId, rejected: r.scopes.length });
+});
+
+// The organisation's authorisation decisions (immutable records).
+router.get('/scope-approvals', requirePermission('vms:read'), async (req: AuthRequest, res) => {
+    const { data, error } = await getSupabase()!.from('vms_scope_approvals').select('id, request_group_id, scope_ids, decision, method, decided_by_email, decided_by_role, authority_name, authority_title, organisation_name, signed_document_ref, declaration_version, declaration_sha256, snapshot, reason, decided_at')
+        .eq('org_id', requestOrg(req)).order('decided_at', { ascending: false }).limit(200);
+    if (error) { res.status(/vms_scope_approvals/.test(error.message) ? 503 : 502).json({ error: /vms_scope_approvals/.test(error.message) ? 'Scope approval is not set up yet (run sql/2026-11-01_p27_vms_onboarding.sql)' : dbErrorMessage(error) }); return; }
+    res.json({ approvals: data ?? [] });
+});
+
+// Revoking is open to the managers who request scope and to the organisation that granted it.
+const revokers = (req: AuthRequest, res: import('express').Response, next: import('express').NextFunction) =>
+    (hasPermission(req.user?.role, 'vms:authorize') ? requirePermission('vms:authorize') : requirePermission('vms:scope'))(req, res, next);
+router.post('/scopes/:id/revoke', revokers, async (req: AuthRequest, res) => {
     if (!isUuid(req.params.id)) { res.status(404).json({ error: 'Scope not found' }); return; }
     const org = requestOrg(req);
     const supabase = getSupabase()!;
@@ -293,8 +413,26 @@ export const JOB_PRIORITY = { verification: 80, manual: 60, event: 50, schedule:
 export type JobTrigger = keyof typeof JOB_PRIORITY;
 
 /** Queues a scan after checking every target against scope. Shared with the scheduler (Release 3). */
+// P27 job limits (queued + running at once). Generous defaults so existing automation is not cut
+// short; tighten per scope (max_active_jobs, approved with it) or platform-wide by environment.
+export const ORG_ACTIVE_JOB_LIMIT = () => Math.max(1, Number(process.env.VMS_MAX_ACTIVE_JOBS_PER_ORG) || 50);
+export const SCOPE_ACTIVE_JOB_LIMIT = () => Math.max(1, Number(process.env.VMS_MAX_ACTIVE_JOBS_PER_SCOPE) || 20);
+/** Why another job may not be queued now (a limit is reached), or null. */
+export async function activeJobLimits(org: string, entry: ScopeEntry): Promise<string | null> {
+    const supabase = getSupabase()!;
+    const [o, s] = await Promise.all([
+        supabase.from('vms_scan_jobs').select('id', { count: 'exact', head: true }).eq('org_id', org).in('status', ['queued', 'running']),
+        supabase.from('vms_scan_jobs').select('id', { count: 'exact', head: true }).eq('org_id', org).eq('scope_id', entry.id).in('status', ['queued', 'running']),
+    ]);
+    const orgMax = ORG_ACTIVE_JOB_LIMIT();
+    const scopeMax = (entry as ScopeEntry & { max_active_jobs?: number | null }).max_active_jobs ?? SCOPE_ACTIVE_JOB_LIMIT();
+    if ((o.count ?? 0) >= orgMax) return `Job limit reached: ${o.count} scans are already queued or running for this organisation (limit ${orgMax})`;
+    if ((s.count ?? 0) >= scopeMax) return `Job limit reached: ${s.count} scans are already queued or running under this scope entry (limit ${scopeMax})`;
+    return null;
+}
+
 export async function queueScan(org: string, by: string, input: z.infer<typeof NewScan>, extra: { schedule_id?: string; purpose?: 'assessment' | 'verification'; options?: Record<string, unknown>; assessment_id?: string; trigger?: JobTrigger } = {}):
-    Promise<{ ok: true; job: Record<string, unknown>; existing: boolean } | { ok: false; status: number; error: string }> {
+    Promise<{ ok: true; job: Record<string, unknown>; existing: boolean } | { ok: false; status: number; error: string; retry_at?: string | null }> {
     const supabase = getSupabase()!;
     const v = await validateScan(org, input, extra.options);
     if (!v.ok) return v;
@@ -311,6 +449,15 @@ export async function queueScan(org: string, by: string, input: z.infer<typeof N
     const { data: open } = await supabase.from('vms_scan_jobs').select('*').eq('org_id', org).eq('scope_id', entry.id).eq('kind', input.kind).in('status', ['queued', 'running']);
     const dup = (open ?? []).find((j) => JSON.stringify(j.targets) === JSON.stringify(uniq) && JSON.stringify(j.options ?? {}) === JSON.stringify(options));
     if (dup) return { ok: true, job: dup, existing: true };
+    // P27: only inside the scope's approved scan windows (passive collection is not scanning).
+    const windows = (entry as ScopeEntry & { scan_windows?: ScanWindows | null }).scan_windows ?? null;
+    if (activityOf(input.kind) !== 'passive' && !inScanWindow(windows)) {
+        const nextAt = nextScanWindow(windows);
+        return { ok: false, status: 409, error: `Outside the approved scan windows (${describeScanWindows(windows)})`, retry_at: nextAt ? new Date(nextAt).toISOString() : null };
+    }
+    // P27: job limits — queued + running jobs per organisation and per scope entry.
+    const lim = await activeJobLimits(org, entry);
+    if (lim) return { ok: false, status: 429, error: lim, retry_at: null };
     const trigger: JobTrigger = extra.purpose === 'verification' ? 'verification' : extra.trigger ?? (extra.schedule_id ? 'schedule' : 'manual');
     const row = { org_id: org, scope_id: entry.id, kind: input.kind, targets: uniq, options, requested_by: by, schedule_id: extra.schedule_id ?? null, purpose: extra.purpose ?? 'assessment', ...(extra.assessment_id ? { assessment_id: extra.assessment_id } : {}) };
     let ins = await supabase.from('vms_scan_jobs').insert({ ...row, priority: JOB_PRIORITY[trigger] }).select('*').single();
@@ -325,7 +472,7 @@ router.post('/scans', requirePermission('vms:scan'), async (req: AuthRequest, re
     const p = NewScan.safeParse(req.body);
     if (!p.success) { res.status(400).json({ error: 'Body must be { scope_id, kind: passive_osint|discovery|ports|vuln_nuclei|vuln_openvas, targets?: [host or IP], ports?: "top-100" | "top-1000" | "22,80,8000-8100" }' }); return; }
     const r = await queueScan(requestOrg(req), actor(req), p.data);
-    if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
+    if (!r.ok) { res.status(r.status).json({ error: r.error, ...(r.retry_at !== undefined ? { retry_at: r.retry_at } : {}) }); return; }
     // Queued either way; the warning says up front if no connected worker can take it.
     const warning = jobAttention(r.job as { kind: string; status: string; targets: unknown }, await loadScannerStatus());
     res.status(r.existing ? 200 : 201).json({ scan: r.job, existing: r.existing, warning });
@@ -366,7 +513,15 @@ router.get('/assets', requirePermission('vms:read'), async (req: AuthRequest, re
         if (typeof f.risk_score === 'number') e.max_risk = Math.max(e.max_risk ?? 0, f.risk_score);
         per.set(f.asset_id, e);
     }
-    res.json({ assets: (data ?? []).map((a) => ({ ...a, findings: per.get(a.id) ?? { open: 0, by_severity: {}, max_risk: null } })) });
+    // P27: whether each asset is inside an approved scope (and for which activities), only in a pending
+    // request, or not authorised — and where it came from. Additive fields.
+    const scopes = await scopesForAuthorisation(requestOrg(req));
+    res.json({ assets: (data ?? []).map((a) => ({
+        ...a,
+        findings: per.get(a.id) ?? { open: 0, by_severity: {}, max_risk: null },
+        authorization: authorisationFor(scanTargetOf(a), scopes.active, scopes.pending),
+        sources: sourceLabels(a.discovery_sources ?? []),
+    })) });
 });
 
 // Relationships around an asset, from stored records only, each labelled confirmed/observed/inferred.

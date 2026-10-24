@@ -28,10 +28,9 @@ import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid, createCase, addTimeline } from '../services/cases';
 import { logAudit } from '../lib/audit';
 import { FINDING_STATUSES, setFindingStatus, type FindingStatus } from '../services/vmsFindings';
-import { queueScan, activeScopes } from './vms';
-import { coveringScope, parseTarget } from '../lib/vmsScope';
 import { correlateFindings, type CorrFinding } from '../services/vmsCorrelation';
 import { wazuhFreshness } from '../services/wazuhVulnSync';
+import { requestVerification } from '../services/vmsVerification';
 
 const router = Router();
 const P5_MISSING = 'Findings are not set up yet (run sql/2026-10-14_p5_vms_findings.sql)';
@@ -184,19 +183,10 @@ router.post('/findings/:id/verify', requirePermission('vms:scan'), async (req: A
     const supabase = getSupabase()!;
     const { data: f } = await supabase.from('vms_findings').select('*').eq('id', req.params.id).eq('org_id', org).maybeSingle();
     if (!f) { res.status(404).json({ error: 'Finding not found' }); return; }
-    if (f.status !== 'fixed_pending_verification') { res.status(409).json({ error: 'Mark the finding fixed first; verification checks that fix' }); return; }
-    if (f.source_class === 'wazuh') { res.json({ queued: false, message: 'Wazuh findings are verified by the next Wazuh vulnerability sync (hourly): it is closed only if Wazuh no longer reports it.' }); return; }
-    const target = parseTarget(f.asset_value);
-    const scopes = await activeScopes(org);
-    const scope = target ? coveringScope(target, scopes, 'vuln') : null;
-    if (!scope) { res.status(409).json({ error: 'This asset is no longer in active vulnerability-scan scope, so it cannot be rescanned' }); return; }
-    const kind = (f.detected_by ?? []).includes('nuclei') ? 'vuln_nuclei' : 'vuln_openvas';
-    const r = await queueScan(org, actor(req), { scope_id: scope.id, kind, targets: [f.asset_value] }, {
-        purpose: 'verification', options: { finding_ids: [f.id], ...(kind === 'vuln_nuclei' ? { templates: [f.rule_id] } : {}), ...(f.port ? { ports: String(f.port) } : {}) },
-    });
-    if (!r.ok) { res.status(r.status).json({ error: r.error }); return; }
-    await supabase.from('vms_findings').update({ verification_job_id: r.job.id as string }).eq('id', f.id);
-    await addEvent(org, f.id, actor(req), 'verification_queued', null, String(r.job.id), `${kind} on ${f.asset_value}`);
+    // Shared with 'verification' schedules (services/vmsVerification.ts, phase P27).
+    const r = await requestVerification(org, actor(req), f);
+    if (!r.ok) { res.status(r.status).json({ error: r.error, ...(r.retry_at ? { retry_at: r.retry_at } : {}) }); return; }
+    if (!r.queued) { res.json({ queued: false, message: r.message }); return; }
     res.status(201).json({ queued: true, scan: r.job });
 });
 

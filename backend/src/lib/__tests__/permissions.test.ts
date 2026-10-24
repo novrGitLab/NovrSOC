@@ -27,10 +27,13 @@ before(() => {
 });
 after(() => { server.close(); });
 
-test('role map: managers hold every permission; executives only read VMS, intelligence and their own CNII profile; portal_user only the client VMS and client security views', () => {
+test('role map: super_admin holds every permission, soc_manager all but approving scan authorisation; executives read VMS, intelligence and their own CNII profile and approve their scan authorisation; portal_user only the client VMS and client security views', () => {
     assert.deepEqual([...ROLE_PERMISSIONS.super_admin], [...PERMISSIONS]);
-    assert.deepEqual([...ROLE_PERMISSIONS.soc_manager], [...PERMISSIONS]);
-    assert.deepEqual([...ROLE_PERMISSIONS.executive], ['vms:read', 'intel:read', 'cnii:read']);
+    // P27: managers request scan authorisation; only the organisation (executive) or a super_admin approves it.
+    assert.deepEqual([...ROLE_PERMISSIONS.soc_manager], PERMISSIONS.filter((p) => p !== 'vms:authorize'));
+    assert.deepEqual([...ROLE_PERMISSIONS.super_admin], [...PERMISSIONS]);
+    assert.deepEqual([...ROLE_PERMISSIONS.executive], ['vms:read', 'intel:read', 'cnii:read', 'vms:authorize']);
+    assert.ok(!ROLE_PERMISSIONS.analyst.includes('vms:authorize'));
     assert.ok(!ROLE_PERMISSIONS.executive.some((p) => /^(alerts|cases|response|handover):/.test(p)), 'no SecOps access for executives');
     // Client portal: its own organisation's VMS view and security monitoring (P24), nothing else.
     assert.deepEqual([...ROLE_PERMISSIONS.portal_user], ['vms:client', 'secops:client']);

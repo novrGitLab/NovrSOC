@@ -114,7 +114,9 @@ test('claim: an empty queue still records the worker; a claimed job is recorded 
     const w = db.tables.vms_workers[0];
     assert.ok(w.last_claim_at && w.last_seen_at);
     assert.equal(w.last_job_id ?? null, null);
-    const job = { id: randomUUID(), org_id: 'org-a', kind: 'discovery', status: 'queued', targets: ['a.test'], cancel_requested: false };
+    const scope = { id: randomUUID(), org_id: 'org-a', kind: 'domain', value: 'a.test', status: 'active', allow_discovery: true, expires_at: new Date(Date.now() + 86_400_000).toISOString() };
+    db.tables.vms_scopes.push(scope);
+    const job = { id: randomUUID(), org_id: 'org-a', scope_id: scope.id, kind: 'discovery', status: 'queued', targets: ['a.test'], cancel_requested: false };
     db.tables.vms_scan_jobs.push(job);
     const got = await claim({ worker_id: 'vps3-demo-worker', kinds: ['discovery'] });
     assert.equal(got.data.job.id, job.id);

@@ -24,7 +24,7 @@ export type ScopeKind = 'domain' | 'ip' | 'cidr' | 'asn';
 export type Activity = 'passive' | 'discovery' | 'ports' | 'vuln';
 export interface ScopeEntry {
     id: string; org_id: string; kind: ScopeKind; value: string; include_subdomains: boolean;
-    allow_port_scan: boolean; allow_vuln_scan: boolean; status: 'active' | 'revoked'; expires_at: string;
+    allow_port_scan: boolean; allow_vuln_scan: boolean; status: 'active' | 'revoked' | 'pending' | 'rejected'; expires_at: string;
     /** Absent on rows written before P9: treated as true, the meaning those rows were approved with. */
     allow_discovery?: boolean;
     /** Never touched even though the entry covers them (P13; absent before that SQL). */

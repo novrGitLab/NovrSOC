@@ -13,6 +13,7 @@ import { randomUUID } from 'crypto';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { requireAuth } from '../../middleware/auth';
+import { approveIfPending } from './vmsApproveHelper';
 import { startFakePostgrest, type FakePostgrest, type Row } from './fakePostgrest';
 import vmsRouter from '../vms';
 import vmsWorkerRouter from '../vmsWorker';
@@ -41,7 +42,7 @@ const worker = (path: string, body: unknown) => http('POST', `/api/vms/worker${p
 
 before(async () => {
     db = await startFakePostgrest(
-        { vms_scopes: [], vms_scan_jobs: [], vms_assets: [], vms_services: [], vms_technologies: [], vms_asset_events: [] },
+        { vms_scopes: [], vms_scan_jobs: [], vms_assets: [], vms_services: [], vms_technologies: [], vms_asset_events: [], vms_scope_approvals: [], vms_scan_schedules: [] },
         { 'vms_asset_events.vms_assets': 'asset_id', 'vms_scan_jobs.vms_scopes': 'scope_id' },
         {
             vms_scopes: { status: 'active', approved_at: new Date().toISOString() },
@@ -77,8 +78,13 @@ beforeEach(() => {
     for (const t of ['vms_scopes', 'vms_scan_jobs', 'vms_assets', 'vms_services', 'vms_technologies', 'vms_asset_events']) db.tables[t].length = 0;
     process.env.VMS_WORKER_TOKEN = WT;
 });
-const newScope = (body: Record<string, unknown>, bearer = MGR) =>
+const requestScope = (body: Record<string, unknown>, bearer = MGR) =>
     http('POST', '/api/vms/scopes', bearer, { authorization_reference: 'LOA-2026-014 signed by Acme CISO', expires_at: future(), ...body });
+// P27: active entries are approved by the organisation's administrator (executive) before use.
+const newScope = async (body: Record<string, unknown>, bearer = MGR) => {
+    const org = (JSON.parse(Buffer.from(bearer.split('.')[1], 'base64url').toString()) as { org_id: string }).org_id;
+    return approveIfPending(http, await requestScope(body, bearer), tok('executive', org));
+};
 
 // ── Scope rules ──────────────────────────────────────────────────────────────────────────────
 test('scope values: plain names and bounded ranges only', () => {
@@ -104,14 +110,19 @@ test('scope values: plain names and bounded ranges only', () => {
 });
 
 // ── Scope approval ───────────────────────────────────────────────────────────────────────────
-test('only managers approve scope; a reference and a bounded expiry are required; duplicates refused', async () => {
-    assert.equal((await newScope({ kind: 'domain', value: 'example.test' }, AN)).status, 403);
-    assert.equal((await newScope({ kind: 'domain', value: 'example.test', authorization_reference: '' })).status, 400);
-    assert.equal((await newScope({ kind: 'domain', value: 'example.test', expires_at: future(500) })).status, 400);
-    assert.equal((await newScope({ kind: 'domain', value: '*.example.test' })).status, 400);
-    const r = await newScope({ kind: 'domain', value: 'Example.Test' });
+// P27: managers request scope; an entry that permits active scanning is pending until the
+// organisation's administrator approves it (vmsAuthorisation.test.ts covers the approval itself).
+test('only managers request scope; a reference and a bounded expiry are required; active entries wait for organisation approval', async () => {
+    assert.equal((await requestScope({ kind: 'domain', value: 'example.test' }, AN)).status, 403);
+    assert.equal((await requestScope({ kind: 'domain', value: 'example.test', authorization_reference: '' })).status, 400);
+    assert.equal((await requestScope({ kind: 'domain', value: 'example.test', expires_at: future(500) })).status, 400);
+    assert.equal((await requestScope({ kind: 'domain', value: '*.example.test' })).status, 400);
+    const r = await requestScope({ kind: 'domain', value: 'Example.Test' });
     assert.equal(r.status, 201);
-    assert.deepEqual([r.data.scope.value, r.data.scope.approved_by, r.data.scope.allow_port_scan], ['example.test', 'soc_manager@org-a.test', false]);
+    assert.deepEqual([r.data.scope.value, r.data.scope.status, r.data.scope.requested_by, r.data.scope.approved_by, r.data.approval_required], ['example.test', 'pending', 'soc_manager@org-a.test', null, true]);
+    assert.equal((await http('POST', '/api/vms/scans', AN, { scope_id: r.data.scope.id, kind: 'discovery' })).status, 400, 'a pending scope authorises nothing');
+    const ok = await approveIfPending(http, r, tok('executive'));
+    assert.deepEqual([ok.data.scope.status, ok.data.scope.approved_by, ok.data.scope.approval_method], ['active', 'executive@org-a.test', 'in_platform']);
 });
 
 // ── Scans ────────────────────────────────────────────────────────────────────────────────────

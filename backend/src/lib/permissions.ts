@@ -29,6 +29,9 @@ export const PERMISSIONS = [
     'vms:scan',
     'vms:scope',
     'vms:manage',
+    // Approve an organisation's scan authorisation (phase P27): its administrator (executive) or a
+    // super_admin — never the soc_manager who requests it (services/vmsAuthorisation.ts).
+    'vms:authorize',
     // Threat Information System (phase P6): read intelligence and matches; review, give verdicts,
     // promote to cases and run feeds.
     'intel:read',
@@ -54,11 +57,13 @@ export type Permission = (typeof PERMISSIONS)[number];
 // alerts:triage (phase R2) changes a stored alert's status: super_admin, soc_manager and analyst.
 export const ROLE_PERMISSIONS: Readonly<Record<UserRole, readonly Permission[]>> = {
     super_admin: PERMISSIONS,
-    soc_manager: PERMISSIONS,
+    // Everything except approving scan authorisation: managers request scopes, the organisation approves.
+    soc_manager: PERMISSIONS.filter((p) => p !== 'vms:authorize'),
     analyst: ['alerts:read', 'alerts:triage', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write', 'vms:read', 'vms:scan', 'vms:manage', 'intel:read', 'intel:manage', 'cnii:read', 'cnii:sector'],
     // Executives see their organisation's attack surface and risk; they change nothing. They never
     // see other organisations, so no sector-wide view.
-    executive: ['vms:read', 'intel:read', 'cnii:read'],
+    // P27: they also approve (or reject) their organisation's scan authorisation requests.
+    executive: ['vms:read', 'intel:read', 'cnii:read', 'vms:authorize'],
     // Client portal accounts (P21): their own organisation's VMS view, nothing else. requireAuth
     // also refuses their tokens on every route outside /api/client/ (middleware/auth.ts).
     portal_user: ['vms:client', 'secops:client'],
