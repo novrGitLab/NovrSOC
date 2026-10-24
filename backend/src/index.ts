@@ -37,6 +37,7 @@ import vmsRouter from './routes/vms';
 import vmsWorkerRouter from './routes/vmsWorker';
 import vmsFindingsRouter from './routes/vmsFindings';
 import threatInfoRouter from './routes/threatInfo';
+import taxiiRouter from './routes/taxii';
 import vmsContinuousRouter from './routes/vmsContinuous';
 import vmsAssessmentsRouter from './routes/vmsAssessments';
 import vmsAdminRouter from './routes/vmsAdmin';
@@ -256,6 +257,9 @@ app.use('/api/ingest', ingestRouter);
 app.use('/api/export/v1', exportApiRouter);
 // VMS scanner worker (routes/vmsWorker.ts): machine credential VMS_WORKER_TOKEN, own rate limit.
 app.use('/api/vms/worker', express.json({ limit: '2mb' }), vmsWorkerRouter);
+// TAXII 2.1 (routes/taxii.ts, phase P25): read-only threat-intelligence exchange; per-client HTTP
+// Basic credentials, own rate limit, TAXII media types. Holds shared intelligence only.
+app.use('/taxii2', taxiiRouter);
 
 app.use(express.json());
 

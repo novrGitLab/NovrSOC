@@ -14,7 +14,7 @@ import { createHash } from 'crypto';
 
 // RFC 4122 §4.3 name-based UUIDv5 (SHA-1). Node has randomUUID but no v5, and pulling in a
 // dependency for ~15 lines isn't worth it.
-function uuidv5(name: string, namespace: string): string {
+export function uuidv5(name: string, namespace: string): string {
     const nsBytes = Buffer.from(namespace.replace(/-/g, ''), 'hex');
     const hash = createHash('sha1').update(Buffer.concat([nsBytes, Buffer.from(name, 'utf8')])).digest();
     const bytes = Buffer.from(hash.subarray(0, 16));
@@ -25,7 +25,7 @@ function uuidv5(name: string, namespace: string): string {
 }
 
 // The namespace OASIS defines for STIX 2.1 deterministic identifiers.
-const STIX_NAMESPACE = '00abedb4-aa42-466c-9c01-fed23315a9b7';
+export const STIX_NAMESPACE = '00abedb4-aa42-466c-9c01-fed23315a9b7';
 
 export type StixIOCType = 'ip' | 'domain' | 'url' | 'hash';
 

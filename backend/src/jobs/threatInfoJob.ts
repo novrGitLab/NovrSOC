@@ -5,10 +5,14 @@
 //     against active indicators (services/threatInfo.ts correlateOrg)
 // Off with TI_ENABLED=false. ThreatFox and URLhaus need THREATFOX_API_KEY (an abuse.ch Auth-Key);
 // without it those runs fail and the feed's health says why — nothing is pretended.
-// OpenCTI and MISP (phase P9) run every 6 hours only when their connector is configured.
+// MISP (phase P9) runs every 6 hours only when its connector is configured; so do MISP event
+// reports (phase P25). OpenCTI is retired and never runs.
+//   • every 30 minutes (P25): up to TI_GEO_BATCH active IP indicators get a hosting location
+//     (services/tiGeo.ts) — the feed's own statement first, otherwise a GeoIP lookup.
 
 import { getSupabase } from '../services/geoEnrichment';
 import { runFeed, expireIndicators, correlateOrg, feedConfigured } from '../services/threatInfo';
+import { locateIndicators } from '../services/tiGeo';
 
 export const lastThreatInfoRun: { correlation: Record<string, unknown> | null; at: string | null } = { correlation: null, at: null };
 
@@ -47,10 +51,15 @@ export function startThreatInfoJob(): void {
         lastThreatInfoRun.correlation = result;
         lastThreatInfoRun.at = new Date().toISOString();
     });
-    const abuse = feeds(['threatfox', 'urlhaus', 'feodo', 'opencti', 'misp']);
+    const abuse = feeds(['threatfox', 'urlhaus', 'feodo', 'misp', 'misp_events']);
     const kev = feeds(['cisa_kev']);
-    setTimeout(() => { void abuse().then(kev).then(correlate); }, 90_000).unref();
+    const locate = once('locate', async () => {
+        const r = await locateIndicators();
+        if (r.located) console.log(`[ti] located ${r.located} indicator(s) (${r.source_stated} from the source, ${r.geoip} by GeoIP)`);
+    });
+    setTimeout(() => { void abuse().then(kev).then(correlate).then(locate); }, 90_000).unref();
     setInterval(() => { void abuse(); }, 6 * 60 * 60_000).unref();
+    setInterval(() => { void locate(); }, 30 * 60_000).unref();
     setInterval(() => { void kev(); }, 24 * 60 * 60_000).unref();
     setInterval(() => { void expire(); }, 60 * 60_000).unref();
     setInterval(() => { void correlate(); }, 15 * 60_000).unref();

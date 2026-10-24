@@ -183,14 +183,19 @@ export async function searchMISP(value: string): Promise<MISPSearchResult | null
     };
 }
 
+// Writes are off unless MISP_WRITE_ENABLED=true (phase P25): the integration starts read-only,
+// so a read-only key is all it needs, and nothing is pushed into MISP by accident.
+export const mispWritesEnabled = () => process.env.MISP_WRITE_ENABLED === 'true';
+
 // Create an event and attach one attribute to it. Returns the new event id, or null if MISP
-// isn't usable (unconfigured, unreachable, or — as today — rejecting the key).
+// isn't usable (unconfigured, unreachable, writes off, or rejecting the key).
 export async function addToMISP(params: {
     title: string;
     iocType: string;
     iocValue: string;
     tags: string[];
 }): Promise<string | null> {
+    if (!mispWritesEnabled()) return null;
     const event = await mispFetch<{ Event?: { id?: string } }>('/events/add', {
         method: 'POST',
         body: JSON.stringify({
@@ -222,6 +227,7 @@ export async function addToMISP(params: {
 // Attach an attribute to an existing event — used by the Nigerian collector, which keeps all of
 // its IOCs on one long-lived event rather than creating one event per indicator.
 export async function addAttributeToEvent(eventId: string, ioc: { type: string; value: string; comment: string }): Promise<boolean> {
+    if (!mispWritesEnabled()) return false;
     const result = await mispFetch(`/attributes/add/${eventId}`, {
         method: 'POST',
         body: JSON.stringify({
@@ -284,14 +290,70 @@ export async function getMISPStats(): Promise<MISPStats> {
  * throws with the reason, so a failed feed run says why instead of looking like "no data".
  */
 export async function mispAttributeSearch(body: Record<string, unknown>, timeoutMs = 60_000): Promise<unknown> {
+    return mispStrict('/attributes/restSearch', { method: 'POST', body: JSON.stringify(body) }, timeoutMs);
+}
+
+/** restSearch over events (metadata only for the report feed, phase P25). Throws with the reason. */
+export async function mispEventSearch(body: Record<string, unknown>, timeoutMs = 60_000): Promise<unknown> {
+    return mispStrict('/events/restSearch', { method: 'POST', body: JSON.stringify(body) }, timeoutMs);
+}
+
+async function mispStrict(path: string, init: { method?: string; body?: string }, timeoutMs: number): Promise<unknown> {
     if (!isMISPConfigured()) throw new Error('MISP is not configured (MISP_URL, MISP_API_KEY)');
     let res: Response;
     try {
-        res = await mispRequest(`${normalizeBase()}/attributes/restSearch`, { method: 'POST', headers: mispHeaders(), body: JSON.stringify(body), timeoutMs });
+        res = await mispRequest(`${normalizeBase()}${path}`, { method: init.method ?? 'GET', headers: mispHeaders(), body: init.body, timeoutMs });
     } catch (err) {
         throw new Error(`MISP could not be reached: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (res.status === 401 || res.status === 403) throw new Error(`MISP refused the API key (HTTP ${res.status})`);
     if (!res.ok) throw new Error(`MISP answered HTTP ${res.status}`);
     return res.json().catch(() => { throw new Error('MISP returned no JSON'); });
+}
+
+export interface MISPCapabilities {
+    checked_at: string;
+    configured: boolean;
+    reachable: boolean;
+    version: string | null;
+    /** The key's role can add or modify data (perm_add / perm_modify); a read-only key shows false. */
+    key_can_write: boolean | null;
+    role: string | null;
+    stix2_export: 'supported' | 'unsupported' | 'unknown';
+    /** MISP core serves no TAXII 2.1 API (TAXII needs a separate server); NovrSOC serves its own. */
+    taxii21: 'not provided by MISP core';
+    writes_enabled_here: boolean;
+    errors: string[];
+}
+
+/**
+ * What the configured MISP instance actually supports, checked with read-only calls only:
+ * GET /servers/getVersion, GET /users/view/me (the key's role), and one STIX 2 restSearch
+ * limited to a single event. Run on demand by a manager, never on a schedule.
+ */
+export async function getMISPCapabilities(): Promise<MISPCapabilities> {
+    const out: MISPCapabilities = {
+        checked_at: new Date().toISOString(), configured: isMISPConfigured(), reachable: false, version: null, key_can_write: null, role: null,
+        stix2_export: 'unknown', taxii21: 'not provided by MISP core', writes_enabled_here: mispWritesEnabled(), errors: [],
+    };
+    if (!out.configured) { out.errors.push('MISP_URL/MISP_API_KEY not set'); return out; }
+    try {
+        const v = await mispStrict('/servers/getVersion', {}, 10_000) as { version?: string };
+        out.reachable = true;
+        out.version = typeof v?.version === 'string' ? v.version : null;
+    } catch (err) { out.errors.push(err instanceof Error ? err.message : String(err)); return out; }
+    try {
+        const me = await mispStrict('/users/view/me', {}, 10_000) as { Role?: { name?: string; perm_add?: boolean; perm_modify?: boolean; perm_modify_org?: boolean } };
+        const role = me?.Role;
+        if (role) { out.role = role.name ?? null; out.key_can_write = !!(role.perm_add || role.perm_modify || role.perm_modify_org); }
+    } catch (err) { out.errors.push(`role: ${err instanceof Error ? err.message : String(err)}`); }
+    try {
+        const s = await mispStrict('/events/restSearch', { method: 'POST', body: JSON.stringify({ returnFormat: 'stix2', limit: 1, last: '30d', metadata: true }) }, 30_000) as { type?: string };
+        out.stix2_export = s?.type === 'bundle' ? 'supported' : 'unknown';
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        out.stix2_export = /HTTP (400|404|405|501)/.test(msg) ? 'unsupported' : 'unknown';
+        out.errors.push(`stix2: ${msg}`);
+    }
+    return out;
 }
