@@ -8,6 +8,7 @@ import { enrichIOC, configuredSources, type IOCType } from '../services/iocEnric
 import { isPrivateAddress } from '../services/emailsec/safeFetch';
 import { requirePermission, requestOrg } from '../lib/permissions';
 import { requireScope, ownsAgent, padAgentId } from '../lib/orgScope';
+import { isStaffRole } from '../lib/resolveOrg';
 
 const router = Router();
 
@@ -96,7 +97,7 @@ router.post('/hunting/escalate', requirePermission('cases:write'), async (req: A
         iocNote = 'Database not configured — the IOC was not cached.';
     } else {
         try {
-            const enriched = await enrichIOC(ioc_value, type, { timeoutMs: HUNT_ENRICH_TIMEOUT_MS });
+            const enriched = await enrichIOC(ioc_value, type, { timeoutMs: HUNT_ENRICH_TIMEOUT_MS, viewerCeiling: isStaffRole(req.user?.role) ? 'red' : 'amber' });
             const timedOut = enriched.timed_out ?? [];
             const answered = sources.filter((s) => !timedOut.includes(s));
             if (answered.length === 0) {

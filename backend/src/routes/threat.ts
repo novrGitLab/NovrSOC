@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validate';
 import { enrichIOC, type IOCType } from '../services/iocEnrichment';
+import type { AuthRequest } from '../middleware/auth';
+import { isStaffRole } from '../lib/resolveOrg';
 import { getCVEById, getRecentCVEs, getCVSSScore, getCVEDescription } from '../services/nvd';
 import { isInKEV, getKEVCatalog } from '../services/cisa';
 import { circlGetPulses } from '../services/circl';
@@ -22,7 +24,7 @@ router.post('/ioc/lookup', validate(IOCLookupSchema), async (req, res) => {
     const { value, type }: { value: string; type: IOCType } = req.body;
 
     try {
-        const result = await enrichIOC(value, type);
+        const result = await enrichIOC(value, type, { viewerCeiling: isStaffRole((req as AuthRequest).user?.role) ? 'red' : 'amber' });
         res.json(result);
     } catch {
         res.status(500).json({ error: 'Enrichment failed' });

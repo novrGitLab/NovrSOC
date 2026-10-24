@@ -9,6 +9,9 @@ import { checkGreyNoise, isGreyNoiseConfigured, type GreyNoiseResult } from './g
 import { checkLeakIX, isConfigured as leakixConfigured, type LeakIXResult } from './leakix';
 import { searchMISP, mispEventUrl, isMISPConfigured } from './misp';
 import { verdictFromScore } from '../lib/severity';
+import { getSupabase } from './geoEnrichment';
+import { normalizeIndicator, type IndicatorType } from './threatInfo';
+import { TLP_ORDER, isTlp, type Tlp } from './tiPolicy';
 
 // OTX and Censys were removed from this pipeline (2026-09-09). OTX's pulse contribution is now
 // covered by ThreatFox (which has a working key here) plus the keyless CIRCL OSINT feed for the
@@ -40,6 +43,15 @@ export interface EnrichedIOC {
             attributes: Array<{ type?: string; value?: string; category?: string; event_id?: string; comment?: string }>;
             event_links: Array<{ event_id: string; url: string }>;
         } | null;
+        // The platform's stored threat intelligence (phase P26): the indicator as ingested from the
+        // feeds (MISP included), with each source record the viewer may see. Informational — it
+        // does not move the score (the live lookups above already do) — and it still answers when
+        // MISP itself is unreachable.
+        ti_platform?: {
+            indicator_id: string; status: string; last_seen: string;
+            sources: Array<{ feed: string; source_ref: string; tlp: string; last_seen: string | null; threat_type: string | null; malware: string | null }>;
+            sources_hidden: number;
+        } | null;
     };
     tags: string[];
     enriched_at: string;
@@ -50,6 +62,37 @@ export interface EnrichedIOC {
 export interface EnrichOptions {
     /** Hard per-source timeout in ms. A source that exceeds it counts as no answer (its request is not awaited further). */
     timeoutMs?: number;
+    /**
+     * The most restrictive sharing marking the requester may see in private intelligence (MISP and
+     * the platform's stored records). 'none' consults no private intelligence at all — required for
+     * anonymous callers, whose verdict must not reveal what partners shared. Default 'amber'
+     * (safe for client roles); staff pass 'red'.
+     */
+    viewerCeiling?: Tlp | 'none';
+}
+
+const STORED_TYPES: Record<IOCType, IndicatorType[]> = { ip: ['ip'], domain: ['domain'], url: ['url'], hash: ['md5', 'sha1', 'sha256'] };
+/** The stored indicator for a value, with the source records within `ceiling`; null if not held. */
+export async function storedIntel(value: string, type: IOCType, ceiling: Tlp): Promise<NonNullable<EnrichedIOC['sources']['ti_platform']> | null> {
+    const supabase = getSupabase();
+    if (!supabase) return null;
+    for (const t of STORED_TYPES[type]) {
+        const norm = normalizeIndicator(t, value);
+        if (!norm) continue;
+        const { data: ind, error } = await supabase.from('ti_indicators').select('id, status, last_seen').eq('type', t).eq('value', norm).maybeSingle();
+        if (error || !ind) continue;
+        const { data: srcs } = await supabase.from('ti_indicator_sources').select('feed_id, source_ref, tlp, last_seen, context').eq('indicator_id', ind.id).limit(50);
+        const all = srcs ?? [];
+        const max = TLP_ORDER.indexOf(ceiling);
+        const shown = all.filter((s) => TLP_ORDER.indexOf(isTlp(s.tlp) ? s.tlp : 'amber') <= max);
+        const ctx = (s: { context: unknown }) => (s.context ?? {}) as Record<string, unknown>;
+        return {
+            indicator_id: ind.id as string, status: ind.status as string, last_seen: ind.last_seen as string,
+            sources: shown.map((s) => ({ feed: s.feed_id as string, source_ref: s.source_ref as string, tlp: (s.tlp as string) ?? 'amber', last_seen: (s.last_seen as string | null) ?? null, threat_type: typeof ctx(s).threat_type === 'string' ? ctx(s).threat_type as string : null, malware: typeof ctx(s).malware === 'string' ? ctx(s).malware as string : null })),
+            sources_hidden: all.length - shown.length,
+        };
+    }
+    return null;
 }
 
 function urlhausSummary(result: URLHausResult | URLHausHostResult | null): { status: string; threat: string; tags: string[] } | null {
@@ -123,12 +166,16 @@ export async function enrichIOC(value: string, type: IOCType, options: EnrichOpt
 
     // MISP applies to every IOC type — it stores whatever the org has curated, not one class of
     // indicator. Returns null (never throws) when unconfigured or when the key is rejected.
-    const mispLookup = searchMISP(value);
+    // Private intelligence only within the requester's sharing ceiling, and none for anonymous callers.
+    const ceiling = options.viewerCeiling ?? 'amber';
+    const mispLookup = ceiling === 'none' ? Promise.resolve(null) : searchMISP(value, { tlpCeiling: ceiling });
+    const storedLookup = ceiling === 'none' ? Promise.resolve(null) : storedIntel(value, type, ceiling);
 
-    const [abuseResult, urlhausResult, threatfoxResult, vtResult, greynoiseResult, leakixResult, mispResult] = await Promise.allSettled([
+    const [abuseResult, urlhausResult, threatfoxResult, vtResult, greynoiseResult, leakixResult, mispResult, storedResult] = await Promise.allSettled([
         limit('abuseipdb', abuseLookup), limit('urlhaus', urlhausLookup), limit('threatfox', threatfoxLookup), limit('virustotal', vtLookup),
-        limit('greynoise', greynoiseLookup), limit('leakix', leakixLookup), limit('misp', mispLookup),
+        limit('greynoise', greynoiseLookup), limit('leakix', leakixLookup), limit('misp', mispLookup), limit('ti_platform', storedLookup),
     ]);
+    const stored = storedResult.status === 'fulfilled' ? storedResult.value : null;
     for (const t of timers) clearTimeout(t);
 
     const abuse = abuseResult.status === 'fulfilled' ? abuseResult.value : null;
@@ -180,6 +227,7 @@ export async function enrichIOC(value: string, type: IOCType, options: EnrichOpt
     if (leakix?.status === 'ok' && leakix.leaks.length > 0) tags.add('known-leak');
     if (leakix?.status === 'ok' && leakix.services.length > 0) tags.add('exposed-service');
     if (misp?.found) tags.add('in-misp');
+    if (stored?.sources.length) tags.add('in-platform-ti');
 
     return {
         value,
@@ -234,6 +282,7 @@ export async function enrichIOC(value: string, type: IOCType, options: EnrichOpt
                         .filter((l): l is { event_id: string; url: string } => l.url !== null),
                 }
                 : null,
+            ti_platform: stored,
         },
         tags: [...tags],
         enriched_at: new Date().toISOString(),

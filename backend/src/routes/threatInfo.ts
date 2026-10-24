@@ -104,8 +104,17 @@ router.get('/feeds', requirePermission('intel:read'), async (_req, res) => {
 router.post('/feeds/:id/run', requireRole('super_admin', 'soc_manager'), async (req: AuthRequest, res) => {
     if (!isRunnableFeed(req.params.id)) { res.status(404).json({ error: RETIRED_FEEDS.has(req.params.id) ? 'This feed is retired' : 'Unknown feed' }); return; }
     if (!feedConfigured(req.params.id)) { res.status(409).json({ error: 'This feed is not configured' }); return; }
-    const r = await runFeed(req.params.id);
-    logAudit({ user: actor(req), action: 'TI_FEED_RUN', resource: 'ti_feed', resource_id: req.params.id, ip: req.ip ?? 'unknown', result: r.status === 'ok' ? 'success' : 'failed', details: r.error ?? JSON.stringify(r.counts) });
+    // One-time backfill for the MISP feeds only (phase P26): { backfill_days: 1..90 }.
+    const raw = req.body?.backfill_days;
+    let backfillDays: number | null = null;
+    if (raw !== undefined && raw !== null) {
+        const n = Number(raw);
+        if (!['misp', 'misp_events'].includes(req.params.id) || !Number.isInteger(n) || n < 1 || n > 90) { res.status(400).json({ error: 'backfill_days must be a whole number from 1 to 90, for the MISP feeds only' }); return; }
+        backfillDays = n;
+    }
+    const r = await runFeed(req.params.id, undefined, { backfillDays });
+    if (r.status === 'busy') { res.status(409).json(r); return; }
+    logAudit({ user: actor(req), action: 'TI_FEED_RUN', resource: 'ti_feed', resource_id: req.params.id, ip: req.ip ?? 'unknown', result: r.status === 'ok' ? 'success' : 'failed', details: (r.error ?? JSON.stringify({ ...r.counts, ...(r.meta ?? {}) })).slice(0, 500) });
     res.status(r.status === 'ok' ? 200 : 502).json(r);
 });
 

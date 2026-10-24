@@ -79,7 +79,8 @@ router.post('/scan', scanLimiter, async (req, res) => {
     }
 
     try {
-        const result = await enrichIOC(classified.value, classified.type);
+        // Anonymous: no private intelligence (MISP, stored partner records) may shape this verdict.
+        const result = await enrichIOC(classified.value, classified.type, { viewerCeiling: 'none' });
         const { checked, detections } = summarise(result);
 
         res.json({

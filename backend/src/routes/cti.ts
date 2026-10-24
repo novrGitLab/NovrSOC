@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { enrichIOC, type IOCType } from '../services/iocEnrichment';
+import type { AuthRequest } from '../middleware/auth';
+import { isStaffRole } from '../lib/resolveOrg';
 import { circlGetPulses } from '../services/circl';
 import { getSupabase } from '../services/geoEnrichment';
 import { checkLeakIX, isConfigured as leakixConfigured } from '../services/leakix';
@@ -41,7 +43,7 @@ router.post('/lookup', async (req, res) => {
     }
 
     try {
-        const result = await enrichIOC(value, type as IOCType);
+        const result = await enrichIOC(value, type as IOCType, { viewerCeiling: isStaffRole((req as AuthRequest).user?.role) ? 'red' : 'amber' });
 
         // Cache to Supabase ioc_enrichments table — non-fatal if it fails or isn't configured
         try {
@@ -59,7 +61,8 @@ router.post('/lookup', async (req, res) => {
                     country_code: result.sources.abuseipdb?.country || null,
                     isp: result.sources.abuseipdb?.isp || null,
                     is_tor: result.sources.abuseipdb?.is_tor || false,
-                    tags: result.tags,
+                    // The cache is readable by every signed-in user: no private-intelligence hits in it.
+                    tags: result.tags.filter((t) => t !== 'in-misp' && t !== 'in-platform-ti'),
                     source: 'manual_lookup',
                     last_seen: new Date().toISOString(),
                 }, { onConflict: 'ioc_value' });

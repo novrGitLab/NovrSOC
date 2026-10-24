@@ -17,14 +17,19 @@ export async function runVmsMaintenance(now = Date.now()): Promise<{ requeued: n
     if (!supabase) return { requeued: 0, failed: 0, cancelled: 0 };
     const out = { requeued: 0, failed: 0, cancelled: 0 };
     const staleBefore = new Date(now - WORKER_STALE_MINUTES * 60_000).toISOString();
-    const { data: stale, error } = await supabase.from('vms_scan_jobs').select('id, attempts, worker_id').eq('status', 'running').lt('heartbeat_at', staleBefore);
+    // Stale = last heartbeat too old, or (phase P26) no heartbeat at all and claimed/started too
+    // long ago — such a job would otherwise stay "running" forever after its worker died.
+    const STALE = `heartbeat_at.lt."${staleBefore}",and(heartbeat_at.is.null,claimed_at.lt."${staleBefore}"),and(heartbeat_at.is.null,claimed_at.is.null,started_at.lt."${staleBefore}")`;
+    const { data: stale, error } = await supabase.from('vms_scan_jobs').select('id, attempts, worker_id').eq('status', 'running').or(STALE);
     if (error) { if (!/vms_/.test(error.message)) console.error('[vms] maintenance read failed:', error.message.slice(0, 160)); return out; }
     for (const j of stale ?? []) {
+        // The update repeats the staleness test: a worker that heartbeats between the read and the
+        // write keeps its job (otherwise the job could be handed to a second worker while running).
         if ((j.attempts ?? 0) < MAX_ATTEMPTS) {
-            const r = await supabase.from('vms_scan_jobs').update({ status: 'queued', worker_id: null, claimed_at: null, heartbeat_at: null, progress: { message: `Requeued: no heartbeat or completion from worker ${j.worker_id ?? '?'} for ${WORKER_STALE_MINUTES} min` } }).eq('id', j.id).eq('status', 'running').select('id');
+            const r = await supabase.from('vms_scan_jobs').update({ status: 'queued', worker_id: null, claimed_at: null, heartbeat_at: null, started_at: null, progress: { message: `Requeued: no heartbeat or completion from worker ${j.worker_id ?? '?'} for ${WORKER_STALE_MINUTES} min` } }).eq('id', j.id).eq('status', 'running').or(STALE).select('id');
             out.requeued += (r.data ?? []).length;
         } else {
-            const r = await supabase.from('vms_scan_jobs').update({ status: 'failed', finished_at: new Date(now).toISOString(), error: `No heartbeat or completion from the scanner worker for ${WORKER_STALE_MINUTES} min (${j.attempts} attempts); its log says why` }).eq('id', j.id).eq('status', 'running').select('id');
+            const r = await supabase.from('vms_scan_jobs').update({ status: 'failed', finished_at: new Date(now).toISOString(), error: `No heartbeat or completion from the scanner worker for ${WORKER_STALE_MINUTES} min (${j.attempts} attempts); its log says why` }).eq('id', j.id).eq('status', 'running').or(STALE).select('id');
             out.failed += (r.data ?? []).length;
         }
     }
