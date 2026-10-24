@@ -747,5 +747,76 @@ class PinnedAddresses(unittest.TestCase):
         self.assertTrue(worker.job_target_allowed('portal.grid.test', self.PINNED + general, 'ports'), 'a general scope entry still authorises it')
         self.assertTrue(worker.job_target_allowed('196.1.2.3', [{'kind': 'ip', 'value': '196.1.2.3', 'allow_port_scan': True, 'status': 'active', 'expires_at': FUTURE}], 'ports'))
 
+
+FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures', 'evidence-targets.json')
+
+
+class EvidenceTarget(unittest.TestCase):
+    """Evidence targets follow the backend contract (fixtures/evidence-targets.json, also read by
+    backend vmsOutcomes.test.ts). 1.8.1 cut the joined discovery list at 253 characters and sent a
+    fragment ('s'): HTTP 400 'not a host, IP or CIDR', and the job's evidence was switched off."""
+
+    with open(FIXTURE, encoding='utf-8') as f:
+        CONTRACT = json.load(f)
+
+    def valid(self, target):
+        return bool(target) and len(target) <= 253 and all(worker.evidence_target_part_ok(x) for x in target.split(','))
+
+    def test_worker_rules_match_the_contract(self):
+        for t in self.CONTRACT['accept']:
+            self.assertTrue(self.valid(t), t)
+        for t in self.CONTRACT['reject']:
+            self.assertFalse(self.valid(t), t)
+
+    def test_never_cuts_a_name_and_skips_invalid_parts(self):
+        hosts = [f'service-{i:02d}.region-eu.example.test' for i in range(20)]
+        t = worker._evidence_target(hosts + ['203.0.113.9'])
+        self.assertTrue(self.valid(t), t)
+        self.assertTrue(set(t.split(',')) <= set(hosts), 'only whole targets, in order')
+        self.assertEqual(worker._evidence_target(['s', '203.0.113.0/0', 'api.example.test']), 'api.example.test')
+        self.assertEqual(worker._evidence_target(['not a target!']), '')
+        self.assertEqual(worker._evidence_target([]), '')
+
+    def test_discovery_with_many_subdomains_sends_a_valid_evidence_target(self):
+        posts = []
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                posts.append((path, body))
+                return {'accepted': len(body.get('observations', [])), 'ok': True}
+        subs = [f'{name}.example.test' for name in ('www', 'api', 'mail', 'vpn', 'portal', 'staging', 'dev', 'admin', 'shop', 'blog',
+                                                    'cdn', 'auth', 'sso', 'status', 'docs', 'support', 'billing', 'files', 'assets', 'remote',
+                                                    'intranetxxxxxxxxx')]   # 1.8.1 cut this list to '...,portal.' -> HTTP 400
+
+        def fake_tool(args, stdin=None):
+            if args[0] == worker.TOOLS['subfinder']:
+                return '\n'.join(json.dumps({'host': h}) for h in subs)
+            if args[0] == worker.TOOLS['httpx']:
+                return json.dumps({'input': 'www.example.test', 'host': 'www.example.test', 'url': 'https://www.example.test', 'status_code': 200})
+            return ''
+        r = worker.JobRunner(Api(), {'id': 'd1', 'kind': 'discovery', 'targets': ['example.test']}, SCOPES)
+        r.run_tool = fake_tool
+        r.discovery()
+        ev = [b for p_, b in posts if p_.endswith('/evidence')]
+        self.assertEqual(len(ev), 1, 'httpx evidence is sent')
+        self.assertGreater(len(','.join(sorted(set(subs) | {'example.test'}))), 253, 'the probe list is longer than the backend limit')
+        self.assertTrue(self.valid(ev[0]['target']), ev[0]['target'])
+        # A cut can also look valid ('remote.example.tes'): every part must be a whole probed target.
+        self.assertTrue(set(ev[0]['target'].split(',')) <= set(subs) | {'example.test'}, ev[0]['target'])
+        self.assertTrue(r.evidence_enabled, 'evidence stays on for the rest of the job')
+
+    def test_send_evidence_refuses_a_target_the_backend_would_refuse(self):
+        posts = []
+
+        class Api:
+            def post(self, path, body, timeout=60):
+                posts.append(path)
+                return {}
+        r = worker.JobRunner(Api(), {'id': 'd2', 'kind': 'discovery', 'targets': ['example.test']}, SCOPES)
+        for bad in self.CONTRACT['reject'] + ['', 'a.example.test,' * 30]:
+            r.send_evidence(bad, 'httpx', 'output')
+        self.assertEqual(posts, [])
+        self.assertTrue(r.evidence_enabled)
+
 if __name__ == '__main__':
     unittest.main()

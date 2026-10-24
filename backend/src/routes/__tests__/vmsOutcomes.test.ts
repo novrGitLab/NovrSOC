@@ -11,6 +11,8 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { requireAuth } from '../../middleware/auth';
@@ -154,6 +156,24 @@ test('raw evidence: redacted, hashed, capped per job, org-scoped on read', async
     assert.equal((await http('GET', `/api/vms/scans/${j.id}/evidence`, tok('analyst', 'org-b'))).status, 404);
     e.expires_at = ago(1);
     assert.equal((await http('GET', `/api/vms/scans/${j.id}/evidence`, tok('analyst'))).data.evidence.length, 0, 'expired evidence is never served');
+});
+
+// Shared with the worker (infra/vms-worker/test_worker.py EvidenceTarget): the worker never sends
+// a reject target, and the backend refuses every one of them. Worker 1.8.1 cut a long discovery
+// list at 253 characters and sent a fragment ('...,portal.'); the fix is the worker's, not a looser rule here.
+const EVIDENCE_CONTRACT: { accept: string[]; reject: string[] } = JSON.parse(
+    readFileSync(join(__dirname, '..', '..', '..', '..', 'infra', 'vms-worker', 'fixtures', 'evidence-targets.json'), 'utf8'));
+
+test('evidence target contract: whole hosts, IPs and CIDRs only, at most 253 characters', async () => {
+    const j = runningJob();
+    for (const target of EVIDENCE_CONTRACT.accept) {
+        db.tables.vms_job_evidence = [];
+        assert.equal((await wpost(`/jobs/${j.id}/evidence`, { worker_id: W, target, tool: 'httpx', content: 'x' })).status, 201, target);
+    }
+    for (const target of [...EVIDENCE_CONTRACT.reject, 'a.example.test,'.repeat(17) + 'b.example.test']) {
+        const r = await wpost(`/jobs/${j.id}/evidence`, { worker_id: W, target, tool: 'httpx', content: 'x' });
+        assert.equal(r.status, 400, target);
+    }
 });
 
 test('evidence before the P12 SQL: 503 naming the file; the job is unaffected', async () => {
