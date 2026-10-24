@@ -1,0 +1,21 @@
+{
+  "_comment": "Evidence target contract between worker.py (_evidence_target / evidence_target_part_ok) and backend routes/vmsWorker.ts (Evidence.target). Both test suites read this file. accept: the backend must store it (201). reject: the backend must refuse it (400) and the worker must never send it.",
+  "accept": [
+    "10.88.1.139",
+    "203.0.113.0/28",
+    "remote.example.test",
+    "api.example.test,203.0.113.9,203.0.113.0/28",
+    "2001:db8::1",
+    "2001:db8::/64"
+  ],
+  "reject": [
+    "s",
+    "api.example.test,s",
+    "api.example.te,",
+    "203.0.113.0/0",
+    "203.0.113.0/33",
+    "-bad.example.test",
+    "example.123",
+    "not a target!"
+  ]
+}

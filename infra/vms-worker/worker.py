@@ -50,6 +50,8 @@ assessment, so "nothing found" is never confused with "could not look":
 A tool error or unreadable output fails the job. Raw tool output (bounded, redacted) is sent as
 evidence; the backend keeps it 30 days. SIGTERM stops the running tool and hands the job back to
 the queue instead of leaving it to time out.
+Evidence targets (1.8.2): whole, valid targets only, at most 253 characters (fixtures/evidence-targets.json
+is the contract the backend tests too); 1.8.1 could cut a name and lose a discovery job's evidence.
 """
 from __future__ import annotations
 
@@ -79,7 +81,7 @@ WORKER_ID = os.environ.get('VMS_WORKER_ID', 'vms-worker-1')
 KINDS = [k.strip() for k in os.environ.get('VMS_WORKER_KINDS', 'discovery,ports').split(',') if k.strip()]
 POLL_SECONDS = int(os.environ.get('VMS_POLL_SECONDS', '20'))
 HEARTBEAT_SECONDS = 30
-VERSION = '1.8.1'
+VERSION = '1.8.2'
 # What this worker enforces itself; the backend only gives jobs that need a feature to workers announcing it.
 FEATURES = ['exclusions', 'pinned_addresses']
 # Networks this worker can actually reach besides the public internet (comma-separated CIDRs), e.g.
@@ -468,15 +470,37 @@ def _in_net(ip: str, net) -> bool:
         return False
 
 
+EVIDENCE_TARGET_MAX = 253   # backend routes/vmsWorker.ts Evidence.target: max 253, every comma part a host, IP or CIDR
+
+
+def evidence_target_part_ok(t: str) -> bool:
+    """The backend's rule for one part of an evidence target: parseTarget (host or IP) or parseCidr (prefix 1..max)."""
+    if parse_target(t):
+        return True
+    addr, sep, prefix = t.strip().partition('/')
+    if not sep or not re.fullmatch(r'\d{1,3}', prefix):
+        return False
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return 1 <= int(prefix) <= ip.max_prefixlen
+
+
 def _evidence_target(targets: list[str]) -> str:
-    """As many whole targets as fit the backend's 253-character evidence target (never a cut name)."""
+    """As many whole, valid targets as fit the backend's 253-character evidence target. A name is
+    never cut (1.8.1 cut the joined list at 253 characters, leaving a fragment such as 's' that the
+    backend rightly refused with 400). '' when no target qualifies: the caller sends no evidence."""
     out = ''
     for t in targets:
+        t = (t or '').strip()
+        if not t or ',' in t or not evidence_target_part_ok(t):
+            continue
         nxt = f'{out},{t}' if out else t
-        if len(nxt) > 253:
+        if len(nxt) > EVIDENCE_TARGET_MAX:
             break
         out = nxt
-    return out or targets[0][:253]
+    return out
 
 
 REACH_TIMEOUT = 5
@@ -1631,6 +1655,10 @@ class JobRunner:
         backend cannot take it, the job carries on and the log says so once."""
         if not self.evidence_enabled or not text:
             return
+        if not target or len(target) > EVIDENCE_TARGET_MAX or not all(evidence_target_part_ok(x) for x in target.split(',')):
+            # Never send what the backend's contract refuses: one bad target would turn evidence off for the job.
+            log.warning('raw %s output not kept for job %s: no valid evidence target', tool, self.job['id'])
+            return
         raw = text.encode('utf-8', 'replace')
         truncated = len(raw) > EVIDENCE_MAX_BYTES
         content = redact_text(raw[:EVIDENCE_MAX_BYTES].decode('utf-8', 'ignore'), EVIDENCE_MAX_BYTES)
@@ -1726,7 +1754,7 @@ class JobRunner:
             out = self.run_tool([TOOLS['httpx'], '-silent', '-json', '-status-code', '-title', '-tech-detect', '-web-server', '-ip', '-cdn',
                                  '-timeout', '10', '-retries', '1', '-rate-limit', HTTPX_RATE, '-no-color'], '\n'.join(probe))
             answered = parse_httpx(out.splitlines())
-            self.send_evidence(','.join(probe)[:253], 'httpx', out)
+            self.send_evidence(_evidence_target(probe), 'httpx', out)
         # An authorised IP target is inventory even when nothing answers on HTTP: record it with what
         # was (and was not) learned. No HTTP answer says nothing about whether the host is up.
         seen = {o['host'] for o in answered}
@@ -1766,7 +1794,7 @@ class JobRunner:
                                  '--host-timeout', '45m', *port_args, '-oX', '-', '--', t])
             if not xml.strip():
                 raise RuntimeError(f'nmap produced no output for {t}')
-            self.send_evidence(t, 'nmap', xml)
+            self.send_evidence(_evidence_target([t]), 'nmap', xml)
             try:
                 services = parse_nmap_xml(xml)
                 hosts = parse_nmap_hosts(xml)
