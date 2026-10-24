@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { search } from '../lib/wazuh-indexer';
+import { searchStrict as search } from '../lib/wazuh-indexer';
+import { requireScope, alertScopeFilter, type OrgScope } from '../lib/orgScope';
 import { isConfigured as wazuhConfigured } from '../services/wazuh';
 import { getSupabase } from '../services/geoEnrichment';
 import { severityFromLevel, SEVERITY_MIN_LEVEL } from '../lib/severity';
@@ -147,7 +148,7 @@ export interface TechniquesResult {
  * that terminates differently (which Railway does).
  */
 export async function collectTechniques(params: {
-    range?: string; agentId?: string; tactic?: string; severity?: string;
+    scope: OrgScope; range?: string; agentId?: string; tactic?: string; severity?: string;
 }): Promise<TechniquesResult> {
     const range = params.range && RANGE_HOURS[params.range] ? params.range : '24h';
     const hours = RANGE_HOURS[range];
@@ -162,6 +163,8 @@ export async function collectTechniques(params: {
         // Existence is checked on the ID field, since that is what everything downstream keys on.
         { exists: { field: 'rule.mitre.id' } },
         { range: { timestamp: { gte: since.toISOString() } } },
+        // The organisation's own alerts only (lib/orgScope.ts).
+        alertScopeFilter(params.scope),
     ];
 
     if (params.agentId && params.agentId !== 'all') {
@@ -254,13 +257,16 @@ export async function collectTechniques(params: {
         console.error('[MITRE] techniques query failed:', err instanceof Error ? err.message : err);
         // 200 with an explicit error rather than a 500: the page renders filters, tabs and the
         // D3FEND view around this, and none of those should disappear because the indexer blipped.
-        return { ...empty, error: 'Wazuh indexer unreachable' };
+        return { ...empty, error: err instanceof Error ? err.message : 'Wazuh indexer unreachable' };
     }
 }
 
 // GET /api/mitre/techniques
 router.get('/techniques', async (req: Request, res: Response) => {
+    const scope = await requireScope(req, res);
+    if (!scope) return;
     const result = await collectTechniques({
+        scope,
         range: typeof req.query.range === 'string' ? req.query.range : undefined,
         agentId: typeof req.query.agent_id === 'string' ? req.query.agent_id : undefined,
         tactic: typeof req.query.tactic === 'string' ? req.query.tactic : undefined,
@@ -274,6 +280,8 @@ router.get('/technique/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
     const range = typeof req.query.range === 'string' && RANGE_HOURS[req.query.range] ? req.query.range : '7d';
     const since = new Date(Date.now() - RANGE_HOURS[range] * 60 * 60 * 1000);
+    const scope = await requireScope(req, res);
+    if (!scope) return;
 
     interface AlertHit {
         _source?: {
@@ -301,6 +309,7 @@ router.get('/technique/:id', async (req: Request, res: Response) => {
                         { term: { 'rule.mitre.id': id } },
                         { range: { timestamp: { gte: since.toISOString() } } },
                     ],
+                    filter: [alertScopeFilter(scope)],
                 },
             },
             sort: [{ timestamp: { order: 'desc' } }],
@@ -335,7 +344,7 @@ router.get('/technique/:id', async (req: Request, res: Response) => {
         });
     } catch (err) {
         console.error('[MITRE] technique detail failed:', err instanceof Error ? err.message : err);
-        res.json({ technique_id: id, alerts: [], total: 0, agents: [], rules: [], daily: [], error: 'Wazuh indexer unreachable' });
+        res.json({ technique_id: id, alerts: [], total: 0, agents: [], rules: [], daily: [], error: err instanceof Error ? err.message : 'Wazuh indexer unreachable' });
     }
 });
 
@@ -469,7 +478,9 @@ async function backupsAreReporting(): Promise<boolean> {
 router.get('/defend', async (req: Request, res: Response) => {
     const range = typeof req.query.range === 'string' ? req.query.range : '7d';
 
-    const detected = await collectTechniques({ range });
+    const scope = await requireScope(req, res);
+    if (!scope) return;
+    const detected = await collectTechniques({ scope, range });
     const detectedIds = detected.techniques.map((t) => t.technique_id);
 
     // Signals. Wazuh detecting a technique is genuine evidence that the corresponding

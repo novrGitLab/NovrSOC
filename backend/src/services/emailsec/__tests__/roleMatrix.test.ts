@@ -95,6 +95,15 @@ test('non-staff and anonymous callers are refused everywhere', async () => {
     assert.equal((await call('POST', `/dmarc/domains/${domainA}/verify`, 'portal_user')).status, 403);
 });
 
+test('a staff token without an organisation is refused, never served the default organisation', async () => {
+    const noOrg = jwt.sign({ sub: randomUUID(), email: 'admin@none.test', role: 'super_admin' }, process.env.JWT_SECRET!);
+    for (const p of ['/overview', '/dmarc/domains', '/messaging/events']) {
+        const r = await fetch(`${base}/api/email-security${p}`, { headers: { Authorization: `Bearer ${noOrg}` } });
+        assert.equal(r.status, 403, p);
+        assert.match(((await r.json()) as { error: string }).error, /No organisation/);
+    }
+});
+
 test('tenant isolation: another org\'s ids are 404, and org_id from the client is ignored', async () => {
     assert.equal((await call('GET', `/dmarc/domains/${domainB}`, 'analyst', 'org-a')).status, 404);
     assert.equal((await call('POST', `/dmarc/domains/${domainB}/verify`, 'analyst', 'org-a')).status, 404);

@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth';
-import { wazuhGet } from '../lib/wazuh';
-import { getAgentsForGroup, getAgentNamesForGroup } from '../lib/wazuh-group';
-import { search } from '../lib/wazuh-indexer';
-import { isConfigured as wazuhConfigured, getAgents as getWazuhAgents, getAgentInventory } from '../services/wazuh';
+import { searchStrict as search, search as rawSearch } from '../lib/wazuh-indexer';
+import { isConfigured as wazuhConfigured, getAgentInventory } from '../services/wazuh';
+import { orgScope, requireScope, alertScopeFilter, agentStateFilter, scoped, ownsAgent, padAgentId, ScopeError, type OrgScope } from '../lib/orgScope';
+import { requestOrg } from '../lib/resolveOrg';
+import { alertNetwork } from '../lib/alertNetwork';
 import { getComplianceImpact } from '../services/complianceMapping';
 import { isDemoMode, DEMO_AGENTS } from '../lib/demoMode';
 import { severityFromLevel, SEVERITY_MIN_LEVEL } from '../lib/severity';
@@ -23,43 +24,45 @@ const router = Router();
 // 1515/1514), never against this API. Its only caller is the admin Setup Guide page.
 router.use(requirePermission('alerts:read'));
 
-// NOTE — multi-tenancy: this is the pre-client baseline, all Wazuh data is Cybernovr-internal.
-// One Wazuh manager currently serves one org, so nothing here filters by org. When multiple
-// clients are onboarded, each client's agents will live in their own named Wazuh agent group —
-// lib/wazuh-group.ts's getAgentsForGroup()/getAgentNamesForGroup() already exist and scope by
-// group name, so the shape of the fix is "pass req.user.org_id as the group filter," not new
-// infrastructure. Routes below that query wazuh-alerts-4.x-* directly (not through those
-// group helpers) will additionally need an `agent.group: req.user.org_id` term added to their
-// query body.
+// Multi-tenancy (P22): every route reads only what the request's organisation owns —
+// lib/orgScope.ts: agents whose Wazuh groups map to it (wazuh_group_org_map) and syslog senders
+// mapped to it (wazuh_source_org_map). Staff choose the organisation with X-Org-Id (audited;
+// analysts only for organisations they are assigned to). ?group= only narrows to one of the
+// organisation's own groups; another organisation's group is a 403. Per-agent routes answer 404
+// for an agent the organisation doesn't own, exactly as for one that doesn't exist.
 
 const groupParam = (req: import('express').Request) =>
-    typeof req.query.group === 'string' ? req.query.group : null;
+    typeof req.query.group === 'string' && req.query.group.trim() ? req.query.group.trim() : null;
 
-// GET /api/wazuh/status — connectivity test for the Manager REST API (services/wazuh.ts),
-// separate from the indexer-backed routes below which use lib/wazuh + lib/wazuh-indexer.
-router.get('/status', async (_req, res) => {
+/** The scope for this request, honouring ?group=. Null once the reason has been sent. */
+const scopeOf = (req: import('express').Request, res: import('express').Response) => requireScope(req, res, groupParam(req));
+
+const errMsg = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+// GET /api/wazuh/status — whether the organisation's agent inventory can be read, and its agents
+// by state. connected:false carries the reason; counts are then null, never a false zero.
+router.get('/status', async (req, res) => {
     if (isDemoMode()) {
         res.json({ connected: true, agent_count: DEMO_AGENTS.length, active_agents: DEMO_AGENTS.filter((a) => a.status === 'active').length, source: 'demo' });
         return;
     }
-    if (!wazuhConfigured()) {
-        res.json({ connected: false, agent_count: 0, active_agents: 0, disconnected_agents: 0, never_connected_agents: 0 });
-        return;
-    }
     try {
-        const agents = await getWazuhAgents();
-        const count = (...states: string[]) => agents.filter((a) => states.includes(a.status)).length;
+        const s = await orgScope(requestOrg(req));
+        const count = (...states: string[]) => s.agents.filter((a) => states.includes(a.status)).length;
         // Registered = active + disconnected + never_connected/pending, so the dashboard can
         // show all three without inferring one from the others.
         res.json({
             connected: true,
-            agent_count: agents.length,
+            agent_count: s.agents.length,
             active_agents: count('active'),
             disconnected_agents: count('disconnected'),
             never_connected_agents: count('never_connected', 'pending'),
+            agent_source: s.agentSource,
+            groups: s.groups,
+            syslog_sources: s.locations.length,
         });
-    } catch {
-        res.json({ connected: false, agent_count: 0, active_agents: 0, disconnected_agents: 0, never_connected_agents: 0 });
+    } catch (err) {
+        res.json({ connected: false, agent_count: null, active_agents: null, disconnected_agents: null, never_connected_agents: null, error: errMsg(err) });
     }
 });
 
@@ -84,21 +87,22 @@ interface AlertHit {
     _source?: {
         id?: string;
         timestamp?: string;
-        '@timestamp'?: string;
-        rule?: { id?: string; level?: number; description?: string; groups?: string[]; mitre_tactics?: string | string[]; mitre_techniques?: string | string[] };
+        rule?: { id?: string; level?: number; description?: string; groups?: string[]; mitre?: { id?: string[]; tactic?: string[]; technique?: string[] } };
         agent?: { id?: string; name?: string };
-        data?: { srcip?: string };
         location?: string;
-    };
+    } & Record<string, unknown>;
 }
 interface AlertsSearchResponse { hits?: { hits?: AlertHit[] } }
 
 router.get('/alerts', async (req, res) => {
+    const scope = await scopeOf(req, res);
+    if (!scope) return;
     try {
-        const limit = Number(req.query.limit) || 50;
-        const result = await search<AlertsSearchResponse>('wazuh-alerts-*', {
+        const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+        const result = await search<AlertsSearchResponse>('wazuh-alerts-4.x-*', {
             size: limit,
-            sort: [{ '@timestamp': { order: 'desc' } }],
+            sort: [{ timestamp: { order: 'desc' } }],
+            query: scoped(undefined, alertScopeFilter(scope)),
         });
 
         const hits = result?.hits?.hits ?? [];
@@ -106,21 +110,22 @@ router.get('/alerts', async (req, res) => {
             const src = h._source ?? {};
             const rule = src.rule ?? {};
             const agent = src.agent ?? {};
-            const data = src.data ?? {};
 
             return {
                 id: String(h._id || src.id || ''),
-                timestamp: src.timestamp || src['@timestamp'] || null,
-                rule_id: String(rule.id || ''),
+                wazuh_alert_id: src.id ?? null,
+                timestamp: src.timestamp ?? null,
+                rule_id: rule.id != null ? String(rule.id) : null,
                 rule_level: Number(rule.level || 0),
-                rule_description: String(rule.description || 'Wazuh alert'),
+                rule_description: rule.description ?? null,
                 rule_groups: Array.isArray(rule.groups) ? rule.groups : [],
-                mitre_tactic: Array.isArray(rule.mitre_tactics) ? rule.mitre_tactics[0] : rule.mitre_tactics || null,
-                mitre_technique: Array.isArray(rule.mitre_techniques) ? rule.mitre_techniques[0] : rule.mitre_techniques || null,
-                agent_id: String(agent.id || ''),
-                agent_name: String(agent.name || 'Unknown'),
-                source_ip: data.srcip || null,
-                location: src.location || null,
+                mitre_id: rule.mitre?.id?.[0] ?? null,
+                mitre_tactic: rule.mitre?.tactic?.[0] ?? null,
+                mitre_technique: rule.mitre?.technique?.[0] ?? null,
+                agent_id: agent.id ?? null,
+                agent_name: agent.name ?? null,
+                location: src.location ?? null,
+                ...alertNetwork(src),
             };
         });
 
@@ -138,29 +143,26 @@ router.get('/agents', async (req, res) => {
         res.json({ active, total: DEMO_AGENTS.length, agents: DEMO_AGENTS, data: { connection: { active, total: DEMO_AGENTS.length } }, source: 'demo' });
         return;
     }
-    try {
-        const group = groupParam(req);
-        const agents = await getAgentsForGroup(group);
-        const active = agents.filter((a) => a.status === 'active').length;
-        const total = agents.length;
-        const agentDetails = agents.map((a) => ({
-            id: a.id,
-            name: a.name,
-            ip: a.ip,
-            status: a.status,
-            lastSeen: a.lastKeepAlive,
-            os: a.os,
-            group: a.group.join(', ') || 'default',
-        }));
-        res.json({ active, total, agents: agentDetails, data: { connection: { active, total } } });
-    } catch (err) {
-        // Was silently swallowed before — confirmed live this can fail with zero visible cause
-        // in the logs (e.g. the Wazuh Indexer, port 9200, being unreachable while the Manager
-        // API on 55000 responds fine — a real network-level split this route's failure used to
-        // hide completely).
-        console.error('[routes/wazuh/agents] Failed:', err instanceof Error ? err.message : err);
-        res.status(502).json(null);
-    }
+    // The organisation's agents (lib/orgScope.ts): from the Manager API, or the indexer's
+    // wazuh-monitoring snapshot when the API can't be reached (agent_source says which). A failure
+    // answers 503 with the reason — it used to be swallowed, and the Manager and the indexer have
+    // been seen failing independently on this deployment.
+    const scope = await scopeOf(req, res);
+    if (!scope) return;
+    const agents = scope.agents;
+    const active = agents.filter((a) => a.status === 'active').length;
+    const total = agents.length;
+    const agentDetails = agents.map((a) => ({
+        id: a.id,
+        name: a.name,
+        ip: a.ip,
+        status: a.status,
+        lastSeen: a.lastKeepAlive,
+        os: a.os,
+        version: a.version,
+        group: a.group.join(', '),
+    }));
+    res.json({ active, total, agents: agentDetails, data: { connection: { active, total } }, agent_source: scope.agentSource, groups: scope.groups });
 });
 
 // GET /api/wazuh/mitre-stats — tactic counts over the last 24h, for the dashboard's MITRE
@@ -168,7 +170,7 @@ router.get('/agents', async (req, res) => {
 // has MITRE mapping enabled) — not every alert has one, so this is a genuine subset, not "all
 // alerts categorized." Demo mode bypasses this entirely (no MITRE data attached to the fixed
 // demo agents), so it returns the same honest empty state as a real Wazuh outage would.
-router.get('/mitre-stats', async (_req, res) => {
+router.get('/mitre-stats', async (req, res) => {
     interface TacticBucket { key: string; doc_count: number }
     interface SearchResponse { aggregations?: { mitre_tactics?: { buckets?: TacticBucket[] } } }
 
@@ -176,12 +178,14 @@ router.get('/mitre-stats', async (_req, res) => {
         res.json({ tactics: {}, source: 'demo' });
         return;
     }
+    const scope = await scopeOf(req, res);
+    if (!scope) return;
 
     try {
         const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         const result = await search<SearchResponse>('wazuh-alerts-4.x-*', {
             size: 0,
-            query: { range: { timestamp: { gte: since } } },
+            query: scoped({ range: { timestamp: { gte: since } } }, alertScopeFilter(scope)),
             aggs: { mitre_tactics: { terms: { field: 'rule.mitre.tactic', size: 20 } } },
         });
 
@@ -189,15 +193,15 @@ router.get('/mitre-stats', async (_req, res) => {
         const tactics: Record<string, number> = {};
         for (const b of buckets) tactics[b.key] = b.doc_count;
 
-        res.json({ tactics, source: buckets.length > 0 ? 'wazuh' : 'unavailable' });
-    } catch {
-        // Honest empty state — same reasoning as every other Wazuh-backed route in this file.
-        res.json({ tactics: {}, source: 'unavailable' });
+        // 'empty' = the indexer answered and nothing in the window carried a MITRE mapping.
+        res.json({ tactics, source: buckets.length > 0 ? 'wazuh' : 'empty' });
+    } catch (err) {
+        res.status(502).json({ tactics: {}, source: 'unavailable', error: errMsg(err) });
     }
 });
 
 // GET /api/wazuh/notifications
-router.get('/notifications', async (_req, res) => {
+router.get('/notifications', async (req, res) => {
     interface WazuhHit { _id: string; _source: { timestamp?: string; rule?: { description?: string; level?: number }; agent?: { name?: string } } }
     interface SearchResponse { hits?: { hits?: WazuhHit[] } }
 
@@ -211,11 +215,14 @@ router.get('/notifications', async (_req, res) => {
     };
     const truncate = (s: string, max: number): string => (s.length > max ? s.slice(0, max - 3) + '...' : s);
 
+    const scope = await scopeOf(req, res);
+    if (!scope) return;
+
     try {
         const result = await search<SearchResponse>('wazuh-alerts-4.x-*', {
             size: 6,
             sort: [{ 'rule.level': { order: 'desc' } }, { timestamp: { order: 'desc' } }],
-            query: { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } },
+            query: scoped({ range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } }, alertScopeFilter(scope)),
             _source: ['timestamp', 'rule.description', 'rule.level', 'agent.name'],
         });
 
@@ -235,41 +242,21 @@ router.get('/notifications', async (_req, res) => {
         });
 
         res.json(notifications);
-    } catch {
-        res.status(502).json([]);
+    } catch (err) {
+        res.status(502).json({ error: errMsg(err) });
     }
 });
 
-// GET /api/wazuh/threats-blocked
-router.get('/threats-blocked', async (req, res) => {
-    const THREAT_RULE_GROUPS = [
-        'authentication_failed', 'attacks', 'exploit', 'malware', 'web-attack',
-        'intrusion_detection', 'firewall-drop', 'ids', 'sshd',
-    ];
-    interface SearchResponse { hits?: { total?: { value?: number } } }
+// RFC 1918, loopback and link-local prefixes, as string prefixes of a keyword IP field.
+const PRIVATE_PREFIXES = [
+    '10.', '127.', '192.168.', '169.254.',
+    ...Array.from({ length: 16 }, (_, i) => `172.${16 + i}.`),
+];
 
-    try {
-        const group = groupParam(req);
-        const agentNames = group ? await getAgentNamesForGroup(group) : null;
-
-        const must: unknown[] = [
-            { terms: { 'rule.groups': THREAT_RULE_GROUPS } },
-            { range: { timestamp: { gte: 'now-30d' } } },
-        ];
-        if (agentNames) must.push({ terms: { 'agent.name': agentNames } });
-
-        const result = await search<SearchResponse>('wazuh-alerts-4.x-*', { size: 0, track_total_hits: true, query: { bool: { must } } });
-        const threatsBlocked = result?.hits?.total?.value ?? 0;
-
-        res.json({ threats_blocked: threatsBlocked, period: 'last 30 days' });
-    } catch {
-        res.status(502).json({ threats_blocked: 0, period: 'last 30 days' });
-    }
-});
-
-// GET /api/wazuh/network-connections
+// GET /api/wazuh/network-connections — the organisation's busiest addresses over 24 h, split into
+// external (public) and internal (private) by source and destination. Fails as a whole with the
+// reason rather than showing a partial picture as if it were complete.
 router.get('/network-connections', async (req, res) => {
-    const PRIVATE_PREFIXES = ['10.', '192.168.', '172.'];
     interface AggBucket { key: string; doc_count: number }
     interface RawHit { _source: { data?: { srcip?: string; dstip?: string; dstport?: string; srcport?: string } } }
     interface SearchResponse { hits?: { hits?: RawHit[] }; aggregations?: { top_ips?: { buckets?: AggBucket[] } } }
@@ -279,85 +266,58 @@ router.get('/network-connections', async (req, res) => {
             const parts = ip.split('.');
             return `192.168.${parts[2] ?? '0'}.x LAN`;
         }
-        if (ip.startsWith('172.')) return '172.x LAN';
+        if (ip.startsWith('172.')) return '172.16/12 LAN';
         return 'Private Network';
     };
 
-    const ipAggQuery = (field: 'data.srcip' | 'data.dstip', agentFilter: unknown[], scope: 'external' | 'internal') => {
-        const must: unknown[] = [{ exists: { field } }, { range: { timestamp: { gte: 'now-24h' } } }, ...agentFilter];
+    const scope = await scopeOf(req, res);
+    if (!scope) return;
+    const filter = alertScopeFilter(scope);
+
+    const ipAggQuery = (field: 'data.srcip' | 'data.dstip', kind: 'external' | 'internal') => {
+        const must: unknown[] = [{ exists: { field } }, { range: { timestamp: { gte: 'now-24h' } } }];
         const query =
-            scope === 'external'
-                ? { bool: { must, must_not: PRIVATE_PREFIXES.map((p) => ({ prefix: { [field]: p } })) } }
-                : { bool: { must, should: PRIVATE_PREFIXES.map((p) => ({ prefix: { [field]: p } })), minimum_should_match: 1 } };
+            kind === 'external'
+                ? { bool: { must, must_not: PRIVATE_PREFIXES.map((p) => ({ prefix: { [field]: p } })), filter: [filter] } }
+                : { bool: { must, should: PRIVATE_PREFIXES.map((p) => ({ prefix: { [field]: p } })), minimum_should_match: 1, filter: [filter] } };
         return search<SearchResponse>('wazuh-alerts-4.x-*', { size: 0, query, aggs: { top_ips: { terms: { field, size: 10 } } } });
     };
 
     try {
-        const group = groupParam(req);
-        const agentNames = group ? await getAgentNamesForGroup(group) : null;
-        const agentFilter = agentNames ? [{ terms: { 'agent.name': agentNames } }] : [];
-
-        const [extSrcRes, extDstRes, intSrcRes, intDstRes, rawRes] = await Promise.allSettled([
-            ipAggQuery('data.srcip', agentFilter, 'external'),
-            ipAggQuery('data.dstip', agentFilter, 'external'),
-            ipAggQuery('data.srcip', agentFilter, 'internal'),
-            ipAggQuery('data.dstip', agentFilter, 'internal'),
+        const [extSrcRes, extDstRes, intSrcRes, intDstRes, rawRes] = await Promise.all([
+            ipAggQuery('data.srcip', 'external'),
+            ipAggQuery('data.dstip', 'external'),
+            ipAggQuery('data.srcip', 'internal'),
+            ipAggQuery('data.dstip', 'internal'),
             search<SearchResponse>('wazuh-alerts-4.x-*', {
                 size: 40,
-                query: {
+                query: scoped({
                     bool: {
                         must: [
                             { bool: { should: [{ exists: { field: 'data.srcip' } }, { exists: { field: 'data.dstip' } }] } },
                             { range: { timestamp: { gte: 'now-24h' } } },
-                            ...agentFilter,
                         ],
                     },
-                },
+                }, filter),
                 _source: ['data.srcip', 'data.dstip', 'data.dstport', 'data.srcport'],
             }),
         ]);
 
-        const bucketsOf = (r: PromiseSettledResult<SearchResponse | null>) =>
-            r.status === 'fulfilled' ? r.value?.aggregations?.top_ips?.buckets ?? [] : [];
+        const bucketsOf = (r: SearchResponse | null) => r?.aggregations?.top_ips?.buckets ?? [];
+        const rawHits = rawRes?.hits?.hits ?? [];
 
-        const extSrcBuckets = bucketsOf(extSrcRes);
-        const extDstBuckets = bucketsOf(extDstRes);
-        const intSrcBuckets = bucketsOf(intSrcRes);
-        const intDstBuckets = bucketsOf(intDstRes);
-        const rawHits = rawRes.status === 'fulfilled' ? rawRes.value?.hits?.hits ?? [] : [];
-
+        // The port seen with this address in the sampled hits; null when the sample has none.
         const portForIp = (ip: string, field: 'srcip' | 'dstip', portField: 'dstport' | 'srcport') => {
             const hit = rawHits.find((h) => h._source.data?.[field] === ip);
-            return hit?._source.data?.[portField] ?? '—';
+            return hit?._source.data?.[portField] ?? null;
         };
 
-        const externalInbound = extSrcBuckets.map((b) => ({
-            ip: b.key, count: b.doc_count,
-            verdict: 'Unknown' as const,
-            country: '—',
-            port: portForIp(b.key, 'srcip', 'dstport'),
-        }));
-        const externalOutbound = extDstBuckets.map((b) => ({
-            ip: b.key, count: b.doc_count,
-            verdict: 'Unknown' as const,
-            country: '—',
-            port: portForIp(b.key, 'dstip', 'srcport'),
-        }));
-
-        // No reputation lookup runs here (the CTIP service it used was removed), so external IPs
-        // are 'Unknown' and malicious_detected is null — not checked, rather than a false zero.
-        const internalInbound = intSrcBuckets.map((b) => ({
-            ip: b.key, count: b.doc_count,
-            verdict: 'Internal' as const,
-            network: networkLabel(b.key),
-            port: portForIp(b.key, 'srcip', 'dstport'),
-        }));
-        const internalOutbound = intDstBuckets.map((b) => ({
-            ip: b.key, count: b.doc_count,
-            verdict: 'Internal' as const,
-            network: networkLabel(b.key),
-            port: portForIp(b.key, 'dstip', 'srcport'),
-        }));
+        // No reputation lookup runs here, so external verdicts are 'Unknown' and country is null:
+        // not checked, rather than an invented value.
+        const externalInbound = bucketsOf(extSrcRes).map((b) => ({ ip: b.key, count: b.doc_count, verdict: 'Unknown' as const, country: null, port: portForIp(b.key, 'srcip', 'dstport') }));
+        const externalOutbound = bucketsOf(extDstRes).map((b) => ({ ip: b.key, count: b.doc_count, verdict: 'Unknown' as const, country: null, port: portForIp(b.key, 'dstip', 'srcport') }));
+        const internalInbound = bucketsOf(intSrcRes).map((b) => ({ ip: b.key, count: b.doc_count, verdict: 'Internal' as const, network: networkLabel(b.key), port: portForIp(b.key, 'srcip', 'dstport') }));
+        const internalOutbound = bucketsOf(intDstRes).map((b) => ({ ip: b.key, count: b.doc_count, verdict: 'Internal' as const, network: networkLabel(b.key), port: portForIp(b.key, 'dstip', 'srcport') }));
 
         res.json({
             external: { inbound: externalInbound, outbound: externalOutbound },
@@ -369,12 +329,8 @@ router.get('/network-connections', async (req, res) => {
                 malicious_detected: null,
             },
         });
-    } catch {
-        res.status(502).json({
-            external: { inbound: [], outbound: [] },
-            internal: { inbound: [], outbound: [] },
-            summary: { total_external_inbound: 0, total_external_outbound: 0, total_internal: 0, malicious_detected: 0 },
-        });
+    } catch (err) {
+        res.status(502).json({ error: errMsg(err) });
     }
 });
 
@@ -389,25 +345,34 @@ router.get('/vulnerabilities', async (req, res) => {
     }
     interface SearchResponse { hits?: { hits?: VulnHit[] }; aggregations?: { by_severity?: { buckets?: { key: string; doc_count: number }[] } } }
 
+    // This page distinguishes "none found" from "couldn't read" (index_available): an ownership
+    // failure is the second, in the same shape — except another organisation's group, a 403.
+    let scope: OrgScope;
     try {
-        const group = groupParam(req);
+        scope = await orgScope(requestOrg(req), { group: groupParam(req) });
+    } catch (err) {
+        const status = err instanceof ScopeError && err.status === 403 ? 403 : 502;
+        res.status(status).json({ vulnerabilities: [], summary: null, index_available: false, problem: errMsg(err) });
+        return;
+    }
+    try {
         const severity = typeof req.query.severity === 'string' ? req.query.severity : null;
-        const agentNames = group ? await getAgentNamesForGroup(group) : null;
 
-        const groupFilters: Record<string, unknown>[] = [];
-        if (agentNames) groupFilters.push({ terms: { 'agent.name': agentNames } });
+        // The organisation's agents only (narrowed by ?group= to one of its groups).
+        const groupFilters: Record<string, unknown>[] = [agentStateFilter(scope)];
         // ?agent=<name> narrows to one endpoint (the page's agent selector, fed by /agents).
         const agentName = typeof req.query.agent === 'string' && req.query.agent.trim() ? req.query.agent.trim() : null;
         if (agentName) groupFilters.push({ term: { 'agent.name': agentName } });
 
-        const aggsQuery = groupFilters.length ? { bool: { must: groupFilters } } : { match_all: {} };
+        const aggsQuery = { bool: { filter: groupFilters } };
 
         const hitsFilters = [...groupFilters];
         if (severity) hitsFilters.push({ term: { 'vulnerability.severity': severity } });
-        const hitsQuery = hitsFilters.length ? { bool: { must: hitsFilters } } : { match_all: {} };
+        const hitsQuery = { bool: { filter: hitsFilters } };
 
+        // The lenient search(): unusableReply() below reads the indexer's own error body.
         const [hitsRes, aggsRes] = await Promise.allSettled([
-            search<SearchResponse>('wazuh-states-vulnerabilities-*', {
+            rawSearch<SearchResponse>('wazuh-states-vulnerabilities-*', {
                 size: 50,
                 sort: [{ 'vulnerability.score.base': { order: 'desc' } }],
                 _source: [
@@ -417,7 +382,7 @@ router.get('/vulnerabilities', async (req, res) => {
                 ],
                 query: hitsQuery,
             }),
-            search<SearchResponse>('wazuh-states-vulnerabilities-*', {
+            rawSearch<SearchResponse>('wazuh-states-vulnerabilities-*', {
                 size: 0,
                 query: aggsQuery,
                 aggs: { by_severity: { terms: { field: 'vulnerability.severity' } } },
@@ -456,8 +421,8 @@ router.get('/vulnerabilities', async (req, res) => {
         const problem = unusableReply(aggsRes as never) ?? unusableReply(hitsRes as never);
         if (problem) { res.status(502).json({ vulnerabilities: [], summary: null, index_available: false, problem }); return; }
         res.json({ vulnerabilities, summary, index_available: true });
-    } catch {
-        res.status(502).json({ vulnerabilities: [], summary: { critical: 0, high: 0, medium: 0, low: 0, total: 0 }, index_available: false });
+    } catch (err) {
+        res.status(502).json({ vulnerabilities: [], summary: null, index_available: false, problem: errMsg(err) });
     }
 });
 
@@ -467,47 +432,36 @@ router.get('/alerts-indexer', async (req, res) => {
 
     const RANGE_MAP: Record<string, string> = { '1h': 'now-1h', '24h': 'now-24h', '7d': 'now-7d' };
 
-    const countByLevel = (minLevel: number, agentNames: string[] | null) => {
-        const must: unknown[] = [
-            { range: { 'rule.level': { gte: minLevel } } },
-            { range: { timestamp: { gte: 'now-24h' } } },
-        ];
-        if (agentNames) must.push({ terms: { 'agent.name': agentNames } });
-        return search<SearchResponse>('wazuh-alerts-4.x-*', { size: 0, track_total_hits: true, query: { bool: { must } } });
-    };
+    const scope = await scopeOf(req, res);
+    if (!scope) return;
+    const filter = alertScopeFilter(scope);
+
+    const countByLevel = (minLevel: number) => search<SearchResponse>('wazuh-alerts-4.x-*', {
+        size: 0, track_total_hits: true,
+        query: { bool: { must: [{ range: { 'rule.level': { gte: minLevel } } }, { range: { timestamp: { gte: 'now-24h' } } }], filter: [filter] } },
+    });
 
     try {
-        const group = groupParam(req);
-        const agentNames = group ? await getAgentNamesForGroup(group) : null;
-        const minLevelParam = typeof req.query.minLevel === 'string' ? req.query.minLevel : null;
-        const minLevel = minLevelParam !== null ? Number(minLevelParam) : SEVERITY_MIN_LEVEL.medium;
+        const minLevelParam = typeof req.query.minLevel === 'string' ? Number(req.query.minLevel) : NaN;
+        const minLevel = Number.isInteger(minLevelParam) && minLevelParam >= 0 && minLevelParam <= 16 ? minLevelParam : SEVERITY_MIN_LEVEL.medium;
         const rangeParam = typeof req.query.range === 'string' ? req.query.range : null;
         const since = RANGE_MAP[rangeParam ?? '24h'] ?? RANGE_MAP['24h'];
 
-        const hitsMust: unknown[] = [
-            { range: { 'rule.level': { gte: minLevel } } },
-            { range: { timestamp: { gte: since } } },
-        ];
-        if (agentNames) hitsMust.push({ terms: { 'agent.name': agentNames } });
-
-        const [alertsRes, criticalRes, openRes] = await Promise.allSettled([
+        const [alertsRes, criticalRes, openRes] = await Promise.all([
             search<SearchResponse>('wazuh-alerts-4.x-*', {
                 size: 10,
                 sort: [{ timestamp: { order: 'desc' } }],
-                query: { bool: { must: hitsMust } },
+                query: { bool: { must: [{ range: { 'rule.level': { gte: minLevel } } }, { range: { timestamp: { gte: since } } }], filter: [filter] } },
                 _source: ['timestamp', 'rule.description', 'rule.level', 'agent.name', 'agent.ip', 'location'],
             }),
-            countByLevel(SEVERITY_MIN_LEVEL.critical, agentNames),
-            countByLevel(SEVERITY_MIN_LEVEL.medium, agentNames),
-        ]).then((results) => results.map((r) => (r.status === 'fulfilled' ? r.value : null)));
+            countByLevel(SEVERITY_MIN_LEVEL.critical),
+            countByLevel(SEVERITY_MIN_LEVEL.medium),
+        ]);
 
         const hits = (alertsRes?.hits?.hits ?? []).map((h) => h._source).filter(Boolean);
-        const criticalCount = criticalRes?.hits?.total?.value ?? null;
-        const openIncidentsCount = openRes?.hits?.total?.value ?? null;
-
-        res.json({ hits, criticalCount, openIncidentsCount });
-    } catch {
-        res.status(502).json({ hits: [], criticalCount: null, openIncidentsCount: null });
+        res.json({ hits, criticalCount: criticalRes?.hits?.total?.value ?? null, openIncidentsCount: openRes?.hits?.total?.value ?? null });
+    } catch (err) {
+        res.status(502).json({ hits: [], criticalCount: null, openIncidentsCount: null, error: errMsg(err) });
     }
 });
 
@@ -522,19 +476,16 @@ router.get('/trend', async (req, res) => {
         '30d': { interval: 'day', min: 'now-30d', count: 30 },
     };
 
+    const scope = await scopeOf(req, res);
+    if (!scope) return;
+
     try {
         const rangeParam = typeof req.query.range === 'string' ? req.query.range : null;
         const config = RANGE_CONFIG[rangeParam ?? '7d'] ?? RANGE_CONFIG['7d'];
-        const group = groupParam(req);
-        const agentNames = group ? await getAgentNamesForGroup(group) : null;
-
-        const must: unknown[] = [{ range: { timestamp: { gte: config.min } } }];
-        if (agentNames) must.push({ terms: { 'agent.name': agentNames } });
-        const query = { bool: { must } };
 
         const result = await search<SearchResponse>('wazuh-alerts-4.x-*', {
             size: 0,
-            query,
+            query: scoped({ range: { timestamp: { gte: config.min } } }, alertScopeFilter(scope)),
             aggs: {
                 alerts_over_time: {
                     date_histogram: {
@@ -563,8 +514,8 @@ router.get('/trend', async (req, res) => {
         });
 
         res.json(trend);
-    } catch {
-        res.status(502).json([]);
+    } catch (err) {
+        res.status(502).json({ error: errMsg(err) });
     }
 });
 
@@ -572,13 +523,6 @@ router.get('/trend', async (req, res) => {
 router.get('/attack-origins', async (req, res) => {
     interface Bucket { key: string; doc_count: number; top_groups?: { buckets?: { key: string }[] } }
     interface SearchResponse { aggregations?: { top_countries?: { buckets?: Bucket[] } } }
-
-    // Excludes RFC1918 / loopback / link-local so internal agent-to-agent traffic
-    // never shows up disguised as an "attack".
-    const PRIVATE_PREFIXES = [
-        '10.', '127.', '192.168.', '169.254.',
-        ...Array.from({ length: 16 }, (_, i) => `172.${16 + i}.`),
-    ];
 
     const NAME_TO_ISO: Record<string, string> = {
         'United States': 'US', 'United Kingdom': 'GB', 'China': 'CN', 'Russia': 'RU',
@@ -613,16 +557,21 @@ router.get('/attack-origins', async (req, res) => {
         return 'Suspicious Activity';
     };
 
+    const scope = await scopeOf(req, res);
+    if (!scope) return;
+
     try {
-        const group = groupParam(req);
-        const agentNames = group ? await getAgentNamesForGroup(group) : null;
-
-        const must: unknown[] = [{ exists: { field: 'data.srcip' } }, { range: { timestamp: { gte: 'now-24h' } } }];
-        if (agentNames) must.push({ terms: { 'agent.name': agentNames } });
-
+        // Excludes RFC1918 / loopback / link-local so internal agent-to-agent traffic
+        // never shows up disguised as an "attack".
         const result = await search<SearchResponse>('wazuh-alerts-4.x-*', {
             size: 0,
-            query: { bool: { must, must_not: PRIVATE_PREFIXES.map((p) => ({ prefix: { 'data.srcip': p } })) } },
+            query: {
+                bool: {
+                    must: [{ exists: { field: 'data.srcip' } }, { range: { timestamp: { gte: 'now-24h' } } }],
+                    must_not: PRIVATE_PREFIXES.map((p) => ({ prefix: { 'data.srcip': p } })),
+                    filter: [alertScopeFilter(scope)],
+                },
+            },
             aggs: {
                 top_countries: {
                     terms: { field: 'GeoLocation.country_name', size: 5 },
@@ -640,69 +589,63 @@ router.get('/attack-origins', async (req, res) => {
         }));
 
         res.json(origins);
-    } catch {
-        res.status(502).json([]);
+    } catch (err) {
+        res.status(502).json({ error: errMsg(err) });
     }
 });
 
-// GET /api/wazuh/incidents
+// GET /api/wazuh/incidents — the organisation's level 3+ alerts over 7 days, highest first, and
+// counts by severity. Raw Wazuh alerts carry no triage state: status, assignee and SLA belong to
+// stored alerts and cases, so none is made up here.
 router.get('/incidents', async (req, res) => {
     interface WazuhHit {
         _id: string;
-        _source: { timestamp?: string; rule?: { description?: string; level?: number; mitre?: { technique?: string[] } }; agent?: { name?: string } };
+        _source: { timestamp?: string; rule?: { description?: string; level?: number; mitre?: { id?: string[]; technique?: string[] } }; agent?: { id?: string; name?: string }; location?: string };
     }
     interface SearchResponse { hits?: { hits?: WazuhHit[]; total?: { value?: number } } }
 
     // Capitalised labels are this route's existing response format.
     const SEVERITY_LABEL = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' } as const;
     const severityFor = (level: number) => SEVERITY_LABEL[severityFromLevel(level)];
-    const slaTimeFor = (level: number): string => {
-        const s = severityFromLevel(level);
-        return s === 'critical' ? '00:30:00' : s === 'low' ? '06:00:00' : '02:00:00';
-    };
 
-    const countInRange = (minLevel: number, maxLevelExclusive: number | undefined, agentNames: string[] | null) => {
+    const scope = await scopeOf(req, res);
+    if (!scope) return;
+    const filter = alertScopeFilter(scope);
+
+    const countInRange = (minLevel: number, maxLevelExclusive: number | undefined) => {
         const levelRange: { gte: number; lt?: number } = { gte: minLevel };
         if (maxLevelExclusive !== undefined) levelRange.lt = maxLevelExclusive;
-        const must: unknown[] = [{ range: { 'rule.level': levelRange } }, { range: { timestamp: { gte: 'now-7d' } } }];
-        if (agentNames) must.push({ terms: { 'agent.name': agentNames } });
-        return search<SearchResponse>('wazuh-alerts-4.x-*', { size: 0, track_total_hits: true, query: { bool: { must } } });
+        return search<SearchResponse>('wazuh-alerts-4.x-*', {
+            size: 0, track_total_hits: true,
+            query: { bool: { must: [{ range: { 'rule.level': levelRange } }, { range: { timestamp: { gte: 'now-7d' } } }], filter: [filter] } },
+        });
     };
 
     try {
-        const group = groupParam(req);
-        const agentNames = group ? await getAgentNamesForGroup(group) : null;
-
-        const mainMust: unknown[] = [{ range: { 'rule.level': { gte: 3 } } }, { range: { timestamp: { gte: 'now-7d' } } }];
-        if (agentNames) mainMust.push({ terms: { 'agent.name': agentNames } });
-
-        const [alertsRes, criticalRes, highRes, mediumRes, lowRes] = await Promise.allSettled([
+        const [alertsRes, criticalRes, highRes, mediumRes, lowRes] = await Promise.all([
             search<SearchResponse>('wazuh-alerts-4.x-*', {
                 size: 20,
                 sort: [{ 'rule.level': { order: 'desc' } }, { timestamp: { order: 'desc' } }],
-                query: { bool: { must: mainMust } },
-                _source: ['timestamp', 'rule.description', 'rule.level', 'rule.groups', 'agent.name', 'agent.ip', 'location', 'data.srcip', 'rule.mitre.technique'],
+                query: { bool: { must: [{ range: { 'rule.level': { gte: 3 } } }, { range: { timestamp: { gte: 'now-7d' } } }], filter: [filter] } },
+                _source: ['timestamp', 'rule.description', 'rule.level', 'rule.groups', 'agent.id', 'agent.name', 'agent.ip', 'location', 'data.srcip', 'rule.mitre.id', 'rule.mitre.technique'],
             }),
-            countInRange(SEVERITY_MIN_LEVEL.critical, undefined, agentNames),
-            countInRange(SEVERITY_MIN_LEVEL.high, SEVERITY_MIN_LEVEL.critical, agentNames),
-            countInRange(SEVERITY_MIN_LEVEL.medium, SEVERITY_MIN_LEVEL.high, agentNames),
-            countInRange(3, SEVERITY_MIN_LEVEL.medium, agentNames),
-        ]).then((results) => results.map((r) => (r.status === 'fulfilled' ? r.value : null)));
+            countInRange(SEVERITY_MIN_LEVEL.critical, undefined),
+            countInRange(SEVERITY_MIN_LEVEL.high, SEVERITY_MIN_LEVEL.critical),
+            countInRange(SEVERITY_MIN_LEVEL.medium, SEVERITY_MIN_LEVEL.high),
+            countInRange(3, SEVERITY_MIN_LEVEL.medium),
+        ]);
 
-        const rawHits = alertsRes?.hits?.hits ?? [];
-        const incidents = rawHits.map((h) => {
+        const incidents = (alertsRes?.hits?.hits ?? []).map((h) => {
             const level = h._source.rule?.level ?? 0;
             return {
                 id: h._id,
                 severity: severityFor(level),
-                name: h._source.rule?.description ?? 'Wazuh alert',
-                source: 'Wazuh-Agent',
-                asset: h._source.agent?.name ?? 'Unknown',
-                status: 'Open' as const,
-                analyst: 'Unassigned',
-                slaTime: slaTimeFor(level),
+                name: h._source.rule?.description ?? `Wazuh alert (level ${level})`,
+                // The agent, or for syslog the sender's address.
+                asset: h._source.agent?.id === '000' ? h._source.location ?? null : h._source.agent?.name ?? null,
                 // null when the rule carries no MITRE mapping (this used to default to T1059).
-                mitre: h._source.rule?.mitre?.technique?.[0] ?? null,
+                mitre: h._source.rule?.mitre?.id?.[0] ?? null,
+                mitre_technique: h._source.rule?.mitre?.technique?.[0] ?? null,
                 timestamp: h._source.timestamp ?? null,
                 level,
             };
@@ -713,15 +656,9 @@ router.get('/incidents', async (req, res) => {
         const medium = mediumRes?.hits?.total?.value ?? 0;
         const low = lowRes?.hits?.total?.value ?? 0;
 
-        // investigating / escalated / avgSla are not tracked for raw Wazuh alerts: null, not invented.
-        const kpis = { total: critical + high + medium + low, critical, high, medium, low, investigating: null, escalated: null, avgSla: null };
-
-        res.json({ incidents, kpis });
-    } catch {
-        res.status(502).json({
-            incidents: [],
-            kpis: { total: 0, critical: 0, high: 0, medium: 0, low: 0, investigating: null, escalated: null, avgSla: null },
-        });
+        res.json({ incidents, kpis: { total: critical + high + medium + low, critical, high, medium, low } });
+    } catch (err) {
+        res.status(502).json({ incidents: [], kpis: null, error: errMsg(err) });
     }
 });
 
@@ -730,7 +667,7 @@ router.get('/incidents', async (req, res) => {
 // serialize an array of objects into GET querystring params is exactly the kind of thing that
 // looks fine for the single-condition case and breaks the moment someone adds a second row.
 interface HuntCondition {
-    field: 'agent.name' | 'rule.level' | 'rule.groups' | 'data.srcip' | 'data.dstip' | 'rule.description';
+    field: string; // one of HUNT_FIELDS
     op: 'equals' | 'contains' | 'greater_than' | 'less_than' | 'exists';
     value: string;
 }
@@ -745,16 +682,33 @@ interface HuntQueryClause {
     exists?: { field: string };
 }
 
+// The fields the query builder offers — checked at runtime, not only by the type above.
+const HUNT_FIELDS = new Set<string>(['agent.name', 'rule.level', 'rule.groups', 'data.srcip', 'data.dstip', 'rule.description', 'data.action', 'data.protocol', 'data.dstport', 'location']);
+
 router.post('/hunt', requirePermission('cases:write'), async (req, res) => {
     const { conditions, time_range = '24h', limit = 100 }: { conditions?: HuntCondition[]; time_range?: string; limit?: number } = req.body ?? {};
     const rangeMs = HUNT_TIME_RANGE_MS[time_range] ?? HUNT_TIME_RANGE_MS['24h'];
+    if (conditions !== undefined && !Array.isArray(conditions)) { res.status(400).json({ error: 'conditions must be a list', results: [], total: 0 }); return; }
+    for (const cond of conditions ?? []) {
+        if (!cond || typeof cond.field !== 'string' || !HUNT_FIELDS.has(cond.field)) {
+            res.status(400).json({ error: `Unsupported hunt field: ${String(cond?.field).slice(0, 64)}`, results: [], total: 0 });
+            return;
+        }
+        if (cond.value !== undefined && (typeof cond.value !== 'string' || cond.value.length > 200)) {
+            res.status(400).json({ error: 'Each condition value must be text of up to 200 characters', results: [], total: 0 });
+            return;
+        }
+    }
+
+    const scope = await requireScope(req, res);
+    if (!scope) return;
 
     // ISO string, matching every other route's timestamp range query in this file/dashboard.ts
     // — not epoch millis, which would still work (OpenSearch accepts both for a date field)
     // but be the one inconsistent convention in this codebase for no reason.
     const must: HuntQueryClause[] = [{ range: { timestamp: { gte: new Date(Date.now() - rangeMs).toISOString() } } }];
     for (const cond of conditions ?? []) {
-        if (!cond?.field || !cond.op) continue;
+        if (!cond.op) continue;
         if (cond.op === 'exists') {
             must.push({ exists: { field: cond.field } });
         } else if (cond.op === 'contains') {
@@ -771,14 +725,15 @@ router.post('/hunt', requirePermission('cases:write'), async (req, res) => {
     }
 
     try {
-        const result = await search<{ hits?: { hits?: Array<{ _source: Record<string, unknown> }>; total?: { value?: number } } }>('wazuh-alerts-4.x-*', {
-            size: Math.min(Number(limit) || 100, 500),
+        const result = await search<{ hits?: { hits?: Array<{ _id?: string; _source: Record<string, unknown> }>; total?: { value?: number } } }>('wazuh-alerts-4.x-*', {
+            size: Math.min(Math.max(Number(limit) || 100, 1), 500),
             sort: [{ timestamp: { order: 'desc' } }],
-            query: { bool: { must } },
+            query: { bool: { must, filter: [alertScopeFilter(scope)] } },
             _source: [
-                'timestamp', 'agent.name', 'agent.ip',
+                'id', 'timestamp', 'agent.id', 'agent.name', 'agent.ip', 'location', 'decoder.name', 'predecoder.hostname',
                 'rule.id', 'rule.level', 'rule.description', 'rule.groups',
-                'data.srcip', 'data.dstip',
+                'data.srcip', 'data.dstip', 'data.srcport', 'data.dstport', 'data.protocol', 'data.proto', 'data.action',
+                'data.direction', 'data.dir', 'data.interface', 'data.iface',
                 'GeoLocation.country_name', 'GeoLocation.region_name',
             ],
         });
@@ -789,6 +744,7 @@ router.post('/hunt', requirePermission('cases:write'), async (req, res) => {
             results: hits.map((h) => {
                 const src = h._source as any;
                 return {
+                    id: h._id ?? null,
                     timestamp: src?.timestamp,
                     agent: src?.agent?.name,
                     rule_id: src?.rule?.id,
@@ -797,6 +753,8 @@ router.post('/hunt', requirePermission('cases:write'), async (req, res) => {
                     source_ip: src?.data?.srcip,
                     dest_ip: src?.data?.dstip,
                     country: src?.GeoLocation?.country_name,
+                    location: src?.location ?? null,
+                    ...alertNetwork(src),
                     raw: src,
                 };
             }),
@@ -804,7 +762,7 @@ router.post('/hunt', requirePermission('cases:write'), async (req, res) => {
             source: 'wazuh',
         });
     } catch (err) {
-        res.status(502).json({ error: err instanceof Error ? err.message : 'Hunt query failed', results: [], total: 0 });
+        res.status(502).json({ error: errMsg(err), results: [], total: 0 });
     }
 });
 
@@ -812,8 +770,23 @@ router.post('/hunt', requirePermission('cases:write'), async (req, res) => {
 //
 // Registered after GET /agents so the literal path still wins: Express matches in definition
 // order, and a '/agents/:id' declared earlier would swallow '/agents' itself.
+//
+// Each answers 404 for an agent the organisation does not own — the same answer as for an agent
+// that does not exist, so another organisation's agent ids can't be probed.
 
-// GET /api/wazuh/agents/:id — one agent's record, read from the same source the list uses so the
+/** The request's scope and the padded agent id when the organisation owns it; else null (answered). */
+async function ownedAgent(req: import('express').Request, res: import('express').Response): Promise<{ scope: OrgScope; agentId: string } | null> {
+    const scope = await requireScope(req, res);
+    if (!scope) return null;
+    const agentId = padAgentId(String(req.params.id ?? '').trim());
+    if (!/^\d{3,}$/.test(agentId) || !ownsAgent(scope, agentId)) {
+        res.status(404).json({ error: 'Agent not found' });
+        return null;
+    }
+    return { scope, agentId };
+}
+
+// GET /api/wazuh/agents/:id — one agent's record, from the same inventory the list uses so the
 // detail page can never disagree with the row the analyst clicked.
 router.get('/agents/:id', async (req, res) => {
     const { id } = req.params;
@@ -825,15 +798,13 @@ router.get('/agents/:id', async (req, res) => {
         return;
     }
 
-    try {
-        const agents = await getWazuhAgents();
-        const agent = agents.find((a) => String(a.id) === id);
-        if (!agent) { res.status(404).json({ error: 'Agent not found' }); return; }
-        res.json({ agent });
-    } catch (err) {
-        console.error('[wazuh/agents/:id] failed:', err instanceof Error ? err.message : err);
-        res.status(502).json({ error: 'Wazuh unreachable' });
-    }
+    const owned = await ownedAgent(req, res);
+    if (!owned) return;
+    const a = owned.scope.agents.find((x) => x.id === owned.agentId)!;
+    res.json({
+        agent: { id: a.id, name: a.name, ip: a.ip, os: a.os, status: a.status, last_keepalive: a.lastKeepAlive, version: a.version, group: a.group },
+        agent_source: owned.scope.agentSource,
+    });
 });
 
 // GET /api/wazuh/agents/:id/vulnerabilities
@@ -856,6 +827,9 @@ router.get('/agents/:id/vulnerabilities', async (req, res) => {
     }
     interface VulnSearch { hits?: { hits?: VulnHit[] } }
 
+    const owned = await ownedAgent(req, res);
+    if (!owned) return;
+
     try {
         const result = await search<VulnSearch>('wazuh-states-vulnerabilities-*', {
             size: 100,
@@ -865,7 +839,7 @@ router.get('/agents/:id/vulnerabilities', async (req, res) => {
                 'vulnerability.score.base', 'vulnerability.under_evaluation',
                 'package.name', 'package.version', 'package.condition', 'agent.id', 'agent.name',
             ],
-            query: { bool: { must: [{ term: { 'agent.id': req.params.id } }] } },
+            query: { bool: { filter: [{ term: { 'agent.id': owned.agentId } }] } },
         });
 
         const vulnerabilities = (result?.hits?.hits ?? []).map((h) => {
@@ -886,13 +860,13 @@ router.get('/agents/:id/vulnerabilities', async (req, res) => {
             vulnerabilities.map((v) => ({ severity: v.severity, package: v.package, cvss: v.cvss_score ?? undefined })),
         );
 
-        res.json({ vulnerabilities, agent_id: req.params.id, compliance });
+        res.json({ vulnerabilities, agent_id: owned.agentId, compliance });
     } catch (err) {
-        console.error('[wazuh/agents/:id/vulnerabilities] failed:', err instanceof Error ? err.message : err);
+        console.error('[wazuh/agents/:id/vulnerabilities] failed:', errMsg(err));
         // 200 with an explicit `error`, not 502: the asset page renders five other tabs and must
         // not lose all of them because the vulnerability index is unreachable.
         res.json({
-            vulnerabilities: [], agent_id: req.params.id, error: 'Vulnerability index unreachable',
+            vulnerabilities: [], agent_id: owned.agentId, error: `Vulnerability index unavailable: ${errMsg(err)}`,
             compliance: getComplianceImpact([]),
         });
     }
@@ -911,10 +885,6 @@ router.get('/agents/:id/vulnerabilities', async (req, res) => {
 // response says syscollector is not reporting rather than implying the host has no software —
 // the agent's syscollector wodle has to be enabled with <packages>yes</packages>.
 router.get('/agents/:id/packages', async (req, res) => {
-    // Agent ids are zero-padded to 3 digits in the indexer ('1' -> '001'), but the Manager API
-    // accepts either. Padding here keeps the term query matching.
-    const agentId = req.params.id.padStart(3, '0');
-
     interface PkgHit {
         _source?: {
             package?: { name?: string; version?: string; architecture?: string; vendor?: string; install_time?: string };
@@ -922,11 +892,15 @@ router.get('/agents/:id/packages', async (req, res) => {
     }
     interface PkgSearch { hits?: { hits?: PkgHit[] } }
 
+    const owned = await ownedAgent(req, res);
+    if (!owned) return;
+    const { agentId } = owned;
+
     let indexerError: string | null = null;
     try {
         const result = await search<PkgSearch>('wazuh-states-inventory-packages-*', {
             size: 500,
-            query: { bool: { must: [{ term: { 'agent.id': agentId } }] } },
+            query: { bool: { filter: [{ term: { 'agent.id': agentId } }] } },
             _source: ['package.name', 'package.version', 'package.architecture', 'package.vendor', 'package.install_time'],
         });
 
@@ -939,25 +913,25 @@ router.get('/agents/:id/packages', async (req, res) => {
                 vendor: h._source?.package?.vendor ?? null,
                 install_time: h._source?.package?.install_time ?? null,
             }));
-            res.json({ packages, agent_id: req.params.id, total: packages.length, source: 'indexer' });
+            res.json({ packages, agent_id: agentId, total: packages.length, source: 'indexer' });
             return;
         }
     } catch (err) {
         // A missing index throws here — expected on pre-4.8, so fall through to the Manager API
         // rather than failing. Kept for the diagnostic below if that path is empty too.
-        indexerError = err instanceof Error ? err.message : String(err);
+        indexerError = errMsg(err);
     }
 
     if (!wazuhConfigured()) {
-        res.json({ packages: [], agent_id: req.params.id, total: 0, error: 'Wazuh not configured' });
+        res.json({ packages: [], agent_id: agentId, total: 0, error: 'Wazuh Manager API not configured', indexer_error: indexerError });
         return;
     }
 
     try {
-        const packages = await getAgentInventory(req.params.id);
+        const packages = await getAgentInventory(agentId);
         res.json({
             packages,
-            agent_id: req.params.id,
+            agent_id: agentId,
             total: packages.length,
             source: 'manager-api',
             ...(packages.length === 0 && {
@@ -966,9 +940,9 @@ router.get('/agents/:id/packages', async (req, res) => {
             }),
         });
     } catch (err) {
-        console.error('[wazuh/agents/:id/packages] failed:', err instanceof Error ? err.message : err);
+        console.error('[wazuh/agents/:id/packages] failed:', errMsg(err));
         res.json({
-            packages: [], agent_id: req.params.id, total: 0,
+            packages: [], agent_id: agentId, total: 0,
             error: 'Syscollector unavailable - the agent may not have run an inventory scan yet',
             indexer_error: indexerError,
         });
@@ -978,43 +952,47 @@ router.get('/agents/:id/packages', async (req, res) => {
 // GET /api/wazuh/agents/:id/alerts — this agent's recent alerts from the indexer.
 router.get('/agents/:id/alerts', async (req, res) => {
     interface AlertHit {
+        _id?: string;
         _source?: {
+            id?: string;
             timestamp?: string;
             rule?: { description?: string; level?: number; id?: string; groups?: string[]; mitre?: { tactic?: string[]; id?: string[] } };
             agent?: { id?: string; name?: string };
-            data?: { srcip?: string };
-        };
+        } & Record<string, unknown>;
     }
     interface AlertSearch { hits?: { hits?: AlertHit[] } }
 
-    const limit = Math.min(Number(req.query.limit) || 20, 100);
+    const owned = await ownedAgent(req, res);
+    if (!owned) return;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
 
     try {
         const result = await search<AlertSearch>('wazuh-alerts-4.x-*', {
             size: limit,
             sort: [{ timestamp: { order: 'desc' } }],
-            query: { bool: { must: [{ term: { 'agent.id': req.params.id } }] } },
+            query: { bool: { filter: [{ term: { 'agent.id': owned.agentId } }] } },
         });
 
-        const alerts = (result?.hits?.hits ?? []).map((h, i) => {
+        const alerts = (result?.hits?.hits ?? []).map((h) => {
             const level = h._source?.rule?.level ?? 0;
             return {
-                id: `${req.params.id}-${i}`,
-                timestamp: h._source?.timestamp ?? '',
-                description: h._source?.rule?.description ?? 'Unknown rule',
+                id: h._id ?? h._source?.id ?? null,
+                timestamp: h._source?.timestamp ?? null,
+                description: h._source?.rule?.description ?? null,
                 level,
-                rule_id: h._source?.rule?.id ?? '',
+                rule_id: h._source?.rule?.id ?? null,
                 severity: severityFromLevel(level),
                 mitre_tactic: h._source?.rule?.mitre?.tactic?.[0] ?? null,
                 mitre_id: h._source?.rule?.mitre?.id?.[0] ?? null,
-                source_ip: h._source?.data?.srcip ?? null,
+                ...alertNetwork(h._source),
+                source_ip: alertNetwork(h._source).src_ip,
             };
         });
 
-        res.json({ alerts, agent_id: req.params.id, total: alerts.length });
+        res.json({ alerts, agent_id: owned.agentId, total: alerts.length });
     } catch (err) {
-        console.error('[wazuh/agents/:id/alerts] failed:', err instanceof Error ? err.message : err);
-        res.json({ alerts: [], agent_id: req.params.id, error: 'Alert index unreachable' });
+        console.error('[wazuh/agents/:id/alerts] failed:', errMsg(err));
+        res.json({ alerts: [], agent_id: owned.agentId, error: `Alert index unavailable: ${errMsg(err)}` });
     }
 });
 

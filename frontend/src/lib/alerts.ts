@@ -28,6 +28,18 @@ export interface StoredAlert {
     received_at: string;
     status: StoredAlertStatus;
     case_id: string | null;
+    // Network and firewall fields (phase P24); absent until the P24 SQL has run, null when the
+    // alert carries none.
+    src_ip?: string | null;
+    src_port?: number | null;
+    dst_ip?: string | null;
+    dst_port?: number | null;
+    protocol?: string | null;
+    net_action?: string | null;
+    net_direction?: string | null;
+    net_interface?: string | null;
+    decoder_name?: string | null;
+    device_hostname?: string | null;
     // Triage fields (phase P3); absent until the P3 SQL has run.
     assigned_to?: string | null;
     acknowledged_at?: string | null;
@@ -43,13 +55,25 @@ export interface AlertStats {
     by_status: Record<StoredAlertStatus, number>;
     last_received_at: string | null;
     last_event_time: string | null;
+    /** The backend's threshold (ALERT_STALE_MINUTES), shared with Platform Health. */
+    stale_after_minutes?: number;
 }
 
-/** Newest received alert older than this = the pipeline may be down. */
-export const STALE_AFTER_MINUTES = 10;
+export const FIREWALL_ACTIONS = ['block', 'reject', 'pass'] as const;
+export type FirewallAction = (typeof FIREWALL_ACTIONS)[number];
 
-export function isStale(lastReceivedAt: string | null, now = Date.now()): boolean {
-    return lastReceivedAt !== null && now - Date.parse(lastReceivedAt) > STALE_AFTER_MINUTES * 60_000;
+/** "203.0.113.10:22" / "[2001:db8::1]:443" / the address alone; '—' when there is none. */
+export function endpoint(ip: string | null | undefined, port: number | null | undefined): string {
+    if (!ip) return '—';
+    if (port === null || port === undefined) return ip;
+    return ip.includes(':') ? `[${ip}]:${port}` : `${ip}:${port}`;
+}
+
+/** Fallback when the backend doesn't say: its default ALERT_STALE_MINUTES. */
+export const STALE_AFTER_MINUTES = 60;
+
+export function isStale(lastReceivedAt: string | null, now = Date.now(), minutes = STALE_AFTER_MINUTES): boolean {
+    return lastReceivedAt !== null && now - Date.parse(lastReceivedAt) > minutes * 60_000;
 }
 
 /**

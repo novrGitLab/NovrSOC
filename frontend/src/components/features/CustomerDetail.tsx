@@ -135,15 +135,28 @@ function OverviewTab({ org }: { org: Org }) {
     );
 }
 
-function IncidentsTab({ org }: { org: Org }) {
-    const [data, setData] = useState<{ incidents: WazuhIncident[]; kpis: { total: number; critical: number; high: number; medium: number; low: number } } | null>(null);
+/**
+ * Wazuh data read AS this organisation (X-Org-Id): the backend limits it to the agents and syslog
+ * senders mapped to it in Settings → Wazuh Groups (the same map alert ingest uses), checks the
+ * viewer may see the organisation, and audits the access. A failure is an error, never zeros.
+ */
+function useOrgWazuh<T>(org: Org, path: string): { data: T | null; error: string | null } {
+    const [state, setState] = useState<{ data: T | null; error: string | null }>({ data: null, error: null });
     useEffect(() => {
-        const group = org.wazuh_group ? `?group=${encodeURIComponent(org.wazuh_group)}` : '';
-        apiFetch(apiUrl(`/api/wazuh/incidents${group}`), { cache: 'no-store', signal: AbortSignal.timeout(15000) })
-            .then((r) => r.json()).then(setData).catch(() => setData({ incidents: [], kpis: { total: 0, critical: 0, high: 0, medium: 0, low: 0 } }));
-    }, [org.wazuh_group]);
+        apiFetch(apiUrl(path), { cache: 'no-store', signal: AbortSignal.timeout(15000), headers: { 'X-Org-Id': org.slug } })
+            .then(async (r) => {
+                const d = await r.json().catch(() => null);
+                setState(r.ok && d ? { data: d as T, error: null } : { data: null, error: d?.error ?? `HTTP ${r.status}` });
+            })
+            .catch(() => setState({ data: null, error: 'Could not reach the backend' }));
+    }, [org.slug, path]);
+    return state;
+}
 
-    if (!org.wazuh_group) return <p className="text-xs text-foreground-muted">No Wazuh group set for this org yet — set one in Settings to see live alerts.</p>;
+function IncidentsTab({ org }: { org: Org }) {
+    const { data, error } = useOrgWazuh<{ incidents: WazuhIncident[]; kpis: { total: number; critical: number; high: number; medium: number; low: number } }>(org, '/api/wazuh/incidents');
+
+    if (error) return <p className="text-xs text-red-500">Alerts unavailable for this organisation: {error}</p>;
     if (!data) return <div className="h-24 bg-card-muted rounded-xl animate-pulse" />;
 
     return (
@@ -157,7 +170,7 @@ function IncidentsTab({ org }: { org: Org }) {
                 ))}
             </div>
             {data.incidents.length === 0 ? (
-                <p className="text-xs text-foreground-muted py-6 text-center">No alerts in the last 7 days for this group.</p>
+                <p className="text-xs text-foreground-muted py-6 text-center">No alerts in the last 7 days for this organisation&apos;s mapped agents and senders.</p>
             ) : (
                 <div className="bg-card border border-border rounded-xl divide-y divide-border">
                     {data.incidents.slice(0, 15).map((inc) => (
@@ -177,14 +190,9 @@ function IncidentsTab({ org }: { org: Org }) {
 }
 
 function AgentsTab({ org }: { org: Org }) {
-    const [data, setData] = useState<{ total: number; active: number; agents: WazuhAgent[] } | null>(null);
-    useEffect(() => {
-        const group = org.wazuh_group ? `?group=${encodeURIComponent(org.wazuh_group)}` : '';
-        apiFetch(apiUrl(`/api/wazuh/agents${group}`), { cache: 'no-store', signal: AbortSignal.timeout(15000) })
-            .then((r) => r.json()).then(setData).catch(() => setData({ total: 0, active: 0, agents: [] }));
-    }, [org.wazuh_group]);
+    const { data, error } = useOrgWazuh<{ total: number; active: number; agents: WazuhAgent[]; groups?: string[] }>(org, '/api/wazuh/agents');
 
-    if (!org.wazuh_group) return <p className="text-xs text-foreground-muted">No Wazuh group set for this org yet — set one in Settings to see enrolled agents.</p>;
+    if (error) return <p className="text-xs text-red-500">Agent inventory unavailable for this organisation: {error}</p>;
     if (!data) return <div className="h-24 bg-card-muted rounded-xl animate-pulse" />;
 
     return (
@@ -194,7 +202,11 @@ function AgentsTab({ org }: { org: Org }) {
                 <div className="bg-card border border-border rounded-xl p-3"><div className="text-xl font-black text-blue">{data.active}</div><div className="text-[9px] text-foreground-muted uppercase tracking-wider">Active</div></div>
             </div>
             {data.agents.length === 0 ? (
-                <p className="text-xs text-foreground-muted py-6 text-center">No agents enrolled in group &quot;{org.wazuh_group}&quot; yet.</p>
+                <p className="text-xs text-foreground-muted py-6 text-center">
+                    {data.groups?.length
+                        ? `No agents enrolled yet in ${data.groups.join(', ')}.`
+                        : 'No Wazuh group is mapped to this organisation yet — map one in Settings → Wazuh Groups.'}
+                </p>
             ) : (
                 <div className="bg-card border border-border rounded-xl divide-y divide-border">
                     {data.agents.map((a) => (

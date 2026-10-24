@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
-import { search } from '../lib/wazuh-indexer';
+import { searchStrict as search } from '../lib/wazuh-indexer';
 import { sendCriticalAlertEmail, socNotificationRecipients, warnNoRecipient } from '../services/email';
 import { createCase, type CaseSeverity } from '../services/cases';
 import { loadThreats, readTriage, writeTriage, applyTriage, type Threat, type Triage } from '../services/threatBoard';
@@ -15,14 +15,19 @@ import { urlhausGetRecent } from '../services/urlhaus';
 import { feodoGetBlocklist } from '../services/feodo';
 import { severityFromLevel, severityFromScore, SEVERITY_MIN_LEVEL, type Severity } from '../lib/severity';
 import { requirePermission, requestOrg } from '../lib/permissions';
+import { orgScope, requireScope, alertScopeFilter, scoped, type OrgScope } from '../lib/orgScope';
+import { alertNetwork } from '../lib/alertNetwork';
 
 // SecOps Threat Management console — live security event stream from the Wazuh Indexer
 // (wazuh-alerts-4.x-*, same OpenSearch backend /api/wazuh/alerts-indexer queries). There is no
 // demo or mock fallback: an empty index is an empty list, and an unreachable indexer is a 502
-// with the real error, never fabricated alerts. The Manager REST API's GET /alerts (services/wazuh.ts's getAlerts) 404s on this
-// deployment (Wazuh v4.7.5) — alert search only works through the indexer here. Not to be
-// confused with routes/threat-intel.ts / routes/ctip.ts, which power the separate
-// CTIP-backed threat-intel dashboards.
+// with the real error, never fabricated alerts. Not to be confused with routes/threat-intel.ts /
+// routes/ctip.ts, which power the separate CTIP-backed threat-intel dashboards.
+//
+// Tenancy (P22): every query is limited to the request organisation's agents and syslog senders
+// (lib/orgScope.ts). There is no shared list of "the alerts last served": /:id, PATCH and
+// create-incident look the alert up again inside the caller's scope, so an alert another
+// organisation's analyst loaded can never be read, triaged or turned into a case here.
 
 const router = Router();
 
@@ -35,31 +40,28 @@ interface ThreatAlert {
     rule_description: string;
     severity: Severity;
     status: AlertStatus;
-    mitre_tactic: string;
-    mitre_technique: string;
-    // Live alerts only. Technique ID (T1110) — mitre_technique above is the display name.
-    mitre_technique_id?: string;
-    // Live alerts only. Wazuh's alert id, distinct from the indexer document id in `id`.
-    wazuh_alert_id?: string;
+    mitre_tactic: string | null;
+    mitre_technique: string | null;
+    // Technique ID (T1110) — mitre_technique above is the display name.
+    mitre_technique_id: string | null;
+    // Wazuh's alert id, distinct from the indexer document id in `id`.
+    wazuh_alert_id: string | null;
     source_ip: string | null;
-    source_country: string | null;
-    source_isp: string | null;
-    destination_ip: string;
-    destination_host: string;
+    source_port: number | null;
+    destination_ip: string | null;
     destination_port: number | null;
-    protocol: string;
+    protocol: string | null;
+    action: string | null;
+    direction: string | null;
+    interface: string | null;
     agent_id: string;
-    agent_name: string;
-    alert_count: number;
-    raw_log: string;
-    detected_at: string;
+    agent_name: string | null;
+    location: string | null;
+    raw_log: string | null;
+    detected_at: string | null;
     tags: string[];
-    abuseipdb_confidence: number | null;
-    vt_malicious: number | null;
-    pulse_matches: number | null;
     assigned_to: string | null;
 }
-
 
 // Shape of a wazuh-alerts-4.x-* document as returned by the Indexer's _search — see
 // routes/wazuh.ts's /alerts-indexer, /trend, /incidents for the same interface pattern.
@@ -68,6 +70,7 @@ interface IndexerAlertHit {
     _source: {
         id?: string; // Wazuh's own alert id — what the SOAR engine keys cases on
         timestamp?: string;
+        full_log?: string;
         rule?: {
             id?: number | string;
             level?: number;
@@ -76,53 +79,47 @@ interface IndexerAlertHit {
             mitre?: { tactic?: string[]; technique?: string[]; id?: string[] };
         };
         agent?: { id?: string; name?: string };
-        data?: { srcip?: string };
         location?: string;
-    };
+    } & Record<string, unknown>;
 }
 interface IndexerSearchResponse {
     hits?: { hits?: IndexerAlertHit[]; total?: { value?: number } };
 }
 
-// Wazuh alerts don't carry a NovrSOC-side triage status/incident link — 'open' is the honest
-// default for anything freshly indexed. PATCH/create-incident below mutate whatever list is
-// currently cached here, live or mock, so triage actions still stick between requests even
-// though GET /alerts re-queries the indexer each time.
-// Severity comes from lib/severity.ts. LOW (below level 7) is filtered out entirely in
-// loadAlerts() below, not just relabeled — this route doesn't show level 1-6 alerts at all; SOAR
-// handles them silently (infra/soar/soar.py cases level 7+ alerts and auto-closes tier 1).
+// Wazuh alerts don't carry a NovrSOC-side triage status — 'open' is the default for anything
+// freshly indexed. Severity comes from lib/severity.ts. LOW (below level 7) is filtered out in
+// loadAlerts() below, not just relabeled; SOAR handles them silently (infra/soar/soar.py cases
+// level 7+ alerts and auto-closes tier 1).
 
 function mapIndexerAlert(hit: IndexerAlertHit): ThreatAlert {
     const src = hit._source;
     const level = src.rule?.level ?? 0;
-    const severity: Severity = severityFromLevel(level);
+    const net = alertNetwork(src);
     return {
         id: hit._id,
         rule_id: src.rule?.id != null ? String(src.rule.id) : '',
         rule_level: level,
-        rule_description: src.rule?.description ?? 'Wazuh alert',
-        severity,
+        rule_description: src.rule?.description ?? `Wazuh rule ${src.rule?.id ?? 'unknown'}`,
+        severity: severityFromLevel(level),
         status: 'open',
-        mitre_tactic: src.rule?.mitre?.tactic?.[0] ?? '—',
-        mitre_technique: src.rule?.mitre?.technique?.[0] ?? '—',
-        mitre_technique_id: src.rule?.mitre?.id?.[0],
-        wazuh_alert_id: src.id,
-        source_ip: src.data?.srcip ?? null,
-        source_country: null,
-        source_isp: null,
-        destination_ip: '—',
-        destination_host: src.agent?.name ?? 'Unknown',
-        destination_port: null,
-        protocol: 'N/A',
+        mitre_tactic: src.rule?.mitre?.tactic?.[0] ?? null,
+        mitre_technique: src.rule?.mitre?.technique?.[0] ?? null,
+        mitre_technique_id: src.rule?.mitre?.id?.[0] ?? null,
+        wazuh_alert_id: src.id ?? null,
+        source_ip: net.src_ip,
+        source_port: net.src_port,
+        destination_ip: net.dst_ip,
+        destination_port: net.dst_port,
+        protocol: net.protocol,
+        action: net.net_action,
+        direction: net.net_direction,
+        interface: net.net_interface,
         agent_id: src.agent?.id ?? '',
-        agent_name: src.agent?.name ?? 'Unknown',
-        alert_count: 1,
-        raw_log: src.location ?? '',
-        detected_at: src.timestamp ?? new Date().toISOString(),
+        agent_name: src.agent?.name ?? null,
+        location: src.location ?? null,
+        raw_log: typeof src.full_log === 'string' ? src.full_log : null,
+        detected_at: src.timestamp ?? null,
         tags: src.rule?.groups ?? [],
-        abuseipdb_confidence: null,
-        vt_malicious: null,
-        pulse_matches: null,
         assigned_to: null,
     };
 }
@@ -142,22 +139,18 @@ function computeStats(alerts: ThreatAlert[], day: { total: number; critical: num
         investigating: countBy((a) => a.status === 'investigating'),
         acknowledged: countBy((a) => a.status === 'acknowledged'),
         active_agents: new Set(alerts.map((a) => a.agent_id)).size,
-        mitre_tactics_seen: Array.from(new Set(alerts.map((a) => a.mitre_tactic).filter((t) => t && t !== '—'))),
+        mitre_tactics_seen: Array.from(new Set(alerts.map((a) => a.mitre_tactic).filter((t): t is string => !!t))),
     };
 }
 
-// The list GET /alerts last served. /:id, PATCH and create-incident read this so they act on
-// what the analyst is looking at.
-let liveAlerts: ThreatAlert[] = [];
-
-// Analyst triage (status, assignee) keyed by indexer document id. Kept apart from liveAlerts
-// because that list is rebuilt from the indexer on every load — storing triage on it (as
-// before) reset every alert to Open/Unassigned on the next refresh. In-process, so it survives
-// refreshes but not a backend restart; anything that must be durable belongs in a case.
+// Analyst triage (status, assignee) keyed by organisation and indexer document id. In-process, so
+// it survives refreshes but not a backend restart; anything that must be durable belongs in a
+// case or in the stored alert (routes/alertStore.ts).
 const triage = new Map<string, { status?: AlertStatus; assigned_to?: string | null }>();
+const triageKey = (orgId: string, id: string) => `${orgId}\n${id}`;
 
-function withTriage(alert: ThreatAlert): ThreatAlert {
-    const t = triage.get(alert.id);
+function withTriage(orgId: string, alert: ThreatAlert): ThreatAlert {
+    const t = triage.get(triageKey(orgId, alert.id));
     if (!t) return alert;
     return { ...alert, ...(t.status ? { status: t.status } : {}), ...(t.assigned_to !== undefined ? { assigned_to: t.assigned_to } : {}) };
 }
@@ -185,33 +178,45 @@ function notifyCriticalAlerts(alerts: ThreatAlert[]): void {
             to: recipients,
             alertTitle: alert.rule_description,
             severity: alert.severity,
-            agentName: alert.agent_name,
+            agentName: alert.agent_name ?? alert.location ?? 'unknown',
             sourceIp: alert.source_ip || '',
             mitreId: alert.mitre_technique_id || 'Unknown',
             mitreTactic: alert.mitre_tactic || 'Unknown',
-            riskScore: alert.rule_level * 6,
-            rawLog: alert.raw_log,
+            // The Wazuh rule level as reported (0-16); no derived "risk score" is invented.
+            riskScore: alert.rule_level,
+            rawLog: alert.raw_log ?? '',
         }).catch((err) => console.error('Critical alert email failed:', err));
     }
 }
 
 type LoadResult = { ok: true; alerts: ThreatAlert[] } | { ok: false; error: string };
 
-async function loadAlerts(limit: number): Promise<LoadResult> {
+async function loadAlerts(scope: OrgScope, limit: number): Promise<LoadResult> {
     try {
         const result = await search<IndexerSearchResponse>('wazuh-alerts-4.x-*', {
-            size: limit,
+            size: Math.min(Math.max(limit, 1), 500),
             sort: [{ timestamp: { order: 'desc' } }],
             // level 7+ only — filtered at the query itself, not just relabeled after the fact,
             // so a LOW alert never even counts against `limit` here.
-            query: { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } },
+            query: scoped({ range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } }, alertScopeFilter(scope)),
         });
-        liveAlerts = (result?.hits?.hits ?? []).map(mapIndexerAlert).map(withTriage);
-        notifyCriticalAlerts(liveAlerts); // fire-and-forget — must not add latency to the alert list response
-        return { ok: true, alerts: liveAlerts };
+        const alerts = (result?.hits?.hits ?? []).map(mapIndexerAlert).map((a) => withTriage(scope.orgId, a));
+        notifyCriticalAlerts(alerts); // fire-and-forget — must not add latency to the alert list response
+        return { ok: true, alerts };
     } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : 'Wazuh indexer unreachable' };
     }
+}
+
+/** One alert by indexer document id, only if it is inside the scope. */
+async function findAlert(scope: OrgScope, id: string): Promise<ThreatAlert | null> {
+    if (!id || id.length > 128) return null;
+    const result = await search<IndexerSearchResponse>('wazuh-alerts-4.x-*', {
+        size: 1,
+        query: scoped({ ids: { values: [id] } }, alertScopeFilter(scope)),
+    });
+    const hit = result?.hits?.hits?.[0];
+    return hit ? withTriage(scope.orgId, mapIndexerAlert(hit)) : null;
 }
 
 interface CountsResponse {
@@ -221,12 +226,12 @@ interface CountsResponse {
 
 // Real 24-hour counts from the indexer (level 7+), by severity. The previous "Alerts (24h)" was
 // the length of the loaded list — capped at the page size, and not a 24h figure at all.
-async function counts24h(): Promise<{ total: number; critical: number; high: number; medium: number } | null> {
+async function counts24h(scope: OrgScope): Promise<{ total: number; critical: number; high: number; medium: number } | null> {
     try {
         const r = await search<CountsResponse>('wazuh-alerts-4.x-*', {
             size: 0,
             track_total_hits: true,
-            query: { bool: { filter: [{ range: { timestamp: { gte: 'now-24h' } } }, { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } }] } },
+            query: { bool: { filter: [{ range: { timestamp: { gte: 'now-24h' } } }, { range: { 'rule.level': { gte: SEVERITY_MIN_LEVEL.medium } } }, alertScopeFilter(scope)] } },
             aggs: {
                 levels: {
                     range: {
@@ -254,11 +259,13 @@ async function counts24h(): Promise<{ total: number; critical: number; high: num
 }
 
 router.get('/alerts', requirePermission('alerts:read'), async (req, res) => {
+    const scope = await requireScope(req, res);
+    if (!scope) return;
     const { severity, status, limit = '50' } = req.query;
-    const parsedLimit = parseInt(String(limit), 10) || 50;
+    const parsedLimit = Math.min(Math.max(parseInt(String(limit), 10) || 50, 1), 500);
 
     const checkedAt = new Date().toISOString();
-    const [loaded, day] = await Promise.all([loadAlerts(parsedLimit), counts24h()]);
+    const [loaded, day] = await Promise.all([loadAlerts(scope, parsedLimit), counts24h(scope)]);
     if (!loaded.ok) {
         // The real reason, not an empty list that reads as "all quiet".
         res.status(502).json({ alerts: [], stats: null, source: 'error', error: loaded.error, checked_at: checkedAt });
@@ -278,52 +285,60 @@ router.get('/alerts', requirePermission('alerts:read'), async (req, res) => {
     });
 });
 
-router.get('/alerts/:id', requirePermission('alerts:read'), (req, res) => {
-    const alert = liveAlerts.find((a) => a.id === req.params.id);
-    if (!alert) {
-        res.status(404).json({ error: 'Alert not found' });
-        return;
+/** The alert named by :id inside the caller's scope, or null after answering (404 / 502). */
+async function scopedAlert(req: AuthRequest, res: import('express').Response): Promise<{ scope: OrgScope; alert: ThreatAlert } | null> {
+    const scope = await requireScope(req, res);
+    if (!scope) return null;
+    try {
+        const alert = await findAlert(scope, String(req.params.id ?? ''));
+        if (!alert) { res.status(404).json({ error: 'Alert not found' }); return null; }
+        return { scope, alert };
+    } catch (err) {
+        res.status(502).json({ error: err instanceof Error ? err.message : 'Wazuh indexer unreachable' });
+        return null;
     }
-    res.json(alert);
+}
+
+router.get('/alerts/:id', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
+    const found = await scopedAlert(req, res);
+    if (found) res.json(found.alert);
 });
 
-router.patch('/alerts/:id', requirePermission('cases:write'), (req, res) => {
+const ALERT_STATUSES: readonly AlertStatus[] = ['open', 'investigating', 'acknowledged', 'closed'];
+
+router.patch('/alerts/:id', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     const { status, assigned_to }: { status?: AlertStatus; assigned_to?: string | null } = req.body ?? {};
-    const alert = liveAlerts.find((a) => a.id === req.params.id);
-    if (!alert) {
-        res.status(404).json({ error: 'Alert not found' });
-        return;
-    }
-    if (status) alert.status = status;
-    if (assigned_to !== undefined) alert.assigned_to = assigned_to;
-    triage.set(alert.id, { ...triage.get(alert.id), ...(status ? { status } : {}), ...(assigned_to !== undefined ? { assigned_to } : {}) });
-    res.json({ success: true, alert });
+    if (status !== undefined && !ALERT_STATUSES.includes(status)) { res.status(400).json({ error: `status must be one of ${ALERT_STATUSES.join(', ')}` }); return; }
+    if (assigned_to !== undefined && assigned_to !== null && (typeof assigned_to !== 'string' || assigned_to.length > 320)) { res.status(400).json({ error: 'assigned_to must be text or null' }); return; }
+    const found = await scopedAlert(req, res);
+    if (!found) return;
+    const key = triageKey(found.scope.orgId, found.alert.id);
+    triage.set(key, { ...triage.get(key), ...(status ? { status } : {}), ...(assigned_to !== undefined ? { assigned_to } : {}) });
+    res.json({ success: true, alert: withTriage(found.scope.orgId, found.alert) });
 });
 
 // Opens a case from an alert. Keyed on the Wazuh alert id (source 'wazuh'), the same key the
 // SOAR engine uses, so an alert the engine already cased returns that case instead of a
-// duplicate. Refused while the list is serving demo/mock alerts — a real case must never be
-// opened from a fabricated alert.
+// duplicate. The alert is looked up inside the caller's scope, and the case belongs to that
+// same organisation.
 router.post('/alerts/:id/create-incident', requirePermission('cases:write'), async (req: AuthRequest, res) => {
-    const alert = liveAlerts.find((a) => a.id === req.params.id);
-    if (!alert) {
-        res.status(404).json({ error: 'Alert not found' });
-        return;
-    }
+    const found = await scopedAlert(req, res);
+    if (!found) return;
+    const { alert, scope } = found;
     const result = await createCase({
         title: alert.rule_description,
-        description: `Alert detected by Wazuh\nAgent: ${alert.agent_name}\nSource IP: ${alert.source_ip ?? 'N/A'}\nRule ID: ${alert.rule_id}\nLevel: ${alert.rule_level}`,
+        description: `Alert detected by Wazuh\nAgent: ${alert.agent_name ?? alert.location ?? 'unknown'}\nSource IP: ${alert.source_ip ?? 'N/A'}\nRule ID: ${alert.rule_id}\nLevel: ${alert.rule_level}`,
         severity: alert.severity as CaseSeverity,
         source: 'wazuh',
         source_id: alert.wazuh_alert_id ?? alert.id,
-        org_id: requestOrg(req),
+        org_id: scope.orgId,
         agent_id: alert.agent_id || null,
         agent_name: alert.agent_name,
         source_ip: alert.source_ip,
         rule_id: alert.rule_id,
         rule_level: alert.rule_level,
-        mitre_technique: alert.mitre_technique_id ?? null,
-        mitre_tactic: alert.mitre_tactic !== '—' ? alert.mitre_tactic : null,
+        mitre_technique: alert.mitre_technique_id,
+        mitre_tactic: alert.mitre_tactic,
         tags: ['wazuh', 'manual', `level-${alert.rule_level}`],
     }, req.user?.email || 'analyst');
     if (!result.ok) {
@@ -331,8 +346,8 @@ router.post('/alerts/:id/create-incident', requirePermission('cases:write'), asy
         return;
     }
 
-    alert.status = 'investigating';
-    triage.set(alert.id, { ...triage.get(alert.id), status: 'investigating' });
+    const key = triageKey(scope.orgId, alert.id);
+    triage.set(key, { ...triage.get(key), status: 'investigating' });
     const n = result.case.case_number;
     res.json({
         success: true, case_id: result.case.id, case_number: n, created: result.created,
@@ -497,16 +512,18 @@ router.get('/global-map', requirePermission('alerts:read'), async (req, res) => 
         }
     }
 
+    // GreyNoise above is internet-wide data, not any tenant's. From here on it is the organisation's own alerts.
+    const scope = await requireScope(req, res);
+    if (!scope) return;
     try {
-        const timeQuery = windowParam === 'all'
-            ? { match_all: {} }
-            : { range: { timestamp: { gte: `now-${windowParam}` } } };
+        const filter = alertScopeFilter(scope);
+        const timeQuery = scoped(windowParam === 'all' ? undefined : { range: { timestamp: { gte: `now-${windowParam}` } } }, filter);
 
         const result = await search<CountryAgg>('wazuh-alerts-4.x-*', {
             size: 0,
             query: timeQuery,
             aggs: { countries: { terms: { field: 'GeoLocation.country_name', size: 30 } } },
-        }).catch(() => null);
+        });
 
         const buckets = result?.aggregations?.countries?.buckets ?? [];
         if (buckets.length > 0) sourcesReporting.push('wazuh');
@@ -520,7 +537,7 @@ router.get('/global-map', requirePermission('alerts:read'), async (req, res) => 
         if (buckets.length === 0) {
             const [totalHits, geoHits] = await Promise.all([
                 search<{ hits?: { total?: { value?: number } } }>('wazuh-alerts-4.x-*', { size: 0, query: timeQuery }).catch(() => null),
-                search<{ hits?: { total?: { value?: number } } }>('wazuh-alerts-4.x-*', { size: 0, query: { exists: { field: 'GeoLocation.country_name' } } }).catch(() => null),
+                search<{ hits?: { total?: { value?: number } } }>('wazuh-alerts-4.x-*', { size: 0, query: scoped({ exists: { field: 'GeoLocation.country_name' } }, filter) }).catch(() => null),
             ]);
             const alerts = totalHits?.hits?.total?.value ?? 0;
             const geolocated = geoHits?.hits?.total?.value ?? 0;
@@ -552,12 +569,16 @@ router.get('/global-map', requirePermission('alerts:read'), async (req, res) => 
         });
     } catch (err) {
         console.error('[threats] Global map error:', err);
-        res.status(500).json({ countries: [], total: 0, sources: [], source: 'error', error: 'Failed to build global map' });
+        res.status(502).json({ countries: [], total: 0, sources: [], source: 'error', error: err instanceof Error ? err.message : 'Failed to build global map' });
     }
 });
 
-router.get('/stats', requirePermission('alerts:read'), async (_req, res) => {
-    res.json(computeStats(liveAlerts, await counts24h()));
+router.get('/stats', requirePermission('alerts:read'), async (req, res) => {
+    const scope = await requireScope(req, res);
+    if (!scope) return;
+    const [loaded, day] = await Promise.all([loadAlerts(scope, 50), counts24h(scope)]);
+    if (!loaded.ok) { res.status(502).json({ error: loaded.error }); return; }
+    res.json(computeStats(loaded.alerts, day));
 });
 
 // GET /api/threats/actors — threat actor reference library.
@@ -725,7 +746,7 @@ async function findThreat(orgId: string, id: string): Promise<Threat | null> {
     const cached = threatCache.get(cacheKey(orgId, id));
     if (cached) return cached;
     const { map } = await readTriage(orgId);
-    for (const t of await loadThreats(720)) threatCache.set(cacheKey(orgId, t.id), applyTriage(t, map.get(t.id)));
+    for (const t of await loadThreats(720, await orgScope(orgId))) threatCache.set(cacheKey(orgId, t.id), applyTriage(t, map.get(t.id)));
     return threatCache.get(cacheKey(orgId, id)) ?? null;
 }
 
@@ -735,7 +756,7 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
     const range = typeof req.query.range === 'string' && RANGE_HOURS[req.query.range] ? req.query.range : '7d';
     const checkedAt = new Date().toISOString();
     try {
-        const [raw, { map, store }] = await Promise.all([loadThreats(RANGE_HOURS[range]), readTriage(orgId)]);
+        const [raw, { map, store }] = await Promise.all([orgScope(orgId).then((scope) => loadThreats(RANGE_HOURS[range], scope)), readTriage(orgId)]);
         const threats = raw.map((t) => applyTriage(t, map.get(t.id)));
         for (const t of threats) threatCache.set(cacheKey(orgId, t.id), t);
         const weekAgo = Date.now() - 7 * 24 * 3600_000;

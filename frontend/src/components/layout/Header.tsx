@@ -7,6 +7,7 @@ import { Logo } from '@/components/shared/Logo';
 import { GlobalSearch } from './GlobalSearch';
 import { useTheme } from '@/components/providers/ThemeProvider';
 import { apiUrl, apiFetch } from '@/lib/api';
+import { usePolling } from '@/lib/usePolling';
 
 interface HeaderProps {
     initials: string;
@@ -67,9 +68,9 @@ export function Header({ initials, onSignOut, onMenu }: HeaderProps) {
 
     useEffect(() => {
         load();
-        const interval = setInterval(load, 60000);
-        return () => clearInterval(interval);
     }, []);
+    // Every 60 s while the tab is visible; at once when it becomes visible again after that.
+    usePolling(load, 60_000);
 
     useEffect(() => {
         if (!open) return;

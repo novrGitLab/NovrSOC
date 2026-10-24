@@ -161,6 +161,24 @@ test('alert store write failure: 502, the forwarder resends', async () => {
     }
 });
 
+test('when an unmapped alert cannot be quarantined the batch is refused (503) so the forwarder resends it', async () => {
+    const saved = db.tables.alert_quarantine;
+    const batch = [alert(['acme']), alert(['default'])];
+    (db.tables as Record<string, unknown>).alert_quarantine = null; // the table unavailable
+    try {
+        const r = await ingest(batch);
+        assert.equal(r.status, 503, 'never a 200 that would let the forwarder move past an alert kept nowhere');
+        assert.match(r.data.error, /quarantine unavailable/i);
+        assert.equal(db.tables.alerts.length, 1, 'the mapped alert is stored; the resend is a duplicate');
+    } finally {
+        db.tables.alert_quarantine = saved;
+    }
+    const again = await ingest(batch); // the forwarder resends the same batch
+    assert.equal(again.status, 200);
+    assert.equal(again.data.quarantined, 1);
+    assert.equal(db.tables.alerts.length, 1);
+});
+
 test('a retried batch overwrites, never duplicates, a quarantined alert', async () => {
     const a = alert(['default']);
     await ingest([a]);

@@ -12,6 +12,13 @@
 //     wazuh_group_org_map via the agent's groups (none mapped -> rejected `unmapped_group`; groups
 //     mapped to more than one org -> rejected `ambiguous_org`). Severity is computed from
 //     rule.level with lib/severity.ts. Status starts at the table default ('new').
+//   • Syslog the manager receives itself (OPNsense and other agentless senders, phase P24) is
+//     agent 000 with no group: its org comes from wazuh_source_org_map by the sender address in
+//     `location` (not mapped -> rejected `unmapped_source`). Only agent 000 is ever matched by
+//     location — an enrolled agent's location is a log file path that every agent shares.
+//   • Network and firewall fields (src/dst IP and port, protocol, action, direction, interface,
+//     decoder, syslog host) are extracted from the alert itself (lib/alertNetwork.ts), before raw
+//     is capped, so a truncated raw still has them.
 //   • Each alert is validated on its own; an invalid one is rejected (`invalid: <field>`) without
 //     failing the batch, so one bad alert can't stall the forwarder's cursor.
 //   • raw is capped at 32 KB per alert (truncated and flagged with raw_truncated). The body is
@@ -33,6 +40,7 @@ import { createHash, timingSafeEqual } from 'crypto';
 import { z } from 'zod';
 import { getSupabase } from '../services/geoEnrichment';
 import { severityFromLevel } from '../lib/severity';
+import { alertNetwork, missingNetworkColumns, withoutNetworkColumns } from '../lib/alertNetwork';
 
 export const INGEST_MAX_BATCH = 100;
 export const INGEST_BODY_LIMIT = '1mb';
@@ -132,7 +140,32 @@ function alertRowWithoutOrg(a: AlertIn, eventTime: string): Record<string, unkno
         raw,
         raw_truncated: truncated,
         event_time: eventTime,
+        ...alertNetwork(a.raw),
     };
+}
+
+/** The manager itself: syslog it receives (OPNsense) carries this agent id and no group. */
+export const MANAGER_AGENT_ID = '000';
+
+/**
+ * location -> org for the given syslog senders. A missing table (P24 SQL not applied yet) is an
+ * empty map; any other failure is an error so the batch is retried instead of quarantined.
+ */
+export async function sourceOrgs(supabase: NonNullable<ReturnType<typeof getSupabase>>, locations: string[]): Promise<Map<string, string> | { error: string }> {
+    const out = new Map<string, string>();
+    if (locations.length === 0) return out;
+    const { data, error } = await supabase.from('wazuh_source_org_map').select('location, org_id').in('location', locations);
+    if (error) return /wazuh_source_org_map/.test(error.message ?? '') ? out : { error: error.message ?? 'source map unreadable' };
+    for (const r of data ?? []) out.set(String(r.location), String(r.org_id));
+    return out;
+}
+
+/** Upsert alerts rows; before the P24 columns exist, the same rows without them. */
+export async function insertAlerts(supabase: NonNullable<ReturnType<typeof getSupabase>>, rows: Record<string, unknown>[]) {
+    const go = (r: Record<string, unknown>[]) => supabase.from('alerts').upsert(r, { onConflict: 'org_id,wazuh_alert_id', ignoreDuplicates: true }).select('id');
+    const first = await go(rows);
+    if (first.error && missingNetworkColumns(first.error)) return go(rows.map(withoutNetworkColumns));
+    return first;
 }
 
 router.post('/alerts', async (req: Request, res: Response) => {
@@ -171,6 +204,13 @@ router.post('/alerts', async (req: Request, res: Response) => {
         for (const r of data ?? []) groupOrg.set(r.wazuh_group, r.org_id);
     }
 
+    // Sender address -> org, for agent-000 alerts that no group could place.
+    const senderLocations = [...new Set(valid
+        .filter((v) => v.a.agent?.id === MANAGER_AGENT_ID && v.a.location && !v.a.agent_groups.some((g) => groupOrg.has(noNul(g))))
+        .map((v) => noNul(v.a.location!)))];
+    const senders = await sourceOrgs(supabase, senderLocations);
+    if ('error' in senders) { res.status(503).json({ error: 'Source map unavailable — retry later' }); return; }
+
     const rows = new Map<string, Record<string, unknown>>();
     // Unmapped / ambiguous alerts are kept without an org so they can be replayed once the group
     // is mapped (services/alertQuarantine.ts). Keyed by Wazuh alert id: a retry overwrites.
@@ -179,8 +219,13 @@ router.post('/alerts', async (req: Request, res: Response) => {
     for (const { a, eventTime } of valid) {
         const agentGroups = a.agent_groups.map(noNul);
         const orgs = [...new Set(agentGroups.map((g) => groupOrg.get(g)).filter((o): o is string => !!o))];
+        const isManager = a.agent?.id === MANAGER_AGENT_ID;
+        if (orgs.length === 0 && isManager && a.location) {
+            const sender = senders.get(noNul(a.location));
+            if (sender) orgs.push(sender);
+        }
         if (orgs.length !== 1) {
-            const reason = orgs.length === 0 ? 'unmapped_group' : 'ambiguous_org';
+            const reason = orgs.length > 1 ? 'ambiguous_org' : isManager ? 'unmapped_source' : 'unmapped_group';
             rejects.push({ reason, wazuh_alert_id: noNul(a.id), wazuh_groups: agentGroups });
             quarantine.set(noNul(a.id), {
                 wazuh_alert_id: noNul(a.id), wazuh_groups: agentGroups, reason,
@@ -196,10 +241,7 @@ router.post('/alerts', async (req: Request, res: Response) => {
 
     let accepted = 0;
     if (rows.size > 0) {
-        const { data, error } = await supabase
-            .from('alerts')
-            .upsert([...rows.values()], { onConflict: 'org_id,wazuh_alert_id', ignoreDuplicates: true })
-            .select('id');
+        const { data, error } = await insertAlerts(supabase, [...rows.values()]);
         if (error) {
             console.error('[ingest] alert insert failed:', error.code ?? '', error.message?.slice(0, 200));
             res.status(502).json({ error: 'Alert store write failed — retry later' });
@@ -216,9 +258,12 @@ router.post('/alerts', async (req: Request, res: Response) => {
     // indexer. Every write in this handler is idempotent, so the resend is harmless.
     let quarantined = 0;
     if (quarantine.size > 0) {
-        const { data, error } = await supabase.from('alert_quarantine')
-            .upsert([...quarantine.values()], { onConflict: 'wazuh_alert_id' })
-            .select('wazuh_alert_id');
+        const put = (q: Record<string, unknown>[]) => supabase.from('alert_quarantine').upsert(q, { onConflict: 'wazuh_alert_id' }).select('wazuh_alert_id');
+        let { data, error } = await put([...quarantine.values()]);
+        // Before the P24 SQL the reason check doesn't know unmapped_source: keep them as unmapped_group.
+        if (error && /reason|check constraint/i.test(error.message ?? '')) {
+            ({ data, error } = await put([...quarantine.values()].map((q) => (q.reason === 'unmapped_source' ? { ...q, reason: 'unmapped_group' } : q))));
+        }
         const kept = new Set((data ?? []).map((r) => String(r.wazuh_alert_id)));
         const missing = [...quarantine.keys()].filter((id) => !kept.has(id));
         if (error || missing.length > 0) {
@@ -234,7 +279,8 @@ router.post('/alerts', async (req: Request, res: Response) => {
         if (error) console.error(`[ingest] could not record ${rejects.length} rejected alert(s):`, error.message?.slice(0, 200));
     }
     // invalid = refused by validation; no organisation can ever be derived from them, so they are
-    // not quarantined (their reasons are in alert_ingest_rejects). The forwarder logs these.
+    // not quarantined (their reasons are in alert_ingest_rejects). The forwarder logs these. The
+    // rest of `rejected` is quarantined.
     const invalid = rejects.filter((r) => r.reason.startsWith('invalid')).length;
     console.log(`[ingest] batch of ${batch.data.alerts.length}: accepted ${accepted}, duplicates ${duplicates}, rejected ${rejects.length} (quarantined ${quarantined}, invalid ${invalid})`);
     res.json({ accepted, duplicates, rejected: rejects.length, quarantined, invalid });

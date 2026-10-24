@@ -92,6 +92,8 @@ systemctl daemon-reload && systemctl enable --now novrsoc-forwarder
 journalctl -u novrsoc-forwarder -f
 ```
 
-To replay a time range (quarantined alerts are replayed by the backend itself when their group is mapped; this is for anything else), stop the service, back up the cursor file, then write a timestamp-only cursor: `{"last_forwarded_timestamp": "<ISO time>"}`. Remove `search_after`, because it takes precedence over the timestamp. Start the service; it resumes from that time minus the overlap. Deleting the file backfills `SOAR_BACKFILL_HOURS` instead.
+Agentless syslog (OPNsense sending to the manager on UDP 514) needs no forwarder change. Those alerts belong to agent `000`, which has no group, and the forwarder already sends their `location` (the sender's address). The backend assigns them by that address (`wazuh_source_org_map`, Settings → Wazuh Groups → Syslog sources). Until the address is mapped they are quarantined as `unmapped_source`, and mapping it replays them. OPNsense "pass" events can be numerous: raise `SOAR_FORWARD_MIN_LEVEL` if only level-N+ firewall events should be stored.
+
+To replay a time range (quarantined alerts are replayed by the backend itself when their group or sender is mapped; this is for anything else), stop the service, back up the cursor file, then write a timestamp-only cursor: `{"last_forwarded_timestamp": "<ISO time>"}`. Remove `search_after`, because it takes precedence over the timestamp. Start the service; it resumes from that time minus the overlap. Deleting the file backfills `SOAR_BACKFILL_HOURS` instead.
 
 Unit tests (no network): `cd infra/soar && python -m unittest test_forwarder -v`.

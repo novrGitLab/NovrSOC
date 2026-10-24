@@ -15,7 +15,8 @@
 // unaffected either way.
 
 import { getSupabase } from '../services/geoEnrichment';
-import { search } from '../lib/wazuh-indexer';
+import { searchStrict } from '../lib/wazuh-indexer';
+import { orgScope, alertScopeFilter } from '../lib/orgScope';
 import { circlGetPulses } from '../services/circl';
 
 // Table-missing is the expected steady state until the migration runs — logged once per call,
@@ -74,48 +75,66 @@ interface MitreAgg {
     };
 }
 
+/**
+ * Each organisation's MITRE techniques over the last 24 h, from its own alerts only
+ * (lib/orgScope.ts), stored under that organisation. Every organisation in the Wazuh group or
+ * source maps is synced; one that can't be resolved is skipped and logged, never merged.
+ */
 async function syncMITREDetections(): Promise<number> {
     const supabase = getSupabase();
     if (!supabase) return 0;
-    try {
-        const result = await search<MitreAgg>('wazuh-alerts-4.x-*', {
-            size: 0,
-            query: { range: { timestamp: { gte: 'now-24h' } } },
-            aggs: {
-                techniques: {
-                    terms: { field: 'rule.mitre.id', size: 50 },
-                    aggs: {
-                        tactic: { terms: { field: 'rule.mitre.tactic', size: 1 } },
-                        agents: { terms: { field: 'agent.name', size: 5 } },
-                    },
-                },
-            },
-        });
-
-        const buckets = result?.aggregations?.techniques?.buckets ?? [];
-        if (buckets.length === 0) return 0;
-
-        const { error } = await supabase.from('mitre_detections').upsert(
-            buckets.map((b) => ({
-                technique_id: b.key,
-                tactic: b.tactic?.buckets?.[0]?.key ?? 'Unknown',
-                detection_count: b.doc_count,
-                agent_names: (b.agents?.buckets ?? []).map((a) => a.key),
-                last_detected: new Date().toISOString(),
-                org_id: 'cybernovr',
-            })),
-            { onConflict: 'technique_id,org_id' }
-        );
-        if (error) {
-            if (!isMissingTable(error.code)) console.warn('[GlobalIntel] MITRE persist failed:', error.message);
-            return 0;
-        }
-        console.log(`[GlobalIntel] Synced ${buckets.length} MITRE techniques`);
-        return buckets.length;
-    } catch (err) {
-        console.warn('[GlobalIntel] MITRE sync error:', err instanceof Error ? err.message : err);
+    const [groups, sources] = await Promise.all([
+        supabase.from('wazuh_group_org_map').select('org_id'),
+        supabase.from('wazuh_source_org_map').select('org_id'),
+    ]);
+    if (groups.error) {
+        if (!isMissingTable(groups.error.code)) console.warn('[GlobalIntel] MITRE sync: group map unreadable:', groups.error.message);
         return 0;
     }
+    const orgs = [...new Set([...(groups.data ?? []), ...(sources.error ? [] : sources.data ?? [])].map((r) => String(r.org_id)))];
+    let total = 0;
+    for (const orgId of orgs) {
+        try {
+            const scope = await orgScope(orgId);
+            const result = await searchStrict<MitreAgg>('wazuh-alerts-4.x-*', {
+                size: 0,
+                query: { bool: { filter: [{ range: { timestamp: { gte: 'now-24h' } } }, alertScopeFilter(scope)] } },
+                aggs: {
+                    techniques: {
+                        terms: { field: 'rule.mitre.id', size: 50 },
+                        aggs: {
+                            tactic: { terms: { field: 'rule.mitre.tactic', size: 1 } },
+                            agents: { terms: { field: 'agent.name', size: 5 } },
+                        },
+                    },
+                },
+            });
+
+            const buckets = result?.aggregations?.techniques?.buckets ?? [];
+            if (buckets.length === 0) continue;
+
+            const { error } = await supabase.from('mitre_detections').upsert(
+                buckets.map((b) => ({
+                    technique_id: b.key,
+                    tactic: b.tactic?.buckets?.[0]?.key ?? null,
+                    detection_count: b.doc_count,
+                    agent_names: (b.agents?.buckets ?? []).map((a) => a.key),
+                    last_detected: new Date().toISOString(),
+                    org_id: orgId,
+                })),
+                { onConflict: 'technique_id,org_id' }
+            );
+            if (error) {
+                if (!isMissingTable(error.code)) console.warn(`[GlobalIntel] MITRE persist failed for ${orgId}:`, error.message);
+                continue;
+            }
+            total += buckets.length;
+        } catch (err) {
+            console.warn(`[GlobalIntel] MITRE sync skipped ${orgId}:`, err instanceof Error ? err.message : err);
+        }
+    }
+    if (total > 0) console.log(`[GlobalIntel] Synced ${total} MITRE technique row(s) across ${orgs.length} organisation(s)`);
+    return total;
 }
 
 export function startGlobalIntelJob(): void {

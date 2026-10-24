@@ -18,6 +18,8 @@ import casesRouter from '../cases';
 import secopsRouter from '../secops';
 import alertStoreRouter from '../alertStore';
 import responseApprovalsRouter from '../responseApprovals';
+import { __setAgentsForTests } from '../../services/wazuh';
+import { resetOrgScopeCache } from '../../lib/orgScope';
 
 const A = 'org-a';
 const B = 'org-b';
@@ -42,12 +44,18 @@ before(async () => {
     db = await startFakePostgrest({
         organisations: [{ id: 'oa', slug: A, name: 'Org A' }, { id: 'ob', slug: B, name: 'Org B' }],
         cases: [], case_tasks: [], case_timeline: [], soar_log: [], response_approvals: [], alerts: [], alert_events: [], platform_users: [],
+        // Agent ownership (lib/orgScope.ts): 003 and 009 are org A's, 010 is org B's.
+        wazuh_group_org_map: [{ wazuh_group: 'grp-a', org_id: A }, { wazuh_group: 'grp-b', org_id: B }],
+        wazuh_source_org_map: [],
     }, { 'platform_users.organisations': 'org_id' }, {
         response_approvals: { status: 'pending', requested_at: new Date().toISOString() },
         cases: { status: 'open', get case_number() { return `CASE-${++n}`; } } as Row,
     });
     process.env.SUPABASE_URL = db.url;
     process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
+    const agent = (id: string, group: string) => ({ id, name: `host-${id}`, ip: null, os: null, status: 'active', last_keepalive: null, version: null, group: [group] });
+    __setAgentsForTests(async () => [agent('003', 'grp-a'), agent('009', 'grp-a'), agent('010', 'grp-b')]);
+    resetOrgScopeCache();
     const app = express();
     app.use(express.json());
     app.use('/api/cases', requireAuth, casesRouter);
@@ -58,7 +66,7 @@ before(async () => {
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     for (const k of ['log', 'warn', 'error'] as const) console[k] = () => undefined;
 });
-after(async () => { Object.assign(console, realLog); server.close(); await db.close(); });
+after(async () => { Object.assign(console, realLog); __setAgentsForTests(null); resetOrgScopeCache(); server.close(); await db.close(); });
 beforeEach(() => {
     for (const t of ['cases', 'case_tasks', 'case_timeline', 'soar_log', 'response_approvals', 'alerts', 'alert_events', 'platform_users']) db.tables[t].length = 0;
     caseRow = { id: randomUUID(), org_id: A, case_number: 'CASE-A1', title: 'Brute force on web-01', severity: 'high', status: 'open', source: 'manual', source_ip: '203.0.113.9', agent_id: '003', agent_name: 'web-01', tier: 2 };
@@ -95,6 +103,25 @@ test('playbook block and isolate also wait for approval', async () => {
     assert.equal((await http('POST', '/api/secops/actions/isolate', ANALYST, { endpoint_id: '009' })).status, 202);
     assert.equal(db.tables.response_approvals.length, 2);
     assert.equal(db.tables.soar_log.length, 0);
+});
+
+test('isolation is only requested for an agent the organisation owns (another org\'s agent looks missing)', async () => {
+    const r = await http('POST', '/api/secops/actions/isolate', ANALYST, { endpoint_id: '010' });
+    assert.equal(r.status, 404);
+    assert.equal((await http('POST', '/api/secops/actions/isolate', ANALYST, { endpoint_id: '999' })).status, 404);
+    assert.equal(db.tables.response_approvals.length, 0);
+});
+
+test('an approved isolation of an agent the organisation does not own is refused when it runs', async () => {
+    caseRow.agent_id = '010'; // org B's agent on an org A case
+    const r = await http('POST', `/api/cases/${caseRow.id}/execute-step`, ANALYST, { step_id: 'isolate_agent' });
+    assert.equal(r.status, 202);
+    const id = db.tables.response_approvals[0].id;
+    const ok = await http('POST', `/api/response-approvals/${id}/approve`, MANAGER2);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.data.approval.status, 'skipped');
+    assert.match(ok.data.approval.result, /does not belong to this organisation/);
+    assert.equal(db.tables.soar_log.length, 0, 'no active response was attempted');
 });
 
 test('an analyst cannot approve; a manager cannot approve their own request; another manager can', async () => {

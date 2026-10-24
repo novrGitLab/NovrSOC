@@ -15,8 +15,9 @@ interface Customer {
     industry: string | null;
     plan: string;
     status: string;
-    agentsTotal: number;
-    activeIncidents: number;
+    // null: not known from the organisations list (shown as —).
+    agentsTotal: number | null;
+    activeIncidents: number | null;
     wazuhGroup: string | null;
 }
 
@@ -57,7 +58,7 @@ export function AllCustomers() {
                     { label: 'Total Clients', value: customers?.length ?? 0 },
                     { label: 'Active', value: customers?.filter((c) => c.status === 'active').length ?? 0 },
                     { label: 'Enterprise Plan', value: customers?.filter((c) => c.plan === 'enterprise').length ?? 0 },
-                    { label: 'Open Cases', value: customers?.reduce((s, c) => s + c.activeIncidents, 0) ?? 0 },
+                    { label: 'Open Cases', value: customers && customers.every((c) => c.activeIncidents !== null) ? customers.reduce((s, c) => s + (c.activeIncidents ?? 0), 0) : '—' },
                 ].map((s) => (
                     <div key={s.label} className="bg-card border border-border rounded-xl p-4">
                         <div className="text-2xl font-black text-foreground">{loading ? '—' : s.value}</div>
@@ -97,7 +98,7 @@ export function AllCustomers() {
                                         <td className="px-4 py-3">
                                             <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${PLAN_STYLE[c.plan] ?? PLAN_STYLE.starter}`}>{c.plan}</span>
                                         </td>
-                                        <td className="px-4 py-3 text-foreground-muted">{c.agentsTotal.toLocaleString()}</td>
+                                        <td className="px-4 py-3 text-foreground-muted">{c.agentsTotal?.toLocaleString() ?? '—'}</td>
                                         <td className="px-4 py-3">
                                             <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase ${c.status === 'active' ? 'bg-blue/10 text-blue border-blue/30' : 'bg-card-muted text-foreground-muted border-border'}`}>{c.status}</span>
                                         </td>

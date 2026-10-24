@@ -1,4 +1,5 @@
-import { search } from './wazuh-indexer';
+import { searchStrict } from './wazuh-indexer';
+import type { OrgScope } from './orgScope';
 
 // Shared in-memory org CTI store — used by both routes/orgCTI.ts and jobs/ctiWatcher.ts.
 // Replace with Supabase once a real schema exists (see routes/orgCTI.ts's header comment);
@@ -37,7 +38,8 @@ interface IndexerAlertHit {
     _source?: {
         timestamp?: string;
         rule?: { level?: number; description?: string; groups?: string[] };
-        agent?: { name?: string };
+        agent?: { id?: string; name?: string };
+        location?: string;
         data?: { srcip?: string };
     };
 }
@@ -54,6 +56,11 @@ function verdictForLevel(level: number): OrgIOC['verdict'] {
 }
 
 // ── WAZUH-SOURCED IOC ACCUMULATOR ──────────────────────────────────────────
+//
+// Tenancy (P22): sightings are kept per external IP AND per owner — the agent that saw it, or for
+// syslog the manager receives itself (agent 000) the sender's address — and an organisation only
+// ever aggregates the owners it holds (lib/orgScope.ts). Before this, one global per-IP tally
+// was handed to every organisation stamped with its own org_id.
 
 interface AccumulatedIp {
     count: number;
@@ -63,33 +70,46 @@ interface AccumulatedIp {
     latestRule: string;
     latestAgent: string;
 }
+/** `${ip}\n${owner}` -> sightings; owner = agent id, or `000@<location>`. */
 const wazuhAccumulator = new Map<string, AccumulatedIp>();
 let lastSyncTs = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 let totalAlertsIngested = 0;
+
+const ownerOf = (src: NonNullable<IndexerAlertHit['_source']>): string | null => {
+    const id = src.agent?.id;
+    if (!id) return null;
+    if (id === '000') return src.location ? `000@${src.location}` : null;
+    return id;
+};
 
 function ingestAlertHits(hits: IndexerAlertHit[]): number {
     let newIps = 0;
     for (const hit of hits) {
         const src = hit._source;
         const ip = src?.data?.srcip;
-        if (!ip || PRIVATE_IP_RE.test(ip)) continue;
+        if (!src || !ip || PRIVATE_IP_RE.test(ip)) continue;
+        const owner = ownerOf(src);
+        if (!owner) continue; // no owner means no organisation can be shown it
 
-        const ts = src?.timestamp || new Date().toISOString();
-        const level = src?.rule?.level ?? 0;
-        const existing = wazuhAccumulator.get(ip);
+        // An alert with no timestamp is skipped rather than dated "now".
+        const ts = src.timestamp;
+        if (!ts) continue;
+        const level = src.rule?.level ?? 0;
+        const key = `${ip}\n${owner}`;
+        const existing = wazuhAccumulator.get(key);
         if (existing) {
             existing.count++;
             if (ts < existing.firstSeenTs) existing.firstSeenTs = ts;
             if (ts > existing.lastSeenTs) existing.lastSeenTs = ts;
             if (level >= existing.maxLevel) {
                 existing.maxLevel = level;
-                existing.latestRule = src?.rule?.description || existing.latestRule;
+                existing.latestRule = src.rule?.description || existing.latestRule;
             }
-            existing.latestAgent = src?.agent?.name || existing.latestAgent;
+            existing.latestAgent = src.agent?.id === '000' ? src.location ?? existing.latestAgent : src.agent?.name || existing.latestAgent;
         } else {
-            wazuhAccumulator.set(ip, {
+            wazuhAccumulator.set(key, {
                 count: 1, firstSeenTs: ts, lastSeenTs: ts, maxLevel: level,
-                latestRule: src?.rule?.description || '', latestAgent: src?.agent?.name || '',
+                latestRule: src.rule?.description || '', latestAgent: src.agent?.id === '000' ? src.location ?? '' : src.agent?.name || '',
             });
             newIps++;
         }
@@ -98,27 +118,46 @@ function ingestAlertHits(hits: IndexerAlertHit[]): number {
     return newIps;
 }
 
-/** Pull alerts since the last successful sync and fold new external IPs into the accumulator. */
+/**
+ * Pull alerts since the last successful sync and fold new external IPs into the accumulator.
+ * Oldest first: when a window holds more than `size` alerts the cursor moves only to the newest
+ * one read, so the rest are picked up next time instead of skipped.
+ */
 export async function syncWazuhIOCs(size = 100): Promise<{ newIps: number; hitCount: number }> {
     const since = lastSyncTs;
-    const result = await search<IndexerSearchResponse>('wazuh-alerts-4.x-*', {
+    const startedAt = new Date().toISOString();
+    const result = await searchStrict<IndexerSearchResponse>('wazuh-alerts-4.x-*', {
         size,
-        sort: [{ timestamp: { order: 'desc' } }],
-        query: { range: { timestamp: { gte: since } } },
-        _source: ['timestamp', 'data.srcip', 'rule.level', 'rule.description', 'rule.groups', 'agent.name'],
+        sort: [{ timestamp: { order: 'asc' } }],
+        query: { bool: { filter: [{ range: { timestamp: { gt: since } } }, { exists: { field: 'data.srcip' } }] } },
+        _source: ['timestamp', 'data.srcip', 'rule.level', 'rule.description', 'rule.groups', 'agent.id', 'agent.name', 'location'],
     });
     // Only advance the cursor on a successful query — a thrown/failed request (indexer down,
-    // not configured) should retry the same window next time rather than silently skip it.
-    lastSyncTs = new Date().toISOString();
-
+    // not configured, an error reply) retries the same window next time rather than skipping it.
     const hits = result?.hits?.hits ?? [];
+    const newest = hits.at(-1)?._source?.timestamp;
+    lastSyncTs = hits.length >= size && newest ? newest : startedAt;
+
     const newIps = ingestAlertHits(hits);
     return { newIps, hitCount: hits.length };
 }
 
-export function wazuhIOCsForOrg(orgId: string): OrgIOC[] {
-    return [...wazuhAccumulator.entries()].map(([ip, d]) => ({
-        id: `wazuh-${ip.replace(/\./g, '-')}`,
+/** The organisation's Wazuh-sighted external IPs: only sightings on agents and senders it owns. */
+export function wazuhIOCsForOrg(orgId: string, scope: OrgScope): OrgIOC[] {
+    const owners = new Set<string>([...scope.agentIds, ...scope.locations.map((l) => `000@${l}`)]);
+    const byIp = new Map<string, AccumulatedIp>();
+    for (const [key, d] of wazuhAccumulator) {
+        const [ip, owner] = key.split('\n');
+        if (!owners.has(owner)) continue;
+        const cur = byIp.get(ip);
+        if (!cur) { byIp.set(ip, { ...d }); continue; }
+        cur.count += d.count;
+        if (d.firstSeenTs < cur.firstSeenTs) cur.firstSeenTs = d.firstSeenTs;
+        if (d.lastSeenTs > cur.lastSeenTs) { cur.lastSeenTs = d.lastSeenTs; cur.latestAgent = d.latestAgent; }
+        if (d.maxLevel >= cur.maxLevel) { cur.maxLevel = d.maxLevel; cur.latestRule = d.latestRule || cur.latestRule; }
+    }
+    return [...byIp.entries()].map(([ip, d]) => ({
+        id: `wazuh-${ip.replace(/[.:]/g, '-')}`,
         org_id: orgId,
         value: ip,
         type: 'ip',
@@ -129,7 +168,7 @@ export function wazuhIOCsForOrg(orgId: string): OrgIOC[] {
         risk_score: Math.min(d.maxLevel * 6, 100),
         verdict: verdictForLevel(d.maxLevel),
         tags: [d.latestRule].filter(Boolean),
-        notes: `Seen on agent: ${d.latestAgent}`,
+        notes: `Seen on: ${d.latestAgent}`,
         shared: false,
         mitre_tactic: null,
         alert_ids: [],
@@ -137,8 +176,16 @@ export function wazuhIOCsForOrg(orgId: string): OrgIOC[] {
     }));
 }
 
+/** Watcher health. Per-organisation counts come from wazuhIOCsForOrg(); this holds no tenant data. */
 export function watcherStats() {
-    return { tracked_ips: wazuhAccumulator.size, total_alerts_ingested: totalAlertsIngested, last_synced: lastSyncTs };
+    return { total_alerts_ingested: totalAlertsIngested, last_synced: lastSyncTs };
+}
+
+/** Tests only: forget every sighting and restart the cursor window. */
+export function __resetWazuhIOCsForTests(since = new Date(Date.now() - 5 * 60 * 1000).toISOString()): void {
+    wazuhAccumulator.clear();
+    lastSyncTs = since;
+    totalAlertsIngested = 0;
 }
 
 // ── MANUAL / ANALYST-ADDED IOC STORE ───────────────────────────────────────

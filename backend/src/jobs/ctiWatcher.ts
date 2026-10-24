@@ -11,7 +11,7 @@ export async function runCTIWatcher(): Promise<void> {
         const { newIps, hitCount } = await syncWazuhIOCs(100);
         if (hitCount > 0) {
             const stats = watcherStats();
-            console.log(`[CTI Watcher] ingested ${hitCount} alert(s), ${newIps} new external IP(s) — tracking ${stats.tracked_ips} total.`);
+            console.log(`[CTI Watcher] ingested ${hitCount} alert(s), ${newIps} new IP sighting(s) — ${stats.total_alerts_ingested} alert(s) read since start.`);
         }
     } catch (err) {
         // Indexer not configured/unreachable — same as threatManagement.ts's loadAlerts, this
