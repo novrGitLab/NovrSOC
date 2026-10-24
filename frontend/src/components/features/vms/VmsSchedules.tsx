@@ -2,7 +2,8 @@
 
 // Scan schedules (phase P7): the same scan every interval, inside authorised scope. Managers create
 // them; every run passes the same scope checks as a manual scan, and a schedule whose scope ends is
-// stopped with the reason.
+// stopped with the reason. P27: 'verification' schedules rescan findings marked fixed inside the
+// scope; outside the scope's approved scan windows, or at a job limit, a run waits instead of failing.
 
 import { useEffect, useState } from 'react';
 import { CalendarClock } from 'lucide-react';
@@ -10,8 +11,10 @@ import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
 import { fmtWat, SCAN_KIND_LABEL, type VmsScan, type VmsScope } from '@/lib/vms';
 
+type ScheduleKind = VmsScan['kind'] | 'verification' | 'full_assessment';
+const KIND_LABEL: Record<ScheduleKind, string> = { ...SCAN_KIND_LABEL, verification: 'Verification rescans (findings marked fixed)', full_assessment: 'Full assessment' };
 interface Schedule {
-    id: string; scope_id: string; kind: VmsScan['kind']; targets: string[]; ports: string | null; interval_hours: number; next_run_at: string;
+    id: string; scope_id: string; kind: ScheduleKind; targets: string[]; ports: string | null; interval_hours: number; next_run_at: string;
     enabled: boolean; last_run_at: string | null; last_result: string | null; created_by: string;
     vms_scopes?: { value: string; expires_at: string; status: string } | null;
 }
@@ -23,7 +26,7 @@ export function VmsSchedules() {
     const [scopes, setScopes] = useState<VmsScope[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [msg, setMsg] = useState<string | null>(null);
-    const [form, setForm] = useState({ scope_id: '', kind: 'discovery' as VmsScan['kind'], targets: '', ports: 'top-1000', interval_hours: 168 });
+    const [form, setForm] = useState({ scope_id: '', kind: 'discovery' as ScheduleKind, targets: '', ports: 'top-1000', interval_hours: 168 });
     const [reload, setReload] = useState(0);
 
     useEffect(() => {
@@ -53,11 +56,11 @@ export function VmsSchedules() {
     }
 
     const scope = scopes.find((s) => s.id === form.scope_id);
-    const kindAllowed = (k: VmsScan['kind']) => !scope || (k === 'ports' ? scope.allow_port_scan : k.startsWith('vuln_') ? scope.allow_vuln_scan : true);
+    const kindAllowed = (k: ScheduleKind) => !scope || (k === 'ports' ? scope.allow_port_scan : k.startsWith('vuln_') || k === 'verification' ? scope.allow_vuln_scan : true);
     return (
         <div className="bg-card border border-border rounded-xl p-4 space-y-3">
             <h2 className="text-sm font-black text-foreground flex items-center gap-2"><CalendarClock className="w-4 h-4" /> Schedules</h2>
-            <p className="text-[11px] text-foreground-muted">Repeat a scan inside authorised scope. Only SOC managers can create or change schedules; each run is checked against the scope again, and a schedule stops when its scope is revoked or expires.</p>
+            <p className="text-[11px] text-foreground-muted">Repeat a scan inside approved scope — no further approval per run. Only SOC managers can create or change schedules; each run is checked against the scope again, waits for the scope&apos;s scan window or a free job slot, and stops when its scope is revoked or expires.</p>
             <form onSubmit={(e) => void create(e)} className="flex flex-wrap gap-2 items-end text-xs">
                 <label className="text-[11px] font-bold text-foreground-muted">Scope
                     <select required value={form.scope_id} onChange={(e) => setForm({ ...form, scope_id: e.target.value })} className="block bg-card-muted border border-border rounded px-2 py-1 text-xs">
@@ -66,8 +69,8 @@ export function VmsSchedules() {
                     </select>
                 </label>
                 <label className="text-[11px] font-bold text-foreground-muted">Scan
-                    <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as VmsScan['kind'] })} className="block bg-card-muted border border-border rounded px-2 py-1 text-xs">
-                        {(Object.keys(SCAN_KIND_LABEL) as VmsScan['kind'][]).map((k) => <option key={k} value={k} disabled={!kindAllowed(k)}>{SCAN_KIND_LABEL[k]}{kindAllowed(k) ? '' : ' — not authorised'}</option>)}
+                    <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as ScheduleKind })} className="block bg-card-muted border border-border rounded px-2 py-1 text-xs">
+                        {([...Object.keys(SCAN_KIND_LABEL), 'verification'] as ScheduleKind[]).map((k) => <option key={k} value={k} disabled={!kindAllowed(k)}>{KIND_LABEL[k]}{kindAllowed(k) ? '' : ' — not authorised'}</option>)}
                     </select>
                 </label>
                 <label className="text-[11px] font-bold text-foreground-muted">Targets (optional)
@@ -92,8 +95,8 @@ export function VmsSchedules() {
                 {rows?.map((s) => (
                     <div key={s.id} className="py-2 text-xs flex flex-wrap items-start justify-between gap-2">
                         <div>
-                            <p className="font-bold text-foreground">{SCAN_KIND_LABEL[s.kind]} · {every(s.interval_hours)} · {s.vms_scopes?.value ?? 'scope removed'}{s.targets.length ? ` (${s.targets.join(', ')})` : ''}</p>
-                            <p className="text-foreground-muted">{s.enabled ? `Next run ${fmtWat(s.next_run_at)}` : 'Stopped'} · last run {fmtWat(s.last_run_at)}{s.last_result ? ` · ${s.last_result}` : ''} · by {s.created_by}</p>
+                            <p className="font-bold text-foreground">{KIND_LABEL[s.kind] ?? s.kind} · {every(s.interval_hours)} · {s.vms_scopes?.value ?? 'scope removed'}{s.targets.length ? ` (${s.targets.join(', ')})` : ''}</p>
+                            <p className="text-foreground-muted">{s.enabled ? `${s.last_result?.startsWith('Waiting') ? 'Waiting — next try' : 'Next run'} ${fmtWat(s.next_run_at)}` : 'Stopped'} · last run {fmtWat(s.last_run_at)}{s.last_result ? ` · ${s.last_result}` : ''} · by {s.created_by}</p>
                         </div>
                         <div className="flex gap-2">
                             <button onClick={() => void send('PATCH', `/api/vms/schedules/${s.id}`, { enabled: !s.enabled })} className="text-[11px] font-bold border border-border rounded px-2 py-1">{s.enabled ? 'Pause' : 'Resume'}</button>

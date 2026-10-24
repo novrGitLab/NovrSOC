@@ -12,7 +12,7 @@
 --   • scan_windows: when scans may run (NULL = any time). max_active_jobs: queued + running jobs
 --     allowed at once under the scope (NULL = the platform default).
 -- Scheduling: a 'verification' schedule kind re-tests findings marked fixed.
--- Requires: P4 (vms_scopes, vms_scan_schedules), P9 (origin column), P17 (full_assessment kind).
+-- Requires: P4 (vms_scopes, vms_scan_schedules), P9 (allow_discovery), P18 (origin column), P17 (full_assessment kind).
 
 -- ── Scope lifecycle ─────────────────────────────────────────────────────────────────────────
 ALTER TABLE public.vms_scopes DROP CONSTRAINT IF EXISTS vms_scopes_status_check;

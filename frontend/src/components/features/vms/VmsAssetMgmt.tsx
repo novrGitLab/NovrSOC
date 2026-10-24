@@ -24,6 +24,7 @@ import { VmsScope } from './VmsScope';
 import { ScanResult } from './VmsRemediationPlus';
 import { STATUS_LABEL, type Finding } from './FindingDetail';
 import { useVmsData, useVmsCan, vmsSend } from './data';
+import { AuthorisationBadge, AUTH_META } from './VmsOnboarding';
 
 type Asset = VmsAsset & { findings?: { open: number; by_severity: Record<string, number>; max_risk: number | null } };
 interface AssetDetail { asset: VmsAsset; services: VmsService[]; technologies: VmsTech[]; events: VmsEvent[]; linked?: { id: string; asset_type: string; value: string; exposure: string; relation: string; services: VmsService[] }[] }
@@ -55,6 +56,7 @@ export function VmsAssetInventory() {
     const [type, setType] = useState(params.get('source') === 'external' ? 'external' : '');
     const [criticality, setCriticality] = useState(params.get('criticality') ?? '');
     const [q, setQ] = useState('');
+    const [auth, setAuth] = useState('');
     const path = useMemo(() => {
         const p = new URLSearchParams();
         if (exposure) p.set('exposure', exposure);
@@ -63,7 +65,7 @@ export function VmsAssetInventory() {
         return `/api/vms/assets?${p.toString()}`;
     }, [exposure, status, q]);
     const { load, data, reload } = useVmsData<{ assets: Asset[] }>(view === 'all' ? path : null);
-    const rows = useMemo(() => data?.assets.filter((a) => (!type || (type === 'external' ? a.asset_type !== 'endpoint' : a.asset_type === type)) && (!criticality || a.criticality === criticality)) ?? null, [data, type, criticality]);
+    const rows = useMemo(() => data?.assets.filter((a) => (!type || (type === 'external' ? a.asset_type !== 'endpoint' : a.asset_type === type)) && (!criticality || a.criticality === criticality) && (!auth || a.authorization?.status === auth)) ?? null, [data, type, criticality, auth]);
     const columns: Column<Asset>[] = [
         { key: 'value', header: 'Asset', className: 'min-w-[200px]', sort: (a) => a.value, render: (a) => <div><p className="font-mono font-semibold text-foreground break-all">{a.value}</p><p className="text-[10.5px] text-foreground-muted">{TYPE_LABEL[a.asset_type] ?? a.asset_type}{a.ips.length && a.asset_type !== 'ip' ? ` · ${a.ips.slice(0, 2).join(', ')}` : ''}{a.status === 'gone' ? ' · gone' : ''}</p></div> },
         { key: 'exposure', header: 'Exposure', sort: (a) => a.exposure, render: (a) => a.exposure === 'internet' ? <Tag><Globe className="w-3 h-3" aria-hidden />Internet</Tag> : <span className="text-[11px] text-foreground-muted">{EXPOSURE_LABEL[a.exposure] ?? a.exposure}</span> },
@@ -71,6 +73,8 @@ export function VmsAssetInventory() {
         { key: 'findings', header: 'Open findings', sort: (a) => a.findings?.open ?? 0, render: (a) => a.findings?.open ? <div className="flex items-center gap-2"><span className="tabular-nums font-bold w-6 text-right">{a.findings.open}</span><SevBar by={a.findings.by_severity} /></div> : <span className="text-[11px] text-foreground-muted">None</span> },
         { key: 'risk', header: 'Max risk', sort: (a) => a.findings?.max_risk ?? -1, render: (a) => <RiskScore score={a.findings?.max_risk} /> },
         { key: 'assessed', header: 'Last assessment', hideBelow: 'lg', sort: (a) => a.last_assessed_at ?? '', render: (a) => <Outcome a={a} /> },
+        { key: 'sources', header: 'Source', hideBelow: 'md', sort: (a) => (a.sources ?? []).join(','), render: (a) => <span className="text-[11px] text-foreground-muted">{(a.sources ?? []).join(', ') || '—'}</span> },
+        { key: 'authorization', header: 'Scanning', sort: (a) => a.authorization?.status ?? '', render: (a) => <AuthorisationBadge a={a.authorization} /> },
         { key: 'owner', header: 'Owner', hideBelow: 'lg', sort: (a) => a.owner ?? '~', render: (a) => <span className="text-[11px] text-foreground-muted">{a.owner ?? '—'}</span> },
         { key: 'seen', header: 'Last seen', hideBelow: 'md', sort: (a) => a.last_seen, render: (a) => <span className="text-[11px] text-foreground-muted whitespace-nowrap">{fmtWat(a.last_seen).replace(/ WAT$/, '')}</span> },
     ];
@@ -79,17 +83,18 @@ export function VmsAssetInventory() {
             <PageHeader icon={Boxes} title="Asset Inventory" description="Every host, domain and IP found inside authorised scope, and every Wazuh-managed endpoint — one inventory, with each asset's open findings and highest risk."
                 actions={<>
                     <Segmented label="View" value={view} onChange={setView} options={[['all', 'All assets'], ['endpoints', 'Managed endpoints (Wazuh)']]} />
-                    <Link href="/admin/vms/discovery" className={btn('secondary')}><Plus className="w-3.5 h-3.5" aria-hidden /> Add asset</Link>
+                    <Link href="/admin/vms/import" className={btn('secondary')}><Plus className="w-3.5 h-3.5" aria-hidden /> Import assets</Link>
                 </>} />
             {view === 'endpoints' ? <VmsEndpoints /> : (
                 <>
                     <div className="flex flex-wrap items-center gap-2">
                         <Select label="Type" value={type} onChange={setType} options={[['', 'Any type'], ['external', 'Found by scans'], ['endpoint', 'Wazuh endpoints'], ['domain', 'Domains'], ['host', 'Hosts'], ['ip', 'IP addresses']]} />
                         <Select label="Exposure" value={exposure} onChange={setExposure} options={[['', 'Any exposure'], ['internet', 'Internet-facing'], ['internal', 'Internal'], ['unknown', 'Unknown']]} />
+                        <Select label="Scanning" value={auth} onChange={setAuth} options={[['', 'Any'], ...Object.entries(AUTH_META).map(([k, v]) => [k, v.label] as [string, string])]} />
                         <Select label="Criticality" value={criticality} onChange={setCriticality} options={[['', 'Any criticality'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']]} />
                         <Segmented label="Status" value={status} onChange={setStatus} options={[['active', 'Active'], ['gone', 'Gone'], ['all', 'All']]} />
                         <SearchBox value={q} onSubmit={setQ} placeholder="Hostname or IP" label="Search assets" />
-                        <div className="ml-auto"><ExportCsvButton filename="vms-assets.csv" rows={rows?.map((a) => ({ ...a, open_findings: a.findings?.open ?? 0, max_risk: a.findings?.max_risk ?? '' }))} columns={[{ key: 'value', header: 'Asset' }, { key: 'asset_type', header: 'Type' }, { key: 'exposure', header: 'Exposure' }, { key: 'criticality', header: 'Criticality' }, { key: 'owner', header: 'Owner' }, { key: 'ips', header: 'IPs' }, { key: 'open_findings', header: 'Open findings' }, { key: 'max_risk', header: 'Max risk' }, { key: 'status', header: 'Status' }, { key: 'first_seen', header: 'First seen' }, { key: 'last_seen', header: 'Last seen' }, { key: 'last_assessed_at', header: 'Last assessed' }]} /></div>
+                        <div className="ml-auto"><ExportCsvButton filename="vms-assets.csv" rows={rows?.map((a) => ({ ...a, open_findings: a.findings?.open ?? 0, max_risk: a.findings?.max_risk ?? '', sources_text: (a.sources ?? []).join('; '), authorisation_text: a.authorization ? AUTH_META[a.authorization.status].label : '' }))} columns={[{ key: 'value', header: 'Asset' }, { key: 'asset_type', header: 'Type' }, { key: 'exposure', header: 'Exposure' }, { key: 'criticality', header: 'Criticality' }, { key: 'owner', header: 'Owner' }, { key: 'ips', header: 'IPs' }, { key: 'open_findings', header: 'Open findings' }, { key: 'max_risk', header: 'Max risk' }, { key: 'status', header: 'Status' }, { key: 'first_seen', header: 'First seen' }, { key: 'last_seen', header: 'Last seen' }, { key: 'last_assessed_at', header: 'Last assessed' }, { key: 'sources_text', header: 'Source' }, { key: 'authorisation_text', header: 'Scanning' }]} /></div>
                     </div>
                     {load.state === 'error' ? <ErrorState error={load.error} status={load.status} onRetry={reload} />
                         : <DataTable caption="Asset inventory" rows={rows} columns={columns} rowKey={(a) => a.id} onRowClick={(a) => router.push(`/admin/vms/assets/${a.id}`)} initialSort={{ key: 'findings', dir: 'desc' }}
@@ -235,7 +240,7 @@ export function VmsDiscovery() {
             <PageHeader icon={Radar} title="Asset Discovery" description="Assets enter the inventory in two ways: discovery scans inside an authorised scope (subdomains, DNS, HTTP), and Wazuh agents of the organisation's mapped groups. Nothing outside authorised scope is ever scanned."
                 actions={<Link href="/admin/vms/scans" className={btn('primary', 'md')}><Radar className="w-4 h-4" aria-hidden /> Run discovery</Link>} />
             <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <Step n={1} title="Authorise the scope" body="A manager records the domains, IPs or networks the organisation authorised, with the agreement reference, exclusions and what may run (discovery, port scans, vulnerability scans)." />
+                <Step n={1} title="Authorise the scope" body="A manager requests the domains, IPs or networks to test, with the agreement reference, exclusions, scan windows and what may run. The organisation's administrator approves it once on the Scan Authorisation page." />
                 <Step n={2} title="Run discovery" body="Discovery finds subdomains, resolves DNS and probes HTTP inside that scope. Each new host becomes an asset with its source." />
                 <Step n={3} title="Review and classify" body="Set an owner and business criticality on each asset — criticality feeds the risk score of its findings." />
             </section>

@@ -14,7 +14,9 @@ export const VMS_SECTIONS: VmsSection[] = [
         id: 'assets', label: 'Asset Management', href: '/admin/vms/assets', icon: Boxes,
         pages: [
             { href: '/admin/vms/assets', label: 'Asset Inventory' },
+            { href: '/admin/vms/import', label: 'Asset Import' },
             { href: '/admin/vms/discovery', label: 'Asset Discovery' },
+            { href: '/admin/vms/authorisation', label: 'Scan Authorisation' },
             { href: '/admin/vms/attack-surface', label: 'Attack Surface' },
             { href: '/admin/vms/services', label: 'Services & Technologies' },
         ],

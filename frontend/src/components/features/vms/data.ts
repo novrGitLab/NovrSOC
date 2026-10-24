@@ -56,5 +56,6 @@ export type VmsRole = 'super_admin' | 'soc_manager' | 'analyst' | 'executive' | 
 export function useVmsCan() {
     const [role] = useState<VmsRole>(() => (typeof window === 'undefined' ? '' : getAdminUser().role));
     const staff = role === 'super_admin' || role === 'soc_manager' || role === 'analyst';
-    return { role, manage: staff, scan: staff, scope: role === 'super_admin' || role === 'soc_manager', readOnly: !staff, superAdmin: role === 'super_admin' };
+    // authorize (P27): the organisation's administrator (executive) or a super_admin approves scan authorisation.
+    return { role, manage: staff, scan: staff, scope: role === 'super_admin' || role === 'soc_manager', authorize: role === 'executive' || role === 'super_admin', readOnly: !staff, superAdmin: role === 'super_admin' };
 }

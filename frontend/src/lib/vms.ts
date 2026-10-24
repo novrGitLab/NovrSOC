@@ -1,14 +1,23 @@
 // Shared types and helpers for the VMS pages (phase P4). Every value shown comes from /api/vms.
 
 export interface VmsScope {
-    id: string; kind: 'domain' | 'ip' | 'cidr'; value: string; include_subdomains: boolean; allow_port_scan: boolean; allow_vuln_scan: boolean;
-    authorization_reference: string; notes: string | null; status: 'active' | 'revoked'; approved_by: string; approved_at: string; expires_at: string;
+    id: string; kind: 'domain' | 'ip' | 'cidr' | 'asn'; value: string; include_subdomains: boolean; allow_port_scan: boolean; allow_vuln_scan: boolean;
+    /** P27: entries that permit active scanning are 'pending' until the organisation approves them. */
+    authorization_reference: string; notes: string | null; status: 'active' | 'revoked' | 'pending' | 'rejected'; approved_by: string | null; approved_at: string | null; expires_at: string;
+    /** Scan authorisation (P27; absent before that SQL). */
+    request_group_id?: string | null; requested_by?: string | null; requested_at?: string | null;
+    approval_method?: 'in_platform' | 'offline_document' | 'passive_registration' | 'legacy' | 'cnii' | null; approval_id?: string | null;
+    scan_windows?: VmsScanWindows | null; max_active_jobs?: number | null; rejected_by?: string | null; rejection_reason?: string | null; origin?: string | null;
     /** Hosts, .subdomains, IPs or CIDRs never touched (P13). */
     exclusions?: string[];
     /** false = passive-only scope (P15): no active discovery. Absent before that SQL. */
     allow_discovery?: boolean;
     revoked_by: string | null; revoked_at: string | null;
 }
+/** When active scans may run under a scope (P27): ISO weekdays 1..7, local HH:MM in `tz`. */
+export interface VmsScanWindows { tz: string; windows: { days: number[]; start: string; end: string }[] }
+/** Whether an asset's scan target is inside approved scope (P27). */
+export interface VmsAuthorisation { status: 'authorised' | 'pending_approval' | 'not_authorised' | 'not_applicable'; activities: ('discovery' | 'ports' | 'vuln')[]; scope_id: string | null; expires_at: string | null }
 export interface VmsScan {
     id: string; scope_id: string; kind: 'passive_osint' | 'discovery' | 'ports' | 'vuln_nuclei' | 'vuln_openvas'; targets: string[]; options: { ports?: string };
     status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; requested_by: string; requested_at: string; started_at: string | null; finished_at: string | null;
@@ -18,7 +27,7 @@ export interface VmsScan {
     attention?: string | null;
 }
 export interface VmsAsset {
-    id: string; asset_type: 'domain' | 'host' | 'ip' | 'endpoint'; value: string; hostnames: string[]; ips: string[];
+    id: string; asset_type: 'domain' | 'host' | 'ip' | 'endpoint' | 'asn' | 'cidr'; value: string; hostnames: string[]; ips: string[];
     dns: { a?: string[]; aaaa?: string[]; cname?: string[] }; http: { url?: string; status?: number | null; title?: string | null; webserver?: string | null; cdn?: string | null } | null;
     exposure: 'internet' | 'internal' | 'unknown'; alive: boolean | null; owner: string | null; criticality: 'low' | 'medium' | 'high' | 'critical';
     wazuh_agent_id: string | null; discovery_sources: string[]; first_seen: string; last_seen: string; status: 'active' | 'gone';
@@ -27,6 +36,8 @@ export interface VmsAsset {
     /** Wazuh endpoints (P19; absent before that SQL): what the agent reports, eligibility, next scan. */
     os?: string | null; agent_status?: string | null; agent_last_keepalive?: string | null; agent_groups?: string[];
     scan_eligibility?: VmsEligibility | null; next_scan_at?: string | null;
+    /** P27: where the asset came from, and whether it may be scanned under today's scope. */
+    sources?: string[]; authorization?: VmsAuthorisation;
 }
 export type AssessmentOutcome = 'reachable_open' | 'reachable_no_open' | 'unreachable' | 'no_route' | 'insufficient_evidence';
 /** What one scan learned about reaching a host (P12). Not the Full Assessment (VmsAssessment, P13). */
