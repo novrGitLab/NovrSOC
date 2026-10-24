@@ -5,8 +5,11 @@ import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { buildStixBundle, type ExportableIOC } from '../services/stix';
+import { requireOrg, requestOrg } from '../lib/permissions';
 
 const router = Router();
+// The organisation's own IOC lookups only (phase P26): ioc_enrichments is per organisation.
+router.use(requireOrg);
 
 // GET /api/intelligence/stix
 //   ?min_risk=0..100   omit IOCs below this composite risk score (default 0 — export everything)
@@ -32,6 +35,7 @@ router.get('/stix', async (req: AuthRequest, res) => {
         const { data, error } = await supabase
             .from('ioc_enrichments')
             .select('ioc_value, ioc_type, risk_score, tags, first_seen, last_seen, country_name, isp')
+            .eq('org_id', requestOrg(req))
             .gte('risk_score', minRisk)
             .order('risk_score', { ascending: false })
             .limit(limit);
@@ -74,6 +78,7 @@ router.get('/stix/summary', async (req: AuthRequest, res) => {
         const { count, error } = await supabase
             .from('ioc_enrichments')
             .select('ioc_value', { count: 'exact', head: true })
+            .eq('org_id', requestOrg(req))
             .gte('risk_score', minRisk);
         if (error) throw error;
         res.json({ available: true, total: count ?? 0, min_risk: minRisk });

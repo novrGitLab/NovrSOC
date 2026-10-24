@@ -6,8 +6,12 @@ import { circlGetPulses } from '../services/circl';
 import { getSupabase } from '../services/geoEnrichment';
 import { checkLeakIX, isConfigured as leakixConfigured } from '../services/leakix';
 import { verdictFromScore } from '../lib/severity';
+import { requireOrg, requestOrg } from '../lib/permissions';
 
 const router = Router();
+// The IOC lookup cache is per organisation (phase P26, sql/2026-10-31_p26_ioc_cache_tenancy.sql):
+// every read and write below is limited to the requester's organisation.
+router.use(requireOrg);
 
 const VALID_IOC_TYPES: IOCType[] = ['ip', 'domain', 'hash', 'url'];
 const PRIVATE_IP_RE = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.)/;
@@ -50,6 +54,7 @@ router.post('/lookup', async (req, res) => {
             const supabase = getSupabase();
             if (supabase) {
                 await supabase.from('ioc_enrichments').upsert({
+                    org_id: requestOrg(req),
                     ioc_value: value,
                     ioc_type: type,
                     risk_score: result.risk_score,
@@ -65,7 +70,7 @@ router.post('/lookup', async (req, res) => {
                     tags: result.tags.filter((t) => t !== 'in-misp' && t !== 'in-platform-ti'),
                     source: 'manual_lookup',
                     last_seen: new Date().toISOString(),
-                }, { onConflict: 'ioc_value' });
+                }, { onConflict: 'org_id,ioc_value' });
             }
         } catch {
             // caching failure should not break the response
@@ -94,7 +99,8 @@ router.get('/feed', async (req, res) => {
 
         let query = supabase
             .from('ioc_enrichments')
-            .select('*')
+            .select('ioc_value, ioc_type, risk_score, otx_pulse_count, abuseipdb_confidence, country_code, isp, is_tor, tags, source, last_seen')
+            .eq('org_id', requestOrg(req))
             .gte('risk_score', minScore)
             .order('last_seen', { ascending: false })
             .limit(limit);
@@ -126,7 +132,7 @@ router.get('/pulses', async (req, res) => {
 
 // GET /api/cti/stats
 // Summary stats for the CTI dashboard header
-router.get('/stats', async (_req, res) => {
+router.get('/stats', async (req, res) => {
     try {
         const supabase = getSupabase();
         if (!supabase) {
@@ -134,7 +140,7 @@ router.get('/stats', async (_req, res) => {
             return;
         }
 
-        const { data } = await supabase.from('ioc_enrichments').select('risk_score');
+        const { data } = await supabase.from('ioc_enrichments').select('risk_score').eq('org_id', requestOrg(req));
         const iocs = (data || []) as { risk_score: number }[];
 
         res.json({

@@ -50,7 +50,7 @@ router.get('/', requirePermission('alerts:read'), async (req: AuthRequest, res) 
             .order('published_at', { ascending: false }).limit(3)
         : null;
     const iocsP = supabase
-        ? supabase.from('ioc_enrichments').select('ioc_value, ioc_type, risk_score').ilike('ioc_value', like).limit(3)
+        ? supabase.from('ioc_enrichments').select('ioc_value, ioc_type, risk_score').eq('org_id', orgId).ilike('ioc_value', like).limit(3)
         : null;
     // The organisation's own alerts only (lib/orgScope.ts); when ownership can't be resolved the
     // alert source is simply missing from the results, like any other unavailable source.

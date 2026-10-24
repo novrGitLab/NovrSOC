@@ -307,17 +307,23 @@ test('security assessment: client roles always get their own org; staff pick wit
     assert.equal((await call('GET', `${path}?org=${B}`, { role: 'analyst', org: A })).data.org_id, A, '?org is no longer read');
 });
 
-test('ioc_enrichments: a second org escalating the same IOC does not take over its org_id', async () => {
+// Phase P26: the IOC cache is per organisation — each organisation's escalation writes its own
+// row, and never touches another organisation's (sql/2026-10-31_p26_ioc_cache_tenancy.sql).
+test('ioc_enrichments: each org escalating the same IOC gets its own row; the other org\'s row is untouched', async () => {
     const body = { ioc_value: '8.8.4.4', ioc_type: 'ip', finding: 'beaconing' };
     const first = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: A, body });
     assert.equal(first.status, 200, JSON.stringify(first.data));
     assert.equal(first.data.ioc_saved, true, JSON.stringify(first.data));
+    const aRow = { ...db.tables.ioc_enrichments.find((r) => r.ioc_value === '8.8.4.4' && r.org_id === A)! };
     const second = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: B, body });
     assert.equal(second.data.ioc_saved, true, JSON.stringify(second.data));
     const rows = db.tables.ioc_enrichments.filter((r) => r.ioc_value === '8.8.4.4');
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].org_id, A);
-    assert.ok((rows[0].tags as string[]).includes('analyst-confirmed'), 'enrichment fields are still refreshed');
+    assert.deepEqual(rows.map((r) => r.org_id).sort(), [A, B]);
+    assert.deepEqual(rows.find((r) => r.org_id === A), aRow, 'org B\'s escalation did not refresh org A\'s row');
+    assert.ok((rows.find((r) => r.org_id === B)!.tags as string[]).includes('analyst-confirmed'));
+    const again = await call('POST', '/api/secops/hunting/escalate', { role: 'analyst', org: A, body });
+    assert.equal(again.data.ioc_saved, true);
+    assert.equal(db.tables.ioc_enrichments.filter((r) => r.ioc_value === '8.8.4.4').length, 2, 'a repeat refreshes, never duplicates');
 });
 
 test('hunt escalate: a second org gets a NEW case of its own; the same org still gets its existing case', async () => {

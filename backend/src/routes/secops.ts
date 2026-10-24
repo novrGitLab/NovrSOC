@@ -104,9 +104,8 @@ router.post('/hunting/escalate', requirePermission('cases:write'), async (req: A
                 iocNote = `IOC enrichment timed out (${HUNT_ENRICH_TIMEOUT_MS / 1000}s per source) — not added to the IOC cache.`;
             } else {
                 enrichment = { verdict: enriched.verdict, risk_score: enriched.risk_score, sources: answered, timed_out: timedOut };
-                // ioc_enrichments is one shared row per IOC value. org_id records the organisation
-                // that first added it and is never overwritten: insert-if-absent with the caller's
-                // org, then refresh the enrichment fields only.
+                // ioc_enrichments is per organisation (phase P26): this organisation's row for the
+                // value is created or refreshed; another organisation's row is never touched.
                 const fields = {
                     ioc_type: type,
                     risk_score: enriched.risk_score,
@@ -114,11 +113,10 @@ router.post('/hunting/escalate', requirePermission('cases:write'), async (req: A
                     source: 'threat_hunt',
                     last_seen: new Date().toISOString(),
                 };
-                const inserted = await supabase.from('ioc_enrichments').upsert(
-                    { ioc_value, ...fields, org_id: requestOrg(req) },
-                    { onConflict: 'ioc_value', ignoreDuplicates: true },
+                const { error } = await supabase.from('ioc_enrichments').upsert(
+                    { org_id: requestOrg(req), ioc_value, ...fields },
+                    { onConflict: 'org_id,ioc_value' },
                 );
-                const { error } = inserted.error ? inserted : await supabase.from('ioc_enrichments').update(fields).eq('ioc_value', ioc_value);
                 iocSaved = !error;
                 if (error) {
                     console.error('[secops/hunting/escalate] ioc_enrichments upsert failed:', error.message);
