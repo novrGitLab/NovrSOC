@@ -32,6 +32,9 @@ export interface NavItem {
     roles?: NavRole[];
     // Other route prefixes that belong to this item (its sub-pages), so it stays highlighted there.
     match?: string[];
+    // config/nav.ts: set only for a BROKEN/PLANNED item, and only when toNavGroups kept it
+    // visible because the viewer is super_admin (everyone else never sees such an item at all).
+    badge?: string;
 }
 
 /** Whether `item` is the current page: its own route, or one of its sub-page prefixes. */
@@ -165,6 +168,7 @@ export function Sidebar({ navGroups, user, onLogout, mobileOpen = false, onClose
                                     >
                                         <Icon size={18} />
                                         {item.label}
+                                        {item.badge && <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber/10 text-amber border border-amber/30 uppercase tracking-wide">{item.badge}</span>}
                                     </Link>
                                 );
                             })}
@@ -204,6 +208,7 @@ export function Sidebar({ navGroups, user, onLogout, mobileOpen = false, onClose
                                                 >
                                                     <Icon size={16} />
                                                     {item.label}
+                                                    {item.badge && <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber/10 text-amber border border-amber/30 uppercase tracking-wide">{item.badge}</span>}
                                                 </Link>
                                             );
                                         })}

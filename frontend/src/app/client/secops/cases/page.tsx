@@ -1,11 +1,8 @@
-import { Suspense } from 'react';
-import { CaseWorkbench } from '@/components/features/CaseWorkbench';
+import { redirect } from 'next/navigation';
 
-// Suspense boundary: CaseWorkbench reads ?id= with useSearchParams, which needs one to prerender.
+// BROKEN at the portal level (Release 2 Stage 6): CaseWorkbench calls /api/cases, not a
+// client-scoped route, so every request fails for portal_user. Redirects with a notice instead
+// of rendering a page where everything fails. /admin/secops/cases is unaffected.
 export default function Page() {
-    return (
-        <Suspense fallback={null}>
-            <CaseWorkbench />
-        </Suspense>
-    );
+    redirect('/client/dashboard?unavailable=' + encodeURIComponent('Cases'));
 }

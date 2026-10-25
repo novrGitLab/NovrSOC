@@ -8,7 +8,6 @@ import { ADMIN_NAV, toNavGroups } from '@/config/nav';
 // matrix: Threat Intelligence, Infrastructure and Security Operations are hidden from
 // `executive`; Compliance and Data Continuity are hidden from `analyst`; Sec Ops Management is
 // manager-only.
-const adminNav = toNavGroups(ADMIN_NAV);
 
 interface AdminSidebarProps {
     user: { name: string; email: string; role: string };
@@ -18,5 +17,7 @@ interface AdminSidebarProps {
 }
 
 export function AdminSidebar({ user, onLogout, mobileOpen, onClose }: AdminSidebarProps) {
+    // Recomputed per role: a BROKEN/PLANNED item is hidden from everyone but super_admin (§4.5).
+    const adminNav = toNavGroups(ADMIN_NAV, user.role);
     return <Sidebar navGroups={adminNav} user={user} onLogout={onLogout} mobileOpen={mobileOpen} onClose={onClose} />;
 }

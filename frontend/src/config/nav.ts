@@ -92,7 +92,13 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         items: [
             { id: 'cases', label: 'Cases', href: '/admin/secops/cases', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: FileText },
             { id: 'alerts', label: 'Alerts', href: '/admin/secops/alerts', domain: 'secops', status: 'PARTIAL', roles: NOT_EXEC, icon: Bell },
+            // Had no nav entry at all (audit F-xx, §4 "pages not reachable from any navigation");
+            // both call real, tested backend routes (/api/communications/*, /api/secops/hunting/
+            // escalate, /api/wazuh/hunt) and are not duplicates of anything else in this section.
+            { id: 'alert-comms', label: 'Alert Communication', href: '/admin/secops/alert-comms', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: MessageSquare },
             { id: 'threats', label: 'Threats', href: '/admin/secops/threats', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: ShieldAlert },
+            { id: 'hunting', label: 'Threat Hunting', href: '/admin/secops/hunting', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: Crosshair },
+            { id: 'wazuh-vulnerabilities', label: 'Wazuh Vulnerabilities', href: '/admin/secops/vulnerabilities', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: AlertTriangle },
             { id: 'mitre', label: 'MITRE Intelligence', href: '/admin/secops/mitre', domain: 'secops', status: 'PARTIAL', roles: NOT_EXEC, icon: Shield },
             { id: 'playbooks', label: 'Playbooks', href: '/admin/secops/playbooks', domain: 'secops', status: 'PARTIAL', roles: NOT_EXEC, icon: BookOpen },
             { id: 'soar', label: 'SOAR Automation', href: '/admin/secops/soar', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: Zap },
@@ -148,6 +154,10 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'social-suite', label: 'Social Suite', href: '/admin/brand/social', domain: 'brand', status: 'PARTIAL', roles: NOT_EXEC, icon: Users },
             { id: 'brand-suite', label: 'Brand Suite', href: '/admin/brand/brand', domain: 'brand', status: 'PARTIAL', roles: NOT_EXEC, icon: Shield },
             { id: 'executive-monitoring', label: 'Executive Monitoring', href: '/admin/brand/executive', domain: 'brand', status: 'PARTIAL', roles: NOT_EXEC, icon: UserCheck },
+            // Had no nav entry at all (audit §4); the pages work for staff (/api/brand/apps,
+            // /api/brand/signatures) and already carry the BrandIsolationNotice banner (Stage 0).
+            { id: 'mobile-app-suite', label: 'Mobile App Suite', href: '/admin/brand/mobile', domain: 'brand', status: 'PARTIAL', roles: NOT_EXEC, icon: Smartphone },
+            { id: 'intelli-code', label: 'Intelli CODE copyID', href: '/admin/brand/copyid', domain: 'brand', status: 'PARTIAL', roles: NOT_EXEC, icon: Code },
             { id: 'dark-web', label: 'Dark Web Monitor', href: '/admin/brand/darkweb', domain: 'brand', status: 'WORKING', roles: NOT_EXEC, icon: Eye },
         ],
     },
@@ -266,7 +276,9 @@ export const CLIENT_NAV: NavSectionConfig[] = [
         items: [
             { id: 'client-threat-management', label: 'Security Alerts', href: '/client/secops/threats', domain: 'secops', status: 'PARTIAL', roles: 'all', icon: Activity },
             { id: 'client-cases', label: 'Cases', href: '/client/secops/cases', domain: 'secops', status: 'BROKEN', roles: 'all', icon: Siren },
-            { id: 'client-report-card', label: 'Security Report Card', href: '/client/secops/security-assessment', domain: 'secops', status: 'BROKEN', roles: 'all', icon: Activity },
+            // SecurityReportCard's mode="client" branch calls /api/client/security-assessment,
+            // which portal_user can reach — this one was mislabeled BROKEN; it genuinely works.
+            { id: 'client-report-card', label: 'Security Report Card', href: '/client/secops/security-assessment', domain: 'secops', status: 'PARTIAL', roles: 'all', icon: Activity },
             { id: 'client-alert-communication', label: 'Alert Communication', href: '/client/secops/alerts', domain: 'secops', status: 'BROKEN', roles: 'all', icon: Bell },
         ],
     },
@@ -284,12 +296,27 @@ export const CLIENT_NAV: NavSectionConfig[] = [
     },
 ];
 
-/** Converts config sections into the NavGroup shape Sidebar.tsx renders. */
-export function toNavGroups(sections: NavSectionConfig[]): NavGroup[] {
-    return sections.map(({ items, ...section }) => ({
-        ...section,
-        items: items.map(({ label, href, icon, roles, match }): NavItem => ({ label, href, icon, ...(roles === 'all' ? {} : { roles }), ...(match?.length ? { match } : {}) })),
-    }));
+/** Converts config sections into the NavGroup shape Sidebar.tsx renders.
+ * BROKEN/PLANNED items are hidden from everyone except super_admin (the audit's recommendation,
+ * §4.5): the client portal has no super_admin tier, so every BROKEN client item simply disappears;
+ * a super_admin still sees them, now carrying a badge, instead of a page that fails for anyone
+ * who opens it. A section left with no items after this (e.g. "Account" when its one item was
+ * BROKEN) is dropped rather than rendered as an empty, uselessly-clickable accordion header. */
+export function toNavGroups(sections: NavSectionConfig[], role: string): NavGroup[] {
+    const isSuperAdmin = role === 'super_admin';
+    return sections
+        .map(({ items, ...section }) => ({
+            ...section,
+            items: items
+                .filter((item) => isSuperAdmin || (item.status !== 'BROKEN' && item.status !== 'PLANNED'))
+                .map(({ label, href, icon, roles, match, status }): NavItem => ({
+                    label, href, icon,
+                    ...(roles === 'all' ? {} : { roles }),
+                    ...(match?.length ? { match } : {}),
+                    ...(isSuperAdmin && (status === 'BROKEN' || status === 'PLANNED') ? { badge: status } : {}),
+                })),
+        }))
+        .filter((section) => section.items.length > 0);
 }
 
 /** Every href in both navs — used by scripts/check-nav-routes.mjs. */
