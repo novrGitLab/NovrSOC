@@ -4,7 +4,7 @@ import type { AuthRequest } from '../middleware/auth';
 import { getSupabase } from '../services/geoEnrichment';
 import { enrichIOC } from '../services/iocEnrichment';
 import { startOfTodayWAT, dbErrorMessage } from '../services/cases';
-import { requirePermission, requestOrg } from '../lib/permissions';
+import { requirePermission, requestOrg, requireService } from '../lib/permissions';
 import { requestApproval, CONSEQUENTIAL_ACTIONS, isConsequential } from '../services/responseApprovals';
 
 // SOAR reporting + the enrichment and containment-request endpoints the SOAR engine
@@ -25,7 +25,7 @@ const router = Router();
 const orgOf = requestOrg;
 
 // GET /api/soar/stats
-router.get('/stats', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
+router.get('/stats', requirePermission('alerts:read'), requireService('secops_automation'), async (req: AuthRequest, res) => {
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Case store not configured' }); return; }
     const orgId = orgOf(req);
@@ -85,7 +85,7 @@ interface TimelineRow { case_id: string; action: string; created_at: string }
 // Cases for one tier, each annotated with what the engine actually did, derived from soar_log
 // and the case timeline rather than inferred from the tier. A tier-3 case whose isolation was
 // skipped shows as not isolated, with the logged reason.
-router.get('/cases', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
+router.get('/cases', requirePermission('alerts:read'), requireService('secops_automation'), async (req: AuthRequest, res) => {
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Case store not configured' }); return; }
     const tier = Number(req.query.tier);
@@ -142,7 +142,7 @@ router.get('/cases', requirePermission('alerts:read'), async (req: AuthRequest, 
 });
 
 // GET /api/soar/log?limit= — most recent engine actions, newest first.
-router.get('/log', requirePermission('alerts:read'), async (req: AuthRequest, res) => {
+router.get('/log', requirePermission('alerts:read'), requireService('secops_automation'), async (req: AuthRequest, res) => {
     const supabase = getSupabase();
     if (!supabase) { res.status(503).json({ error: 'Case store not configured' }); return; }
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);

@@ -10,7 +10,8 @@
 
 import type { Response, NextFunction } from 'express';
 import { requireAuth, type AuthRequest, type UserRole } from '../middleware/auth';
-import { resolveOrg, setRequestOrg } from './resolveOrg';
+import { resolveOrg, setRequestOrg, requestOrg as readRequestOrg } from './resolveOrg';
+import { hasServiceAccess, SERVICE_BY_PERMISSION_PREFIX, SERVICE_LABEL, type ServiceKey } from './serviceAccess';
 
 export { requestOrg } from './resolveOrg';
 
@@ -101,7 +102,16 @@ export function requirePermission(permission: Permission) {
                 res.status(403).json({ error: 'Insufficient permissions', required: permission, current: role ?? null });
                 return;
             }
-            withOrg(req, res, next).catch(next);
+            withOrg(req, res, async () => {
+                // phase P29: which module this permission belongs to, if any (alerts:*/cases:*/
+                // response:*/handover:* have none and are never gated this way).
+                const service = SERVICE_BY_PERMISSION_PREFIX[permission.split(':')[0]];
+                if (service) {
+                    const allowed = await hasServiceAccess(readRequestOrg(req), service);
+                    if (!allowed) { res.status(403).json({ error: `The ${SERVICE_LABEL[service]} module is not enabled for this organisation` }); return; }
+                }
+                next();
+            }).catch(next);
         });
     };
 }
@@ -112,4 +122,19 @@ export function requirePermission(permission: Permission) {
  */
 export function requireOrg(req: AuthRequest, res: Response, next: NextFunction) {
     withOrg(req, res, next).catch(next);
+}
+
+/**
+ * Explicit module gate (phase P29) for a route whose permission's prefix can't name its module
+ * on its own — e.g. SOAR's routes share 'alerts:read' with core SecOps, so requirePermission()'s
+ * automatic prefix mapping doesn't reach them. Mount after requirePermission/requireOrg, which
+ * must already have resolved the organisation.
+ */
+export function requireService(service: ServiceKey) {
+    return (req: AuthRequest, res: Response, next: NextFunction) => {
+        hasServiceAccess(readRequestOrg(req), service).then((allowed) => {
+            if (!allowed) { res.status(403).json({ error: `The ${SERVICE_LABEL[service]} module is not enabled for this organisation` }); return; }
+            next();
+        }).catch(next);
+    };
 }

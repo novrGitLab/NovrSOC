@@ -84,6 +84,7 @@ import { announceJobPolicy } from './lib/runtimeEnv';
 import { announceVerificationSecret } from './services/emailsec/verification';
 import platformRouter from './routes/platform';
 import organisationsRouter from './routes/organisations';
+import onboardingRouter from './routes/onboarding';
 import secopsRouter from './routes/secops';
 import notificationsRouter from './routes/notifications';
 import playbooksRouter from './routes/playbooks';
@@ -399,6 +400,7 @@ app.use('/api/platform', requireAuth, requireRole('super_admin'), platformRouter
 // soc_manager per the customer-onboarding + multitenancy spec; a user reading their own org: any
 // authenticated role). A single router-level role would force all of those to the same tier.
 app.use('/api/organisations', requireAuth, organisationsRouter);
+app.use('/api/admin/onboarding', requireAuth, requireRole('super_admin', 'soc_manager'), onboardingRouter);
 // admin-only — no client-portal component calls Threat Hunting or the Security Ops Management
 // tabs that use this (confirmed: no /client route imports either).
 app.use('/api/secops', requireAuth, secopsRouter);

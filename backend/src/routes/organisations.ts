@@ -212,6 +212,32 @@ router.get('/', requireRole('super_admin'), async (_req, res) => {
     }
 });
 
+// GET /api/organisations/check-duplicate?name=&domain= — Release 3.1's onboarding wizard Step 1:
+// a near-match warning before creating a new organisation, so "Zenith Bank" typed twice doesn't
+// silently become zenith-bank-2 (POST / already avoids a hard slug collision; this is the softer,
+// earlier warning the wizard shows while the admin is still typing). Registered before GET /:id
+// so this literal path is never swallowed as an :id value.
+router.get('/check-duplicate', requireRole('super_admin', 'soc_manager'), async (req, res) => {
+    const supabase = getSupabase();
+    if (!supabase) { res.status(503).json({ error: 'Database not configured' }); return; }
+    const name = typeof req.query.name === 'string' ? req.query.name.trim() : '';
+    const domain = typeof req.query.domain === 'string' ? req.query.domain.trim().toLowerCase() : '';
+    if (!name && !domain) { res.json({ matches: [] }); return; }
+    try {
+        let query = supabase.from('organisations').select('id, name, slug, domain, status');
+        const nameSlug = name ? slugify(name) : '';
+        const or = [nameSlug ? `slug.eq.${nameSlug}` : null, domain ? `domain.eq.${domain}` : null].filter(Boolean).join(',');
+        if (!or) { res.json({ matches: [] }); return; }
+        query = query.or(or);
+        const { data, error } = await query.limit(5);
+        if (error) throw error;
+        res.json({ matches: data ?? [] });
+    } catch (err) {
+        console.error('[organisations] check-duplicate error:', err);
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to check for an existing organisation' });
+    }
+});
+
 // GET /api/organisations/:id — single org. super_admin can look up any org by its UUID id;
 // everyone else can only ever see their own org, resolved from their token's slug — the :id URL
 // param is ignored for them rather than trusted (the same "don't trust a client-supplied org
