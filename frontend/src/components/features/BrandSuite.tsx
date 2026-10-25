@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Shield, Pencil, X, Upload, Search, ExternalLink, CheckCircle, AlertTriangle, History } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { ExportButton } from '@/components/shared/ExportButton';
+import { BrandIsolationNotice } from './BrandIsolationNotice';
 
 const BRAND_SEVERITY_STYLE: Record<string, string> = {
     CRITICAL: 'bg-red-500 text-white',
@@ -166,6 +167,8 @@ export function BrandSuite() {
                     <ExportButton elementId="report-content" filename="brand-suite" title="Brand Suite" />
                 </div>
             </div>
+
+            <BrandIsolationNotice />
 
             {/* Brand Assets panel */}
             <div className="bg-card border border-border rounded-xl p-5">

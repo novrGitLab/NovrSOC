@@ -17,6 +17,7 @@ import {
     type CollectedAdvisory,
 } from '../services/nigerianIntelCollector';
 import { verdictFromScore } from '../lib/severity';
+import { requirePermission } from '../lib/permissions';
 
 const router = Router();
 
@@ -274,7 +275,12 @@ router.get('/network-info/:ip', async (req, res) => {
 // (the "Refresh Intelligence" button on the Nigerian Threat Feed page). The hourly job runs the
 // same function; the collector itself refuses overlapping runs so a double-click can't
 // double-count state counters.
-router.post('/nigeria-threats/collect', async (_req, res) => {
+//
+// F-12: this used to need only requireAuth — any signed-in role, including a client `executive`
+// token, could trigger it on demand and spend its external API quota (GreyNoise, Feodo, CIRCL,
+// IPregistry, FOFA) and MISP pushes. requirePermission('intel:manage') restricts it to the roles
+// that already manage Threat Intelligence feeds (super_admin, soc_manager; lib/permissions.ts).
+router.post('/nigeria-threats/collect', requirePermission('intel:manage'), async (_req, res) => {
     try {
         const result = await runNigerianIntelCollector();
         setLastCollectorResult(result);

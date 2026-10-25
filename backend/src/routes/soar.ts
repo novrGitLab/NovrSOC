@@ -5,13 +5,21 @@ import { getSupabase } from '../services/geoEnrichment';
 import { enrichIOC } from '../services/iocEnrichment';
 import { startOfTodayWAT, dbErrorMessage } from '../services/cases';
 import { requirePermission, requestOrg } from '../lib/permissions';
+import { requestApproval, CONSEQUENTIAL_ACTIONS, isConsequential } from '../services/responseApprovals';
 
-// SOAR reporting + the enrichment endpoint the SOAR engine (infra/soar/soar.py) calls.
+// SOAR reporting + the enrichment and containment-request endpoints the SOAR engine
+// (infra/soar/soar.py) calls.
 //
-// Reporting routes need a SecOps token with alerts:read (lib/permissions.ts). POST /enrich is instead authenticated by a
-// shared secret: the engine runs on the Wazuh manager with no user session. It exists because
-// the engine can't use /api/public/scan — that route is capped at 10 requests an hour per IP,
-// and the engine sends one request per level 7+ alert.
+// Reporting routes need a SecOps token with alerts:read (lib/permissions.ts). POST /enrich and
+// POST /response-requests are instead authenticated by a shared secret: the engine runs on the
+// Wazuh manager with no user session. /enrich exists because the engine can't use
+// /api/public/scan — that route is capped at 10 requests an hour per IP, and the engine sends one
+// request per level 7+ alert. /response-requests exists because the engine (2026 redesign, F-07)
+// no longer blocks an IP or isolates a host directly: it asks for approval here, exactly like a
+// case's Execute button, a Playbook step or the threat board's Contain action, and a
+// soc_manager/super_admin decides it the same way (services/responseApprovals.ts). The action
+// itself then runs on THIS backend, with its own OPNsense/Wazuh configuration — the engine's
+// local OPNSENSE_*/WAZUH_ISOLATE_COMMAND settings are no longer used for tier 2/3 containment.
 
 const router = Router();
 const orgOf = requestOrg;
@@ -173,6 +181,45 @@ router.post('/enrich', async (req, res) => {
     } catch (err) {
         res.status(502).json({ error: err instanceof Error ? err.message : 'enrichment failed' });
     }
+});
+
+// POST /api/soar/response-requests { action, target, target_label?, case_id?, org_id, reason }
+// X-NovrSOC-SOAR-Token: $SOAR_ENGINE_TOKEN — same shared-secret pattern and token as /enrich.
+//
+// F-07: this is now the ONLY path by which the SOAR engine's tier 2/3 alerts reach a block or an
+// isolation. It never runs the action itself — it records a pending response_approvals request
+// (services/responseApprovals.ts), the same store every in-platform containment path already
+// uses, and returns at once. A soc_manager or super_admin then approves or rejects it from
+// Response Approvals / SOAR Automation, exactly as for a request made from a case or a playbook.
+router.post('/response-requests', async (req, res) => {
+    const expected = process.env.SOAR_ENGINE_TOKEN ?? '';
+    const presented = Buffer.from(req.get('x-novrsoc-soar-token') ?? '');
+    const wanted = Buffer.from(expected);
+    if (!expected || presented.length !== wanted.length || !timingSafeEqual(presented, wanted)) {
+        res.status(401).json({ error: 'Unauthorised', detail: expected ? 'Invalid or missing SOAR token.' : 'SOAR_ENGINE_TOKEN is not set on the backend.' });
+        return;
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const orgId = typeof body.org_id === 'string' ? body.org_id.trim() : '';
+    const action = body.action;
+    const target = typeof body.target === 'string' ? body.target.trim() : '';
+    const targetLabel = typeof body.target_label === 'string' ? body.target_label.trim() : null;
+    const caseId = typeof body.case_id === 'string' ? body.case_id : null;
+    const reason = typeof body.reason === 'string' ? body.reason : '';
+
+    if (!orgId) { res.status(400).json({ error: 'org_id is required' }); return; }
+    if (!isConsequential(action)) { res.status(400).json({ error: `action must be one of: ${CONSEQUENTIAL_ACTIONS.join(', ')}` }); return; }
+    if (!target) { res.status(400).json({ error: 'target is required' }); return; }
+
+    const result = await requestApproval({
+        org_id: orgId, action, target, target_label: targetLabel, reason,
+        case_id: caseId, source: 'soar', requested_by: 'novrsoc-soar-engine',
+    });
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.status(result.value.existing ? 200 : 201).json({
+        approval_id: result.value.approval.id, status: result.value.approval.status, existing: result.value.existing,
+    });
 });
 
 export default router;

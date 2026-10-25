@@ -5,6 +5,7 @@ import { AtSign, Plus, BadgeCheck } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ExportButton } from '@/components/shared/ExportButton';
+import { BrandIsolationNotice } from './BrandIsolationNotice';
 
 
 interface SocialAccount {
@@ -157,6 +158,8 @@ export function SocialSuite() {
                     </button>
                 </div>
             </div>
+
+            <BrandIsolationNotice />
 
             {!loading && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

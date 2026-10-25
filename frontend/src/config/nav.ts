@@ -142,11 +142,13 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         // Mobile App Suite and Intelli CODE (Mobile Application / Code Security) are v2 and not listed.
         section: 'Brand Protection', collapsible: true, icon: Shield, groupLabel: 'Brand Protection',
         items: [
-            { id: 'domain-intelligence', label: 'Domain Intelligence', href: '/admin/brand/domain', domain: 'brand', status: 'PARTIAL', roles: 'all', icon: Globe },
-            { id: 'social-suite', label: 'Social Suite', href: '/admin/brand/social', domain: 'brand', status: 'PARTIAL', roles: 'all', icon: Users },
-            { id: 'brand-suite', label: 'Brand Suite', href: '/admin/brand/brand', domain: 'brand', status: 'PARTIAL', roles: 'all', icon: Shield },
-            { id: 'executive-monitoring', label: 'Executive Monitoring', href: '/admin/brand/executive', domain: 'brand', status: 'PARTIAL', roles: 'all', icon: UserCheck },
-            { id: 'dark-web', label: 'Dark Web Monitor', href: '/admin/brand/darkweb', domain: 'brand', status: 'WORKING', roles: 'all', icon: Eye },
+            // roles: NOT_EXEC (not 'all') — F-01 containment restricted the backend to staff roles;
+            // the client `executive` role would otherwise see a page that always 403s.
+            { id: 'domain-intelligence', label: 'Domain Intelligence', href: '/admin/brand/domain', domain: 'brand', status: 'PARTIAL', roles: NOT_EXEC, icon: Globe },
+            { id: 'social-suite', label: 'Social Suite', href: '/admin/brand/social', domain: 'brand', status: 'PARTIAL', roles: NOT_EXEC, icon: Users },
+            { id: 'brand-suite', label: 'Brand Suite', href: '/admin/brand/brand', domain: 'brand', status: 'PARTIAL', roles: NOT_EXEC, icon: Shield },
+            { id: 'executive-monitoring', label: 'Executive Monitoring', href: '/admin/brand/executive', domain: 'brand', status: 'PARTIAL', roles: NOT_EXEC, icon: UserCheck },
+            { id: 'dark-web', label: 'Dark Web Monitor', href: '/admin/brand/darkweb', domain: 'brand', status: 'WORKING', roles: NOT_EXEC, icon: Eye },
         ],
     },
     {

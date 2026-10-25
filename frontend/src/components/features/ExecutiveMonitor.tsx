@@ -5,6 +5,7 @@ import { UserCheck, Plus, AlertTriangle, ShieldQuestion, Lock, RefreshCw, CheckC
 import { apiUrl, apiFetch } from '@/lib/api';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ExportButton } from '@/components/shared/ExportButton';
+import { BrandIsolationNotice } from './BrandIsolationNotice';
 
 interface ExecBreach {
     source: string;
@@ -198,6 +199,8 @@ export function ExecutiveMonitor() {
                     </button>
                 </div>
             </div>
+
+            <BrandIsolationNotice />
 
             {/* What a scan actually runs. Driven by the `capabilities` flags the backend
                 reports, not a fixed list — only breach checking is wired up today, and showing

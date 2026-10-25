@@ -313,8 +313,12 @@ app.use('/api/dns', requireAuth, dnsRouter);
 app.use('/api/novr-ai', requireAuth, novrAiRouter);
 app.use('/api/wazuh', wazuhRouter);
 app.use('/api/geo', requireAuth, geoRouter);
-app.use('/api/brand/domains', requireAuth, domainSuiteRouter);
-app.use('/api/brand', requireAuth, brandRouter);
+// F-01 containment: Brand Protection keeps every tenant's monitored domains/socials/executives/
+// apps/signatures in shared, un-scoped in-memory stores (routes/brand.ts, routes/domainSuite.ts).
+// Until that data is moved into per-organisation tables, access is staff-only — the client
+// `executive` role (and portal_user, already excluded by requireAuth) must not reach it.
+app.use('/api/brand/domains', requireAuth, requireRole('super_admin', 'soc_manager', 'analyst'), domainSuiteRouter);
+app.use('/api/brand', requireAuth, requireRole('super_admin', 'soc_manager', 'analyst'), brandRouter);
 app.use('/api/contact', contactRouter);
 app.use('/api/threat', requireAuth, threatRouter);
 app.use('/api/cti', requireAuth, ctiRouter);

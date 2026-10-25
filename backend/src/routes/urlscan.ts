@@ -6,15 +6,15 @@ import { searchURL, searchDomain, isConfigured as urlscanConfigured, type URLSca
 import { checkURLSafety } from '../services/google';
 import type { AuthRequest } from '../middleware/auth';
 import { verdictFromScore } from '../lib/severity';
+import { requireOrg, requestOrg } from '../lib/permissions';
 
 const router = Router();
 
-// Placeholder single-tenant org id — this route is one of the ones shared with the client
-// portal (UrlScanSuite.tsx is rendered by both /admin and /client), so it isn't behind
-// requireAuth yet (see index.ts's block comment on why). req.user is therefore always
-// undefined here today and this fallback is what actually runs; the `req.user?.org_id ||`
-// below is forward-prep for once shared-route auth exists, not a live behavior change.
-const DEFAULT_ORG_ID = '00000000-0000-0000-0000-000000000001';
+// Mounted behind requireAuth (index.ts); requireOrg resolves the organisation this request acts
+// on (lib/resolveOrg.ts) — the token's own org for client/portal roles, or a verified X-Org-Id
+// for staff. Fixes F-02: scans used to be written under a single shared placeholder org id and
+// history was returned to anyone signed in, with no tenant filter at all.
+router.use(requireOrg);
 
 interface UrlScanResult {
     url: string;
@@ -125,7 +125,7 @@ router.post('/submit', async (req: AuthRequest, res) => {
             const supabase = getSupabase();
             if (supabase) {
                 await supabase.from('url_scans').insert({
-                    org_id: req.user?.org_id || DEFAULT_ORG_ID,
+                    org_id: requestOrg(req),
                     submitted_url: url,
                     final_url: url,
                     risk_score: results.risk_score,
@@ -161,8 +161,8 @@ router.get('/domain/:domain', async (req, res) => {
     }
 });
 
-// GET /api/urlscan/history?limit=20
-router.get('/history', async (req, res) => {
+// GET /api/urlscan/history?limit=20 — this organisation's own scans only (F-02).
+router.get('/history', async (req: AuthRequest, res) => {
     const limit = Math.min(Number(req.query.limit) || 20, 100);
     try {
         const supabase = getSupabase();
@@ -171,7 +171,7 @@ router.get('/history', async (req, res) => {
             return;
         }
 
-        const { data } = await supabase.from('url_scans').select('*').order('scanned_at', { ascending: false }).limit(limit);
+        const { data } = await supabase.from('url_scans').select('*').eq('org_id', requestOrg(req)).order('scanned_at', { ascending: false }).limit(limit);
         res.json({ scans: data || [] });
     } catch {
         res.status(500).json({ error: 'History fetch failed' });

@@ -5,6 +5,7 @@ import { Smartphone, Plus, Apple, CheckCircle, ExternalLink, Search, Info, Trash
 import { apiUrl, apiFetch } from '@/lib/api';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ExportButton } from '@/components/shared/ExportButton';
+import { BrandIsolationNotice } from './BrandIsolationNotice';
 
 interface OfficialApp {
     id: string;
@@ -170,6 +171,8 @@ export function MobileAppSuite() {
                 </div>
                 <ExportButton elementId="report-content" filename="mobile-app-suite" title="Mobile App Suite" />
             </div>
+
+            <BrandIsolationNotice />
 
             {/* Info banner */}
             <div className="flex items-start gap-2 bg-blue/5 border border-blue/20 rounded-lg p-3">

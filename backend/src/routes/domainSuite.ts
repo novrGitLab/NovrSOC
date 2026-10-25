@@ -87,28 +87,12 @@ interface MonitoredDomain {
     last_scan: DomainScanCache | null;
 }
 
-const monitoredDomains: MonitoredDomain[] = [
-    {
-        id: 'dom_001',
-        domain: 'cybernovr.com',
-        brand_keywords: ['cybernovr', 'novrsoc'],
-        similarity_threshold: 80,
-        alerts: { lookalike: true, dns_change: true, expiry: true, new_cert: true },
-        status: 'active',
-        added_at: '2026-01-15',
-        last_scan: null,
-    },
-    {
-        id: 'dom_002',
-        domain: 'novrsoc.com',
-        brand_keywords: ['novrsoc', 'cybernovr'],
-        similarity_threshold: 80,
-        alerts: { lookalike: true, dns_change: true, expiry: true, new_cert: true },
-        status: 'active',
-        added_at: '2026-01-15',
-        last_scan: null,
-    },
-];
+// Starts empty, like routes/brand.ts's other in-memory stores (2026-10 cleanup) — Cybernovr's own
+// seed domains used to be returned to every tenant that could reach this route (F-01). Domains
+// are added via POST. This store is still shared and process-lifetime only (lost on restart,
+// visible to any staff session, not per organisation) until it moves into a real table; see
+// index.ts's mount comment for the access restriction that contains that risk in the meantime.
+const monitoredDomains: MonitoredDomain[] = [];
 
 let nextId = 100;
 const newId = () => `dom_${nextId++}`;

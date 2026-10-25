@@ -5,6 +5,7 @@ import { Code, Plus, AlertTriangle, ChevronDown, ExternalLink, RefreshCw, GitBra
 import { apiUrl, apiFetch } from '@/lib/api';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ExportButton } from '@/components/shared/ExportButton';
+import { BrandIsolationNotice } from './BrandIsolationNotice';
 
 interface CodeSignature {
     id: string;
@@ -157,6 +158,8 @@ export function CopyIdSuite() {
                     </button>
                 </div>
             </div>
+
+            <BrandIsolationNotice />
 
             {/* Scan stats — this session's live scan only; nothing is persisted yet */}
             <div className="grid grid-cols-2 gap-3">

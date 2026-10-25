@@ -3,14 +3,14 @@ import { analyzeSSL, type SSLReport } from '../services/sslLabs';
 import { getSupabase } from '../services/geoEnrichment';
 import { lookupDomain, type ParsedWhois } from '../services/rdap';
 import type { AuthRequest } from '../middleware/auth';
+import { requireOrg, requestOrg } from '../lib/permissions';
 
 const router = Router();
 
-// Placeholder single-tenant org id — this route is shared with the client portal
-// (WebsiteScanning.tsx is rendered by both /admin and /client), so it isn't behind
-// requireAuth yet (see index.ts's block comment on why). req.user is therefore always
-// undefined here today; the `req.user?.org_id ||` fallback below is forward-prep only.
-const DEFAULT_ORG_ID = '00000000-0000-0000-0000-000000000001';
+// Mounted behind requireAuth (index.ts); requireOrg resolves the organisation this request acts
+// on (lib/resolveOrg.ts). Fixes F-02: scans used to be written under a single shared placeholder
+// org id and history was returned to anyone signed in, with no tenant filter at all.
+router.use(requireOrg);
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
@@ -182,7 +182,7 @@ router.post('/start', async (req: AuthRequest, res) => {
             const supabase = getSupabase();
             if (supabase) {
                 await supabase.from('website_scans').insert({
-                    org_id: req.user?.org_id || DEFAULT_ORG_ID,
+                    org_id: requestOrg(req),
                     target_domain: cleanDomain,
                     scan_type,
                     ssl_grade: results.ssl?.grade || null,
@@ -204,15 +204,15 @@ router.post('/start', async (req: AuthRequest, res) => {
     }
 });
 
-// GET /api/webscan/history
-router.get('/history', async (_req, res) => {
+// GET /api/webscan/history — this organisation's own scans only (F-02).
+router.get('/history', async (req: AuthRequest, res) => {
     try {
         const supabase = getSupabase();
         if (!supabase) {
             res.json({ scans: [] });
             return;
         }
-        const { data } = await supabase.from('website_scans').select('*').order('scanned_at', { ascending: false }).limit(20);
+        const { data } = await supabase.from('website_scans').select('*').eq('org_id', requestOrg(req)).order('scanned_at', { ascending: false }).limit(20);
         res.json({ scans: data || [] });
     } catch {
         res.status(500).json({ error: 'History failed' });

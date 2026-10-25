@@ -2,9 +2,12 @@
 //
 // Blocking an IP at the firewall and isolating a host are consequential, so they no longer run on
 // a single click. Every path that used to run them (a case's Execute button, the Playbooks page,
-// the threat board's Contain) now records a pending request here; the action runs only when a
-// user holding response:approve (soc_manager, super_admin) approves it. The requester can't
-// approve their own request unless RESPONSE_ALLOW_SELF_APPROVAL=true (for a team of one).
+// the threat board's Contain, and — since the F-07 redesign fix — the SOAR engine's own tier 2/3
+// containment) now records a pending request here; the action runs only when a user holding
+// response:approve (soc_manager, super_admin) approves it. The requester can't approve their own
+// request unless RESPONSE_ALLOW_SELF_APPROVAL=true (for a team of one). A request whose source is
+// 'soar' is requested by the engine itself (routes/soar.ts POST /response-requests, SOAR_ENGINE_TOKEN)
+// and decided by a person exactly like any other source.
 // The stored result is exactly what services/responseActions.ts reported — success only when the
 // remote system accepted the action. A rejected or cancelled request runs nothing.
 
@@ -33,7 +36,7 @@ export const isConsequential = (v: unknown): v is ConsequentialAction => typeof 
 
 export interface ApprovalRow {
     id: string; org_id: string; action: ConsequentialAction; target: string; target_label: string | null; reason: string;
-    case_id: string | null; task_id: string | null; threat_id: string | null; source: 'case' | 'playbook' | 'threat';
+    case_id: string | null; task_id: string | null; threat_id: string | null; source: 'case' | 'playbook' | 'threat' | 'soar';
     status: 'pending' | 'approved' | 'rejected' | 'executed' | 'failed' | 'skipped' | 'cancelled';
     requested_by: string; requested_at: string; decided_by: string | null; decided_at: string | null;
     decision_note: string | null; result: string | null; executed_at: string | null;

@@ -54,17 +54,17 @@ echo '{"id":"manual-test-1","rule":{"level":10,"id":"5710","description":"Test a
 tail -n 20 /var/log/novrsoc-soar.log
 ```
 
-The test creates a tier-2 case. It appears on **Cases**. Its actions are listed under **SOAR Automation → Tier 2**, and each shows SUCCESS, SKIPPED (with the reason) or FAILED. If you run the same test again, the engine logs "already has case" and does not create a duplicate. Change `"id"` to create a new test case.
+The test creates a tier-2 case. It appears on **Cases**. Its actions are listed under **SOAR Automation → Tier 2**, and each shows REQUESTED, SKIPPED (with the reason) or FAILED. If you run the same test again, the engine logs "already has case" and does not create a duplicate. Change `"id"` to create a new test case.
 
 ## What each tier does
 
 | Tier | Level | Actions |
 | --- | --- | --- |
 | 1 | 7–9 | Enrich IOC, then auto-close |
-| 2 | 10–12 | Enrich IOC, block source IP (OPNsense), email the SOC mailbox. An analyst then reviews the case |
-| 3 | 13+ | Enrich IOC, block IP, isolate agent (T1486/T1021/T1055/T1210 only), CISO email (plus a SOC email if `SOC_EMAIL` is a different inbox) |
+| 2 | 10–12 | Enrich IOC, request approval to block the source IP, email the SOC mailbox. A soc_manager or super_admin then reviews the case and the pending request |
+| 3 | 13+ | Enrich IOC, request approval to block the IP and to isolate the agent (T1486/T1021/T1055/T1210 only), CISO email (plus a SOC email if `SOC_EMAIL` is a different inbox) |
 
-Each action whose configuration is missing is skipped and logged with the reason. An action is logged as SUCCESS only when the remote system accepted it. Isolation is logged as REQUESTED, because the Wazuh manager accepting the command does not confirm that it ran on the endpoint.
+Each action whose configuration is missing is skipped and logged with the reason. **Blocking and isolating are requests, not actions** (2026 redesign, F-07): the engine creates a pending entry in **Response Approvals** / **SOAR Automation** and runs nothing itself. The block or the isolation runs only once a soc_manager or super_admin approves it, on the backend, using the backend's own OPNsense/Wazuh configuration — logged as REQUESTED when the backend accepted the request, never as SUCCESS, because accepting the request is not the same as the action having run. The approved outcome itself (SUCCESS, SKIPPED or FAILED) is then recorded on the approval and on the case timeline by the backend, exactly as for a request made from a case, a playbook or the threat board.
 
 ## Alert forwarder (durable alert store)
 

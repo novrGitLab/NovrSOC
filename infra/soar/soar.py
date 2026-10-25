@@ -7,12 +7,16 @@ the integration's <level>. Reads the alert, creates a case in Supabase (deduplic
 Wazuh alert id), then responds by tier:
 
   Tier 1  level 7-9    medium   enrich, auto-close
-  Tier 2  level 10-12  high     enrich, block source IP, email the SOC; an analyst reviews
-  Tier 3  level 13+    critical enrich, block source IP, isolate agent (selected techniques),
-                                CISO email
+  Tier 2  level 10-12  high     enrich, request approval to block source IP, email the SOC;
+                                an analyst reviews
+  Tier 3  level 13+    critical enrich, request approval to block source IP and isolate agent
+                                (selected techniques), CISO email
 
 Every action writes its real outcome to soar_log and the case timeline. Nothing is recorded as
 done unless the remote system accepted it; a skipped action says why (e.g. not configured).
+Blocking and isolating are requests, not actions (F-07, 2026 redesign): they create a pending
+response_approvals row on the backend and run only once a soc_manager/super_admin approves it,
+exactly like every other containment path in the platform (see request_containment(), below).
 
 Configuration comes from the environment (see soar.env.example). Deployment: infra/soar/README.md.
 """
@@ -59,8 +63,12 @@ CISO_EMAIL = os.environ.get('CISO_EMAIL', 'soc@cybernovr.com')
 # Team notifications (tier 2, and tier 3 when it differs from CISO_EMAIL).
 SOC_EMAIL = os.environ.get('SOC_EMAIL') or os.environ.get('ALERT_EMAIL_TO') or CISO_EMAIL
 
-# OPNsense API auth is an API key + secret pair (System → Access → Users → API keys), used as
-# HTTP basic auth — not root + key.
+# F-07 (2026 redesign): block_ip() and isolate_agent() no longer call OPNsense or the Wazuh API
+# directly — they request approval from the backend (request_containment(), below), which runs
+# the action only once a soc_manager/super_admin approves it, using the BACKEND's own OPNsense/
+# Wazuh configuration (Railway/Render env, services/responseActions.ts), not this host's. These
+# four settings are therefore no longer read by this script; they are kept, unused, only so an
+# existing soar.env on the Wazuh manager does not need editing before this version is deployed.
 OPNSENSE_URL = os.environ.get('OPNSENSE_URL', '').rstrip('/')
 OPNSENSE_KEY = os.environ.get('OPNSENSE_KEY', '')
 OPNSENSE_SECRET = os.environ.get('OPNSENSE_SECRET', '')
@@ -71,9 +79,8 @@ WAZUH_API = os.environ.get('WAZUH_API_URL', 'https://localhost:55000').rstrip('/
 WAZUH_USER = os.environ.get('WAZUH_USER', 'wazuh-wui')
 WAZUH_PASSWORD = os.environ.get('WAZUH_PASSWORD', '')
 WAZUH_VERIFY_TLS = os.environ.get('WAZUH_VERIFY_TLS', 'false').lower() == 'true'
-# Wazuh ships no "isolate host" active response. Name the command of one you have deployed to
-# the agents (e.g. a custom AR script registered in ossec.conf); unset means isolation is
-# skipped and logged as such, rather than reported as done.
+# No longer read by this script (see the OPNSENSE_* comment above: isolation is requested from
+# the backend, not run here) — kept, unused, so an existing soar.env does not need editing.
 WAZUH_ISOLATE_COMMAND = os.environ.get('WAZUH_ISOLATE_COMMAND', '')
 ISOLATE_TECHNIQUES = {'T1486', 'T1021', 'T1055', 'T1210'}
 
@@ -262,43 +269,53 @@ def enrich_iocs(case: dict, tier: int):
     add_soar_log(case['id'], tier, f'Enrich IOC {ip}', f'SUCCESS: {verdict} ({score})')
 
 
+def request_containment(case: dict, tier: int, action: str, target: str, target_label: Optional[str], action_label: str) -> bool:
+    """F-07: every disruptive action (block an IP, isolate a host) now goes through the same
+    platform approval workflow as a case's Execute button, a Playbook step or the threat board's
+    Contain action — it no longer calls OPNsense or the Wazuh API itself. Returns True only if the
+    request was recorded; the action itself runs on the BACKEND, with the backend's own OPNsense/
+    Wazuh configuration, only once a soc_manager or super_admin approves it (Response Approvals /
+    SOAR Automation). Uses the same shared token as enrich_iocs()."""
+    if not SOAR_TOKEN:
+        add_soar_log(case['id'], tier, action_label, 'SKIPPED — SOAR_ENGINE_TOKEN not set')
+        return False
+    try:
+        resp = requests.post(
+            f'{BACKEND_URL}/api/soar/response-requests',
+            json={
+                'action': action, 'target': target, 'target_label': target_label, 'case_id': case['id'],
+                'org_id': ORG_ID, 'reason': f'Tier {tier} alert — automatic containment request',
+            },
+            headers={'X-NovrSOC-SOAR-Token': SOAR_TOKEN},
+            timeout=15,
+        )
+    except requests.RequestException as e:
+        add_soar_log(case['id'], tier, action_label, f'ERROR: {e}')
+        return False
+    if resp.status_code not in (200, 201):
+        add_soar_log(case['id'], tier, action_label, f'FAILED: HTTP {resp.status_code} {resp.text[:120]}')
+        return False
+    try:
+        existing = bool((resp.json() or {}).get('existing'))
+    except ValueError:
+        existing = False
+    detail = 'already pending' if existing else 'pending manager approval'
+    add_timeline(case['id'], f'Approval requested: {action_label} ({detail})')
+    add_soar_log(case['id'], tier, action_label, f'REQUESTED — {detail}')
+    return True
+
+
 def block_ip(case: dict, tier: int) -> bool:
+    """Requests approval to block the source IP at OPNsense — see request_containment()."""
     ip = case.get('source_ip') or ''
     if not ip or is_internal_ip(ip):
         return False
-    if not (OPNSENSE_URL and OPNSENSE_KEY and OPNSENSE_SECRET):
-        add_soar_log(case['id'], tier, f'Block IP {ip}', 'SKIPPED — OPNsense not configured')
-        return False
-    try:
-        # alias_util/add inserts into the live pf table immediately — no reconfigure needed.
-        # The alias must already exist (type Host(s)) and be referenced by a block rule.
-        resp = requests.post(
-            f'{OPNSENSE_URL}/api/firewall/alias_util/add/{OPNSENSE_ALIAS}',
-            json={'address': ip},
-            auth=(OPNSENSE_KEY, OPNSENSE_SECRET),
-            verify=OPNSENSE_VERIFY_TLS,
-            timeout=10,
-        )
-    except requests.RequestException as e:
-        add_soar_log(case['id'], tier, f'Block IP {ip}', f'ERROR: {e}')
-        return False
-    try:
-        body = resp.json() if resp.ok else {}
-    except ValueError:
-        body = {}
-    # OPNsense answers {"status": "done"} on success and {"status": "failed"} otherwise, both 200.
-    if resp.ok and str(body.get('status', '')).lower() == 'done':
-        add_timeline(case['id'], f'Source IP {ip} blocked at OPNsense (alias {OPNSENSE_ALIAS})')
-        add_soar_log(case['id'], tier, f'Block IP {ip}', 'SUCCESS')
-        update_case(case['id'], {'containment_done': True})
-        return True
-    add_soar_log(case['id'], tier, f'Block IP {ip}', f'FAILED: HTTP {resp.status_code} {resp.text[:120]}')
-    return False
+    return request_containment(case, tier, 'block_ip', ip, None, f'Block IP {ip}')
 
 
 def wazuh_token() -> Optional[str]:
-    """The Wazuh API takes a JWT from /security/user/authenticate — basic auth on
-    /active-response itself is rejected."""
+    """The Wazuh API takes a JWT from /security/user/authenticate — basic auth on the API itself
+    is rejected. Used by the forwarder's AgentGroups (below) to read agent-to-group mappings."""
     try:
         resp = requests.post(f'{WAZUH_API}/security/user/authenticate', auth=(WAZUH_USER, WAZUH_PASSWORD), verify=WAZUH_VERIFY_TLS, timeout=10)
     except requests.RequestException as e:
@@ -311,44 +328,14 @@ def wazuh_token() -> Optional[str]:
 
 
 def isolate_agent(case: dict, tier: int) -> bool:
+    """Requests approval to isolate the agent via Wazuh active response — see
+    request_containment(). Still gated on the MITRE technique allow-list, exactly as before."""
     technique = case.get('mitre_technique') or ''
     agent_id = case.get('agent_id') or ''
     base_technique = technique.split('.')[0]
     if base_technique not in ISOLATE_TECHNIQUES or not agent_id or agent_id == '000':
         return False
-    action = f'Isolate agent {agent_id}'
-    if not WAZUH_ISOLATE_COMMAND:
-        add_soar_log(case['id'], tier, action, 'SKIPPED — WAZUH_ISOLATE_COMMAND not set (Wazuh ships no isolation response)')
-        return False
-    if not WAZUH_PASSWORD:
-        add_soar_log(case['id'], tier, action, 'SKIPPED — WAZUH_PASSWORD not set')
-        return False
-    token = wazuh_token()
-    if not token:
-        add_soar_log(case['id'], tier, action, 'FAILED: could not authenticate to the Wazuh API')
-        return False
-    try:
-        resp = requests.put(
-            f'{WAZUH_API}/active-response',
-            params={'agents_list': agent_id},
-            json={'command': WAZUH_ISOLATE_COMMAND, 'alert': {'data': {'srcip': case.get('source_ip') or ''}}},
-            headers={'Authorization': f'Bearer {token}'},
-            verify=WAZUH_VERIFY_TLS,
-            timeout=15,
-        )
-    except requests.RequestException as e:
-        add_soar_log(case['id'], tier, action, f'ERROR: {e}')
-        return False
-    affected = ((resp.json().get('data') or {}).get('affected_items') or []) if resp.ok else []
-    if resp.ok and agent_id in [str(a) for a in affected]:
-        # "REQUESTED", not "isolated": the manager accepted the command for the agent; whether the
-        # script succeeded on the endpoint is only visible in that agent's active-responses.log.
-        add_timeline(case['id'], f'Isolation ({WAZUH_ISOLATE_COMMAND}) sent to agent {agent_id} via Wazuh active response')
-        add_soar_log(case['id'], tier, action, 'REQUESTED — accepted by Wazuh manager')
-        update_case(case['id'], {'containment_done': True})
-        return True
-    add_soar_log(case['id'], tier, action, f'FAILED: HTTP {resp.status_code} {resp.text[:120]}')
-    return False
+    return request_containment(case, tier, 'isolate_agent', agent_id, case.get('agent_name') or None, f'Isolate agent {agent_id}')
 
 
 def send_resend(to: str, subject: str, body: str):
