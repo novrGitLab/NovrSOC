@@ -156,7 +156,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         items: [
             // Unified inventory (P14): Wazuh-managed and external assets, one record set (VMS Attack Surface).
             { id: 'infra-inventory', label: 'Asset Inventory', href: '/admin/vms/assets', domain: 'infra', status: 'WORKING', roles: VMS_READ, icon: Server },
-            { id: 'digital-assets', label: 'Wazuh Endpoints', href: '/admin/infra/assets', domain: 'infra', status: 'WORKING', roles: NOT_EXEC, icon: Monitor },
+            { id: 'digital-assets', label: 'Wazuh Endpoints', href: '/admin/vms/assets?category=wazuh', domain: 'infra', status: 'WORKING', roles: NOT_EXEC, icon: Monitor },
             { id: 'cloud-assets', label: 'Cloud Assets', href: '/admin/infra/cloud', domain: 'infra', status: 'PARTIAL', roles: NOT_EXEC, icon: Cloud },
         ],
     },

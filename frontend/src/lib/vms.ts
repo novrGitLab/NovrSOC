@@ -27,7 +27,7 @@ export interface VmsScan {
     attention?: string | null;
 }
 export interface VmsAsset {
-    id: string; asset_type: 'domain' | 'host' | 'ip' | 'endpoint' | 'asn' | 'cidr'; value: string; hostnames: string[]; ips: string[];
+    id: string; asset_type: 'domain' | 'host' | 'ip' | 'endpoint' | 'asn' | 'cidr' | 'cloud_resource'; value: string; hostnames: string[]; ips: string[];
     dns: { a?: string[]; aaaa?: string[]; cname?: string[] }; http: { url?: string; status?: number | null; title?: string | null; webserver?: string | null; cdn?: string | null } | null;
     exposure: 'internet' | 'internal' | 'unknown'; alive: boolean | null; owner: string | null; criticality: 'low' | 'medium' | 'high' | 'critical';
     wazuh_agent_id: string | null; discovery_sources: string[]; first_seen: string; last_seen: string; status: 'active' | 'gone';
@@ -38,7 +38,15 @@ export interface VmsAsset {
     scan_eligibility?: VmsEligibility | null; next_scan_at?: string | null;
     /** P27: where the asset came from, and whether it may be scanned under today's scope. */
     sources?: string[]; authorization?: VmsAuthorisation;
+    /** P28: cloud linkage (nullable; no connector writes these yet) and the unified-inventory
+     * categories this asset falls into — a predicate, so an asset can hold more than one. */
+    cloud_provider?: 'aws' | 'azure' | 'gcp' | 'oci' | 'other' | null; cloud_ref?: string | null; cloud_account?: string | null;
+    categories?: InventoryCategory[];
+    /** This organisation's CNII sector classification, if any (org-level, not per-asset). */
+    cnii?: { sector_id: string; designation: 'designated' | 'candidate' } | null;
 }
+export type InventoryCategory = 'wazuh' | 'vulnerability' | 'cloud' | 'other';
+export const CATEGORY_LABEL: Record<InventoryCategory, string> = { wazuh: 'Wazuh Assets', vulnerability: 'Vulnerability Assets', cloud: 'Cloud Assets', other: 'Other Assets' };
 export type AssessmentOutcome = 'reachable_open' | 'reachable_no_open' | 'unreachable' | 'no_route' | 'insufficient_evidence';
 /** What one scan learned about reaching a host (P12). Not the Full Assessment (VmsAssessment, P13). */
 export interface VmsReachAssessment {

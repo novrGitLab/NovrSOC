@@ -51,6 +51,21 @@ const fail = (res: import('express').Response, e: { message?: string }) => res.s
 const actor = (req: AuthRequest) => req.user?.email ?? 'unknown';
 const days = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
 
+// Phase P28 (Release 2 Stage 5): the four unified-inventory categories are predicates over
+// vms_assets, not separate asset types — an asset can be in more than one at once.
+export type InventoryCategory = 'wazuh' | 'vulnerability' | 'cloud' | 'other';
+export function assetCategories(a: { asset_type: string; wazuh_agent_id?: string | null; last_assessed_at?: string | null; cloud_ref?: string | null }, hasFindings: boolean): InventoryCategory[] {
+    const isWazuh = a.asset_type === 'endpoint' && !!a.wazuh_agent_id;
+    const isVulnerability = !!a.last_assessed_at || hasFindings;
+    const isCloud = a.asset_type === 'cloud_resource' || !!a.cloud_ref;
+    const out: InventoryCategory[] = [];
+    if (isWazuh) out.push('wazuh');
+    if (isVulnerability) out.push('vulnerability');
+    if (isCloud) out.push('cloud');
+    if (!out.length) out.push('other');
+    return out;
+}
+
 /** Where an asset came from, as labels: Wazuh, manual / CSV import, or scanning. */
 export function sourceLabels(sources: string[]): string[] {
     const map: Record<string, string> = { wazuh: 'Wazuh', manual: 'Manual', csv: 'CSV import' };
@@ -516,12 +531,22 @@ router.get('/assets', requirePermission('vms:read'), async (req: AuthRequest, re
     // P27: whether each asset is inside an approved scope (and for which activities), only in a pending
     // request, or not authorised — and where it came from. Additive fields.
     const scopes = await scopesForAuthorisation(requestOrg(req));
-    res.json({ assets: (data ?? []).map((a) => ({
+    // P28: this organisation's CNII sector classification, if any — assets belong to it by being
+    // this organisation's assets; CNII does not keep a separate per-asset store (sql/2026-10-17_p9_cnii.sql).
+    const { data: cniiProfile } = await getSupabase()!.from('cnii_org_profiles').select('sector_id, designation').eq('org_id', requestOrg(req)).maybeSingle();
+    let rows = (data ?? []).map((a) => ({
         ...a,
         findings: per.get(a.id) ?? { open: 0, by_severity: {}, max_risk: null },
         authorization: authorisationFor(scanTargetOf(a), scopes.active, scopes.pending),
         sources: sourceLabels(a.discovery_sources ?? []),
-    })) });
+        categories: assetCategories(a, per.has(a.id)),
+        cnii: cniiProfile ?? null,
+    }));
+    if (typeof q.category === 'string' && ['wazuh', 'vulnerability', 'cloud', 'other'].includes(q.category)) {
+        const cat = q.category as InventoryCategory;
+        rows = rows.filter((a) => a.categories.includes(cat));
+    }
+    res.json({ assets: rows });
 });
 
 // Relationships around an asset, from stored records only, each labelled confirmed/observed/inferred.
@@ -553,10 +578,50 @@ router.get('/assets/:id', requirePermission('vms:read'), async (req: AuthRequest
     ]);
     const linkedIds = (linked.data ?? []).map((l) => l.id);
     const linkedServices = linkedIds.length ? (await supabase.from('vms_services').select('*').in('asset_id', linkedIds).eq('status', 'active').order('port')).data ?? [] : [];
+    // P28: has a person already confirmed or rejected "same machine?" for this inferred pair.
+    const { data: links } = linkedIds.length
+        ? await supabase.from('vms_asset_links').select('*').eq('org_id', org).eq('relation', 'same_machine').or(`asset_a.eq.${asset.id},asset_b.eq.${asset.id}`)
+        : { data: [] };
+    const linkFor = (otherId: string) => (links ?? []).find((l) => (l.asset_a === asset.id && l.asset_b === otherId) || (l.asset_a === otherId && l.asset_b === asset.id)) ?? null;
     res.json({
         asset, services: services.data ?? [], technologies: techs.data ?? [], events: events.data ?? [],
-        linked: (linked.data ?? []).map((l) => ({ ...l, relation: 'same address (inferred: an address can be shared or reassigned)', services: linkedServices.filter((s) => s.asset_id === l.id) })),
+        linked: (linked.data ?? []).map((l) => {
+            const confirmation = linkFor(l.id);
+            return {
+                ...l, relation: 'same address (inferred: an address can be shared or reassigned)', services: linkedServices.filter((s) => s.asset_id === l.id),
+                same_machine: confirmation ? { basis: confirmation.basis, confirmed_by: confirmation.confirmed_by, confirmed_at: confirmation.confirmed_at } : null,
+            };
+        }),
     });
+});
+
+const AssetLinkBody = z.object({
+    asset_a: z.string().uuid(), asset_b: z.string().uuid(),
+    relation: z.enum(['same_machine', 'serves', 'resolves_to']),
+    basis: z.enum(['confirmed', 'rejected']),
+    note: z.string().trim().max(500).optional(),
+}).strict();
+// P28: a person confirming or rejecting a suggested relationship between two inventory records
+// (starting with "same machine?" on the asset page). Never written automatically — the inferred
+// same_address lead from vmsGraph.ts/this file's /assets/:id stays separate and derived-on-read.
+router.post('/asset-links', requirePermission('vms:manage'), async (req: AuthRequest, res) => {
+    const p = AssetLinkBody.safeParse(req.body);
+    if (!p.success) { res.status(400).json({ error: 'Body needs asset_a, asset_b (different UUIDs), relation and basis' }); return; }
+    if (p.data.asset_a === p.data.asset_b) { res.status(400).json({ error: 'asset_a and asset_b must be different assets' }); return; }
+    const org = requestOrg(req);
+    const supabase = getSupabase()!;
+    const { data: assets, error } = await supabase.from('vms_assets').select('id').eq('org_id', org).in('id', [p.data.asset_a, p.data.asset_b]);
+    if (error) { fail(res, error); return; }
+    if ((assets ?? []).length !== 2) { res.status(404).json({ error: 'Both assets must exist in this organisation' }); return; }
+    // A pair is unordered (confirming A~B is the same as confirming B~A) — sort so either order
+    // collapses onto the same row instead of the unique index missing the reversed pair.
+    const [asset_a, asset_b] = [p.data.asset_a, p.data.asset_b].sort();
+    const { data: row, error: insErr } = await supabase.from('vms_asset_links')
+        .upsert({ org_id: org, asset_a, asset_b, relation: p.data.relation, basis: p.data.basis, note: p.data.note ?? null, confirmed_by: actor(req), confirmed_at: new Date().toISOString() }, { onConflict: 'org_id,asset_a,asset_b,relation' })
+        .select('*').maybeSingle();
+    if (insErr) { fail(res, insErr); return; }
+    logAudit({ user: actor(req), action: 'VMS_ASSET_LINK', resource: 'vms_asset_link', resource_id: row?.id ?? null, org_id: org, ip: req.ip ?? 'unknown', result: 'success', details: `${p.data.relation}:${p.data.basis} ${p.data.asset_a}~${p.data.asset_b}` });
+    res.json({ link: row });
 });
 
 const AssetPatch = z.object({ owner: z.string().trim().max(200).nullable().optional(), criticality: z.enum(['low', 'medium', 'high', 'critical']).optional() }).strict();

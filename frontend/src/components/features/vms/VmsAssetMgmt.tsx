@@ -10,8 +10,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Boxes, Globe, Radar, ArrowLeft, Server, ShieldCheck, Plus } from 'lucide-react';
 import {
-    fmtWat, EVENT_LABEL, describeEvent, OUTCOME_LABEL, portStates, ELIGIBILITY_LABEL, PROFILE_LABEL, ASSESSMENT_STATUS_LABEL, SCAN_KIND_LABEL,
-    type VmsAsset, type VmsService, type VmsTech, type VmsEvent, type VmsAssessment, type VmsScan,
+    fmtWat, EVENT_LABEL, describeEvent, OUTCOME_LABEL, portStates, ELIGIBILITY_LABEL, PROFILE_LABEL, ASSESSMENT_STATUS_LABEL, SCAN_KIND_LABEL, CATEGORY_LABEL,
+    type VmsAsset, type VmsService, type VmsTech, type VmsEvent, type VmsAssessment, type VmsScan, type InventoryCategory,
 } from '@/lib/vms';
 import { AiPanel } from '@/components/shared/AiPanel';
 import { Card, SectionTitle, StatusPill, SegmentBar } from './ui';
@@ -27,7 +27,10 @@ import { useVmsData, useVmsCan, vmsSend } from './data';
 import { AuthorisationBadge, AUTH_META } from './VmsOnboarding';
 
 type Asset = VmsAsset & { findings?: { open: number; by_severity: Record<string, number>; max_risk: number | null } };
-interface AssetDetail { asset: VmsAsset; services: VmsService[]; technologies: VmsTech[]; events: VmsEvent[]; linked?: { id: string; asset_type: string; value: string; exposure: string; relation: string; services: VmsService[] }[] }
+interface AssetDetail {
+    asset: VmsAsset; services: VmsService[]; technologies: VmsTech[]; events: VmsEvent[];
+    linked?: { id: string; asset_type: string; value: string; exposure: string; relation: string; services: VmsService[]; same_machine: { basis: 'confirmed' | 'rejected'; confirmed_by: string; confirmed_at: string } | null }[];
+}
 interface Overview { assets: { active: number; internet_facing: number; gone: number; open_services: number }; last_7_days: { new_assets: number; changed_assets: number; gone_assets: number; new_services: number }; active_scopes: number }
 
 const SEV4 = ['critical', 'high', 'medium', 'low'] as const;
@@ -57,13 +60,18 @@ export function VmsAssetInventory() {
     const [criticality, setCriticality] = useState(params.get('criticality') ?? '');
     const [q, setQ] = useState('');
     const [auth, setAuth] = useState('');
+    // P28: Wazuh / Vulnerability / Cloud / Other — predicates over the one inventory, so an asset
+    // can show up under more than one; a deep link (e.g. from the dashboard) may set it directly.
+    const CAT = params.get('category');
+    const [category, setCategory] = useState<InventoryCategory | ''>(CAT === 'wazuh' || CAT === 'vulnerability' || CAT === 'cloud' || CAT === 'other' ? CAT : '');
     const path = useMemo(() => {
         const p = new URLSearchParams();
         if (exposure) p.set('exposure', exposure);
         if (status !== 'all') p.set('status', status);
         if (q) p.set('q', q);
+        if (category) p.set('category', category);
         return `/api/vms/assets?${p.toString()}`;
-    }, [exposure, status, q]);
+    }, [exposure, status, q, category]);
     const { load, data, reload } = useVmsData<{ assets: Asset[] }>(view === 'all' ? path : null);
     const rows = useMemo(() => data?.assets.filter((a) => (!type || (type === 'external' ? a.asset_type !== 'endpoint' : a.asset_type === type)) && (!criticality || a.criticality === criticality) && (!auth || a.authorization?.status === auth)) ?? null, [data, type, criticality, auth]);
     const columns: Column<Asset>[] = [
@@ -74,6 +82,7 @@ export function VmsAssetInventory() {
         { key: 'risk', header: 'Max risk', sort: (a) => a.findings?.max_risk ?? -1, render: (a) => <RiskScore score={a.findings?.max_risk} /> },
         { key: 'assessed', header: 'Last assessment', hideBelow: 'lg', sort: (a) => a.last_assessed_at ?? '', render: (a) => <Outcome a={a} /> },
         { key: 'sources', header: 'Source', hideBelow: 'md', sort: (a) => (a.sources ?? []).join(','), render: (a) => <span className="text-[11px] text-foreground-muted">{(a.sources ?? []).join(', ') || '—'}</span> },
+        { key: 'cnii', header: 'CNII', hideBelow: 'lg', sort: (a) => a.cnii?.sector_id ?? '~', render: (a) => a.cnii ? <span className="text-[11px] font-semibold capitalize">{a.cnii.designation}</span> : <span className="text-[11px] text-foreground-muted">—</span> },
         { key: 'authorization', header: 'Scanning', sort: (a) => a.authorization?.status ?? '', render: (a) => <AuthorisationBadge a={a.authorization} /> },
         { key: 'owner', header: 'Owner', hideBelow: 'lg', sort: (a) => a.owner ?? '~', render: (a) => <span className="text-[11px] text-foreground-muted">{a.owner ?? '—'}</span> },
         { key: 'seen', header: 'Last seen', hideBelow: 'md', sort: (a) => a.last_seen, render: (a) => <span className="text-[11px] text-foreground-muted whitespace-nowrap">{fmtWat(a.last_seen).replace(/ WAT$/, '')}</span> },
@@ -87,6 +96,7 @@ export function VmsAssetInventory() {
                 </>} />
             {view === 'endpoints' ? <VmsEndpoints /> : (
                 <>
+                    <Segmented label="Category" value={category} onChange={setCategory} options={[['', 'All categories'], ['wazuh', CATEGORY_LABEL.wazuh], ['vulnerability', CATEGORY_LABEL.vulnerability], ['cloud', CATEGORY_LABEL.cloud], ['other', CATEGORY_LABEL.other]]} />
                     <div className="flex flex-wrap items-center gap-2">
                         <Select label="Type" value={type} onChange={setType} options={[['', 'Any type'], ['external', 'Found by scans'], ['endpoint', 'Wazuh endpoints'], ['domain', 'Domains'], ['host', 'Hosts'], ['ip', 'IP addresses']]} />
                         <Select label="Exposure" value={exposure} onChange={setExposure} options={[['', 'Any exposure'], ['internet', 'Internet-facing'], ['internal', 'Internal'], ['unknown', 'Unknown']]} />
@@ -94,7 +104,7 @@ export function VmsAssetInventory() {
                         <Select label="Criticality" value={criticality} onChange={setCriticality} options={[['', 'Any criticality'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']]} />
                         <Segmented label="Status" value={status} onChange={setStatus} options={[['active', 'Active'], ['gone', 'Gone'], ['all', 'All']]} />
                         <SearchBox value={q} onSubmit={setQ} placeholder="Hostname or IP" label="Search assets" />
-                        <div className="ml-auto"><ExportCsvButton filename="vms-assets.csv" rows={rows?.map((a) => ({ ...a, open_findings: a.findings?.open ?? 0, max_risk: a.findings?.max_risk ?? '', sources_text: (a.sources ?? []).join('; '), authorisation_text: a.authorization ? AUTH_META[a.authorization.status].label : '' }))} columns={[{ key: 'value', header: 'Asset' }, { key: 'asset_type', header: 'Type' }, { key: 'exposure', header: 'Exposure' }, { key: 'criticality', header: 'Criticality' }, { key: 'owner', header: 'Owner' }, { key: 'ips', header: 'IPs' }, { key: 'open_findings', header: 'Open findings' }, { key: 'max_risk', header: 'Max risk' }, { key: 'status', header: 'Status' }, { key: 'first_seen', header: 'First seen' }, { key: 'last_seen', header: 'Last seen' }, { key: 'last_assessed_at', header: 'Last assessed' }, { key: 'sources_text', header: 'Source' }, { key: 'authorisation_text', header: 'Scanning' }]} /></div>
+                        <div className="ml-auto"><ExportCsvButton filename="vms-assets.csv" rows={rows?.map((a) => ({ ...a, open_findings: a.findings?.open ?? 0, max_risk: a.findings?.max_risk ?? '', sources_text: (a.sources ?? []).join('; '), authorisation_text: a.authorization ? AUTH_META[a.authorization.status].label : '', categories_text: (a.categories ?? []).map((c) => CATEGORY_LABEL[c]).join('; '), cnii_text: a.cnii ? `${a.cnii.sector_id} (${a.cnii.designation})` : '' }))} columns={[{ key: 'value', header: 'Asset' }, { key: 'asset_type', header: 'Type' }, { key: 'exposure', header: 'Exposure' }, { key: 'criticality', header: 'Criticality' }, { key: 'owner', header: 'Owner' }, { key: 'ips', header: 'IPs' }, { key: 'open_findings', header: 'Open findings' }, { key: 'max_risk', header: 'Max risk' }, { key: 'status', header: 'Status' }, { key: 'first_seen', header: 'First seen' }, { key: 'last_seen', header: 'Last seen' }, { key: 'last_assessed_at', header: 'Last assessed' }, { key: 'sources_text', header: 'Source' }, { key: 'authorisation_text', header: 'Scanning' }, { key: 'categories_text', header: 'Categories' }, { key: 'cnii_text', header: 'CNII' }]} /></div>
                     </div>
                     {load.state === 'error' ? <ErrorState error={load.error} status={load.status} onRetry={reload} />
                         : <DataTable caption="Asset inventory" rows={rows} columns={columns} rowKey={(a) => a.id} onRowClick={(a) => router.push(`/admin/vms/assets/${a.id}`)} initialSort={{ key: 'findings', dir: 'desc' }}
@@ -125,6 +135,12 @@ export function VmsAssetPage({ id }: { id: string }) {
     async function patch(body: Record<string, unknown>) {
         const r = await vmsSend('PATCH', `/api/vms/assets/${a.id}`, body);
         setMsg(r.ok ? { ok: true, text: 'Saved' } : { ok: false, text: r.error });
+        if (r.ok) reload();
+    }
+    // P28: a person confirming or rejecting the inferred "same address" lead — never automatic.
+    async function confirmSameMachine(otherAssetId: string, basis: 'confirmed' | 'rejected') {
+        const r = await vmsSend('POST', '/api/vms/asset-links', { asset_a: a.id, asset_b: otherAssetId, relation: 'same_machine', basis });
+        setMsg(r.ok ? { ok: true, text: basis === 'confirmed' ? 'Marked as the same machine' : 'Marked as not the same machine' } : { ok: false, text: r.error });
         if (r.ok) reload();
     }
     const findingCols: Column<Finding>[] = [
@@ -181,7 +197,23 @@ export function VmsAssetPage({ id }: { id: string }) {
                         )}
                         {(data.linked ?? []).length > 0 && (
                             <div><p className="text-[11px] font-semibold text-foreground-muted mb-1">Linked records</p>
-                                {data.linked!.map((l) => <p key={l.id} className="text-xs"><Link href={`/admin/vms/assets/${l.id}`} className="font-mono font-semibold text-purple dark:text-[var(--vz-prog-4)]">{l.value}</Link> <span className="text-foreground-muted">({l.asset_type === 'endpoint' ? 'Wazuh endpoint' : 'scanned address'} · {l.relation})</span></p>)}
+                                <div className="space-y-1.5">
+                                    {data.linked!.map((l) => (
+                                        <div key={l.id} className="flex flex-wrap items-center gap-2 text-xs">
+                                            <Link href={`/admin/vms/assets/${l.id}`} className="font-mono font-semibold text-purple dark:text-[var(--vz-prog-4)]">{l.value}</Link>
+                                            <span className="text-foreground-muted">({l.asset_type === 'endpoint' ? 'Wazuh endpoint' : 'scanned address'} · {l.relation})</span>
+                                            {l.same_machine ? (
+                                                <StatusPill tone={l.same_machine.basis === 'confirmed' ? 'good' : 'neutral'} label={l.same_machine.basis === 'confirmed' ? 'Confirmed same machine' : 'Not the same machine'} />
+                                            ) : can.manage ? (
+                                                <span className="flex items-center gap-1">
+                                                    <span className="text-[10.5px] text-foreground-muted">Same machine?</span>
+                                                    <button type="button" onClick={() => void confirmSameMachine(l.id, 'confirmed')} className="text-[10.5px] font-semibold text-green hover:underline">Confirm</button>
+                                                    <button type="button" onClick={() => void confirmSameMachine(l.id, 'rejected')} className="text-[10.5px] font-semibold text-foreground-muted hover:underline">No</button>
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                         )}
                     </Card>
