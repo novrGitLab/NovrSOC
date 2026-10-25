@@ -10,21 +10,17 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Map as MapIcon, Info } from 'lucide-react';
+import { Map as MapIcon } from 'lucide-react';
 import { PageHeader, EmptyState, ErrorState, Segmented, Select, Drawer, Tag, btn, nf } from '@/components/features/vms/kit';
 import { Card, SectionTitle, Skeleton } from '@/components/features/vms/ui';
 import { useVmsData } from '@/components/features/vms/data';
 import { fmtWat } from '@/lib/vms';
-import { NIGERIA_STATE_PATHS, NIGERIA_VIEWBOX } from './nigeriaPaths';
+import { NigeriaStateMap } from './NigeriaStateMap';
 import { TlpBadge, Field, Limitations } from './common';
 import { ago, type MapData, type MapTargeting } from '@/lib/ti';
 
 type Layer = 'hosted' | 'exposure';
 const DAYS = [['7', '7 days'], ['30', '30 days'], ['90', '90 days']] as const;
-// The outline file spells it "Nassarawa"; the data uses the official "Nasarawa".
-const stateKey = (name: string) => (name === 'Nassarawa' ? 'Nasarawa' : name);
-const SHADES = ['var(--card-muted)', 'color-mix(in oklab, var(--vz-prog-1) 45%, var(--card))', 'var(--vz-prog-2)', 'var(--vz-prog-3)', 'var(--vz-prog-4)'];
-const shade = (n: number, max: number) => (n <= 0 ? SHADES[0] : SHADES[Math.min(4, 1 + Math.floor((n / Math.max(1, max)) * 3.999))]);
 
 export function TiMap() {
     const [days, setDays] = useState<'7' | '30' | '90'>('30');
@@ -34,8 +30,9 @@ export function TiMap() {
     const [report, setReport] = useState<MapTargeting | null>(null);
     const { load, data, reload, at } = useVmsData<MapData>(`/api/ti/map?days=${days}${sector ? `&sector=${encodeURIComponent(sector)}` : ''}`);
     const now = at ?? 0;
+    // NigeriaStateMap corrects the path file's "Nassarawa" to this map's "Nasarawa" internally,
+    // so the keys here stay exactly what the backend sends.
     const counts = useMemo(() => new Map((data?.states ?? []).map((s) => [s.state, layer === 'hosted' ? s.hosted : s.exposure])), [data, layer]);
-    const max = Math.max(0, ...counts.values());
     const inState = (s: string) => ({ hosted: (data?.hosted ?? []).filter((h) => h.state === s), exposure: (data?.exposure ?? []).filter((e) => e.state === s) });
 
     return (
@@ -54,26 +51,7 @@ export function TiMap() {
                             action={<Segmented label="Layer" value={layer} onChange={(v) => { setLayer(v); setState(null); }} options={[['hosted', 'Hosted infrastructure'], ['exposure', 'Your exposure']] as const} />} />
                         {load.state === 'loading' ? <Skeleton className="h-[420px]" /> : (
                             <>
-                                <svg viewBox={NIGERIA_VIEWBOX} className="w-full h-auto max-h-[520px]" role="img" aria-label={`Nigeria map, ${layer === 'hosted' ? 'hosted infrastructure' : 'your exposure'} by state`}>
-                                    {NIGERIA_STATE_PATHS.map((p) => {
-                                        const name = stateKey(p.name);
-                                        const n = counts.get(name) ?? 0;
-                                        const active = state === name;
-                                        return (
-                                            <path key={p.code} d={p.d} fill={shade(n, max)} stroke={active ? 'var(--color-purple)' : 'var(--color-border)'} strokeWidth={active ? 3 : 1}
-                                                className="cursor-pointer outline-none focus-visible:[stroke:var(--color-purple)] focus-visible:[stroke-width:3px] hover:opacity-90"
-                                                tabIndex={0} role="button" aria-label={`${name}: ${n} ${layer === 'hosted' ? 'hosted indicator(s)' : 'match(es)'}`}
-                                                onClick={() => setState(name)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setState(name); } }}>
-                                                <title>{`${name}: ${n}`}</title>
-                                            </path>
-                                        );
-                                    })}
-                                </svg>
-                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-[11px] text-foreground-muted">
-                                    <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm border border-border" style={{ background: SHADES[0] }} /> none</span>
-                                    {SHADES.slice(1).map((c, i) => <span key={c} className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: c }} /> {i === 3 ? `up to ${max}` : ''}</span>)}
-                                    <span className="flex items-center gap-1"><Info className="w-3 h-3" aria-hidden /> Placed on a state only when the provider named it.</span>
-                                </div>
+                                <NigeriaStateMap counts={counts} layer={layer} selected={state} onSelect={setState} />
                                 <div className="grid grid-cols-2 gap-3 mt-3">
                                     <div className="rounded-xl border border-border p-3"><p className="text-[11px] text-foreground-muted">Hosted in Nigeria, state unknown</p><p className="text-lg font-black tabular-nums">{nf.format(data!.country_level.hosted_state_unknown)}</p></div>
                                     <div className="rounded-xl border border-border p-3"><p className="text-[11px] text-foreground-muted">Your exposure, state unknown</p><p className="text-lg font-black tabular-nums">{nf.format(data!.country_level.exposure_state_unknown)}</p></div>

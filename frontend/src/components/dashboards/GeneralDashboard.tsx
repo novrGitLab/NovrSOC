@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import {
     Monitor, Siren, ShieldAlert, Shield, Clock, Laptop, Server, ChevronRight, Building2, Timer, Zap, Activity,
@@ -8,12 +8,14 @@ import {
 } from 'lucide-react';
 import { KpiCard, type KpiCardProps } from '../shared/KpiCard';
 import { ChartWrapper } from '../shared/ChartWrapper';
-import { GlobalThreatMap } from '../geo/GlobalThreatMap';
-import { NigeriaThreatMap } from '../geo/NigeriaThreatMap';
+import { DashboardNigeriaMap } from './DashboardNigeriaMap';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { fetchAlertStats, loadJson, watTime, type AlertStats } from '@/lib/alerts';
 import { AlertFeedStatus } from '@/components/shared/AlertFeedStatus';
 import { usePolling } from '@/lib/usePolling';
+import { getAdminUser } from '@/lib/admin-auth';
+import { getOrgContext, subscribeOrgContext } from '@/lib/orgContext';
+import { platformHealthDisplay, honestCountDisplay, openCasesDisplay } from '@/lib/dashboardKpis';
 
 const Card = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
     <div className={`bg-card border border-border rounded-xl overflow-hidden shadow-sm ${className}`}>
@@ -172,8 +174,17 @@ export function IncidentQueueWidget({ incidents, loading }: { incidents: QueueIn
     );
 }
 
-/* ── MITRE ATT&CK Widget (Row 3, left) ── */
-const MITRE_TACTICS = ['Initial Access', 'Execution', 'Persistence', 'Privilege Escalation', 'Credential Access', 'Lateral Movement', 'Exfiltration', 'Command and Control'];
+/* ── MITRE ATT&CK Widget (Row 3, left) ──
+ * All 14 MITRE ATT&CK Enterprise tactics (this used to list 8, silently dropping Reconnaissance,
+ * Resource Development, Defense Evasion, Discovery, Collection and Impact — Defense Evasion and
+ * Discovery are among the most common tactics Wazuh rules map to, so the dropped six were not an
+ * edge case). GET /api/wazuh/mitre-stats already aggregates by whatever rule.mitre.tactic values
+ * the last 24h of alerts carry; only the fixed row list here needs to cover every one of them. */
+const MITRE_TACTICS = [
+    'Reconnaissance', 'Resource Development', 'Initial Access', 'Execution', 'Persistence', 'Privilege Escalation',
+    'Defense Evasion', 'Credential Access', 'Discovery', 'Lateral Movement', 'Collection', 'Command and Control',
+    'Exfiltration', 'Impact',
+];
 
 function MITREWidget({ tactics, source }: { tactics: Record<string, number> | null; source: string | null }) {
     const data = tactics ?? {};
@@ -204,25 +215,38 @@ function MITREWidget({ tactics, source }: { tactics: Record<string, number> | nu
 }
 
 /* ── Threat Intel Snapshot Widget (Row 3, right) ──
- * The platform-wide IOC totals came from the CTIP backend (/api/threat-intel/stats), which no
- * longer exists, and rendered as 0. They now say "Not connected" instead of a false zero. */
-interface OrgCtiSummary { malicious: number; suspicious: number; total: number }
+ * Was GET /api/org-cti/stats — a process-lifetime, in-memory accumulator (lib/orgCtiStore.ts)
+ * that resets on every deploy, and its platform-wide half was wired to a backend
+ * (/api/threat-intel/stats) that no longer exists, so it always rendered "Not connected". Both
+ * halves now come from GET /api/ti/overview (the persistent Threat Intelligence pipeline, phase
+ * P25): indicators.active / indicators.new_last_24h are genuinely platform-wide (every org sees
+ * the same two numbers, same as the TI Overview page itself); matches.new / matches.total are
+ * this organisation's own ti_matches rows, so they move with the organisation switcher. */
+interface TiSummary { indicatorsActive: number; indicatorsNew24h: number; matchesNew: number; matchesTotal: number }
 
-function ThreatIntelWidget({ orgCti }: { orgCti: OrgCtiSummary | null }) {
+function ThreatIntelWidget({ ti, failure }: { ti: TiSummary | null; failure: string | null }) {
     return (
-        <WidgetCard title="Threat Intelligence" linkHref="/admin/threat/cti" linkLabel="Open IOC Lookup →">
-            <div className="bg-card-muted rounded-lg p-3 mb-4 text-center">
-                <div className="text-sm font-bold text-foreground-muted">Not connected</div>
-                <div className="text-[10px] text-foreground-muted mt-0.5">Platform-wide IOC feed totals have no data source</div>
-            </div>
-            <div className="border-t border-border pt-3">
-                <div className="text-[10px] text-foreground-muted uppercase tracking-wider mb-2">Your Organisation IOCs</div>
-                <div className="flex gap-4">
-                    <div><div className="text-lg font-black text-red">{orgCti?.malicious ?? 0}</div><div className="text-[10px] text-foreground-muted">Malicious</div></div>
-                    <div><div className="text-lg font-black text-amber">{orgCti?.suspicious ?? 0}</div><div className="text-[10px] text-foreground-muted">Suspicious</div></div>
-                    <div><div className="text-lg font-black text-purple">{orgCti?.total ?? 0}</div><div className="text-[10px] text-foreground-muted">Total</div></div>
-                </div>
-            </div>
+        <WidgetCard title="Threat Intelligence" linkHref="/admin/ti" linkLabel="Open Threat Intelligence →">
+            {failure ? (
+                <p className="text-xs text-foreground-muted text-center py-6">{failure}</p>
+            ) : (
+                <>
+                    <div className="bg-card-muted rounded-lg p-3 mb-4">
+                        <div className="text-[10px] text-foreground-muted uppercase tracking-wider mb-2">Platform-wide</div>
+                        <div className="flex gap-4">
+                            <div><div className="text-lg font-black text-foreground">{ti ? ti.indicatorsActive.toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">Active indicators</div></div>
+                            <div><div className="text-lg font-black text-blue">{ti ? ti.indicatorsNew24h.toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">New (24h)</div></div>
+                        </div>
+                    </div>
+                    <div className="border-t border-border pt-3">
+                        <div className="text-[10px] text-foreground-muted uppercase tracking-wider mb-2">Your Organisation</div>
+                        <div className="flex gap-4">
+                            <div><div className="text-lg font-black text-red">{ti ? ti.matchesNew.toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">New matches</div></div>
+                            <div><div className="text-lg font-black text-purple">{ti ? ti.matchesTotal.toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">Total matches</div></div>
+                        </div>
+                    </div>
+                </>
+            )}
         </WidgetCard>
     );
 }
@@ -282,13 +306,15 @@ function SOARWidget() {
 
 /* ── Compliance Scores Widget (Row 4, right) — real /api/compliance data ── */
 interface FrameworkScore { shortName: string; score: number; assessed: number }
-function ComplianceWidget({ frameworks, loading }: { frameworks: FrameworkScore[] | null; loading: boolean }) {
+function ComplianceWidget({ frameworks, loading, failure }: { frameworks: FrameworkScore[] | null; loading: boolean; failure: string | null }) {
     const FW_COLOR: Record<string, string> = { NDPA: 'bg-purple', 'ISO 27001': 'bg-blue', CBN: 'bg-orange', 'PCI-DSS': 'bg-green', NCC: 'bg-red' };
     const shown = (frameworks ?? []).filter((f) => ['NDPA', 'ISO 27001', 'CBN', 'PCI-DSS', 'NCC'].includes(f.shortName));
     return (
         <WidgetCard title="Compliance" linkHref="/admin/compliance" linkLabel="Full report →">
             {loading ? (
                 <div className="space-y-3">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-6 bg-card-muted rounded animate-pulse" />)}</div>
+            ) : failure ? (
+                <p className="text-xs text-foreground-muted text-center py-6">{failure}</p>
             ) : (
                 <div className="space-y-3">
                     {shown.map((f) => (
@@ -379,7 +405,7 @@ function clientStatusBadge(orgStatus: string, endpoints: number | null): { label
     return { label: 'Pending', classes: 'text-amber bg-grey-100 border-amber/30' };
 }
 
-const OnboardedClientsWidget = ({ clients, loading }: { clients: OnboardedClient[] | null; loading: boolean }) => {
+const OnboardedClientsWidget = ({ clients, loading, failure }: { clients: OnboardedClient[] | null; loading: boolean; failure: string | null }) => {
     const rows = (clients ?? []).slice(0, 5);
     const [liveData, setLiveData] = useState<Record<string, ClientLiveData>>({});
 
@@ -418,6 +444,8 @@ const OnboardedClientsWidget = ({ clients, loading }: { clients: OnboardedClient
                 </div>
                 {loading ? (
                     <div className="space-y-2 py-2">{Array.from({ length: 2 }).map((_, i) => <div key={i} className="h-6 bg-card-muted rounded animate-pulse" />)}</div>
+                ) : failure ? (
+                    <p className="text-xs text-foreground-muted text-center py-6">{failure}</p>
                 ) : rows.length === 0 ? (
                     <div className="py-8 text-center">
                         <p className="text-[11px] text-foreground-muted mb-3">No clients onboarded yet. Go to Customers to add your first client.</p>
@@ -460,36 +488,51 @@ const OnboardedClientsWidget = ({ clients, loading }: { clients: OnboardedClient
 
 /* ── Main ── */
 export const GeneralDashboard = () => {
+    // The organisation being viewed (lib/orgContext.ts, 2026 redesign Stage 2) — every org-scoped
+    // fetch below re-runs when a staff session switches organisation. super_admin-only is read
+    // once (getAdminUser decodes the token locally; never used for authorization, only to decide
+    // which calls this role can expect to succeed — the backend enforces every one regardless).
+    const org = useSyncExternalStore(subscribeOrgContext, getOrgContext, () => '');
+    const [role] = useState<string>(() => (typeof window === 'undefined' ? '' : getAdminUser().role));
+    const isSuperAdmin = role === 'super_admin';
+
     const [wazuhStatus, setWazuhStatus] = useState<{ connected: boolean; agent_count: number | null; active_agents: number | null; disconnected_agents: number | null; error?: string } | null>(null);
-    const [platformHealth, setPlatformHealth] = useState<{ overall: string; services: Array<{ name: string; status: string; latency_ms: number }> } | null>(null);
+    const [platformHealth, setPlatformHealth] = useState<{ overall: string; services: Array<{ name: string; status: string; latency_ms: number }>; error?: string } | null>(null);
     const [alertStats, setAlertStats] = useState<AlertStats | null>(null);
     const [alertsState, setAlertsState] = useState<{ loaded: boolean; notConnected: boolean; error: string | null }>({ loaded: false, notConnected: false, error: null });
     const [incidentKpis, setIncidentKpis] = useState<{ total: number; critical: number } | null>(null);
+    const [incidentsFailed, setIncidentsFailed] = useState(false);
     const [incidentQueue, setIncidentQueue] = useState<QueueIncident[] | null>(null);
     const [incidentsLoading, setIncidentsLoading] = useState(true);
     const [mitreTactics, setMitreTactics] = useState<Record<string, number> | null>(null);
     const [mitreSource, setMitreSource] = useState<string | null>(null);
-    const [orgCti, setOrgCti] = useState<OrgCtiSummary | null>(null);
+    const [ti, setTi] = useState<TiSummary | null>(null);
+    const [tiFailure, setTiFailure] = useState<string | null>(null);
     const [frameworks, setFrameworks] = useState<FrameworkScore[] | null>(null);
     const [frameworksLoading, setFrameworksLoading] = useState(true);
+    const [frameworksFailure, setFrameworksFailure] = useState<string | null>(null);
     const [feedAlerts, setFeedAlerts] = useState<FeedAlert[]>([]);
     const [feedFailure, setFeedFailure] = useState<string | null>(null);
     const [feedLoading, setFeedLoading] = useState(true);
     const [customerCount, setCustomerCount] = useState<number | null>(null);
+    const [customersFailed, setCustomersFailed] = useState(false);
 
     useEffect(() => {
         apiFetch(apiUrl('/api/wazuh/status'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then(r => r.json())
             .then(data => setWazuhStatus({ connected: !!data?.connected, agent_count: data?.agent_count ?? null, active_agents: data?.active_agents ?? null, disconnected_agents: data?.disconnected_agents ?? null, error: data?.error }))
             .catch(() => setWazuhStatus({ connected: false, agent_count: null, active_agents: null, disconnected_agents: null, error: 'Could not reach the backend' }));
-    }, []);
+    }, [org]);
 
+    // Platform-wide, super_admin only (backend: requireRole('super_admin')) — every other role
+    // would always get a 403 here, which used to render as a red "0%" rather than "unavailable
+    // for your role". Not fetched at all for anyone else, same reasoning as HeaderStatus.tsx.
     useEffect(() => {
+        if (!isSuperAdmin) return;
         apiFetch(apiUrl('/api/platform/health'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => r.json())
-            .then(data => setPlatformHealth({ overall: data?.overall ?? 'unknown', services: Array.isArray(data?.services) ? data.services : [] }))
-            .catch(() => setPlatformHealth({ overall: 'unknown', services: [] }));
-    }, []);
+            .then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`); setPlatformHealth({ overall: data?.overall ?? 'unknown', services: Array.isArray(data?.services) ? data.services : [] }); })
+            .catch((e: unknown) => setPlatformHealth({ overall: 'unknown', services: [], error: e instanceof Error ? e.message : 'Could not reach the backend' }));
+    }, [isSuperAdmin]);
 
     // Alert counts come from the stored, org-scoped alert table (phase R2). A failure leaves them
     // null, shown as "—" with the reason — never 0.
@@ -497,13 +540,14 @@ export const GeneralDashboard = () => {
         setAlertStats(r.ok ? r.data : null);
         setAlertsState({ loaded: true, notConnected: !r.ok && r.notConnected, error: r.ok ? null : r.error });
     }), []);
-    useEffect(() => { void loadAlertStats(); }, [loadAlertStats]);
+    useEffect(() => { void loadAlertStats(); }, [loadAlertStats, org]);
 
     useEffect(() => {
         // Real cases (analyst queue: auto-closed tier-1 excluded), newest first; unresolved only.
+        // A failed load leaves the KPI null (shown as "—"), never a false "0 open cases".
         const STATUS_LABEL: Record<string, QueueIncident['status']> = { open: 'Open', investigating: 'Investigating', contained: 'Contained', resolved: 'Resolved' };
         apiFetch(apiUrl('/api/cases?exclude_auto_closed=true&limit=50'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => r.json())
+            .then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`); return data; })
             .then(data => {
                 setIncidentKpis({ total: data?.summary?.active ?? 0, critical: data?.summary?.critical ?? 0 });
                 const rows = (Array.isArray(data?.cases) ? data.cases : []) as Array<{ id: string; title: string; agent_name: string | null; severity: QueueIncident['severity']; status: string; created_at: string; rule_id: string | null }>;
@@ -517,34 +561,41 @@ export const GeneralDashboard = () => {
                     ruleId: c.rule_id ?? undefined,
                 })));
             })
-            .catch(() => { setIncidentKpis({ total: 0, critical: 0 }); setIncidentQueue([]); })
+            .catch(() => { setIncidentKpis(null); setIncidentQueue([]); setIncidentsFailed(true); })
             .finally(() => setIncidentsLoading(false));
-    }, []);
+    }, [org]);
 
     useEffect(() => {
         apiFetch(apiUrl('/api/wazuh/mitre-stats'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then(r => r.json())
             .then(data => { setMitreTactics(data?.tactics ?? {}); setMitreSource(data?.source ?? 'unavailable'); })
             .catch(() => { setMitreTactics({}); setMitreSource('unavailable'); });
-    }, []);
+    }, [org]);
 
+    // GET /api/ti/overview (phase P25, persistent) — replaces the in-memory org-cti store.
+    useEffect(() => {
+        apiFetch(apiUrl('/api/ti/overview'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+            .then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`); return data; })
+            .then(data => {
+                setTi({
+                    indicatorsActive: data?.indicators?.active ?? 0, indicatorsNew24h: data?.indicators?.new_last_24h ?? 0,
+                    matchesNew: data?.matches?.new ?? 0, matchesTotal: data?.matches?.total ?? 0,
+                });
+                setTiFailure(null);
+            })
+            .catch((e: unknown) => { setTi(null); setTiFailure(e instanceof Error ? e.message : 'Could not reach the backend'); });
+    }, [org]);
 
     useEffect(() => {
-        apiFetch(apiUrl('/api/org-cti/stats'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => r.json())
-            .then(data => setOrgCti({ malicious: data?.malicious ?? 0, suspicious: data?.suspicious ?? 0, total: data?.total_iocs ?? 0 }))
-            .catch(() => {});
-    }, []);
-
-    useEffect(() => {
-        // Cybernovr is the single pre-launch tenant everywhere else in this codebase defaults
-        // to (see lib/orgCtiStore.ts, routes/orgCTI.ts) — orgId=1 here for the same reason.
-        apiFetch(apiUrl('/api/compliance?orgId=1'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => r.json())
-            .then(data => setFrameworks(Array.isArray(data) ? data : []))
-            .catch(() => setFrameworks([]))
+        apiFetch(apiUrl('/api/compliance'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+            .then(async r => {
+                const data = await r.json().catch(() => null);
+                if (!r.ok) throw new Error(r.status === 403 ? 'Compliance is not available for your role' : (data?.error ?? `HTTP ${r.status}`));
+                setFrameworks(Array.isArray(data) ? data : []);
+            })
+            .catch((e: unknown) => { setFrameworks(null); setFrameworksFailure(e instanceof Error ? e.message : 'Could not reach the backend'); })
             .finally(() => setFrameworksLoading(false));
-    }, []);
+    }, [org]);
 
     const loadFeed = useCallback(() => loadJson<{ alerts: FeedAlert[] }>('/api/alerts?limit=10').then((r) => {
         setFeedAlerts(r.ok ? r.data.alerts : []);
@@ -559,11 +610,11 @@ export const GeneralDashboard = () => {
     const [clientsLoading, setClientsLoading] = useState(true);
     useEffect(() => {
         apiFetch(apiUrl('/api/customers'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => r.json())
+            .then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`); return data; })
             .then(data => { setClients(Array.isArray(data?.customers) ? data.customers : []); setCustomerCount(Array.isArray(data?.customers) ? data.customers.length : 0); })
-            .catch(() => { setClients([]); setCustomerCount(0); })
+            .catch(() => { setClients(null); setCustomerCount(null); setCustomersFailed(true); })
             .finally(() => setClientsLoading(false));
-    }, []);
+    }, [org]);
 
     const [trendData, setTrendData] = useState<{ label: string; alerts: number; incidents: number; critical: number }[] | null>(null);
     const [trendLoading, setTrendLoading] = useState(true);
@@ -583,10 +634,9 @@ export const GeneralDashboard = () => {
         })()
         : [];
 
-    const servicesUp = platformHealth?.services.filter(s => s.status === 'up').length ?? 0;
-    const servicesTotal = platformHealth?.services.length ?? 0;
-    const platformHealthPct = platformHealth?.overall === 'operational' ? '100%' : platformHealth?.overall === 'degraded' ? `${Math.round((servicesUp / Math.max(servicesTotal, 1)) * 100)}%` : '0%';
-    const platformHealthType: KpiCardProps['type'] = platformHealth?.overall === 'operational' ? 'green' : platformHealth?.overall === 'degraded' ? 'orange' : 'red';
+    const health = platformHealthDisplay(isSuperAdmin, platformHealth);
+    const openCases = openCasesDisplay(incidentKpis, incidentsFailed);
+    const clientsProtected = honestCountDisplay(customerCount, customersFailed, 'organisations');
 
     const criticalAlertsCount = alertStats ? alertStats.by_severity.critical : null;
     const level7PlusCount = alertStats ? alertStats.by_severity.critical + alertStats.by_severity.high + alertStats.by_severity.medium : null;
@@ -603,13 +653,13 @@ export const GeneralDashboard = () => {
                 ? `${wazuhStatus.active_agents ?? '—'} online · ${wazuhStatus.disconnected_agents ?? '—'} offline`
                 : 'Agent inventory unavailable',
         },
-        { label: 'Open Cases', value: String(incidentKpis?.total ?? 0), trend: '', type: 'orange', icon: Siren, subValue: `${incidentKpis?.critical ?? 0} critical` },
+        { label: 'Open Cases', value: openCases.value, trend: '', type: 'orange', icon: Siren, subValue: openCases.sub },
         { label: 'Critical Alerts', value: criticalAlertsCount !== null ? String(criticalAlertsCount) : '—', trend: '', type: 'red', icon: ShieldAlert, subValue: alertStats ? 'last 24 hours' : alertsUnavailable },
         { label: 'Alerts Level 7+', value: level7PlusCount !== null ? String(level7PlusCount) : '—', trend: '', type: 'orange', icon: Shield, subValue: alertStats ? 'last 24 hours' : alertsUnavailable },
-        { label: 'Clients Protected', value: customerCount !== null ? String(customerCount) : '0', trend: '', type: 'blue', icon: Building2, subValue: 'organisations' },
+        { label: 'Clients Protected', value: clientsProtected.value, trend: '', type: 'blue', icon: Building2, subValue: clientsProtected.sub },
         { label: 'Mean Time to Detect', value: '—', trend: '', type: 'purple', icon: Timer, subValue: 'no data yet' },
         { label: 'Mean Time to Respond', value: '—', trend: '', type: 'blue', icon: Zap, subValue: 'no data yet' },
-        { label: 'Platform Health', value: platformHealthPct, trend: '', type: platformHealthType, icon: Activity, subValue: `${servicesUp}/${servicesTotal} services up` },
+        { label: 'Platform Health', value: health.pct, trend: '', type: health.type, icon: Activity, subValue: health.sub },
     ];
 
     return (
@@ -634,7 +684,7 @@ export const GeneralDashboard = () => {
 
             {/* Row 2: Nigeria map (60%) + Case queue (40%) */}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
-                <div className="lg:col-span-5"><NigeriaThreatMap /></div>
+                <div className="lg:col-span-5"><DashboardNigeriaMap /></div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
@@ -644,22 +694,19 @@ export const GeneralDashboard = () => {
             {/* Row 3: MITRE (40%) + Threat Intel (60%) */}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
                 <div className="lg:col-span-2"><MITREWidget tactics={mitreTactics} source={mitreSource} /></div>
-                <div className="lg:col-span-3"><ThreatIntelWidget orgCti={orgCti} /></div>
+                <div className="lg:col-span-3"><ThreatIntelWidget ti={ti} failure={tiFailure} /></div>
             </div>
 
             {/* Row 4: SOAR (50%) + Compliance (50%) */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
                 <SOARWidget />
-                <ComplianceWidget frameworks={frameworks} loading={frameworksLoading} />
+                <ComplianceWidget frameworks={frameworks} loading={frameworksLoading} failure={frameworksFailure} />
             </div>
 
             {/* Row 5: Recent alerts feed */}
             <AlertsFeed alerts={feedAlerts} failure={feedFailure} loading={feedLoading} />
 
-            {/* Supplementary — kept from the previous dashboard, still real data */}
-            <GlobalThreatMap />
-
-            <OnboardedClientsWidget clients={clients} loading={clientsLoading} />
+            <OnboardedClientsWidget clients={clients} loading={clientsLoading} failure={customersFailed ? 'Client list unavailable' : null} />
 
             <ChartWrapper title="Security Posture & Alert Activity Trends">
                 <div className="flex items-center gap-2 mb-3">
