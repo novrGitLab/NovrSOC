@@ -127,6 +127,21 @@ test('portal status reports sign-in available', async () => {
     assert.equal((await http('GET', '/api/portal/status')).data.configured, true);
 });
 
+// Client-auth audit (Release 2 follow-up): with no signing secret, sign-in must say so plainly —
+// never "Invalid email or password", which would read as "your password was wrong" when the
+// service is simply not configured yet.
+test('portal status and sign-in are both honest when no signing secret is configured', async () => {
+    delete process.env.JWT_SECRET;
+    try {
+        assert.equal((await http('GET', '/api/portal/status')).data.configured, false);
+        const r = await portalSignin('ciso@client-a.test');
+        assert.equal(r.status, 503);
+        assert.match(r.data.error, /not configured/i);
+    } finally {
+        process.env.JWT_SECRET = 'client-portal-test-secret';
+    }
+});
+
 test('invitation: the one-time link sets the password and points a client account to the client portal', async () => {
     const invited = { id: randomUUID(), org_id: A.id, email: 'it@client-a.test', name: 'IT', role: 'portal_user', status: 'invited', password_hash: null, failed_logins: 0, locked_until: null };
     db.tables.platform_users.push(invited);

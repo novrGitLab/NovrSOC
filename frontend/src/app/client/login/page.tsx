@@ -159,10 +159,13 @@ export default function ClientLoginPage() {
                             </button>
                         </div>
 
+                        {/* There is no self-service reset: client accounts (phase P21) are invited by, and
+                            reset through, their organisation's administrator (routes/users.ts's one-time
+                            password link) — the same as a staff account. A dead "#" link used to sit here. */}
                         <div className="text-right">
-                            <Link href="#" className="text-xs font-semibold text-purple hover:underline">
-                                Forgot password?
-                            </Link>
+                            <span className="text-xs text-foreground-muted">
+                                Forgot your password? Ask your organisation&apos;s administrator for a new sign-in link.
+                            </span>
                         </div>
 
                         {error && <p className="text-xs text-red-500 text-center">{error}</p>}

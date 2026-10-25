@@ -3,6 +3,13 @@
 -- adds nullable cloud linkage columns and one new table for human-confirmed "same machine" links.
 -- RLS: on, one service-role policy, nothing else, matching every other backend-written table.
 --
+-- Needs P4 (sql/2026-10-14_p4_vms_asm.sql) for vms_assets to exist; nothing else. The CNII
+-- association the API adds alongside these categories (routes/vms.ts) reads cnii_org_profiles
+-- (P9) in application code only — this file has no SQL-level dependency on P9 or any later phase.
+-- Verified against the migration history up to P27 before this file was written (no column, table
+-- or constraint name collision); not executed against any live database (none is available in
+-- this environment) — run it against a staging copy of production first if one exists.
+--
 -- The four inventory categories are views (predicates) over vms_assets, not separate stores:
 --   Wazuh Assets         asset_type = 'endpoint' AND wazuh_agent_id IS NOT NULL
 --   Vulnerability Assets  last_assessed_at IS NOT NULL OR has any vms_findings row

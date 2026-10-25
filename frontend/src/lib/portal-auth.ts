@@ -1,8 +1,12 @@
+import { isJwtLive } from './jwt';
+
 export interface PortalUser {
     userId: string;
     name: string;
     email: string;
-    orgId: number;
+    // organisations.slug (routes/portal.ts's /auth/signin sends org.slug here) — a string,
+    // never a numeric id. Named orgId for parity with AdminUser-style fields, not because it is one.
+    orgId: string;
     orgName: string;
     orgIndustry: string | null;
     orgPlan: string | null;
@@ -18,21 +22,9 @@ export function getPortalToken(): string | null {
     return localStorage.getItem(TOKEN_KEY);
 }
 
-function decodeJwtExpiry(token: string): number | null {
-    try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
-    } catch {
-        return null;
-    }
-}
-
 export function isPortalAuthenticated(): boolean {
     const token = getPortalToken();
-    if (!token) return false;
-    const expiry = decodeJwtExpiry(token);
-    if (expiry !== null && Date.now() >= expiry) return false;
-    return true;
+    return !!token && isJwtLive(token);
 }
 
 export function getPortalUser(): PortalUser | null {

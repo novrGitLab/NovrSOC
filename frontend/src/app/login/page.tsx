@@ -139,10 +139,13 @@ export default function AdminLoginPage() {
                             </button>
                         </div>
 
+                        {/* There is no self-service reset: staff accounts are reset through a one-time link
+                            a super_admin issues (routes/users.ts) — this used to link to /admin/dashboard,
+                            a page a signed-out visitor can never reach. */}
                         <div className="text-right">
-                            <Link href="/admin/dashboard" className="text-xs font-semibold text-purple hover:underline">
-                                Forgot password?
-                            </Link>
+                            <span className="text-xs text-foreground-muted">
+                                Forgot your password? Ask a super admin to send you a new sign-in link.
+                            </span>
                         </div>
 
                         {error && <p className="text-xs text-red-500 text-center">{error}</p>}

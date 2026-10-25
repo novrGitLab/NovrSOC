@@ -2,7 +2,7 @@ import { getPortalUser, isPortalAuthenticated } from './portal-auth';
 
 export interface PortalContext {
     isPortal: boolean;
-    orgId: number | null;
+    orgId: string | null;
     orgName: string | null;
     orgIndustry: string | null;
     wazuhGroup: string | null;

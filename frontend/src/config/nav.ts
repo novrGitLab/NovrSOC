@@ -224,8 +224,12 @@ export const ADMIN_NAV: NavSectionConfig[] = [
     },
 ];
 
-// Client portal. Every item is BROKEN at the portal level: portal sign-in depends on the
-// unreachable APP_API_BASE_URL backend, so no customer can reach these pages today.
+// Client portal. Sign-in itself runs on this backend (phase P21, routes/portal.ts) and works —
+// this comment used to say sign-in depended on an unreachable external backend, which stopped
+// being true at P21 and was corrected in the Release 2 Stage 6/client-auth pass. The per-item
+// BROKEN labels below are a separate, real fact: those specific pages call non-client-scoped
+// routes (/api/brand/*, /api/org-cti/*, etc.) that a signed-in portal_user session cannot reach
+// (requireAuth confines it to /api/client/*) — toNavGroups() hides them (see Stage 6 above).
 export const CLIENT_NAV: NavSectionConfig[] = [
     {
         section: '', collapsible: false,

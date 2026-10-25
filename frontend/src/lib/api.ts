@@ -44,11 +44,15 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
 
     const res = await fetch(input, { ...init, headers });
 
-    if (res.status === 401) {
-        // Prefer whichever session actually looks active — a portal user hitting a
-        // newly-protected route should land back on the portal login, not the admin one.
-        if (typeof window !== 'undefined' && localStorage.getItem('portal_token')) portalSignOut();
-        else if (typeof window !== 'undefined' && localStorage.getItem('admin_token')) adminSignOut();
+    if (res.status === 401 && typeof window !== 'undefined') {
+        // Sign out of whichever session actually sent this request's token — not just
+        // whichever of the two tokens happens to be sitting in storage (a browser can hold
+        // both at once; see lib/account.ts's getAuthToken()). Falls back to the current
+        // route's own portal when no token was sent at all (never signed in on this path).
+        if (token && token === localStorage.getItem('portal_token')) portalSignOut();
+        else if (token && token === localStorage.getItem('admin_token')) adminSignOut();
+        else if (window.location.pathname.startsWith('/client')) portalSignOut();
+        else adminSignOut();
     }
 
     return res;
