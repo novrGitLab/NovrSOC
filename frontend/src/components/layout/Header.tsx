@@ -2,18 +2,26 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { Bell, Sun, Moon, Menu } from 'lucide-react';
+import { Bell, Sun, Moon, Menu, ChevronRight } from 'lucide-react';
 import { Logo } from '@/components/shared/Logo';
 import { GlobalSearch } from './GlobalSearch';
+import { HeaderStatus } from './HeaderStatus';
+import { UserMenu } from './UserMenu';
 import { useTheme } from '@/components/providers/ThemeProvider';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { usePolling } from '@/lib/usePolling';
+import { breadcrumbFor } from '@/lib/breadcrumbs';
 
 interface HeaderProps {
     initials: string;
+    name: string;
+    email: string;
+    role: string;
     onSignOut: () => void;
     /** Opens the off-canvas sidebar below the lg breakpoint. */
     onMenu?: () => void;
+    /** Where this role's Settings page is, if it has one (config/nav.ts). Omit to hide the menu item. */
+    settingsHref?: string;
 }
 
 interface Notification {
@@ -26,15 +34,6 @@ interface Notification {
     read: boolean;
 }
 
-function humanizePathname(pathname: string): string {
-    if (pathname.endsWith('/dashboard')) return 'General';
-    const last = pathname.split('/').filter(Boolean).pop() ?? '';
-    return last
-        .split('-')
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(' ');
-}
-
 function timeAgo(iso: string): string {
     const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
     if (mins < 1) return 'Just now';
@@ -43,10 +42,10 @@ function timeAgo(iso: string): string {
     return `${hrs}h ago`;
 }
 
-export function Header({ initials, onSignOut, onMenu }: HeaderProps) {
+export function Header({ initials, name, email, role, onSignOut, onMenu, settingsHref }: HeaderProps) {
     const pathname = usePathname();
     const router = useRouter();
-    const pageTitle = humanizePathname(pathname);
+    const crumb = breadcrumbFor(pathname);
     const { resolvedTheme, setTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
 
@@ -106,9 +105,14 @@ export function Header({ initials, onSignOut, onMenu }: HeaderProps) {
                     </button>
                 )}
                 <span className="shrink-0"><Logo size="sm" /></span>
-                <span className="text-grey-300 hidden sm:inline">/</span>
-                {/* Long path segments (e.g. a domain name) must not push the header controls off-screen. */}
-                <span className="text-sm text-grey-500 truncate max-w-[16rem] hidden sm:inline" title={pageTitle}>{pageTitle}</span>
+                {/* Section / Page — config/nav.ts and config/vmsSections.ts, the same labels the
+                    sidebar shows, not just the last URL segment. */}
+                <nav aria-label="Breadcrumb" className="hidden sm:flex items-center gap-1.5 text-sm min-w-0">
+                    <span className="text-grey-300">/</span>
+                    {crumb.section && <span className="text-grey-500 truncate max-w-[10rem]">{crumb.section}</span>}
+                    {crumb.section && <ChevronRight size={12} className="text-grey-300 shrink-0" aria-hidden />}
+                    <span className="text-grey-800 font-semibold truncate max-w-[14rem]" title={crumb.page}>{crumb.page}</span>
+                </nav>
             </div>
 
             {/* Center — search. Admin only: /api/search reads cases, which portal tokens can't
@@ -119,18 +123,10 @@ export function Header({ initials, onSignOut, onMenu }: HeaderProps) {
 
             {/* Right */}
             <div className="flex items-center gap-2 sm:gap-3 min-w-fit ml-auto md:ml-0">
-                <div className="hidden xl:flex items-center gap-1.5 bg-blue text-white text-xs font-semibold px-3 py-1.5 rounded-full">
-                    <span className="w-2 h-2 rounded-full bg-green animate-pulse" />
-                    Telemetry Online
+                <div className="hidden xl:block">
+                    <HeaderStatus role={role} />
                 </div>
-                <button onClick={onSignOut} className="text-sm text-grey-500 hover:text-red transition-colors">
-                    Sign Out
-                </button>
                 <div className="hidden lg:block w-px h-4 bg-grey-100" />
-                <div className="hidden lg:flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-green" />
-                    <span className="text-sm text-grey-800">Cloud Node</span>
-                </div>
                 <button
                     onClick={() => setTheme(isDark ? 'light' : 'dark')}
                     className="text-grey-500 hover:text-grey-800 transition-colors"
@@ -171,9 +167,7 @@ export function Header({ initials, onSignOut, onMenu }: HeaderProps) {
                         </div>
                     )}
                 </div>
-                <div className="w-8 h-8 rounded-full bg-purple text-white flex items-center justify-center text-xs font-bold">
-                    {initials}
-                </div>
+                <UserMenu initials={initials} name={name} email={email} role={role} onSignOut={onSignOut} settingsHref={settingsHref} />
             </div>
         </header>
     );
