@@ -8,9 +8,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Building2, Eye, Lock } from 'lucide-react';
+import { Eye, Lock } from 'lucide-react';
 import { loadJson } from '@/lib/alerts';
-import { setVmsOrg } from '@/lib/vmsOrg';
+import { OrgSwitcher } from '@/components/layout/OrgSwitcher';
 import { vmsLocate } from '@/config/vmsSections';
 import { useVmsCan, useVmsOrg } from './data';
 import { EmptyState } from './kit';
@@ -48,15 +48,7 @@ export function VmsShell({ children }: { children: ReactNode }) {
                 </nav>
                 <div className="flex items-center gap-2 pb-2">
                     {can.readOnly && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-foreground-muted bg-card-muted rounded-full px-2.5 py-1"><Eye className="w-3.5 h-3.5" aria-hidden /> Read-only view</span>}
-                    {orgs && orgs.length > 1 && (
-                        <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-foreground-muted">
-                            <Building2 className="w-3.5 h-3.5" aria-hidden /><span className="sr-only">Organisation</span>
-                            <select value={org} onChange={(e) => setVmsOrg(e.target.value)} className="bg-card border border-border rounded-lg px-2 py-1 text-[11px] text-foreground outline-none focus:ring-2 focus:ring-purple/40">
-                                <option value="">My organisation</option>
-                                {orgs.map((x) => <option key={x.slug} value={x.slug}>{x.name}</option>)}
-                            </select>
-                        </label>
-                    )}
+                    <OrgSwitcher />
                 </div>
             </div>
             {org && <p className="text-[11px] text-foreground-muted -mt-2">Viewing <span className="font-semibold text-foreground">{orgs?.find((x) => x.slug === org)?.name ?? org}</span>. Access to another organisation is recorded in the audit log.</p>}

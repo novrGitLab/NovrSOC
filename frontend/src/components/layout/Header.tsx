@@ -6,6 +6,7 @@ import { Bell, Sun, Moon, Menu, ChevronRight } from 'lucide-react';
 import { Logo } from '@/components/shared/Logo';
 import { GlobalSearch } from './GlobalSearch';
 import { HeaderStatus } from './HeaderStatus';
+import { OrgSwitcher } from './OrgSwitcher';
 import { UserMenu } from './UserMenu';
 import { useTheme } from '@/components/providers/ThemeProvider';
 import { apiUrl, apiFetch } from '@/lib/api';
@@ -123,6 +124,9 @@ export function Header({ initials, name, email, role, onSignOut, onMenu, setting
 
             {/* Right */}
             <div className="flex items-center gap-2 sm:gap-3 min-w-fit ml-auto md:ml-0">
+                {/* Staff-only; renders nothing for a client session or a staff account with
+                    access to only one organisation (lib/orgContext.ts). */}
+                <OrgSwitcher />
                 <div className="hidden xl:block">
                     <HeaderStatus role={role} />
                 </div>

@@ -1,7 +1,7 @@
 import { getAuthToken } from './account';
 import { adminSignOut } from './admin-auth';
 import { portalSignOut } from './portal-auth';
-import { vmsOrgHeaderFor } from './vmsOrg';
+import { orgContextHeaderFor } from './orgContext';
 
 // Base URL of the standalone NovrSOC backend (see /backend). All same-origin `/api/...`
 // fetch calls in this app are routed through apiUrl() so the origin lives in one place.
@@ -35,8 +35,11 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
     const token = getAuthToken();
     const headers = new Headers(init.headers);
     if (token) headers.set('Authorization', `Bearer ${token}`);
-    // VMS pages viewing another organisation (lib/vmsOrg.ts); the backend authorises and audits it.
-    const org = vmsOrgHeaderFor(input);
+    // The organisation a staff session is viewing (lib/orgContext.ts; 2026 redesign Stage 2,
+    // promoted from the VMS-only selector). The backend authorises and audits it; a client
+    // session (executive, portal_user) never has this set, and the backend ignores the header
+    // for those roles regardless.
+    const org = orgContextHeaderFor(input);
     if (org && !headers.has('X-Org-Id')) headers.set('X-Org-Id', org);
 
     const res = await fetch(input, { ...init, headers });

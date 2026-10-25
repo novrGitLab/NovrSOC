@@ -13,8 +13,9 @@ import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import { randomUUID } from 'crypto';
 import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth';
+import { requireOrg, requestOrg } from '../lib/permissions';
 import { logAudit } from '../lib/audit';
-import { DEFAULT_ORG_ID, isUuid } from '../services/cases';
+import { isUuid } from '../services/cases';
 import { getDb, f, SchemaMissingError, SCHEMA_FILE, type Db } from '../services/emailsec/db';
 import { normalizeDomain, inspectDomain } from '../services/emailsec/dnsInspect';
 import { verificationRecord } from '../services/emailsec/verification';
@@ -46,7 +47,12 @@ const inspectLimiter = rateLimit({
     message: { error: 'Too many inspection requests — try again in a minute.' },
 });
 
-const orgOf = (req: AuthRequest) => req.user?.org_id ?? DEFAULT_ORG_ID;
+// F-11: used to be req.user?.org_id ?? DEFAULT_ORG_ID — always the signed-in staff member's OWN
+// organisation, never resolved through requireOrg below, so there was no way for staff to work
+// on a client's email security, and no analyst-assignment check or cross-org audit either.
+// requestOrg(req) reads what requireOrg (lib/permissions.ts) resolved: the token's org, or a
+// verified X-Org-Id for staff — ignored for the client `executive` role, same as everywhere else.
+const orgOf = requestOrg;
 const actorOf = (req: AuthRequest) => req.user?.email || 'unknown';
 const str = (v: unknown, max = 500) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
@@ -132,14 +138,7 @@ router.get('/messaging/connections/microsoft365/callback', h(async (db, req, res
     return back(conn.status, conn.status === 'connected' ? 'Connected.' : conn.last_error ?? conn.status);
 }));
 
-router.use(requireAuth, STAFF);
-// Tenant data needs the token's organisation: a token without one is refused, never served the
-// default organisation (orgOf's fallback is kept only for the pre-auth routes above, which carry
-// their organisation in a signed state token).
-router.use((req: AuthRequest, res: Response, next) => {
-    if (!req.user?.org_id) { res.status(403).json({ error: 'No organisation on this account — tenant data cannot be accessed' }); return; }
-    next();
-});
+router.use(requireAuth, STAFF, requireOrg);
 
 // ── Overview + health ──────────────────────────────────────────────────────────────────────
 

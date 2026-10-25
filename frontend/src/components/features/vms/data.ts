@@ -9,13 +9,13 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { loadJson } from '@/lib/alerts';
 import { apiFetch, apiUrl } from '@/lib/api';
 import { getAdminUser } from '@/lib/admin-auth';
-import { getVmsOrg, subscribeVmsOrg } from '@/lib/vmsOrg';
+import { getOrgContext, subscribeOrgContext } from '@/lib/orgContext';
 
 export type Load<T> = { state: 'loading' } | { state: 'ok'; data: T } | { state: 'error'; error: string; status?: number };
 
 /** The organisation being viewed ('' = the user's own); pages reload when it changes. */
 export function useVmsOrg(): string {
-    return useSyncExternalStore(subscribeVmsOrg, getVmsOrg, () => '');
+    return useSyncExternalStore(subscribeOrgContext, getOrgContext, () => '');
 }
 
 export function useVmsData<T>(path: string | null): { load: Load<T>; data: T | null; reload: () => void; at: number | null } {
