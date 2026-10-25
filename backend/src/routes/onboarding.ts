@@ -86,13 +86,15 @@ router.patch('/:id/step/:n', async (req: AuthRequest, res) => {
     const { data: existing, error: selErr } = await supabase.from('org_onboarding').select('*').eq('org_id', org.slug).maybeSingle();
     if (selErr) { fail(res, selErr); return; }
     if (!existing) { res.status(404).json({ error: 'No onboarding record yet — POST /:id/start first' }); return; }
-    if (existing.status === 'active') { res.status(409).json({ error: 'This organisation has already completed onboarding' }); return; }
+    // Editable before AND after activation (a super_admin reviewing/updating a live organisation's
+    // setup) — only the activation action itself is blocked from repeating, not these steps.
     const steps = { ...(existing.steps ?? {}), [String(n)]: p.data.data };
     const completed = [...new Set([...(existing.completed_steps ?? []), n])].sort((a, b) => a - b);
     const { data, error } = await supabase.from('org_onboarding')
         .update({ steps, completed_steps: completed, current_step: p.data.advance_to ?? n, updated_by: actor(req), updated_at: new Date().toISOString() })
         .eq('org_id', org.slug).select('*').single();
     if (error) { fail(res, error); return; }
+    logAudit({ user: actor(req), action: 'ONBOARDING_STEP_SAVED', resource: 'org_onboarding', resource_id: org.slug, ip: req.ip ?? 'unknown', result: 'success', details: `step ${n}${existing.status === 'active' ? ' (post-activation update)' : ''}` });
     res.json({ record: data });
 });
 

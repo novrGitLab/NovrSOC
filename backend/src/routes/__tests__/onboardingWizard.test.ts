@@ -146,8 +146,8 @@ test('activation is blocked until the profile step is saved and at least one exe
     assert.equal(db.tables.organisations.find((o) => o.id === CLIENT.id)?.setup_complete, true);
 
     assert.equal((await http('POST', `/api/admin/onboarding/${CLIENT.id}/activate`, root())).status, 409, 'activating twice is refused');
-    // A step can no longer be edited once active.
-    assert.equal((await http('PATCH', `/api/admin/onboarding/${CLIENT.id}/step/2`, root(), { data: {} })).status, 409);
+    // Steps stay editable after activation — reviewing/updating a live organisation's setup.
+    assert.equal((await http('PATCH', `/api/admin/onboarding/${CLIENT.id}/step/2`, root(), { data: { note: 'updated after go-live' } })).status, 200);
 
     await new Promise((r) => setTimeout(r, 10));
     assert.ok(db.tables.audit_log.some((a) => a.action === 'ONBOARDING_ACTIVATED' && a.resource_id === CLIENT.slug));
