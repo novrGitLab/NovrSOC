@@ -51,7 +51,10 @@ const DEAD_LETTER_RETRIES_PER_TICK = 50;
 export const BACKOFF_MIN_MS = 30_000;
 export const BACKOFF_MAX_MS = 10 * 60_000;
 const CONTENT_REJECTED = new Set([400, 413, 422]);
-const COLUMNS = 'id, ingest_seq, org_id, event_time, received_at, severity, rule_id, rule_level, rule_description, agent_id, agent_name, agent_ip, mitre_ids, location, raw, raw_truncated';
+// src_ip/src_port/dst_ip/dst_port/protocol are the P24 normalized columns — selected so
+// lib/exportEvent.ts's networkForExport() can prefer them over re-deriving from raw (which it
+// still does, per field, for any alert stored before P24 or missing a backfill run).
+const COLUMNS = 'id, ingest_seq, org_id, event_time, received_at, severity, rule_id, rule_level, rule_description, agent_id, agent_name, agent_ip, mitre_ids, location, raw, raw_truncated, src_ip, src_port, dst_ip, dst_port, protocol';
 
 export type StartPoint = { kind: 'latest' } | { kind: 'beginning' } | { kind: 'hours'; hours: number };
 export interface PushConfig {

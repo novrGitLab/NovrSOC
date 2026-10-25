@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { apiUrl, apiFetch } from '@/lib/api';
 
@@ -13,7 +13,7 @@ import { apiUrl, apiFetch } from '@/lib/api';
 
 export type PresenceStatus = 'online' | 'away' | 'offline';
 export interface TeamMemberPresence {
-    email: string; name: string; role: string; account_status: string; status: PresenceStatus;
+    id: string; email: string; name: string; role: string; account_status: string; status: PresenceStatus;
     last_active: string | null; active_days: string[]; cases_assigned: number;
     avg_response_hrs: number | null; response_sample: number;
 }
@@ -26,6 +26,8 @@ export function useTeamPresence() {
     const [data, setData] = useState<PresenceData | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [now, setNow] = useState(() => Date.now());
+    const [tick, setTick] = useState(0);
+    const reload = useCallback(() => setTick((t) => t + 1), []);
     useEffect(() => {
         let active = true;
         const load = () => apiFetch(apiUrl('/api/admin/team/presence'), { cache: 'no-store' })
@@ -41,8 +43,8 @@ export function useTeamPresence() {
         void load();
         const id = setInterval(load, REFRESH_MS);
         return () => { active = false; clearInterval(id); };
-    }, []);
-    return { data, error, now };
+    }, [tick]);
+    return { data, error, now, reload };
 }
 
 export function relativeTime(iso: string | null, now: number): string {

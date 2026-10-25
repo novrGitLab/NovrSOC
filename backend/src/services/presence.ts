@@ -61,6 +61,7 @@ export async function recordPresence(email: string, event: 'login' | 'heartbeat'
 export type PresenceStatus = 'online' | 'away' | 'offline';
 
 export interface TeamMemberPresence {
+    id: string;
     email: string;
     name: string;
     role: string;
@@ -91,7 +92,7 @@ export async function teamPresence(): Promise<{ members: TeamMemberPresence[]; h
         supabase.from('user_activity_days').select('email, day').gte('day', days[0]),
         supabase.from('cases').select('assigned_to').neq('status', 'resolved').not('assigned_to', 'is', null),
     ]);
-    const users = (usersRes.data ?? []) as { email: string; name: string | null; role: string; status: string | null; last_login: string | null; last_active?: string | null }[];
+    const users = (usersRes.data ?? []) as { id: string; email: string; name: string | null; role: string; status: string | null; last_login: string | null; last_active?: string | null }[];
     const history: 'database' | 'since_restart' = daysRes.error ? 'since_restart' : 'database';
 
     const openByName = new Map<string, number>();
@@ -123,6 +124,7 @@ export async function teamPresence(): Promise<{ members: TeamMemberPresence[]; h
             .map(([k, v]) => { const c = createdAt.get(k.split('|')[1]); return c ? v.at - c : NaN; })
             .filter((ms) => Number.isFinite(ms) && ms >= 0);
         return {
+            id: u.id,
             email,
             name: u.name || u.email,
             role: u.role,

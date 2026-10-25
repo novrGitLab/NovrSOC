@@ -378,6 +378,39 @@ test('five-tuple from data.*, Sysmon fallback, nulls for missing or invalid', as
     assert.deepEqual(byId[truncated.id as string], empty);
 });
 
+// P24's stored network columns (src_ip/src_port/dst_ip/dst_port/protocol), filled at ingest by
+// lib/alertNetwork.ts — the export must prefer them over re-deriving from raw, field by field.
+test('the stored P24 network columns are used in the export, not just raw.data.* — and survive raw being truncated', async () => {
+    const c = await createClient({ name: 'P24', org_ids: [A], allowed_cidrs: [ALLOWED_IP] });
+    const start = cursorBefore(nextSeq());
+    // Stored columns disagree with raw.data.* on purpose, so a pass here can only mean the
+    // stored columns won — not a coincidence of both agreeing.
+    const stored = seedAlert(A, {
+        event_time: '2026-10-11T00:00:01.000+00:00',
+        raw: { data: { srcip: '203.0.113.9', srcport: '9999', dstip: '203.0.113.10', dstport: 9999, protocol: 'udp' } },
+        src_ip: '192.0.2.50', src_port: 51515, dst_ip: '198.51.100.9', dst_port: 443, protocol: 'TCP',
+    });
+    // raw is truncated (no data.* at all to derive from), but the P24 columns were filled before
+    // that happened and must still carry the tuple — this is the bug the correction fixes.
+    const truncatedWithColumns = seedAlert(A, {
+        event_time: '2026-10-11T00:00:02.000+00:00',
+        raw: { truncated: true }, raw_truncated: true,
+        src_ip: '192.0.2.60', src_port: 22, dst_ip: '198.51.100.20', dst_port: 2222, protocol: 'tcp',
+    });
+    // A malformed stored value (out-of-range port) must not pass through unvalidated — it falls
+    // back to the raw-derived value, same validation (ip()/port()/protocol()) as every other field.
+    const malformedStored = seedAlert(A, {
+        event_time: '2026-10-11T00:00:03.000+00:00',
+        raw: { data: { srcip: '192.0.2.70', srcport: '2222' } },
+        src_port: 999999,
+    });
+    const r = await exportCall(c.token, `?cursor=${start}`);
+    const byId = Object.fromEntries(r.data.events.map((e) => [e.id, e.network]));
+    assert.deepEqual(byId[stored.id as string], { src_ip: '192.0.2.50', src_port: 51515, dst_ip: '198.51.100.9', dst_port: 443, protocol: 'TCP' });
+    assert.deepEqual(byId[truncatedWithColumns.id as string], { src_ip: '192.0.2.60', src_port: 22, dst_ip: '198.51.100.20', dst_port: 2222, protocol: 'tcp' });
+    assert.deepEqual(byId[malformedStored.id as string].src_port, 2222, 'an invalid stored port falls back to the raw-derived one, not through unvalidated');
+});
+
 test('raw only per profile, always redacted', async () => {
     const SECRET = 'synthetic-Secret-123';
     const cur = cursorBefore(nextSeq());

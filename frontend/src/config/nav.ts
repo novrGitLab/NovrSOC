@@ -214,6 +214,8 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         section: 'Settings', collapsible: true, icon: Settings, groupLabel: 'Settings',
         items: [
             { id: 'team', label: 'Team', href: '/admin/settings/team', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: Users },
+            { id: 'org-access', label: 'Organisation Access', href: '/admin/settings/org-access', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: Building2 },
+            { id: 'export-status', label: 'Vendor Export Status', href: '/admin/settings/export-status', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: Radio },
             { id: 'billing', label: 'Billing', href: '/admin/settings/billing', domain: 'settings', status: 'PARTIAL', roles: SUPER_ADMIN, icon: CreditCard },
             { id: 'analytics', label: 'Analytics', href: '/admin/settings/analytics', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: BarChart },
             { id: 'audit-log', label: 'Audit Log', href: '/admin/settings/audit', domain: 'settings', status: 'PARTIAL', roles: SUPER_ADMIN, icon: ScrollText },

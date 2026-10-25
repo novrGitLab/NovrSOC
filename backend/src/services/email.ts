@@ -654,6 +654,91 @@ export async function sendOnboardingEmail(params: {
     });
 }
 
+// 4b. ACCOUNT INVITE / PASSWORD RESET LINK — routes/users.ts's POST /:id/password-link, the one
+// place both a client organisation's invite (POST /api/organisations/:id/users) and a staff
+// invite (POST /api/admin/users) end up to get their one-time sign-in link. The link itself
+// (routes/users.ts) is unchanged by this — only its *delivery* is new. The token lives in the
+// URL fragment already (never a query string, never logged); this just puts the same URL in an
+// email instead of requiring the admin to copy and hand it over manually. Account disabled/
+// reset distinguishes wording; the link's purpose ('invite' | 'reset') already carries that.
+export async function sendAccountLinkEmail(params: {
+    to: string; name: string; url: string; expires_at: string; purpose: 'invite' | 'reset';
+}): Promise<void> {
+    if (!isEmailEnabled()) return;
+    const name = escapeHtml(params.name);
+    const invite = params.purpose === 'invite';
+    const expires = new Date(params.expires_at).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', dateStyle: 'medium', timeStyle: 'short' });
+    const body = `
+    <tr>
+      <td style="background:#520385;padding:32px;">
+        <h1 style="color:white;font-size:24px;font-weight:900;margin:0 0 8px;letter-spacing:-0.5px;">
+          ${invite ? 'You have been invited to NovrSOC' : 'Reset your NovrSOC password'}
+        </h1>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:32px;">
+        <p style="color:#1C1F2E;font-size:15px;margin:0 0 24px;">Hi ${name},</p>
+        <p style="color:#1C1F2E;font-size:15px;margin:0 0 24px;">
+          ${invite
+            ? 'An administrator has created your NovrSOC account. Use the link below to set your password and sign in.'
+            : 'An administrator has issued a new sign-in link for your NovrSOC account.'}
+        </p>
+        <a href="${params.url}"
+           style="background:#FF5500;color:white;font-size:14px;font-weight:700;
+                  text-decoration:none;padding:14px 32px;border-radius:8px;display:inline-block;">
+          ${invite ? 'Set your password →' : 'Reset your password →'}
+        </a>
+        <p style="color:#7A8099;font-size:12px;margin:24px 0 0;">
+          This link works once and expires ${escapeHtml(expires)} WAT. If you did not expect this email, you can ignore it — your account is unaffected.
+        </p>
+      </td>
+    </tr>
+  `;
+    await sendEmail({
+        to: params.to,
+        subject: invite ? 'Your NovrSOC account is ready — set your password' : 'Your NovrSOC password reset link',
+        html: baseTemplate(invite ? 'Welcome to NovrSOC' : 'Reset your NovrSOC password', invite ? 'Set your password to finish setting up your account' : 'Use this link to reset your password', body),
+    });
+}
+
+// 4c. ACCOUNT SECURITY NOTIFICATION — routes/users.ts's PATCH /:id (status change). Told to the
+// account's own address, not the administrator who made the change — the point is the account
+// holder finding out their access changed, same reasoning as a bank emailing "your card was
+// frozen" to the cardholder, not the branch manager.
+export async function sendAccountStatusEmail(params: { to: string; name: string; status: 'disabled' | 'active' }): Promise<void> {
+    if (!isEmailEnabled()) return;
+    const name = escapeHtml(params.name);
+    const disabled = params.status === 'disabled';
+    const body = `
+    <tr>
+      <td style="background:${disabled ? '#B91C1C' : '#520385'};padding:32px;">
+        <h1 style="color:white;font-size:24px;font-weight:900;margin:0;letter-spacing:-0.5px;">
+          ${disabled ? 'Your NovrSOC account was disabled' : 'Your NovrSOC account was re-enabled'}
+        </h1>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:32px;">
+        <p style="color:#1C1F2E;font-size:15px;margin:0 0 24px;">Hi ${name},</p>
+        <p style="color:#1C1F2E;font-size:15px;margin:0 0 24px;">
+          ${disabled
+            ? 'Your NovrSOC account was just disabled by an administrator. You will not be able to sign in until it is re-enabled.'
+            : 'Your NovrSOC account was just re-enabled by an administrator. You can sign in again.'}
+        </p>
+        <p style="color:#7A8099;font-size:12px;margin:0;">
+          If this was not expected, contact your organisation's security team.
+        </p>
+      </td>
+    </tr>
+  `;
+    await sendEmail({
+        to: params.to,
+        subject: disabled ? 'Your NovrSOC account was disabled' : 'Your NovrSOC account was re-enabled',
+        html: baseTemplate('NovrSOC account notice', disabled ? 'Your account access changed' : 'Your account access changed', body),
+    });
+}
+
 // 5. INCIDENT ESCALATION — jobs/incidentEscalation.ts
 // Covers both escalation paths: the automatic SLA-breach escalation (no escalated_by/note) and
 // an analyst hitting Escalate in the incident workbench, which carries who escalated and why.

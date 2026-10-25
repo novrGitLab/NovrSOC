@@ -2,12 +2,15 @@
 
 import { useState } from 'react';
 import { UserPlus, Search } from 'lucide-react';
-import { useTeamPresence, PresenceStats, PresenceCards, relativeTime } from '@/components/features/TeamPresence';
+import { apiUrl, apiFetch } from '@/lib/api';
+import { getAdminUser } from '@/lib/admin-auth';
+import { useTeamPresence, PresenceStats, PresenceCards, relativeTime, type TeamMemberPresence } from '@/components/features/TeamPresence';
 
-// Team — live status on top (heartbeat presence), then the roster. The roster used to be a
-// hardcoded mock list; it is now the real platform_users table, same layout.
+// Team — live status on top (heartbeat presence), then the roster. The roster is the real
+// platform_users table; invitations, password links and enable/disable call the real staff
+// account endpoints (POST/PATCH /api/admin/users — super_admin only, same as this whole page).
 
-type Role = 'super_admin' | 'soc_manager' | 'analyst' | 'executive' | 'viewer';
+type Role = 'super_admin' | 'soc_manager' | 'analyst' | 'executive';
 const ROLE_BADGE: Record<string, string> = {
     super_admin: 'bg-purple/10 text-purple',
     soc_manager: 'bg-blue/10 text-blue',
@@ -20,17 +23,65 @@ const ROLE_LABEL: Record<string, string> = {
 };
 
 export default function TeamPage() {
-    const { data, error, now } = useTeamPresence();
+    const { data, error, now, reload } = useTeamPresence();
+    const isSuperAdmin = getAdminUser().role === 'super_admin';
     const [search, setSearch] = useState('');
     const [showInviteModal, setShowInviteModal] = useState(false);
     const [inviteEmail, setInviteEmail] = useState('');
+    const [inviteName, setInviteName] = useState('');
     const [inviteRole, setInviteRole] = useState<Role>('analyst');
+    const [inviting, setInviting] = useState(false);
+    const [inviteError, setInviteError] = useState<string | null>(null);
+    const [link, setLink] = useState<{ email: string; url: string; expires_at: string } | null>(null);
+    const [acctMsg, setAcctMsg] = useState<string | null>(null);
 
     const members = data?.members ?? [];
     const filtered = members.filter((u) =>
         u.name.toLowerCase().includes(search.toLowerCase()) ||
         u.email.toLowerCase().includes(search.toLowerCase())
     );
+
+    const sendInvite = async () => {
+        if (!inviteEmail.trim()) return;
+        setInviting(true);
+        setInviteError(null);
+        try {
+            const created = await apiFetch(apiUrl('/api/admin/users'), {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: inviteEmail.trim(), name: inviteName.trim() || undefined, role: inviteRole }),
+            });
+            const createdBody = await created.json().catch(() => null);
+            if (!created.ok) { setInviteError(createdBody?.error ?? `HTTP ${created.status}`); return; }
+            const linkRes = await apiFetch(apiUrl(`/api/admin/users/${createdBody.user.id}/password-link`), {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ purpose: 'invite' }),
+            });
+            const linkBody = await linkRes.json().catch(() => null);
+            setShowInviteModal(false);
+            setInviteEmail(''); setInviteName(''); setInviteRole('analyst');
+            if (linkRes.ok) setLink({ email: createdBody.user.email, url: linkBody.url, expires_at: linkBody.expires_at });
+            else setAcctMsg(`${createdBody.user.email} was created, but the invite link could not be issued: ${linkBody?.error ?? `HTTP ${linkRes.status}`}`);
+            reload();
+        } catch {
+            setInviteError('Could not reach the backend');
+        } finally {
+            setInviting(false);
+        }
+    };
+
+    const accountAction = async (u: TeamMemberPresence, kind: 'link' | 'disable' | 'enable') => {
+        setAcctMsg(null);
+        try {
+            const r = kind === 'link'
+                ? await apiFetch(apiUrl(`/api/admin/users/${u.id}/password-link`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ purpose: u.account_status === 'invited' ? 'invite' : 'reset' }) })
+                : await apiFetch(apiUrl(`/api/admin/users/${u.id}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: kind === 'disable' ? 'disabled' : 'active' }) });
+            const d = await r.json().catch(() => null);
+            if (!r.ok) { setAcctMsg(d?.error ?? `HTTP ${r.status}`); return; }
+            if (kind === 'link') setLink({ email: u.email, url: d.url, expires_at: d.expires_at });
+            else reload();
+        } catch {
+            setAcctMsg('Could not reach the backend');
+        }
+    };
 
     return (
         <div className="space-y-5">
@@ -39,13 +90,15 @@ export default function TeamPage() {
                     <h1 className="text-lg font-black text-foreground">Team Members</h1>
                     <p className="text-xs text-foreground-muted">Administration · Live status, activity and access</p>
                 </div>
-                <button
-                    onClick={() => setShowInviteModal(true)}
-                    className="flex items-center gap-2 bg-orange hover:bg-orange-hover text-white font-bold px-4 py-2.5 rounded-lg text-sm transition-colors"
-                >
-                    <UserPlus size={14} />
-                    Invite Member
-                </button>
+                {isSuperAdmin && (
+                    <button
+                        onClick={() => { setShowInviteModal(true); setInviteError(null); }}
+                        className="flex items-center gap-2 bg-orange hover:bg-orange-hover text-white font-bold px-4 py-2.5 rounded-lg text-sm transition-colors"
+                    >
+                        <UserPlus size={14} />
+                        Invite Member
+                    </button>
+                )}
             </div>
 
             {/* Live Team Status */}
@@ -84,6 +137,19 @@ export default function TeamPage() {
                 />
             </div>
 
+            {acctMsg && <p role="alert" className="text-xs text-red-500 font-semibold">{acctMsg}</p>}
+            {link && (
+                <div className="bg-card border border-border rounded-xl p-4 space-y-2">
+                    <p className="text-xs font-bold text-foreground">Password link for {link.email} (shown once; expires {new Date(link.expires_at).toLocaleString()})</p>
+                    <code className="block bg-card-muted border border-border rounded-lg px-3 py-2 text-[11px] font-mono break-all select-all">{link.url}</code>
+                    <div className="flex gap-2">
+                        <button onClick={() => { void navigator.clipboard.writeText(link.url); }} className="text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1.5">Copy</button>
+                        <button onClick={() => setLink(null)} className="text-[11px] font-bold text-foreground border border-border rounded-lg px-3 py-1.5">Done</button>
+                    </div>
+                    <p className="text-[10px] text-foreground-muted">Send it to them directly. It works once; issuing a new link cancels this one.</p>
+                </div>
+            )}
+
             {/* Team table */}
             <div className="bg-card border border-border rounded-xl overflow-x-auto">
                 <table className="w-full min-w-[640px]">
@@ -93,7 +159,7 @@ export default function TeamPage() {
                             <th className="px-4 py-3 text-left text-xs font-semibold text-white">Role</th>
                             <th className="px-4 py-3 text-left text-xs font-semibold text-white">Account</th>
                             <th className="px-4 py-3 text-left text-xs font-semibold text-white">Last Active</th>
-                            <th className="px-4 py-3 text-left text-xs font-semibold text-white">Actions</th>
+                            {isSuperAdmin && <th className="px-4 py-3 text-left text-xs font-semibold text-white">Actions</th>}
                         </tr>
                     </thead>
                     <tbody>
@@ -124,22 +190,34 @@ export default function TeamPage() {
                                     </span>
                                 </td>
                                 <td className="px-4 py-3">
-                                    <span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase ${user.account_status === 'active' ? 'bg-green/10 text-green' : 'bg-amber/10 text-amber'}`}>
+                                    <span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase ${user.account_status === 'disabled' ? 'bg-red-500/10 text-red-500' : user.account_status === 'invited' ? 'bg-amber/10 text-amber' : 'bg-green-500/10 text-green-600'}`}>
                                         {user.account_status}
                                     </span>
                                 </td>
                                 <td className="px-4 py-3 text-xs text-foreground-muted">{user.status === 'offline' ? relativeTime(user.last_active, now) : 'Now'}</td>
-                                <td className="px-4 py-3">
-                                    <span className="text-xs text-foreground-muted" title="Role changes and removal are not wired to the backend yet">Edit / Remove — not available yet</span>
-                                </td>
+                                {isSuperAdmin && (
+                                    <td className="px-4 py-3">
+                                        <div className="flex items-center gap-2">
+                                            {user.account_status !== 'disabled' && (
+                                                <button onClick={() => void accountAction(user, 'link')} className="text-[10px] font-bold text-foreground border border-border rounded-lg px-2 py-1 whitespace-nowrap">
+                                                    {user.account_status === 'invited' ? 'Invite link' : 'Reset link'}
+                                                </button>
+                                            )}
+                                            <button
+                                                onClick={() => { if (user.account_status !== 'disabled' && !window.confirm(`Disable ${user.email}? They will not be able to sign in.`)) return; void accountAction(user, user.account_status === 'disabled' ? 'enable' : 'disable'); }}
+                                                className={`text-[10px] font-bold rounded-lg px-2 py-1 whitespace-nowrap ${user.account_status === 'disabled' ? 'text-foreground border border-border' : 'text-red-500'}`}
+                                            >
+                                                {user.account_status === 'disabled' ? 'Enable' : 'Disable'}
+                                            </button>
+                                        </div>
+                                    </td>
+                                )}
                             </tr>
                         ))}
                     </tbody>
                 </table>
             </div>
-            <p className="text-[10px] text-foreground-muted">
-                Roster from the platform_users table. Role changes, removal and invitations are not persisted yet.
-            </p>
+            <p className="text-[10px] text-foreground-muted">Roster from the platform_users table.</p>
 
             {/* Invite Modal */}
             {showInviteModal && (
@@ -150,6 +228,15 @@ export default function TeamPage() {
                             <button onClick={() => setShowInviteModal(false)} className="text-foreground-muted hover:text-foreground" aria-label="Close">✕</button>
                         </div>
                         <div className="p-6 space-y-4">
+                            <div>
+                                <label htmlFor="invite-name" className="block text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-1.5">Name</label>
+                                <input
+                                    id="invite-name" type="text" value={inviteName}
+                                    onChange={(e) => setInviteName(e.target.value)}
+                                    className="w-full border border-border rounded-lg px-3 py-2.5 text-sm bg-card focus:outline-none focus:border-purple focus:ring-2 focus:ring-purple/10"
+                                    placeholder="Jane Analyst"
+                                />
+                            </div>
                             <div>
                                 <label htmlFor="invite-email" className="block text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-1.5">
                                     Email Address
@@ -176,16 +263,22 @@ export default function TeamPage() {
                                     <option value="super_admin">Super Admin — full platform access</option>
                                 </select>
                             </div>
-                            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-700">
-                                Invitations aren&apos;t connected yet — no email will be sent. Add the member to the platform_users table for now.
-                            </div>
+                            {inviteRole === 'super_admin' && (
+                                <p className="text-xs text-amber-700 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+                                    Super Admin has full platform access across every organisation. Only invite someone you&apos;d trust with your own account.
+                                </p>
+                            )}
+                            {inviteError && <p role="alert" className="text-xs text-red-500 font-semibold">{inviteError}</p>}
+                            <p className="text-[10px] text-foreground-muted">
+                                No email is sent automatically — a one-time sign-in link is shown here once the account is created, for you to send them directly.
+                            </p>
                         </div>
                         <div className="px-6 py-4 border-t border-border flex justify-end gap-3">
                             <button onClick={() => setShowInviteModal(false)} className="text-sm text-foreground-muted px-4 py-2 rounded-lg hover:bg-card-muted">
                                 Close
                             </button>
-                            <button disabled className="text-sm font-bold bg-orange text-white px-5 py-2 rounded-lg opacity-50 cursor-not-allowed">
-                                Send Invitation
+                            <button onClick={() => void sendInvite()} disabled={inviting || !inviteEmail.trim()} className="text-sm font-bold bg-orange hover:bg-orange-hover text-white px-5 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed">
+                                {inviting ? 'Creating…' : 'Create & Get Link'}
                             </button>
                         </div>
                     </div>

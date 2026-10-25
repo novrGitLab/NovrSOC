@@ -33,6 +33,15 @@ export interface AlertRowForExport {
     location: string | null;
     raw: unknown;
     raw_truncated: boolean | null;
+    // Normalized network columns (phase P24, sql/2026-10-29_p24_wazuh_sources.sql), filled at
+    // ingest by lib/alertNetwork.ts from the same extraction this file does — but durably, once,
+    // before any later raw truncation. Optional so a caller that hasn't added them to its SELECT
+    // yet still compiles and still gets the raw-JSON-derived tuple exactly as before.
+    src_ip?: string | null;
+    src_port?: number | null;
+    dst_ip?: string | null;
+    dst_port?: number | null;
+    protocol?: string | null;
 }
 
 export interface NetworkTuple {
@@ -84,6 +93,22 @@ export function extractNetwork(raw: unknown, rawTruncated: boolean | null): Netw
 
 const text = (v: string | null) => (v === null ? null : redactString(v));
 
+/** The row's own stored network columns (P24) take priority, field by field, over re-deriving
+ * from raw JSON — they survive raw being truncated later, and a caller that selects them gets
+ * the canonical values the rest of the app already uses for this alert, not a second, separately
+ * re-parsed guess. A caller that hasn't added the columns to its SELECT (row.src_ip etc. simply
+ * absent, not null) falls through to exactly the old raw-JSON-derived behaviour, field by field. */
+export function networkForExport(row: AlertRowForExport): NetworkTuple {
+    const derived = extractNetwork(row.raw, row.raw_truncated);
+    return {
+        src_ip: pick(ip(row.src_ip ?? null), derived.src_ip),
+        src_port: pick(port(row.src_port ?? null), derived.src_port),
+        dst_ip: pick(ip(row.dst_ip ?? null), derived.dst_ip),
+        dst_port: pick(port(row.dst_port ?? null), derived.dst_port),
+        protocol: pick(protocol(row.protocol ?? null), derived.protocol),
+    };
+}
+
 export function toExportEvent(row: AlertRowForExport, profile: string | null) {
     const event: Record<string, unknown> = {
         id: row.id,
@@ -95,7 +120,7 @@ export function toExportEvent(row: AlertRowForExport, profile: string | null) {
         agent: { id: row.agent_id ?? null, name: row.agent_name ?? null, ip: row.agent_ip ?? null },
         mitre_ids: row.mitre_ids ?? null,
         location: text(row.location ?? null),
-        network: extractNetwork(row.raw, row.raw_truncated),
+        network: networkForExport(row),
     };
     if (profileIncludesRaw(profile) && row.raw !== null && row.raw !== undefined) {
         const redacted = redactValue(row.raw);

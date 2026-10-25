@@ -51,7 +51,10 @@ export const EXPORT_MAX_LIMIT = 1000;
 export const EXPORT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 export const EXPORT_CLIENT_RATE_PER_MIN = 60;
 const ALLOWED_PARAMS = new Set(['cursor', 'limit', 'format', 'org']);
-const COLUMNS = 'id, ingest_seq, org_id, event_time, received_at, severity, rule_id, rule_level, rule_description, agent_id, agent_name, agent_ip, mitre_ids, location, raw, raw_truncated';
+// src_ip/src_port/dst_ip/dst_port/protocol are the P24 normalized columns — selected so
+// lib/exportEvent.ts's networkForExport() can prefer them over re-deriving from raw (which it
+// still does, per field, for any alert stored before P24 or missing a backfill run).
+const COLUMNS = 'id, ingest_seq, org_id, event_time, received_at, severity, rule_id, rule_level, rule_description, agent_id, agent_name, agent_ip, mitre_ids, location, raw, raw_truncated, src_ip, src_port, dst_ip, dst_port, protocol';
 
 interface ExportClient {
     id: string;
