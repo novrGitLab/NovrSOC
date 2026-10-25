@@ -208,6 +208,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         section: 'Clients', collapsible: true, icon: Building2, groupLabel: 'Clients',
         items: [
             { id: 'all-clients', label: 'All Clients', href: '/admin/customers', domain: 'clients', status: 'WORKING', roles: SUPER_ADMIN, icon: Building2 },
+            { id: 'onboarding', label: 'Onboarding', href: '/admin/onboarding', domain: 'clients', status: 'WORKING', roles: MANAGER_ONLY, icon: ClipboardCheck },
         ],
     },
     {
