@@ -3,8 +3,8 @@
 import { useState, useEffect, useCallback, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import {
-    Monitor, Siren, ShieldAlert, Shield, Clock, Laptop, Server, ChevronRight, Building2, Timer, Zap, Activity,
-    CheckCircle, Bell,
+    Monitor, Siren, ShieldAlert, Shield, Clock, Laptop, Server, ChevronRight, Building2, Activity,
+    CheckCircle, Bell, ClipboardCheck, Bug, Target, Flame, Bot, ListChecks,
 } from 'lucide-react';
 import { KpiCard, type KpiCardProps } from '../shared/KpiCard';
 import { ChartWrapper } from '../shared/ChartWrapper';
@@ -33,10 +33,10 @@ const SectionHeader = ({ title, badge }: { title: string; badge?: string }) => (
     </div>
 );
 
-const WidgetCard = ({ title, linkHref, linkLabel, children }: { title: string; linkHref?: string; linkLabel?: string; children: React.ReactNode }) => (
+const WidgetCard = ({ title, icon: Icon, linkHref, linkLabel, children }: { title: string; icon?: React.ElementType; linkHref?: string; linkLabel?: string; children: React.ReactNode }) => (
     <div className="bg-card border border-border rounded-xl p-5 h-full flex flex-col">
         <div className="flex items-center justify-between mb-4">
-            <h3 className="font-bold text-sm text-foreground">{title}</h3>
+            <h3 className="font-bold text-sm text-foreground flex items-center gap-1.5">{Icon && <Icon size={14} className="text-foreground-muted" />}{title}</h3>
             {linkHref && <Link href={linkHref} className="text-xs text-purple font-medium hover:underline flex-shrink-0">{linkLabel ?? 'View all →'}</Link>}
         </div>
         <div className="flex-1">{children}</div>
@@ -52,6 +52,7 @@ export interface QueueIncident {
     status: 'Open' | 'Investigating' | 'Contained' | 'Resolved';
     openedAt: string;
     ruleId?: string;
+    assignedTo: string | null;
 }
 
 const SEVERITY_CONFIG: Record<string, { bg: string; text: string; border: string }> = {
@@ -251,13 +252,99 @@ function ThreatIntelWidget({ ti, failure }: { ti: TiSummary | null; failure: str
     );
 }
 
+/* ── Priority Action Queue (R3.2) ──────────────────────────────────────────────────
+ * Each item keeps its own real source and its own link — a critical/high case stays a case
+ * (GET /api/cases), a pending response action stays an approval (GET /api/response-approvals),
+ * an overdue finding stays a finding (GET /api/vms/findings/summary) — never merged into one
+ * fabricated "incident" count. "No items" and "could not load every source" are shown
+ * differently: a failed source is named, not silently folded into an empty queue. */
+export interface PriorityItem { id: string; kind: 'case' | 'approval' | 'remediation'; title: string; severity: 'critical' | 'high' | 'medium' | 'low' | null; href: string; meta: string }
+const QUEUE_KIND_LABEL: Record<PriorityItem['kind'], string> = { case: 'Case', approval: 'Approval', remediation: 'Overdue finding' };
+const QUEUE_KIND_STYLE: Record<PriorityItem['kind'], string> = { case: 'bg-red-500/10 text-red-500', approval: 'bg-amber/10 text-amber', remediation: 'bg-orange/10 text-orange' };
+
+function PriorityActionQueue({ items, loading, failedSources }: { items: PriorityItem[] | null; loading: boolean; failedSources: string[] }) {
+    const rows = (items ?? []).slice(0, 8);
+    return (
+        <WidgetCard title="Priority Action Queue" icon={ListChecks}>
+            {loading ? (
+                <div className="space-y-2">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-10 bg-card-muted rounded-lg animate-pulse" />)}</div>
+            ) : rows.length === 0 ? (
+                <div className="text-center py-8">
+                    <CheckCircle size={20} className="text-green mx-auto mb-2" />
+                    <p className="text-xs font-semibold text-foreground">Nothing needs attention right now</p>
+                    <p className="text-[10px] text-foreground-muted mt-0.5">No critical cases, pending approvals, or overdue remediation.</p>
+                </div>
+            ) : (
+                <ul className="divide-y divide-border">
+                    {rows.map((item) => (
+                        <li key={`${item.kind}-${item.id}`}>
+                            <Link href={item.href} className="flex items-center gap-2.5 py-2 hover:bg-card-muted rounded-lg px-1 -mx-1 transition-colors">
+                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase shrink-0 ${QUEUE_KIND_STYLE[item.kind]}`}>{QUEUE_KIND_LABEL[item.kind]}</span>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-semibold text-foreground truncate">{item.title}</p>
+                                    <p className="text-[10px] text-foreground-muted truncate">{item.meta}</p>
+                                </div>
+                                {item.severity && <span className="text-[9px] font-bold uppercase text-foreground-muted shrink-0">{item.severity}</span>}
+                            </Link>
+                        </li>
+                    ))}
+                </ul>
+            )}
+            {failedSources.length > 0 && (
+                <p className="text-[10px] text-amber mt-3 pt-3 border-t border-border flex items-center gap-1"><Flame size={10} aria-hidden /> Could not check: {failedSources.join(', ')} — the queue above may be incomplete.</p>
+            )}
+        </WidgetCard>
+    );
+}
+
+/* ── Vulnerability & Asset Exposure (R3.2) ── GET /api/vms/overview + /api/vms/findings/summary ── */
+interface VulnExposure { activeAssets: number; highRiskAssets: number; openCritical: number; openHigh: number; knownExploited: number; resolvedStates: number }
+function VulnExposureWidget({ data, failure }: { data: VulnExposure | null; failure: string | null }) {
+    return (
+        <WidgetCard title="Vulnerability & Asset Exposure" icon={Bug} linkHref="/admin/vms/findings" linkLabel="Open VMS Findings →">
+            {failure ? (
+                <p className="text-xs text-foreground-muted text-center py-6">{failure}</p>
+            ) : (
+                <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-card-muted rounded-lg p-3"><div className="text-lg font-black text-foreground">{data ? data.activeAssets.toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">Active assets</div></div>
+                    <div className="bg-card-muted rounded-lg p-3"><div className="text-lg font-black text-orange">{data ? data.highRiskAssets.toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">High-risk assets</div></div>
+                    <div className="bg-card-muted rounded-lg p-3"><div className="text-lg font-black text-red">{data ? (data.openCritical + data.openHigh).toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">Open critical + high</div></div>
+                    <div className="bg-card-muted rounded-lg p-3"><div className="text-lg font-black text-purple">{data ? data.knownExploited.toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">Known exploited (KEV)</div></div>
+                </div>
+            )}
+            <Link href="/admin/vms/attack-surface" className="block mt-3 pt-3 border-t border-border text-xs text-blue font-bold hover:underline">View Attack Surface →</Link>
+        </WidgetCard>
+    );
+}
+
+/* ── NovrAI compact entry point (R3.2) ── GET /api/novr-ai/status: a real NVIDIA/Gemini-backed
+ * assistant already exists at /admin/novrail — this is a status-aware link to it, never a
+ * decorative chatbot that pretends to analyse anything on its own. */
+function NovrAiCard() {
+    const [status, setStatus] = useState<{ configured: boolean; provider: string } | null>(null);
+    useEffect(() => {
+        apiFetch(apiUrl('/api/novr-ai/status'), { cache: 'no-store', signal: AbortSignal.timeout(8000) })
+            .then((r) => r.json()).then((d) => setStatus({ configured: !!d?.configured, provider: d?.provider ?? 'none' })).catch(() => setStatus({ configured: false, provider: 'none' }));
+    }, []);
+    return (
+        <Link href="/admin/novrail" className="bg-card border border-border rounded-xl p-4 flex items-center gap-3 hover:border-purple/40 transition-colors">
+            <div className="w-9 h-9 rounded-lg bg-purple/10 flex items-center justify-center shrink-0"><Bot size={18} className="text-purple" /></div>
+            <div className="flex-1 min-w-0">
+                <p className="text-xs font-bold text-foreground">NovrAI Analyst</p>
+                <p className="text-[10px] text-foreground-muted">{status === null ? 'Checking…' : status.configured ? `Available · ${status.provider}` : 'Not configured for this backend'}</p>
+            </div>
+            <ChevronRight size={14} className="text-foreground-muted shrink-0" />
+        </Link>
+    );
+}
+
 /* ── SOAR Activity Widget (Row 4, left) ──────────────────────────────────────────────
  * Every figure comes from GET /api/soar/stats (Supabase case counts).
  * This previously rendered four hardcoded values — "6 playbooks", three zeros and a 0%
  * automation rate — under a note naming a third-party workflow engine. The numbers were not
  * measured and the engine name is not something to surface in the product, so both are gone.
  * A count that can't be read renders as "—", never as 0: zero is a finding, unknown is not. */
-function SOARWidget() {
+function SOARWidget({ pendingApprovals }: { pendingApprovals: number | null }) {
     const [status, setStatus] = useState<{
         cases_created_today?: number;
         auto_resolved_today?: number;
@@ -276,7 +363,7 @@ function SOARWidget() {
     const show = (v: number | undefined) => (typeof v === 'number' ? v.toLocaleString() : '—');
 
     return (
-        <WidgetCard title="SOAR Automation" linkHref="/admin/secops/soar" linkLabel="View workflows →">
+        <WidgetCard title="SecOps & Automation" linkHref="/admin/secops/soar" linkLabel="View workflows →">
             <div className="grid grid-cols-2 gap-3">
                 {[
                     { label: 'Cases Created Today', value: show(status?.cases_created_today), color: 'text-blue' },
@@ -290,6 +377,12 @@ function SOARWidget() {
                     </div>
                 ))}
             </div>
+            {/* Every consequential action (block IP, isolate host) waits here for a manager's
+             * decision — the SOAR engine (infra/soar/soar.py) requests, it never acts directly. */}
+            <Link href="/admin/secops/approvals" className="flex items-center justify-between mt-3 bg-card-muted rounded-lg p-2.5 hover:bg-card transition-colors">
+                <span className="text-[10px] font-semibold text-foreground-muted">Pending response approvals</span>
+                <span className={`text-sm font-black ${pendingApprovals ? 'text-amber' : 'text-foreground'}`}>{pendingApprovals === null ? '—' : pendingApprovals.toLocaleString()}</span>
+            </Link>
             <div className="mt-3 flex items-center gap-2">
                 <div className={`w-2 h-2 rounded-full flex-shrink-0 ${status?.engine_active ? 'bg-green' : 'bg-card-muted'}`} />
                 <span className="text-[10px] text-foreground-muted">
@@ -550,7 +643,7 @@ export const GeneralDashboard = () => {
             .then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`); return data; })
             .then(data => {
                 setIncidentKpis({ total: data?.summary?.active ?? 0, critical: data?.summary?.critical ?? 0 });
-                const rows = (Array.isArray(data?.cases) ? data.cases : []) as Array<{ id: string; title: string; agent_name: string | null; severity: QueueIncident['severity']; status: string; created_at: string; rule_id: string | null }>;
+                const rows = (Array.isArray(data?.cases) ? data.cases : []) as Array<{ id: string; title: string; agent_name: string | null; severity: QueueIncident['severity']; status: string; created_at: string; rule_id: string | null; assigned_to: string | null }>;
                 setIncidentQueue(rows.filter(c => c.status !== 'resolved').map(c => ({
                     id: c.id,
                     name: c.title,
@@ -559,6 +652,7 @@ export const GeneralDashboard = () => {
                     status: STATUS_LABEL[c.status] ?? 'Open',
                     openedAt: new Date(c.created_at).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
                     ruleId: c.rule_id ?? undefined,
+                    assignedTo: c.assigned_to ?? null,
                 })));
             })
             .catch(() => { setIncidentKpis(null); setIncidentQueue([]); setIncidentsFailed(true); })
@@ -616,6 +710,56 @@ export const GeneralDashboard = () => {
             .finally(() => setClientsLoading(false));
     }, [org]);
 
+    // Response approvals (phase P3, services/responseApprovals.ts) — consequential actions already
+    // wait for a manager's decision before anything happens; this is a read of that existing queue,
+    // not a new approval model. Feeds both the SOAR widget's count and the priority queue below.
+    const [approvals, setApprovals] = useState<{ id: string; action: string; target: string; target_label: string | null; requested_at: string }[] | null>(null);
+    const [approvalsFailed, setApprovalsFailed] = useState(false);
+    useEffect(() => {
+        apiFetch(apiUrl('/api/response-approvals?status=pending'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+            .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d?.error ?? `HTTP ${r.status}`); return d; })
+            .then((d) => { setApprovals(Array.isArray(d?.approvals) ? d.approvals : []); setApprovalsFailed(false); })
+            .catch(() => { setApprovals(null); setApprovalsFailed(true); });
+    }, [org]);
+
+    // Overdue remediation (GET /api/vms/findings?overdue=true, phase P5) — findings past their due
+    // date and still open. Used both for the KPI count and the priority queue's individual rows.
+    const [overdueFindings, setOverdueFindings] = useState<{ id: string; title: string; asset_value: string | null; scanner_severity: PriorityItem['severity']; priority: string | null }[] | null>(null);
+    const [overdueFindingsFailed, setOverdueFindingsFailed] = useState(false);
+    useEffect(() => {
+        apiFetch(apiUrl('/api/vms/findings?overdue=true&status=open_all'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+            .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d?.error ?? `HTTP ${r.status}`); return d; })
+            .then((d) => { setOverdueFindings(Array.isArray(d?.findings) ? d.findings : []); setOverdueFindingsFailed(false); })
+            .catch(() => { setOverdueFindings(null); setOverdueFindingsFailed(true); });
+    }, [org]);
+
+    // Vulnerability & asset exposure (GET /api/vms/overview + /api/vms/findings/summary, phases P14/P5)
+    // — both already-built, already org-scoped VMS endpoints; combined client-side, nothing new
+    // on the backend. A failure on either leaves the whole card "—" rather than half-populated.
+    const [vulnExposure, setVulnExposure] = useState<VulnExposure | null>(null);
+    const [vulnExposureFailure, setVulnExposureFailure] = useState<string | null>(null);
+    useEffect(() => {
+        const get = (path: string) => apiFetch(apiUrl(path), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+            .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d?.error ?? `HTTP ${r.status}`); return d; });
+        Promise.all([get('/api/vms/overview'), get('/api/vms/findings/summary')])
+            .then(([overview, summary]) => {
+                setVulnExposure({
+                    activeAssets: overview?.assets?.active ?? 0,
+                    highRiskAssets: overview?.high_risk_assets ?? 0,
+                    openCritical: summary?.by_severity?.critical ?? 0,
+                    openHigh: summary?.by_severity?.high ?? 0,
+                    knownExploited: summary?.known_exploited_open ?? 0,
+                    resolvedStates: summary?.by_status?.resolved ?? 0,
+                });
+                setVulnExposureFailure(null);
+            })
+            .catch((e: unknown) => { setVulnExposure(null); setVulnExposureFailure(e instanceof Error ? e.message : 'VMS is not available for this organisation'); });
+    }, [org]);
+
+    // "My Cases" — client-side filter of the already-fetched queue, not a separate backend call.
+    const [myCasesOnly, setMyCasesOnly] = useState(false);
+    const [currentUserName] = useState<string>(() => (typeof window === 'undefined' ? '' : getAdminUser().name));
+
     const [trendData, setTrendData] = useState<{ label: string; alerts: number; incidents: number; critical: number }[] | null>(null);
     const [trendLoading, setTrendLoading] = useState(true);
     const [trendRange, setTrendRange] = useState<'24h' | '7d' | '30d'>('7d');
@@ -642,6 +786,32 @@ export const GeneralDashboard = () => {
     const level7PlusCount = alertStats ? alertStats.by_severity.critical + alertStats.by_severity.high + alertStats.by_severity.medium : null;
     const alertsUnavailable = !alertsState.loaded ? 'checking…' : alertsState.notConnected ? 'not connected' : 'unavailable';
 
+    // Priority Action Queue: critical/high cases + pending response approvals + overdue
+    // remediation, kept as distinct, labelled rows (never merged into one fabricated count).
+    const SEV_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+    const priorityFailedSources = [
+        ...(incidentsFailed ? ['cases'] : []),
+        ...(approvalsFailed ? ['approvals'] : []),
+        ...(overdueFindingsFailed ? ['VMS findings'] : []),
+    ];
+    const priorityItems: PriorityItem[] | null = (incidentsFailed && approvalsFailed && overdueFindingsFailed) ? null : [
+        ...(incidentQueue ?? []).filter((c) => c.severity === 'critical' || c.severity === 'high').map((c): PriorityItem => ({
+            id: c.id, kind: 'case', title: c.name, severity: c.severity, href: '/admin/secops/cases', meta: `${c.status} · ${c.asset}`,
+        })),
+        ...(approvals ?? []).map((a): PriorityItem => ({
+            id: a.id, kind: 'approval', title: a.target_label || a.target, severity: null, href: '/admin/secops/approvals',
+            meta: `${a.action.replace(/_/g, ' ')} · requested ${watTime(a.requested_at)}`,
+        })),
+        ...(overdueFindings ?? []).map((f): PriorityItem => ({
+            id: f.id, kind: 'remediation', title: f.title, severity: f.scanner_severity, href: '/admin/vms/findings',
+            meta: [f.asset_value ?? 'Unknown asset', f.priority].filter(Boolean).join(' · '),
+        })),
+    ].sort((a, b) => (SEV_RANK[a.severity ?? ''] ?? 4) - (SEV_RANK[b.severity ?? ''] ?? 4));
+    const priorityLoading = incidentsLoading || (approvals === null && !approvalsFailed) || (overdueFindings === null && !overdueFindingsFailed);
+
+    const isManagerPlus = role === 'super_admin' || role === 'soc_manager';
+    const visibleQueue = myCasesOnly && incidentQueue ? incidentQueue.filter((c) => c.assignedTo === currentUserName) : incidentQueue;
+
     const kpiCards: KpiCardProps[] = [
         // Registered / online / offline, from /api/wazuh/status. When the manager can't be reached
         // the card says so instead of showing 0 agents, which would read as "nothing monitored".
@@ -657,8 +827,14 @@ export const GeneralDashboard = () => {
         { label: 'Critical Alerts', value: criticalAlertsCount !== null ? String(criticalAlertsCount) : '—', trend: '', type: 'red', icon: ShieldAlert, subValue: alertStats ? 'last 24 hours' : alertsUnavailable },
         { label: 'Alerts Level 7+', value: level7PlusCount !== null ? String(level7PlusCount) : '—', trend: '', type: 'orange', icon: Shield, subValue: alertStats ? 'last 24 hours' : alertsUnavailable },
         { label: 'Clients Protected', value: clientsProtected.value, trend: '', type: 'blue', icon: Building2, subValue: clientsProtected.sub },
-        { label: 'Mean Time to Detect', value: '—', trend: '', type: 'purple', icon: Timer, subValue: 'no data yet' },
-        { label: 'Mean Time to Respond', value: '—', trend: '', type: 'blue', icon: Zap, subValue: 'no data yet' },
+        {
+            label: 'Pending Approvals', value: approvals ? String(approvals.length) : '—', trend: '', type: 'purple', icon: ClipboardCheck,
+            subValue: approvals ? 'awaiting a decision' : approvalsFailed ? 'could not check' : 'checking…',
+        },
+        {
+            label: 'Overdue Remediation', value: overdueFindings ? String(overdueFindings.length) : '—', trend: '', type: 'red', icon: Target,
+            subValue: overdueFindings ? 'past due, still open' : overdueFindingsFailed ? 'could not check' : 'checking…',
+        },
         { label: 'Platform Health', value: health.pct, trend: '', type: health.type, icon: Activity, subValue: health.sub },
     ];
 
@@ -682,31 +858,53 @@ export const GeneralDashboard = () => {
                 {kpiCards.map((kpi, idx) => <KpiCard key={idx} {...kpi} />)}
             </div>
 
-            {/* Row 2: Nigeria map (60%) + Case queue (40%) */}
+            {/* Threat Intelligence — Nigeria map and the TI summary widget, both preserved as before */}
+            <SectionHeader title="Threat Intelligence" />
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
                 <div className="lg:col-span-5"><DashboardNigeriaMap /></div>
             </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
-                 <div className="lg:col-span-5"><IncidentQueueWidget incidents={incidentQueue} loading={incidentsLoading} /></div>
-            </div>
-
-            {/* Row 3: MITRE (40%) + Threat Intel (60%) */}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
                 <div className="lg:col-span-2"><MITREWidget tactics={mitreTactics} source={mitreSource} /></div>
                 <div className="lg:col-span-3"><ThreatIntelWidget ti={ti} failure={tiFailure} /></div>
             </div>
 
-            {/* Row 4: SOAR (50%) + Compliance (50%) */}
+            {/* Priority Action Queue (left) + Case queue (right), with an analyst-only "My Cases" filter */}
+            <SectionHeader title="Priority Action Queue & Case Status" />
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
+                <div className="lg:col-span-2"><PriorityActionQueue items={priorityItems} loading={priorityLoading} failedSources={priorityFailedSources} /></div>
+                <div className="lg:col-span-3">
+                    {role === 'analyst' && (
+                        <div className="flex justify-end mb-2">
+                            <button onClick={() => setMyCasesOnly((v) => !v)}
+                                className={`text-[10px] font-bold px-2.5 py-1 rounded border transition-colors ${myCasesOnly ? 'bg-grey-100 text-white border-amber' : 'bg-card border-border text-foreground-muted hover:text-foreground'}`}>
+                                My Cases Only
+                            </button>
+                        </div>
+                    )}
+                    <IncidentQueueWidget incidents={visibleQueue} loading={incidentsLoading} />
+                </div>
+            </div>
+
+            {/* Vulnerability & Asset Exposure */}
+            <SectionHeader title="Vulnerability & Asset Exposure" />
+            <VulnExposureWidget data={vulnExposure} failure={vulnExposureFailure} />
+
+            {/* SecOps & Automation (50%) + Compliance (50%) */}
+            <SectionHeader title="SecOps, Automation & Compliance" />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
-                <SOARWidget />
+                <SOARWidget pendingApprovals={approvals ? approvals.length : null} />
                 <ComplianceWidget frameworks={frameworks} loading={frameworksLoading} failure={frameworksFailure} />
             </div>
 
-            {/* Row 5: Recent alerts feed */}
+            {/* NovrAI entry point — only the status-aware link to the real, already-built assistant */}
+            <NovrAiCard />
+
+            {/* Recent alerts feed */}
             <AlertsFeed alerts={feedAlerts} failure={feedFailure} loading={feedLoading} />
 
-            <OnboardedClientsWidget clients={clients} loading={clientsLoading} failure={customersFailed ? 'Client list unavailable' : null} />
+            {isManagerPlus && (
+                <OnboardedClientsWidget clients={clients} loading={clientsLoading} failure={customersFailed ? 'Client list unavailable' : null} />
+            )}
 
             <ChartWrapper title="Security Posture & Alert Activity Trends">
                 <div className="flex items-center gap-2 mb-3">

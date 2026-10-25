@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useSyncExternalStore } from 'react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { exportPageAsPDF } from '@/lib/exportPDF';
+import { getOrgContext, subscribeOrgContext } from '@/lib/orgContext';
 
 // Board/CISO-facing summary — real data only, composed from endpoints already built
 // elsewhere (compliance, cases, alerts, Wazuh agents). No fabricated "Overall Score: 74" or "vs last
@@ -16,6 +17,12 @@ interface CaseKpis { active: number; critical: number }
 interface AgentCounts { total: number; active: number; disconnected: number }
 
 export function ExecutiveReport() {
+    // R3.2: this page never re-fetched when a staff viewer switched organisation (lib/orgContext.ts)
+    // — it fetched once on mount and stayed on whichever org was selected at that moment. An
+    // executive can't switch anyway (resolveOrg.ts confines them to their own org regardless of
+    // this header), but super_admin/soc_manager can reach this page too (nav.ts: MANAGER_PLUS_EXEC)
+    // to preview another organisation's executive view, and that case was silently stale.
+    const org = useSyncExternalStore(subscribeOrgContext, getOrgContext, () => '');
     const [frameworks, setFrameworks] = useState<Framework[] | null>(null);
     const [caseKpis, setCaseKpis] = useState<CaseKpis | null>(null);
     const [agents, setAgents] = useState<AgentCounts | null>(null);
@@ -23,7 +30,7 @@ export function ExecutiveReport() {
     const [customerCount, setCustomerCount] = useState<number | null>(null);
 
     useEffect(() => {
-        apiFetch(apiUrl('/api/compliance?orgId=1'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+        apiFetch(apiUrl('/api/compliance'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then((r) => r.json()).then((d) => setFrameworks(Array.isArray(d) ? d : [])).catch(() => setFrameworks([]));
         apiFetch(apiUrl('/api/cases?limit=1'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then((r) => r.json()).then((d) => setCaseKpis(d?.summary ? { active: d.summary.active, critical: d.summary.critical } : null)).catch(() => setCaseKpis(null));
@@ -37,7 +44,7 @@ export function ExecutiveReport() {
             .then((r) => r.json()).then((d) => setCriticalAlerts(typeof d?.criticalCount === 'number' ? d.criticalCount : 0)).catch(() => setCriticalAlerts(0));
         apiFetch(apiUrl('/api/customers'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then((r) => r.json()).then((d) => setCustomerCount(Array.isArray(d?.customers) ? d.customers.length : 0)).catch(() => setCustomerCount(0));
-    }, []);
+    }, [org]);
 
     const assessedFrameworks = frameworks?.filter((f) => f.assessed > 0) ?? [];
     const overallScore = assessedFrameworks.length > 0 ? Math.round(assessedFrameworks.reduce((s, f) => s + f.score, 0) / assessedFrameworks.length) : null;
