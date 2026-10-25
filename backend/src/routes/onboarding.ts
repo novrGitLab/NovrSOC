@@ -33,10 +33,10 @@ const fail = (res: import('express').Response, e: { message?: string } | null) =
 
 /** organisations.id (UUID) -> its row, or null. Every handler below needs the slug, not the id,
  * to touch org_onboarding / org_service_grants. */
-async function orgById(id: string): Promise<{ id: string; slug: string; name: string } | null> {
+async function orgById(id: string): Promise<{ id: string; slug: string; name: string; status: string | null } | null> {
     if (!isUuid(id)) return null;
     const supabase = getSupabase()!;
-    const { data } = await supabase.from('organisations').select('id, slug, name').eq('id', id).maybeSingle();
+    const { data } = await supabase.from('organisations').select('id, slug, name, status').eq('id', id).maybeSingle();
     return data ?? null;
 }
 
@@ -139,14 +139,19 @@ router.post('/:id/activate', async (req: AuthRequest, res) => {
     if (!record) { res.status(404).json({ error: 'No onboarding record yet — POST /:id/start first' }); return; }
     if (record.status === 'active') { res.status(409).json({ error: 'Already activated' }); return; }
 
-    // Mandatory gate: the organisation profile step is saved, and at least one client-facing
-    // account (its first executive, or a portal_user) exists to actually use the portal —
-    // "invited" is enough; completing their own setup is their own next step, not this one's.
+    // Mandatory gate — security hardening pass: a valid, active organisation; its profile and
+    // service-provisioning steps saved (the latter is "persisted entitlements", not "every
+    // module decided" — a service left 'pending' is a valid, clearly-labelled outcome); and at
+    // least one correctly provisioned, non-disabled executive or portal_user account to actually
+    // use the portal — "invited" is enough, completing their own setup is their own next step.
     const problems: string[] = [];
+    if (org.status && org.status !== 'active') problems.push(`The organisation itself is not active (status: ${org.status})`);
     if (!record.completed_steps?.includes(1)) problems.push('Step 1 (organisation profile) is not saved yet');
+    if (!record.completed_steps?.includes(2)) problems.push('Step 2 (service provisioning) has not been reviewed yet');
     const { data: people, error: peopleErr } = await supabase.from('platform_users').select('id, role, status').eq('org_id', org.id).in('role', ['executive', 'portal_user']);
     if (peopleErr) { fail(res, peopleErr); return; }
-    if (!people || people.length === 0) problems.push('No executive or client user has been invited yet (Step 3)');
+    const usable = (people ?? []).filter((p) => p.status !== 'disabled');
+    if (usable.length === 0) problems.push('No correctly provisioned (non-disabled) executive or client user exists yet (Step 3)');
     if (problems.length) { res.status(409).json({ error: 'Cannot activate yet', problems }); return; }
 
     const now = new Date().toISOString();

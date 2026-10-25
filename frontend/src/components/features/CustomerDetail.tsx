@@ -29,7 +29,7 @@ interface Org {
 interface WazuhIncident { id: string; severity: string; name: string; asset: string; status: string; timestamp: string | null }
 interface WazuhAgent { id: string; name: string; ip: string; status: string; lastSeen: string; os: string }
 interface ComplianceFramework { shortName: string; score: number; assessed: number; totalControls: number }
-interface PlatformUser { id: string; email: string; name: string | null; role: string; status: string }
+interface PlatformUser { id: string; email: string; name: string | null; role: string; status: string; active_invite: { purpose: 'invite' | 'reset'; expires_at: string } | null }
 
 const TABS = [
     { id: 'overview', label: 'Overview', icon: Building2 },
@@ -331,7 +331,11 @@ function TeamTab({ org }: { org: Org }) {
                 <div className="bg-card border border-border rounded-xl divide-y divide-border">
                     {users.map((u) => (
                         <div key={u.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
-                            <div><p className="text-xs font-bold text-foreground">{u.name ?? u.email}</p><p className="text-[10px] text-foreground-muted">{u.email}</p></div>
+                            <div>
+                                <p className="text-xs font-bold text-foreground">{u.name ?? u.email}</p>
+                                <p className="text-[10px] text-foreground-muted">{u.email}</p>
+                                {u.active_invite && <p className="text-[10px] text-foreground-muted">{u.active_invite.purpose === 'invite' ? 'Invite' : 'Reset'} link expires {new Date(u.active_invite.expires_at).toLocaleString()}</p>}
+                            </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
                                 <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-purple/10 text-purple uppercase">{u.role}</span>
                                 <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${u.status === 'disabled' ? 'bg-red-500/10 text-red-500' : u.status === 'invited' ? 'bg-amber/10 text-amber' : 'bg-green-500/10 text-green-600'}`}>{u.status}</span>

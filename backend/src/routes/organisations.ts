@@ -403,7 +403,21 @@ router.get('/:id/users', async (req: AuthRequest, res) => {
         }
         const { data, error } = await supabase.from('platform_users').select(PUBLIC_USER_COLUMNS).eq('org_id', orgUuid).order('created_at');
         if (error) throw error;
-        res.json({ users: (data || []) as PlatformUserRow[] });
+        const users = (data || []) as PlatformUserRow[];
+
+        // Security hardening pass: invitation visibility. Only expires_at/purpose/created_at are
+        // ever read here — auth_links.token_hash is never selected, so there is nothing to leak
+        // even by accident; the raw token itself was never stored anywhere to begin with
+        // (routes/users.ts only ever has it in memory for the one response that issues it).
+        const now = new Date().toISOString();
+        const ids = users.map((u) => u.id);
+        const links = ids.length
+            ? await supabase.from('auth_links').select('user_id, purpose, created_at, expires_at').in('user_id', ids).is('used_at', null).gt('expires_at', now).order('created_at', { ascending: false })
+            : { data: [] as { user_id: string; purpose: string; created_at: string; expires_at: string }[] };
+        const activeLinkByUser = new Map<string, { purpose: string; expires_at: string }>();
+        for (const l of links.data ?? []) if (!activeLinkByUser.has(l.user_id)) activeLinkByUser.set(l.user_id, { purpose: l.purpose, expires_at: l.expires_at });
+
+        res.json({ users: users.map((u) => ({ ...u, active_invite: activeLinkByUser.get(u.id) ?? null })) });
     } catch (err) {
         console.error('[organisations] List users error:', err);
         res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to list users' });

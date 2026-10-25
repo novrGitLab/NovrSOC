@@ -49,7 +49,7 @@ const labelCls = 'text-xs font-medium text-foreground-muted uppercase tracking-w
 interface Org { id: string; slug: string; name: string; domain: string | null; industry: string | null; plan: string; country: string | null; address: string | null; contact_name: string | null; contact_email: string | null; contact_phone: string | null; ciso_name: string | null; ciso_email: string | null; wazuh_group: string | null }
 interface OnboardingRecord { org_id: string; status: 'draft' | 'active'; current_step: number; completed_steps: number[]; steps: Record<string, Record<string, unknown>>; activated_by: string | null; activated_at: string | null }
 interface ServiceGrant { service: ServiceKey; label: string; status: ServiceStatus; notes: string | null }
-interface Member { id: string; email: string; name: string | null; role: string; status: string }
+interface Member { id: string; email: string; name: string | null; role: string; status: string; active_invite: { purpose: 'invite' | 'reset'; expires_at: string } | null }
 
 async function getJson<T>(path: string): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
     try {
@@ -420,7 +420,13 @@ export function OnboardingWizard({ orgId }: { orgId?: string }) {
                             <div className="bg-card-muted border border-border rounded-xl divide-y divide-border">
                                 {members.map((m) => (
                                     <div key={m.id} className="px-3 py-2.5 flex items-center justify-between gap-3">
-                                        <div><p className="text-xs font-bold text-foreground">{m.name ?? m.email}</p><p className="text-[10px] text-foreground-muted">{m.email} · {m.role}</p></div>
+                                        <div>
+                                            <p className="text-xs font-bold text-foreground">{m.name ?? m.email}</p>
+                                            <p className="text-[10px] text-foreground-muted">{m.email} · {m.role}</p>
+                                            <p className="text-[10px] text-foreground-muted">
+                                                {m.active_invite ? `${m.active_invite.purpose === 'invite' ? 'Invite' : 'Reset'} link active · expires ${new Date(m.active_invite.expires_at).toLocaleString()}` : m.status === 'disabled' ? 'Account disabled' : 'No active link — resend one below'}
+                                            </p>
+                                        </div>
                                         <div className="flex items-center gap-2 flex-shrink-0">
                                             <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${m.status === 'disabled' ? 'bg-red-500/10 text-red-500' : m.status === 'invited' ? 'bg-amber/10 text-amber' : 'bg-green-500/10 text-green-600'}`}>{m.status}</span>
                                             {m.status !== 'disabled' && <button onClick={() => void resendLink(m)} className="text-[10px] font-bold text-foreground border border-border rounded-lg px-2 py-1">{m.status === 'invited' ? 'Resend' : 'Reset'}</button>}
@@ -466,12 +472,16 @@ export function OnboardingWizard({ orgId }: { orgId?: string }) {
                             <p className="text-xs"><span className="text-foreground-muted">CISO / report recipient:</span> <span className="font-bold text-foreground">{cisoEmail || contactEmail || '— set one in Step 1'}</span></p>
                             <p className="text-xs"><span className="text-foreground-muted">IT / on-call contact:</span> <span className="font-bold text-foreground">{contactEmail || '—'}</span></p>
                         </div>
-                        <div><label className={labelCls}>Report Cadence</label>
+                        <div><label className={labelCls}>Report Cadence (preference only)</label>
                             <select value={reportCadence} onChange={(e) => setReportCadence(e.target.value as typeof reportCadence)} className={inputCls}>
                                 <option value="weekly">Weekly</option>
                                 <option value="monthly">Monthly</option>
                             </select>
-                            <p className="text-[10px] text-foreground-muted mt-1.5">Saved to the organisation&apos;s profile; Weekly Insights is generated from real data — nothing here fabricates a report.</p>
+                            <div className="mt-1.5 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-2">
+                                <p className="text-[10px] text-amber-800">
+                                    This saves a <strong>preference</strong>, nothing more — no scheduler currently reads it. Weekly Insights keeps running on its own existing schedule either way; choosing &quot;Monthly&quot; here does not change when, or whether, it is delivered.
+                                </p>
+                            </div>
                         </div>
                         <div className="bg-blue/5 border border-blue/20 rounded-xl p-3">
                             <p className="text-xs text-foreground-muted">Executive access to the Executive Report page follows directly from the <strong className="text-foreground">executive</strong> role invited in Step 3 — no separate toggle to keep in sync.</p>
