@@ -149,7 +149,11 @@ const ROUTES: Record<string, [string, string, unknown?][]> = {
     secops: [['POST', '/api/secops/broadcast', {}], ['POST', '/api/secops/hunting/escalate', {}], ['POST', '/api/secops/actions/isolate', {}], ['POST', '/api/secops/actions/block-ip', {}]],
     soar: [['GET', '/api/soar/stats'], ['GET', '/api/soar/cases?tier=1'], ['GET', '/api/soar/log']],
     handover: [['GET', '/api/handover'], ['POST', '/api/handover', {}]],
-    search: [['GET', '/api/search?q=shared']],
+    // search is deliberately NOT in this table (2026 redesign, Stage 3): unlike every other
+    // router here, it has no single permission gate — each entity provider checks its own, so a
+    // role like executive, which has none of cases:read/alerts:read but does have vms:read and
+    // intel:read, correctly gets 200 with a narrower result set rather than 403. See the
+    // dedicated 'search:' tests below.
     communications: [['GET', '/api/communications/recipients'], ['GET', '/api/communications'], ['POST', '/api/communications/send', {}]],
 };
 
@@ -175,6 +179,33 @@ for (const [router, routes] of Object.entries(ROUTES)) {
         }
     });
 }
+
+// search (2026 redesign, Stage 3): requireAuth/requireOrg apply like any other router, but there
+// is no single permission gate — each entity provider runs only if the role holds its own
+// permission, so a role with SOME but not all of them (executive) gets a narrower result set,
+// not a blanket refusal.
+test('search: 401 without a token', async () => {
+    assert.equal((await call('GET', '/api/search?q=shared', {})).status, 401);
+});
+test('search: portal_user is refused — client portal accounts cannot reach it at all', async () => {
+    const r = await call('GET', '/api/search?q=shared', { role: 'portal_user', org: A });
+    assert.equal(r.status, 403);
+    assert.equal(r.data.error, 'Client portal accounts can only use the client portal');
+});
+test('search: 403 for a token without an org (no default organisation)', async () => {
+    const r = await call('GET', '/api/search?q=shared', { role: 'super_admin' });
+    assert.equal(r.status, 403);
+    assert.match(r.data.error, /No organisation/);
+});
+test('search: executive has no cases:read, alerts:read or cnii:sector, so it gets 200 with only its permitted entities attempted (vms:read, intel:read)', async () => {
+    const r = await call('GET', '/api/search?q=shared', { role: 'executive', org: A });
+    assert.equal(r.status, 200);
+    const attempted = new Set(r.data.sources.map((s: { entity: string }) => s.entity));
+    assert.ok(!attempted.has('case'), 'cases:read not held — never attempted');
+    assert.ok(!attempted.has('alert'), 'alerts:read not held — never attempted');
+    assert.ok(!attempted.has('cnii_org'), 'cnii:sector not held (only cnii:read) — never attempted');
+    assert.ok(attempted.has('vms_asset') && attempted.has('ti_indicator'), 'vms:read and intel:read ARE held — those providers do run');
+});
 
 test('an analyst with an org gets through the gate on read routes', async () => {
     for (const p of ['/api/cases', '/api/soar/stats', '/api/soar/log', '/api/handover', '/api/search?q=shared', '/api/communications/recipients', '/api/communications', '/api/notifications']) {
