@@ -46,6 +46,19 @@ export function ExecutiveReport() {
             .then((r) => r.json()).then((d) => setCustomerCount(Array.isArray(d?.customers) ? d.customers.length : 0)).catch(() => setCustomerCount(0));
     }, [org]);
 
+    // Reset in the same render that notices the org switch (not inside the effect above, which
+    // would commit one frame of the previous organisation's figures before the reset took
+    // effect) — react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes.
+    const [resetForOrg, setResetForOrg] = useState(org);
+    if (resetForOrg !== org) {
+        setResetForOrg(org);
+        setFrameworks(null);
+        setCaseKpis(null);
+        setAgents(null);
+        setCriticalAlerts(null);
+        setCustomerCount(null);
+    }
+
     const assessedFrameworks = frameworks?.filter((f) => f.assessed > 0) ?? [];
     const overallScore = assessedFrameworks.length > 0 ? Math.round(assessedFrameworks.reduce((s, f) => s + f.score, 0) / assessedFrameworks.length) : null;
     const scoreLabel = overallScore === null ? '—' : String(overallScore);

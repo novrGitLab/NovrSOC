@@ -16,6 +16,7 @@ import { usePolling } from '@/lib/usePolling';
 import { getAdminUser } from '@/lib/admin-auth';
 import { getOrgContext, subscribeOrgContext } from '@/lib/orgContext';
 import { platformHealthDisplay, honestCountDisplay, openCasesDisplay } from '@/lib/dashboardKpis';
+import { buildPriorityItems, filterMyCases, priorityFailedSources as computePriorityFailedSources, type PriorityItem } from '@/lib/priorityQueue';
 
 const Card = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
     <div className={`bg-card border border-border rounded-xl overflow-hidden shadow-sm ${className}`}>
@@ -36,7 +37,7 @@ const SectionHeader = ({ title, badge }: { title: string; badge?: string }) => (
 const WidgetCard = ({ title, icon: Icon, linkHref, linkLabel, children }: { title: string; icon?: React.ElementType; linkHref?: string; linkLabel?: string; children: React.ReactNode }) => (
     <div className="bg-card border border-border rounded-xl p-5 h-full flex flex-col">
         <div className="flex items-center justify-between mb-4">
-            <h3 className="font-bold text-sm text-foreground flex items-center gap-1.5">{Icon && <Icon size={14} className="text-foreground-muted" />}{title}</h3>
+            <h3 className="font-bold text-sm text-foreground flex items-center gap-1.5">{Icon && <Icon size={14} className="text-foreground-muted" aria-hidden />}{title}</h3>
             {linkHref && <Link href={linkHref} className="text-xs text-purple font-medium hover:underline flex-shrink-0">{linkLabel ?? 'View all →'}</Link>}
         </div>
         <div className="flex-1">{children}</div>
@@ -258,7 +259,6 @@ function ThreatIntelWidget({ ti, failure }: { ti: TiSummary | null; failure: str
  * an overdue finding stays a finding (GET /api/vms/findings/summary) — never merged into one
  * fabricated "incident" count. "No items" and "could not load every source" are shown
  * differently: a failed source is named, not silently folded into an empty queue. */
-export interface PriorityItem { id: string; kind: 'case' | 'approval' | 'remediation'; title: string; severity: 'critical' | 'high' | 'medium' | 'low' | null; href: string; meta: string }
 const QUEUE_KIND_LABEL: Record<PriorityItem['kind'], string> = { case: 'Case', approval: 'Approval', remediation: 'Overdue finding' };
 const QUEUE_KIND_STYLE: Record<PriorityItem['kind'], string> = { case: 'bg-red-500/10 text-red-500', approval: 'bg-amber/10 text-amber', remediation: 'bg-orange/10 text-orange' };
 
@@ -305,7 +305,7 @@ function VulnExposureWidget({ data, failure }: { data: VulnExposure | null; fail
             {failure ? (
                 <p className="text-xs text-foreground-muted text-center py-6">{failure}</p>
             ) : (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <div className="bg-card-muted rounded-lg p-3"><div className="text-lg font-black text-foreground">{data ? data.activeAssets.toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">Active assets</div></div>
                     <div className="bg-card-muted rounded-lg p-3"><div className="text-lg font-black text-orange">{data ? data.highRiskAssets.toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">High-risk assets</div></div>
                     <div className="bg-card-muted rounded-lg p-3"><div className="text-lg font-black text-red">{data ? (data.openCritical + data.openHigh).toLocaleString() : '—'}</div><div className="text-[10px] text-foreground-muted">Open critical + high</div></div>
@@ -328,12 +328,12 @@ function NovrAiCard() {
     }, []);
     return (
         <Link href="/admin/novrail" className="bg-card border border-border rounded-xl p-4 flex items-center gap-3 hover:border-purple/40 transition-colors">
-            <div className="w-9 h-9 rounded-lg bg-purple/10 flex items-center justify-center shrink-0"><Bot size={18} className="text-purple" /></div>
+            <div className="w-9 h-9 rounded-lg bg-purple/10 flex items-center justify-center shrink-0"><Bot size={18} className="text-purple" aria-hidden /></div>
             <div className="flex-1 min-w-0">
                 <p className="text-xs font-bold text-foreground">NovrAI Analyst</p>
                 <p className="text-[10px] text-foreground-muted">{status === null ? 'Checking…' : status.configured ? `Available · ${status.provider}` : 'Not configured for this backend'}</p>
             </div>
-            <ChevronRight size={14} className="text-foreground-muted shrink-0" />
+            <ChevronRight size={14} className="text-foreground-muted shrink-0" aria-hidden />
         </Link>
     );
 }
@@ -696,7 +696,13 @@ export const GeneralDashboard = () => {
         setFeedFailure(r.ok ? null : r.notConnected ? 'Not connected — the alert store is unavailable.' : `Alerts unavailable — ${r.error}`);
         setFeedLoading(false);
     }), []);
-    useEffect(() => { void loadFeed(); }, [loadFeed]);
+    useEffect(() => {
+        // apiFetch (lib/api.ts) reads the current organisation at call time and attaches it as
+        // X-Org-Id, so this call is always correctly scoped — but without `org` in this effect's
+        // deps it never re-ran on a switch, leaving the previous organisation's feed on screen
+        // until the next 60s poll.
+        void loadFeed();
+    }, [loadFeed, org]);
     // Stored-alert KPIs and the feed stay current while the dashboard is on screen.
     usePolling(() => Promise.all([loadAlertStats(), loadFeed()]), 60_000);
 
@@ -738,6 +744,9 @@ export const GeneralDashboard = () => {
     // on the backend. A failure on either leaves the whole card "—" rather than half-populated.
     const [vulnExposure, setVulnExposure] = useState<VulnExposure | null>(null);
     const [vulnExposureFailure, setVulnExposureFailure] = useState<string | null>(null);
+    // The authoritative overdue total (findings/summary.overdue) — distinct from overdueFindings
+    // below, which lists up to 1000 rows for the queue and would under-count on a very large org.
+    const [overdueTotal, setOverdueTotal] = useState<number | null>(null);
     useEffect(() => {
         const get = (path: string) => apiFetch(apiUrl(path), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d?.error ?? `HTTP ${r.status}`); return d; });
@@ -751,9 +760,10 @@ export const GeneralDashboard = () => {
                     knownExploited: summary?.known_exploited_open ?? 0,
                     resolvedStates: summary?.by_status?.resolved ?? 0,
                 });
+                setOverdueTotal(typeof summary?.overdue === 'number' ? summary.overdue : null);
                 setVulnExposureFailure(null);
             })
-            .catch((e: unknown) => { setVulnExposure(null); setVulnExposureFailure(e instanceof Error ? e.message : 'VMS is not available for this organisation'); });
+            .catch((e: unknown) => { setVulnExposure(null); setOverdueTotal(null); setVulnExposureFailure(e instanceof Error ? e.message : 'VMS is not available for this organisation'); });
     }, [org]);
 
     // "My Cases" — client-side filter of the already-fetched queue, not a separate backend call.
@@ -764,12 +774,54 @@ export const GeneralDashboard = () => {
     const [trendLoading, setTrendLoading] = useState(true);
     const [trendRange, setTrendRange] = useState<'24h' | '7d' | '30d'>('7d');
     useEffect(() => {
+        // This is org-scoped (scopeOf(req) in routes/wazuh.ts); `org` was missing from the deps
+        // below, so switching organisation left the previous organisation's trend bars on screen
+        // until the range buttons were next clicked.
         apiFetch(apiUrl(`/api/wazuh/trend?range=${trendRange}`), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
             .then(r => r.json())
             .then(data => setTrendData(Array.isArray(data) && data.length > 0 ? data : null))
             .catch(() => setTrendData(null))
             .finally(() => setTrendLoading(false));
-    }, [trendRange]);
+    }, [trendRange, org]);
+
+    // Org switch: reset every organisation-scoped widget's state in the same render that notices
+    // the change — not inside an effect, which would commit one frame of the previous
+    // organisation's data before the reset took effect. This is React's documented pattern for
+    // "adjusting state when a prop changes" (react.dev/learn/you-might-not-need-an-effect).
+    const [resetForOrg, setResetForOrg] = useState(org);
+    if (resetForOrg !== org) {
+        setResetForOrg(org);
+        setWazuhStatus(null);
+        setAlertStats(null);
+        setAlertsState({ loaded: false, notConnected: false, error: null });
+        setIncidentKpis(null);
+        setIncidentsFailed(false);
+        setIncidentQueue(null);
+        setIncidentsLoading(true);
+        setMitreTactics(null);
+        setMitreSource(null);
+        setTi(null);
+        setTiFailure(null);
+        setFrameworks(null);
+        setFrameworksLoading(true);
+        setFrameworksFailure(null);
+        setFeedAlerts([]);
+        setFeedFailure(null);
+        setFeedLoading(true);
+        setClients(null);
+        setClientsLoading(true);
+        setCustomerCount(null);
+        setCustomersFailed(false);
+        setApprovals(null);
+        setApprovalsFailed(false);
+        setOverdueFindings(null);
+        setOverdueFindingsFailed(false);
+        setVulnExposure(null);
+        setOverdueTotal(null);
+        setVulnExposureFailure(null);
+        setTrendData(null);
+        setTrendLoading(true);
+    }
 
     const trendBars = trendData
         ? (() => {
@@ -786,31 +838,18 @@ export const GeneralDashboard = () => {
     const level7PlusCount = alertStats ? alertStats.by_severity.critical + alertStats.by_severity.high + alertStats.by_severity.medium : null;
     const alertsUnavailable = !alertsState.loaded ? 'checking…' : alertsState.notConnected ? 'not connected' : 'unavailable';
 
-    // Priority Action Queue: critical/high cases + pending response approvals + overdue
-    // remediation, kept as distinct, labelled rows (never merged into one fabricated count).
-    const SEV_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
-    const priorityFailedSources = [
-        ...(incidentsFailed ? ['cases'] : []),
-        ...(approvalsFailed ? ['approvals'] : []),
-        ...(overdueFindingsFailed ? ['VMS findings'] : []),
-    ];
-    const priorityItems: PriorityItem[] | null = (incidentsFailed && approvalsFailed && overdueFindingsFailed) ? null : [
-        ...(incidentQueue ?? []).filter((c) => c.severity === 'critical' || c.severity === 'high').map((c): PriorityItem => ({
-            id: c.id, kind: 'case', title: c.name, severity: c.severity, href: '/admin/secops/cases', meta: `${c.status} · ${c.asset}`,
-        })),
-        ...(approvals ?? []).map((a): PriorityItem => ({
-            id: a.id, kind: 'approval', title: a.target_label || a.target, severity: null, href: '/admin/secops/approvals',
-            meta: `${a.action.replace(/_/g, ' ')} · requested ${watTime(a.requested_at)}`,
-        })),
-        ...(overdueFindings ?? []).map((f): PriorityItem => ({
-            id: f.id, kind: 'remediation', title: f.title, severity: f.scanner_severity, href: '/admin/vms/findings',
-            meta: [f.asset_value ?? 'Unknown asset', f.priority].filter(Boolean).join(' · '),
-        })),
-    ].sort((a, b) => (SEV_RANK[a.severity ?? ''] ?? 4) - (SEV_RANK[b.severity ?? ''] ?? 4));
-    const priorityLoading = incidentsLoading || (approvals === null && !approvalsFailed) || (overdueFindings === null && !overdueFindingsFailed);
-
+    // Priority Action Queue composition (src/lib/priorityQueue.ts, unit-tested there): critical/high
+    // cases + pending response approvals + overdue remediation, kept as distinct, labelled rows
+    // (never merged into one fabricated count). Every source here was already fetched above for
+    // its own widget/KPI — nothing here issues an extra request. "My Cases" filters the case
+    // queue (both here and the case widget below) the same way.
     const isManagerPlus = role === 'super_admin' || role === 'soc_manager';
-    const visibleQueue = myCasesOnly && incidentQueue ? incidentQueue.filter((c) => c.assignedTo === currentUserName) : incidentQueue;
+    const casesForQueue = filterMyCases(incidentQueue, myCasesOnly, currentUserName);
+    const priorityItemsFailedSources = computePriorityFailedSources(incidentsFailed, approvalsFailed, overdueFindingsFailed);
+    const priorityItems: PriorityItem[] | null = (incidentsFailed && approvalsFailed && overdueFindingsFailed)
+        ? null
+        : buildPriorityItems(casesForQueue, approvals, overdueFindings, watTime);
+    const priorityLoading = incidentsLoading || (approvals === null && !approvalsFailed) || (overdueFindings === null && !overdueFindingsFailed);
 
     const kpiCards: KpiCardProps[] = [
         // Registered / online / offline, from /api/wazuh/status. When the manager can't be reached
@@ -832,8 +871,8 @@ export const GeneralDashboard = () => {
             subValue: approvals ? 'awaiting a decision' : approvalsFailed ? 'could not check' : 'checking…',
         },
         {
-            label: 'Overdue Remediation', value: overdueFindings ? String(overdueFindings.length) : '—', trend: '', type: 'red', icon: Target,
-            subValue: overdueFindings ? 'past due, still open' : overdueFindingsFailed ? 'could not check' : 'checking…',
+            label: 'Overdue Remediation', value: overdueTotal !== null ? String(overdueTotal) : '—', trend: '', type: 'red', icon: Target,
+            subValue: overdueTotal !== null ? 'past due, still open' : vulnExposureFailure ? 'could not check' : 'checking…',
         },
         { label: 'Platform Health', value: health.pct, trend: '', type: health.type, icon: Activity, subValue: health.sub },
     ];
@@ -871,7 +910,7 @@ export const GeneralDashboard = () => {
             {/* Priority Action Queue (left) + Case queue (right), with an analyst-only "My Cases" filter */}
             <SectionHeader title="Priority Action Queue & Case Status" />
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-stretch">
-                <div className="lg:col-span-2"><PriorityActionQueue items={priorityItems} loading={priorityLoading} failedSources={priorityFailedSources} /></div>
+                <div className="lg:col-span-2"><PriorityActionQueue items={priorityItems} loading={priorityLoading} failedSources={priorityItemsFailedSources} /></div>
                 <div className="lg:col-span-3">
                     {role === 'analyst' && (
                         <div className="flex justify-end mb-2">
@@ -881,7 +920,7 @@ export const GeneralDashboard = () => {
                             </button>
                         </div>
                     )}
-                    <IncidentQueueWidget incidents={visibleQueue} loading={incidentsLoading} />
+                    <IncidentQueueWidget incidents={casesForQueue} loading={incidentsLoading} />
                 </div>
             </div>
 
