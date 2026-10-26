@@ -49,6 +49,7 @@ import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid } from '../services/cases';
 import { logAudit } from '../lib/audit';
 import { CNII_SECTORS, SECTOR_BY_ID } from '../lib/cnii-sectors';
+import { coverageState, tallyCoverage } from '../lib/cniiCoverage';
 import { classifySector } from '../lib/cnii-classify';
 import { coveringScope, parseTarget, type ScopeEntry } from '../lib/vmsScope';
 import { queueScan } from './vms';
@@ -164,6 +165,9 @@ router.get('/sectors', requirePermission('cnii:sector'), async (_req: AuthReques
                     id: sec.id, organisations: orgs.length, designated: orgs.filter((o) => o.designation === 'designated').length,
                     unmonitored: orgs.filter((o) => !stats[o.org_id].active_scopes).length,
                     with_gaps: orgs.filter((o) => gaps(stats[o.org_id]).length).length,
+                    // R3.3B Stage 2: the five-state coverage model, not just the binary "monitored"
+                    // above — "unknown" is counted apart from "connected", never folded into it.
+                    coverage: tallyCoverage(orgs.map((o) => coverageState(stats[o.org_id]))),
                     assets: t.assets, probable_assets: t.probable_assets, internet_facing: t.internet_facing, open_findings: t.open_findings,
                     confirmed_p1_p2: t.confirmed_p1_p2, unconfirmed_open: t.unconfirmed_open, kev_open: t.kev_open, new_matches: t.new_matches,
                 };
@@ -184,7 +188,7 @@ router.get('/sectors/:sector', requirePermission('cnii:sector'), async (req: Aut
         const { data: watch, error: wErr } = await db().from('cnii_submissions').select('id, value, kind, org_id, subfield, basis, ips, updated_at, authorisation').eq('status', 'confirmed').eq('sector_id', req.params.sector).order('updated_at', { ascending: false }).limit(500);
         // Registered by hand for this sector but not verified (P18): listed apart, never as confirmed.
         const { data: reg } = wErr ? { data: null } : await db().from('cnii_submissions').select('id, value, org_id, reason, updated_at').eq('status', 'candidate').eq('basis', 'manual_registration').eq('sector_id', req.params.sector).order('updated_at', { ascending: false }).limit(500);
-        res.json({ sector: req.params.sector, organisations: (profs ?? []).map((p) => ({ profile: p, name: names.get(p.org_id) ?? p.org_id, stats: stats[p.org_id], gaps: gaps(stats[p.org_id]) })), watchlist: wErr ? null : watch ?? [], registered: wErr ? null : reg ?? [] });
+        res.json({ sector: req.params.sector, organisations: (profs ?? []).map((p) => ({ profile: p, name: names.get(p.org_id) ?? p.org_id, stats: stats[p.org_id], gaps: gaps(stats[p.org_id]), coverage_state: coverageState(stats[p.org_id]) })), watchlist: wErr ? null : watch ?? [], registered: wErr ? null : reg ?? [] });
     } catch (e) { fail(res, e as { message?: string }); }
 });
 

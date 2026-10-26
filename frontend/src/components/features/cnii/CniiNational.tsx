@@ -13,36 +13,42 @@ import { useRouter } from 'next/navigation';
 import { ShieldAlert, ChevronRight, Building2, Server, Globe, Radar, Info } from 'lucide-react';
 import { fmtWat } from '@/lib/vms';
 import { CNII_SECTORS, SECTOR_BY_ID } from '@/lib/cnii-sectors';
-import { Card, SectionTitle, StatusPill, Tip } from '../vms/ui';
+import { Card, SectionTitle, StatusPill, Tip, type Tone } from '../vms/ui';
 import { PageHeader, KpiCard, SeverityBadge, PriorityBadge, RiskScore, Tag, Toggle, SearchBox, Select, ErrorState, EmptyState, relTime, nf, SEVERITY_META, SEVERITY_KEYS, riskColor } from '../vms/kit';
 import { ChartCard, Donut, BarList, TimeChart, Legend, type Series } from '../vms/charts';
 import { DataTable, type Column } from '../vms/table';
 import { useVmsData } from '../vms/data';
 
-type Sev = Record<string, number>;
-type Risk = { mean: number | null; max: number | null; scored: number };
+export type Sev = Record<string, number>;
+export type Risk = { mean: number | null; max: number | null; scored: number };
+// R3.3B Stage 2: the five real monitoring states (lib/cniiCoverage.ts on the backend) — never
+// collapsed back down to a binary "monitored"/"not monitored" pill in this file.
+export type CoverageState = 'connected_fresh' | 'connected_stale' | 'configured_not_receiving' | 'not_connected' | 'unknown';
+type CoverageTally = Record<CoverageState, number>;
+export interface TiSum { total: number; verified: number; contextual: number }
 interface OrgSum {
     slug: string; name: string; sector?: string; subfield: string | null; designation: string;
     assets: number; internet_facing: number; open_findings: number; open_vulnerabilities: number; severity: Sev; priority: Sev; critical_high: number; kev_open: number;
-    risk: Risk; assets_requiring_attention: number; monitoring: { active_scopes: number; assets_assessed_30d: number };
+    risk: Risk; assets_requiring_attention: number; monitoring: { active_scopes: number; assets_assessed_30d: number; last_collection: { at: string; status: string } | null };
+    coverage_state: CoverageState; threat_intelligence: TiSum;
 }
 interface TopAsset { asset_id: string; org_id: string; organisation: string; value: string; open: number; severity: Sev; max_risk: number; kev: number; asset_type: string | null; exposure: string | null; criticality: string | null }
 interface National {
     visibility: { mode: 'all' | 'assigned'; organisations: number; designated_only: boolean };
     definitions: Record<string, string>;
-    kpis: { sectors_configured: number; sectors_monitored: number; organisations: number; designated: number; assets: number; open_vulnerabilities: number; critical: number; high: number; kev_open: number; risk: Risk; assets_requiring_attention: number; coverage: { organisations_scoped: number; organisations: number; pct: number | null } };
+    kpis: { sectors_configured: number; sectors_monitored: number; organisations: number; designated: number; assets: number; open_vulnerabilities: number; critical: number; high: number; kev_open: number; risk: Risk; assets_requiring_attention: number; coverage: { organisations_scoped: number; organisations: number; pct: number | null; by_state: CoverageTally } };
     severity: Sev; priority: Sev; sources: Sev;
     trend: { day: string; open_total: number; kev_open: number; internet_open: number; organisations: number }[];
-    sectors: { id: string; organisations: number; designated: number; candidates: number; assets: number; open_vulnerabilities: number; critical_high: number; severity: Sev; priority: Sev; risk: Risk; monitored: number }[];
+    sectors: { id: string; organisations: number; designated: number; candidates: number; assets: number; open_vulnerabilities: number; critical_high: number; severity: Sev; priority: Sev; risk: Risk; coverage: { by_state: CoverageTally; total: number; connected_pct: number | null }; threat_intelligence: TiSum }[];
     organisations: OrgSum[];
     top_assets: TopAsset[];
 }
 interface SectorData {
     sector: string; visibility: { mode: string; organisations: number }; definitions: Record<string, string>;
-    kpis: { organisations: number; designated: number; assets: number; internet_facing: number; open_vulnerabilities: number; kev_open: number; risk: Risk; assets_requiring_attention: number; coverage: { organisations_scoped: number; assets_assessed_30d: number } };
+    kpis: { organisations: number; designated: number; assets: number; internet_facing: number; open_vulnerabilities: number; kev_open: number; risk: Risk; assets_requiring_attention: number; coverage: { organisations_scoped: number; assets_assessed_30d: number; by_state: CoverageTally } };
     severity: Sev; priority: Sev; sources: Sev; organisations: OrgSum[]; top_assets: TopAsset[];
 }
-interface OrgData {
+export interface OrgData {
     organisation: { slug: string; name: string; sector: string; subfield: string | null; designation: string; designation_reference: string | null; profile_updated_at: string | null };
     definitions: Record<string, string>;
     summary: Omit<OrgSum, 'slug' | 'name' | 'subfield' | 'designation'>;
@@ -50,8 +56,9 @@ interface OrgData {
     remediation: { findings_open_by_status: Sev; findings_closed_by_status: Sev; tasks_by_status: Sev };
     sources: Sev;
     cves: { cve_id: string; kev: boolean; findings: number }[];
-    assets: { id: string; value: string; asset_type: string; exposure: string; criticality: string; last_seen: string; last_assessed_at: string | null; findings: { open: number; severity: Sev; max_risk: number | null } }[];
+    assets: { id: string; value: string; asset_type: string; exposure: string; criticality: string; last_seen: string; last_assessed_at: string | null; findings: { open: number; severity: Sev; max_risk: number | null }; threat_intelligence: TiSum }[];
     findings: { id: string; asset_id: string | null; asset_value: string; port: number | null; title: string; rule_id: string; cve_ids: string[]; scanner_cvss: number | null; risk_score: number | null; priority: string | null; severity: string; status: string; detected_by: string[]; kev: boolean; first_seen: string; last_seen: string; due_at: string | null; evidence_class: string | null }[];
+    trend: { day: string; open_total: number; kev_open: number; internet_open: number; risk_mean: number | null; critical_exposures: number }[];
 }
 interface AssetData {
     organisation: { slug: string; name: string; sector: string; designation: string };
@@ -65,6 +72,9 @@ interface AssetData {
         history: { at: string; action: string; from: string | null; to: string | null }[];
         tasks: { title: string; status: string; due_at: string | null }[];
     }[];
+    // R3.3B Stage 4: each row keeps its own verified-vs-contextual verdict and TLP — never folded
+    // into a single "threat matches" count, and never presented as proof of an attack on its own.
+    threat_intelligence: { indicator_type: string | null; indicator_value: string | null; confidence: number | null; malware_families: string[]; threat_types: string[]; verified: boolean; status: string; case_id: string | null; tlp: string }[];
 }
 
 const SEV_TOKENS = { critical: '--vz-sev-critical', high: '--vz-sev-high', medium: '--vz-sev-medium', low: '--vz-sev-low', info: '--vz-sev-info' } as const;
@@ -73,6 +83,18 @@ const STATUS_TEXT: Record<string, string> = { open: 'Open', reopened: 'Reopened'
 const SOURCE_LABEL: Record<string, string> = { nuclei: 'Nuclei', openvas: 'OpenVAS / Greenbone', wazuh: 'Wazuh agent', unknown: 'Not recorded' };
 const sectorLabel = (id: string) => SECTOR_BY_ID[id]?.label ?? id;
 const designationTag = (d: string) => d === 'designated' ? <StatusPill tone="good" label="Designated CNII" /> : <StatusPill tone="warning" label="Candidate — not yet designated" />;
+
+// R3.3B Stage 2: five real states, not a binary "has a scope" pill — a scope with no recorded
+// collection, or one that stopped reporting, must never read the same as fresh telemetry.
+const COVERAGE_TONE: Record<CoverageState, Tone> = { connected_fresh: 'good', connected_stale: 'warning', configured_not_receiving: 'warning', not_connected: 'critical', unknown: 'neutral' };
+const COVERAGE_LABEL: Record<CoverageState, string> = { connected_fresh: 'Connected — receiving telemetry', connected_stale: 'Connected — stale', configured_not_receiving: 'Configured — not yet receiving data', not_connected: 'Not connected', unknown: 'Monitoring status unknown' };
+function CoverageBadge({ state, detail }: { state: CoverageState; detail?: string }) {
+    return <StatusPill tone={COVERAGE_TONE[state]} label={detail ? `${COVERAGE_LABEL[state]} · ${detail}` : COVERAGE_LABEL[state]} />;
+}
+function ThreatIntelSummary({ ti }: { ti: TiSum }) {
+    if (ti.total === 0) return <span className="text-[11px] text-foreground-muted">No indicator matches</span>;
+    return <span className="text-[11px]"><b className="tabular-nums">{ti.total}</b> indicator match{ti.total === 1 ? '' : 'es'}{ti.verified > 0 ? <> · <span className="font-semibold" style={{ color: 'var(--vz-sev-critical)' }}>{ti.verified} verified</span></> : ''}{ti.contextual > 0 ? ` · ${ti.contextual} contextual` : ''}</span>;
+}
 
 function Crumbs({ items }: { items: { label: string; href?: string }[] }) {
     return (
@@ -126,7 +148,8 @@ export function CniiNationalOverview() {
                     <KpiCard label="Critical & high" value={k ? k.critical + k.high : undefined} reason="Loading" tone={k && k.critical + k.high ? 'critical' : k ? 'good' : undefined} sub={k ? `${k.critical} critical · ${k.high} high${k.kev_open ? ` · ${k.kev_open} known exploited` : ''}` : undefined} />
                     <RiskKpi risk={k?.risk} definition={d?.definitions.infrastructure_risk} />
                     <KpiCard label="Assets requiring attention" value={k?.assets_requiring_attention} reason="Loading" tone={k?.assets_requiring_attention ? 'warning' : k ? 'good' : undefined} hint={d?.definitions.assets_requiring_attention} sub="Critical/high, P1/P2 or known-exploited findings" />
-                    <KpiCard label="Monitoring coverage" value={k ? k.coverage.pct : undefined} suffix="%" reason={k ? 'No organisations' : 'Loading'} hint={d?.definitions.monitoring_coverage} sub={k ? `${k.coverage.organisations_scoped} of ${k.coverage.organisations} organisations with active authorised scope` : undefined} />
+                    <KpiCard label="Monitoring coverage" value={k ? k.coverage.pct : undefined} suffix="%" reason={k ? 'No organisations' : 'Loading'} hint={d?.definitions.monitoring_coverage}
+                        sub={k ? <>{k.coverage.organisations_scoped} of {k.coverage.organisations} receiving telemetry{k.coverage.by_state.connected_stale ? ` · ${k.coverage.by_state.connected_stale} stale` : ''}{k.coverage.by_state.configured_not_receiving ? ` · ${k.coverage.by_state.configured_not_receiving} never collected` : ''}</> : undefined} />
                 </section>
 
                 <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -189,7 +212,7 @@ export function CniiNationalOverview() {
                                             <div><dt className="text-[10px] text-foreground-muted">Crit / high</dt><dd className="text-lg font-black tabular-nums" style={{ color: s.critical_high ? 'var(--vz-sev-critical)' : undefined }}>{s.critical_high}</dd></div>
                                         </dl>
                                     ) : <p className="text-[11px] text-foreground-muted mt-4 leading-relaxed">No organisation in this sector has a CNII profile yet{designatedOnly ? ' (designated only)' : ''}. Classify one from Classification & intake.</p>}
-                                    {monitored && <p className="mt-3 text-[10.5px] text-foreground-muted">{s.designated} designated · {s.candidates} candidate · {s.monitored}/{s.organisations} with authorised scope</p>}
+                                    {monitored && <p className="mt-3 text-[10.5px] text-foreground-muted">{s.designated} designated · {s.candidates} candidate · {s.coverage.by_state.connected_fresh + s.coverage.by_state.connected_stale}/{s.organisations} receiving telemetry</p>}
                                 </Link>
                             );
                         })}
@@ -260,7 +283,8 @@ export function CniiNationalSector({ sectorId }: { sectorId: string }) {
         { key: 'assets', header: 'Assets', sort: (o) => o.assets, render: (o) => <span className="tabular-nums">{nf.format(o.assets)}</span> },
         { key: 'open', header: 'Open findings', sort: (o) => o.open_vulnerabilities, render: (o) => <span className="text-[11px]"><b className="tabular-nums">{o.open_vulnerabilities}</b> · {SEVERITY_KEYS.filter((s) => s !== 'info' && o.severity[s]).map((s) => `${o.severity[s]} ${s}`).join(' · ') || 'none'}</span> },
         { key: 'risk', header: 'Contextual risk', sort: (o) => o.risk.mean ?? -1, render: (o) => <RiskScore score={o.risk.mean} wide /> },
-        { key: 'coverage', header: 'Monitoring', hideBelow: 'lg', render: (o) => <StatusPill tone={o.monitoring.active_scopes ? 'good' : 'warning'} label={o.monitoring.active_scopes ? `${o.monitoring.active_scopes} authorised scope(s)` : 'No authorised scope'} /> },
+        { key: 'coverage', header: 'Monitoring', hideBelow: 'lg', render: (o) => <CoverageBadge state={o.coverage_state} /> },
+        { key: 'ti', header: 'Threat intel', hideBelow: 'lg', sort: (o) => o.threat_intelligence.total, render: (o) => <ThreatIntelSummary ti={o.threat_intelligence} /> },
     ];
     return (
         <div className="space-y-5">
@@ -358,11 +382,11 @@ export function CniiNationalOrg({ org }: { org: string }) {
                         <p className="text-xs text-foreground-muted">{meta?.label ?? d.organisation.sector}{d.organisation.subfield ? ` · ${d.organisation.subfield}` : ''} · {d.organisation.slug}</p>
                         <div className="flex flex-wrap items-center gap-3 pt-1">
                             {designationTag(d.organisation.designation)}
-                            <StatusPill tone={d.monitoring.active_scopes ? 'good' : 'warning'} label={d.monitoring.active_scopes ? `Monitored · ${d.monitoring.active_scopes} authorised scope(s)` : 'No authorised scope — not actively monitored'} />
+                            <CoverageBadge state={d.summary.coverage_state} detail={d.monitoring.active_scopes ? `${d.monitoring.active_scopes} authorised scope(s)` : undefined} />
                             {d.monitoring.last_scan && <span className="text-[11px] text-foreground-muted">Last scan {relTime(d.monitoring.last_scan.finished_at, at ?? 0)} ({d.monitoring.last_scan.kind}, {d.monitoring.last_scan.status})</span>}
                         </div>
                     </div>
-                    <div className="flex items-center gap-2"><RiskBadge risk={d.summary.risk} /><Link href={`/admin/cnii/org/${encodeURIComponent(org)}/manage`} className="text-[11px] font-semibold text-purple dark:text-[var(--vz-prog-4)]">Profile & inventory →</Link></div>
+                    <div className="flex items-center gap-2"><RiskBadge risk={d.summary.risk} /><Link href={`/admin/cnii/org/${encodeURIComponent(org)}/report`} className="text-[11px] font-semibold text-purple dark:text-[var(--vz-prog-4)]">Report →</Link><Link href={`/admin/cnii/org/${encodeURIComponent(org)}/manage`} className="text-[11px] font-semibold text-purple dark:text-[var(--vz-prog-4)]">Profile & inventory →</Link></div>
                 </div>
             )}
             {(d || loading) && <>
@@ -375,6 +399,8 @@ export function CniiNationalOrg({ org }: { org: string }) {
                     <KpiCard label="Assets requiring attention" value={s?.assets_requiring_attention} reason="Loading" hint={d?.definitions.assets_requiring_attention} tone={s?.assets_requiring_attention ? 'warning' : undefined} />
                     <KpiCard label="Remediation progress" value={d ? (openAll + closed ? Math.round((closed / (openAll + closed)) * 100) : null) : undefined} suffix="%" reason={d ? 'No findings on record' : 'Loading'} sub={d ? `${closed} closed (verified, accepted or false positive) · ${openAll} open` : undefined} />
                     <KpiCard label="Assets assessed (30 days)" value={s?.monitoring.assets_assessed_30d} suffix={s ? ` / ${s.assets}` : ''} reason="Loading" />
+                    <KpiCard label="Threat intelligence matches" value={s?.threat_intelligence.total} reason="Loading" tone={s && s.threat_intelligence.verified > 0 ? 'critical' : s ? 'good' : undefined}
+                        sub={s ? (s.threat_intelligence.total ? `${s.threat_intelligence.verified} verified · ${s.threat_intelligence.contextual} contextual only` : 'No indicator matches') : undefined} />
                 </section>
                 <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
                     <ChartCard title="Severity (CVSS)" loading={loading} empty={d && !Object.values(d.summary.severity).some(Boolean) ? { title: 'No open findings' } : null}>{d && <Donut label="Findings by severity" centerLabel="open" slices={sevSlices(d.summary.severity)} />}</ChartCard>
@@ -434,6 +460,24 @@ export function CniiNationalAsset({ org, id }: { org: string; id: string }) {
                 <KpiCard label="Highest contextual risk" value={maxRisk} reason="No open findings" sub="NovrSOC risk, 0–100 — not CVSS" />
                 <KpiCard label="CVEs" value={new Set(open.flatMap((f) => f.cves.map((c) => c.cve_id))).size} sub={`${open.filter((f) => f.cves.some((c) => c.kev)).length} with a known-exploited CVE`} />
             </section>
+            {d.threat_intelligence.length > 0 && (
+                <Card>
+                    <SectionTitle title="Threat intelligence" hint="Each match keeps its own verdict — a shared indicator is never itself proof this asset was attacked." />
+                    <ul className="divide-y divide-border">
+                        {d.threat_intelligence.map((m, i) => (
+                            <li key={i} className="py-2.5 flex flex-wrap items-center gap-2">
+                                <StatusPill tone={m.verified ? 'critical' : 'neutral'} label={m.verified ? 'Verified association' : 'Contextual only'} />
+                                <span className="text-xs font-mono text-foreground">{m.indicator_type}: {m.indicator_value}</span>
+                                {m.malware_families.length > 0 && <Tag>{m.malware_families.join(', ')}</Tag>}
+                                {m.threat_types.length > 0 && <span className="text-[11px] text-foreground-muted">{m.threat_types.join(', ')}</span>}
+                                {m.confidence !== null && <span className="text-[11px] text-foreground-muted">confidence {m.confidence}</span>}
+                                <Tag strong={m.tlp === 'red' || m.tlp === 'amber+strict'}>TLP:{m.tlp.toUpperCase()}</Tag>
+                                {m.case_id && <Link href={`/admin/secops/cases?id=${m.case_id}`} className="text-[11px] font-semibold text-purple dark:text-[var(--vz-prog-4)]">Case →</Link>}
+                            </li>
+                        ))}
+                    </ul>
+                </Card>
+            )}
             <div className="flex items-center justify-between gap-2 flex-wrap">
                 <h2 className="text-sm font-black text-foreground">Vulnerability findings</h2>
                 <div className="inline-flex gap-0.5 bg-card border border-border rounded-lg p-0.5">{(['open', 'all'] as const).map((t) => <button key={t} aria-pressed={show === t} onClick={() => setShow(t)} className={`text-[11px] font-semibold px-2.5 py-1 rounded-md ${show === t ? 'bg-purple text-white' : 'text-foreground-muted'}`}>{t === 'open' ? `Open (${open.length})` : `All, incl. history (${d.findings.length})`}</button>)}</div>

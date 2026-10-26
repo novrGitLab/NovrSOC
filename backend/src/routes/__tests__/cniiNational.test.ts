@@ -35,9 +35,13 @@ before(async () => {
         vms_findings: [finding('grid-co', grid, 'critical', 90, { cve_ids: ['CVE-2024-3400'] }), finding('grid-co', grid, 'medium', 40), finding('grid-co', grid, 'info', 2), finding('bank-co', bank, 'high', 60), finding('other-co', unprofiled, 'critical', 99), finding('grid-co', grid, 'high', 70, { status: 'verified' })],
         vms_scopes: [{ org_id: 'grid-co', status: 'active', expires_at: new Date(Date.now() + 9e8).toISOString() }],
         cve_intel: [{ cve_id: 'CVE-2024-3400', kev: true }],
-        vms_risk_snapshots: [], vms_remediation_tasks: [], vms_scan_jobs: [], vms_finding_evidence: [], vms_finding_events: [], audit_log: [],
+        // grid-co is scoped AND has actually collected (connected_fresh); bank-co has neither a
+        // scope nor a collection (not_connected) — R3.3B Stage 2 requires real telemetry evidence,
+        // not just an authorised scope, before a monitoring coverage figure counts an org as covered.
+        vms_risk_snapshots: [], vms_remediation_tasks: [], vms_scan_jobs: [{ id: randomUUID(), org_id: 'grid-co', kind: 'passive_osint', status: 'succeeded', finished_at: now }], vms_finding_evidence: [], vms_finding_events: [], audit_log: [],
         staff_org_assignments: [{ id: randomUUID(), user_id: 'analyst-soc', user_email: 'a@soc.test', org_slug: 'grid-co', assigned_by: 'root', assigned_at: now }],
-    });
+        ti_matches: [], ti_indicators: [], ti_indicator_sources: [],
+    }, { 'ti_matches.ti_indicators': 'indicator_id' });
     process.env.SUPABASE_URL = db.url;
     process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
     const app = express();
@@ -60,7 +64,10 @@ test('national: only profiled organisations are counted; risk is the defined con
     assert.equal(k.kev_open, 1);
     assert.deepEqual(k.risk, { mean: Math.round(((90 + 40 + 60) / 3) * 10) / 10, max: 90, scored: 3 });
     assert.match(String((r.data.definitions as Row).infrastructure_risk), /not an average of CVSS/);
-    assert.deepEqual((k.coverage as Row), { organisations_scoped: 1, organisations: 2, pct: 50 });
+    assert.deepEqual((k.coverage as Row), {
+        organisations_scoped: 1, organisations: 2, pct: 50,
+        by_state: { connected_fresh: 1, connected_stale: 0, configured_not_receiving: 0, not_connected: 1, unknown: 0 },
+    });
     const sectors = r.data.sectors as Row[];
     assert.equal(sectors.length, 13);
     assert.equal(sectors.find((s) => s.id === 'water')!.organisations, 0);
@@ -102,6 +109,42 @@ test('drill-down: sector → organisation → asset, from the organisation\'s ow
     assert.equal((await get(`/orgs/grid-co/assets/${bank.id}`, t)).status, 404, 'an asset of another organisation');
     assert.equal((await get('/orgs/other-co', t)).status, 404, 'an organisation without a CNII profile');
     assert.equal((await get('/sectors/atlantis', t)).status, 404);
+});
+
+test('R3.3B: coverage_state threads through every level; TI matches are verified-vs-contextual, never a bare count, and carry a conservative TLP', async () => {
+    const t = tok('soc_manager', 'soc');
+    const sector = await get('/sectors/power', t);
+    assert.equal((sector.data.organisations as Row[])[0].coverage_state, 'connected_fresh');
+    assert.deepEqual((sector.data.kpis as Row).coverage, { organisations_scoped: 1, assets_assessed_30d: 0, by_state: { connected_fresh: 1, connected_stale: 0, configured_not_receiving: 0, not_connected: 0, unknown: 0 } });
+    const o = await get('/orgs/grid-co', t);
+    assert.equal(o.data.summary.coverage_state, 'connected_fresh');
+    // No indicator rows seeded yet: a clean, honest zero, not an absent field.
+    assert.deepEqual(o.data.summary.threat_intelligence, { total: 0, verified: 0, contextual: 0 });
+
+    const indicator = { id: randomUUID(), type: 'ip', value: '203.0.113.9', max_confidence: 80, malware_families: ['cobaltstrike'], threat_types: ['c2'], status: 'active' };
+    db.tables.ti_indicators = [indicator];
+    db.tables.ti_indicator_sources = [{ id: randomUUID(), indicator_id: indicator.id, feed_id: 'f', source_ref: 'r', tlp: 'amber+strict' }];
+    db.tables.ti_matches = [
+        { id: randomUUID(), org_id: 'grid-co', entity_type: 'asset', entity_id: grid.id, indicator_id: indicator.id, status: 'new', case_id: null },
+        { id: randomUUID(), org_id: 'grid-co', entity_type: 'asset', entity_id: grid.id, indicator_id: indicator.id, status: 'dismissed', case_id: null }, // excluded — an analyst's call that it isn't relevant
+    ];
+
+    const o2 = await get('/orgs/grid-co', t);
+    assert.deepEqual(o2.data.summary.threat_intelligence, { total: 1, verified: 0, contextual: 1 }, 'dismissed is excluded; "new" is contextual only, not verified');
+    const assetRow = (o2.data.assets as Row[]).find((x) => x.id === grid.id)!;
+    assert.deepEqual(assetRow.threat_intelligence, { total: 1, verified: 0, contextual: 1 });
+
+    const a = await get(`/orgs/grid-co/assets/${grid.id}`, t);
+    const ti = a.data.threat_intelligence as Row[];
+    assert.equal(ti.length, 1);
+    assert.equal(ti[0].verified, false, '"new" status with no case is a contextual association, never implied as verified');
+    assert.equal(ti[0].tlp, 'amber+strict', 'the most restrictive marking among the indicator\'s sources');
+    assert.equal(ti[0].indicator_value, '203.0.113.9');
+
+    // Promoting the match (or linking it to a case) is what a verified association actually means.
+    db.tables.ti_matches[0].status = 'promoted';
+    const a2 = await get(`/orgs/grid-co/assets/${grid.id}`, t);
+    assert.equal((a2.data.threat_intelligence as Row[])[0].verified, true);
 });
 
 test('client and executive roles are refused', async () => {

@@ -153,6 +153,14 @@ test('sector view: confirmed and unconfirmed findings are counted apart; unmonit
     const b = one.data.organisations.find((o: Row) => (o.profile as Row).org_id === B);
     assert.deepEqual(b.gaps, ['no active authorised scope: nothing is monitored']);
     assert.equal((await call('GET', '/sectors/atlantis', tok('analyst'))).status, 404);
+    // R3.3B Stage 2: A has an active scope but no recorded passive collection yet (configured,
+    // not receiving); B has no scope at all (not connected) — never both folded into "monitored".
+    const a = one.data.organisations.find((o: Row) => (o.profile as Row).org_id === A);
+    assert.equal(a.coverage_state, 'configured_not_receiving');
+    assert.equal(b.coverage_state, 'not_connected');
+    assert.deepEqual(ict.coverage.by_state, { connected_fresh: 0, connected_stale: 0, configured_not_receiving: 1, not_connected: 1, unknown: 0 });
+    assert.equal(ict.coverage.total, 2);
+    assert.equal(ict.coverage.connected_pct, 0);
 });
 
 test('authorisation status per asset: authorised, expired, revoked or none', () => {

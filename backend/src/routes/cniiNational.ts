@@ -27,6 +27,8 @@ import { getSupabase } from '../services/geoEnrichment';
 import { logAudit } from '../lib/audit';
 import { isUuid } from '../services/cases';
 import { CNII_SECTORS, SECTOR_BY_ID } from '../lib/cnii-sectors';
+import { coverageState, tallyCoverage, type CoverageState } from '../lib/cniiCoverage';
+import { mostRestrictive, type Tlp } from '../services/tiPolicy';
 
 const router = Router();
 const OPEN = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'];
@@ -61,14 +63,56 @@ async function loadProfiles(req: AuthRequest, opts: { sector?: string; org?: str
     return { error: null, profiles, vis };
 }
 
-/** VMS records of the given organisations, read once. */
+interface TiMatchRow { org_id: string; entity_id: string; status: string; case_id: string | null; indicator_id: string; indicator: { id: string; type: string; value: string; max_confidence: number | null; malware_families: string[] | null; threat_types: string[] | null; status: string | null } | null }
+
+/** Threat Intelligence correlation (R3.3B Stage 4) — the same entity_type='asset' join
+ * routes/cnii.ts's /assets/:id already uses for a single organisation, read here for any set of
+ * asset ids. 'dismissed' matches are an analyst's verdict that the match isn't relevant and are
+ * excluded; everything else is kept, with 'promoted' or a linked case_id treated as a verified
+ * association and 'new'/'reviewed' as contextual/possible only — a shared indicator or CVE
+ * appearing is never itself proof an actor attacked the asset. TLP is the most restrictive marking
+ * among an indicator's sources (services/tiPolicy.ts mostRestrictive) — an indicator with no
+ * source row is treated the same conservative way tlpFromTags() treats an untagged record. */
+async function loadTi(assetIds: string[]) {
+    const tiByAsset = new Map<string, TiMatchRow[]>();
+    const tlpByIndicator = new Map<string, Tlp>();
+    if (!assetIds.length) return { tiByAsset, tlpByIndicator };
+    const { data: matches } = await db().from('ti_matches')
+        .select('org_id, entity_id, status, case_id, indicator_id, ti_indicators(id, type, value, max_confidence, malware_families, threat_types, status)')
+        .eq('entity_type', 'asset').in('entity_id', assetIds).neq('status', 'dismissed').limit(20_000);
+    for (const m of (matches ?? []) as unknown as (Omit<TiMatchRow, 'indicator'> & { ti_indicators: TiMatchRow['indicator'] })[]) {
+        const row: TiMatchRow = { org_id: m.org_id, entity_id: m.entity_id, status: m.status, case_id: m.case_id, indicator_id: m.indicator_id, indicator: m.ti_indicators };
+        const list = tiByAsset.get(m.entity_id) ?? [];
+        list.push(row);
+        tiByAsset.set(m.entity_id, list);
+    }
+    const indicatorIds = [...new Set([...tiByAsset.values()].flat().map((m) => m.indicator_id))];
+    if (indicatorIds.length) {
+        const { data: sources } = await db().from('ti_indicator_sources').select('indicator_id, tlp').in('indicator_id', indicatorIds).limit(20_000);
+        const byIndicator = new Map<string, Tlp[]>();
+        for (const s of sources ?? []) byIndicator.set(s.indicator_id, [...(byIndicator.get(s.indicator_id) ?? []), s.tlp as Tlp]);
+        for (const id of indicatorIds) tlpByIndicator.set(id, byIndicator.has(id) ? mostRestrictive(byIndicator.get(id)!) : 'amber');
+    }
+    return { tiByAsset, tlpByIndicator };
+}
+
+/** VMS (and, R3.3B, Threat Intelligence) records of the given organisations, read once. */
 async function loadRecords(orgIds: string[]) {
-    if (!orgIds.length) return { assets: [] as Asset[], findings: [] as Finding[], scopes: [] as { org_id: string; expires_at: string }[], kev: new Set<string>() };
+    if (!orgIds.length) {
+        return {
+            assets: [] as Asset[], findings: [] as Finding[], scopes: [] as { org_id: string; expires_at: string }[], kev: new Set<string>(),
+            lastCollection: new Map<string, { at: string; status: string }>(), tiByAsset: new Map<string, TiMatchRow[]>(), tlpByIndicator: new Map<string, Tlp>(),
+        };
+    }
     const now = new Date().toISOString();
-    const [assets, findings, scopes] = await Promise.all([
+    const [assets, findings, scopes, collections] = await Promise.all([
         db().from('vms_assets').select('*').in('org_id', orgIds).eq('status', 'active').limit(50_000),
         db().from('vms_findings').select('*').in('org_id', orgIds).in('status', OPEN).limit(50_000),
         db().from('vms_scopes').select('org_id, expires_at').in('org_id', orgIds).eq('status', 'active').gt('expires_at', now),
+        // Same passive-collection signal routes/cnii.ts's orgStats() already uses for its own
+        // monitoring gaps, read here too so the national/sector view carries the same coverage
+        // state instead of its previous binary "has a scope" pill.
+        db().from('vms_scan_jobs').select('org_id, finished_at, status').in('org_id', orgIds).eq('kind', 'passive_osint').not('finished_at', 'is', null).order('finished_at', { ascending: false }).limit(5000),
     ]);
     if (assets.error) throw assets.error;
     if (findings.error) throw findings.error;
@@ -78,7 +122,10 @@ async function loadRecords(orgIds: string[]) {
         const { data } = await db().from('cve_intel').select('cve_id').eq('kev', true).in('cve_id', cves.slice(i, i + 200));
         for (const k of data ?? []) kev.add(k.cve_id);
     }
-    return { assets: (assets.data ?? []) as Asset[], findings: (findings.data ?? []) as Finding[], scopes: scopes.data ?? [], kev };
+    const lastCollection = new Map<string, { at: string; status: string }>();
+    for (const r of collections.data ?? []) if (!lastCollection.has(r.org_id)) lastCollection.set(r.org_id, { at: r.finished_at!, status: r.status });
+    const { tiByAsset, tlpByIndicator } = await loadTi((assets.data ?? []).map((a) => a.id as string));
+    return { assets: (assets.data ?? []) as Asset[], findings: (findings.data ?? []) as Finding[], scopes: scopes.data ?? [], kev, lastCollection, tiByAsset, tlpByIndicator };
 }
 
 const sevCounts = (fs: Finding[]) => Object.fromEntries(SEVERITIES.map((s) => [s, fs.filter((f) => f.scanner_severity === s).length])) as Record<string, number>;
@@ -93,6 +140,13 @@ function sources(fs: Finding[]) {
     for (const f of fs) for (const d of f.source_class === 'wazuh' ? ['wazuh'] : (f.detected_by ?? []).length ? f.detected_by! : ['unknown']) m[d] = (m[d] ?? 0) + 1;
     return m;
 }
+/** Verified (promoted, or linked to a case) vs contextual-only (new/reviewed) counts for an
+ * organisation's assets — never a single merged "threat matches" number, per R3.3B Stage 4. */
+function tiSummary(assetIds: string[], recs: Awaited<ReturnType<typeof loadRecords>>) {
+    const rows = assetIds.flatMap((id) => recs.tiByAsset.get(id) ?? []);
+    const verified = rows.filter((m) => m.status === 'promoted' || !!m.case_id);
+    return { total: rows.length, verified: verified.length, contextual: rows.length - verified.length };
+}
 function orgSummary(slug: string, recs: Awaited<ReturnType<typeof loadRecords>>) {
     const assets = recs.assets.filter((a) => a.org_id === slug);
     const open = recs.findings.filter((f) => f.org_id === slug);
@@ -100,13 +154,17 @@ function orgSummary(slug: string, recs: Awaited<ReturnType<typeof loadRecords>>)
     const since30 = Date.now() - 30 * DAY;
     const assessed = assets.filter((a) => a.last_assessed_at && Date.parse(a.last_assessed_at) > since30).length;
     const needing = new Set(open.filter((f) => f.asset_id && attention(f, recs.kev)).map((f) => f.asset_id));
+    const activeScopes = recs.scopes.filter((s) => s.org_id === slug).length;
+    const lastCollection = recs.lastCollection.get(slug) ?? null;
     return {
         assets: assets.length, internet_facing: assets.filter((a) => a.exposure === 'internet').length,
         open_findings: open.length, open_vulnerabilities: vulns.length, severity: sevCounts(open), priority: prioCounts(open),
         critical_high: open.filter((f) => f.scanner_severity === 'critical' || f.scanner_severity === 'high').length,
         kev_open: open.filter((f) => (f.cve_ids ?? []).some((c) => recs.kev.has(c))).length,
         risk: risk(open), assets_requiring_attention: needing.size,
-        monitoring: { active_scopes: recs.scopes.filter((s) => s.org_id === slug).length, assets_assessed_30d: assessed },
+        monitoring: { active_scopes: activeScopes, assets_assessed_30d: assessed, last_collection: lastCollection },
+        coverage_state: coverageState({ active_scopes: activeScopes, last_collection: lastCollection }) as CoverageState,
+        threat_intelligence: tiSummary(assets.map((a) => a.id), recs),
     };
 }
 function topAssets(recs: Awaited<ReturnType<typeof loadRecords>>, names: Map<string, string>, limit = 10) {
@@ -132,7 +190,7 @@ async function orgNames(slugs: string[]) {
 const DEFINITIONS = {
     infrastructure_risk: 'Mean NovrSOC contextual risk score (0–100) of open non-informational findings on monitored assets, with the highest score beside it. It weighs CVSS 45%, exploitation evidence (KEV, EPSS) 30%, exposure 15% and asset criticality 10% — it is not an average of CVSS.',
     assets_requiring_attention: 'Assets with at least one open critical or high finding, a P1/P2 finding, or a CVE in the CISA KEV catalogue.',
-    monitoring_coverage: 'Organisations with an active authorised scope, out of the CNII organisations shown.',
+    monitoring_coverage: 'Organisations with real, recent evidence of collection — an authorised scope alone is not enough. "Connected — stale" (collection ran, but not within 8 days) and "configured — not yet receiving data" (a scope exists but nothing has ever been collected) are shown apart, never counted as covered.',
     organisations: 'Organisations with a recorded CNII profile (sector set by a manager). Candidates are classified but not yet formally designated.',
 };
 
@@ -146,6 +204,8 @@ router.get('/', can, async (req: AuthRequest, res) => {
             loadRecords(slugs), orgNames(slugs),
             slugs.length ? db().from('vms_risk_snapshots').select('org_id, day, open_total, open_by_priority, kev_open, internet_open, risk_mean, critical_exposures').in('org_id', slugs).gte('day', new Date(Date.now() - 90 * DAY).toISOString().slice(0, 10)).order('day').limit(10_000) : Promise.resolve({ data: [] }),
         ]);
+        const orgCoverage = (orgId: string): CoverageState =>
+            coverageState({ active_scopes: recs.scopes.filter((s) => s.org_id === orgId).length, last_collection: recs.lastCollection.get(orgId) ?? null });
         const sectorCards = CNII_SECTORS.map((sec) => {
             const orgs = profiles.filter((p) => p.sector_id === sec.id);
             const ids = new Set(orgs.map((o) => o.org_id));
@@ -156,12 +216,15 @@ router.get('/', can, async (req: AuthRequest, res) => {
                 assets: assets.length, open_vulnerabilities: fs.filter((f) => f.scanner_severity !== 'info').length,
                 critical_high: fs.filter((f) => f.scanner_severity === 'critical' || f.scanner_severity === 'high').length,
                 severity: sevCounts(fs), priority: prioCounts(fs), risk: risk(fs),
-                monitored: orgs.filter((o) => recs.scopes.some((s) => s.org_id === o.org_id)).length,
+                // R3.3B Stage 2/5: the five-state model, not a binary "monitored" pill — a never-
+                // collected or stale organisation is never counted the same as a fresh one.
+                coverage: tallyCoverage(orgs.map((o) => orgCoverage(o.org_id))),
+                threat_intelligence: tiSummary(assets.map((a) => a.id), recs),
             };
         });
         const vulns = recs.findings.filter((f) => f.scanner_severity !== 'info');
         const needing = new Set(recs.findings.filter((f) => f.asset_id && attention(f, recs.kev)).map((f) => f.asset_id));
-        const scoped = profiles.filter((p) => recs.scopes.some((s) => s.org_id === p.org_id)).length;
+        const coverage = tallyCoverage(profiles.map((p) => orgCoverage(p.org_id)));
         // History: per day, summed over the organisations that recorded a snapshot that day.
         const byDay = new Map<string, { day: string; open_total: number; kev_open: number; internet_open: number; organisations: number }>();
         for (const s of snaps.data ?? []) {
@@ -179,7 +242,7 @@ router.get('/', can, async (req: AuthRequest, res) => {
                 critical: recs.findings.filter((f) => f.scanner_severity === 'critical').length, high: recs.findings.filter((f) => f.scanner_severity === 'high').length,
                 kev_open: recs.findings.filter((f) => (f.cve_ids ?? []).some((c) => recs.kev.has(c))).length,
                 risk: risk(recs.findings), assets_requiring_attention: needing.size,
-                coverage: { organisations_scoped: scoped, organisations: profiles.length, pct: profiles.length ? Math.round((scoped / profiles.length) * 100) : null },
+                coverage: { organisations_scoped: coverage.by_state.connected_fresh + coverage.by_state.connected_stale, organisations: profiles.length, pct: coverage.connected_pct, by_state: coverage.by_state },
             },
             severity: sevCounts(recs.findings),
             priority: prioCounts(recs.findings),
@@ -211,7 +274,7 @@ router.get('/sectors/:sector', can, async (req: AuthRequest, res) => {
                 open_vulnerabilities: recs.findings.filter((f) => f.scanner_severity !== 'info').length,
                 kev_open: recs.findings.filter((f) => (f.cve_ids ?? []).some((c) => recs.kev.has(c))).length,
                 risk: risk(recs.findings), assets_requiring_attention: needing.size,
-                coverage: { organisations_scoped: orgs.filter((o) => o.monitoring.active_scopes > 0).length, assets_assessed_30d: orgs.reduce((n, o) => n + o.monitoring.assets_assessed_30d, 0) },
+                coverage: { organisations_scoped: orgs.filter((o) => o.monitoring.active_scopes > 0).length, assets_assessed_30d: orgs.reduce((n, o) => n + o.monitoring.assets_assessed_30d, 0), by_state: tallyCoverage(orgs.map((o) => o.coverage_state)).by_state },
             },
             severity: sevCounts(recs.findings), priority: prioCounts(recs.findings), sources: sources(recs.findings),
             organisations: orgs,
@@ -235,11 +298,15 @@ router.get('/orgs/:org', can, async (req: AuthRequest, res) => {
     if (!p) { res.status(404).json({ error: 'No CNII organisation by that name that you may view' }); return; }
     try {
         const recs = await loadRecords([p.org_id]);
-        const [names, tasks, closed, lastJob] = await Promise.all([
+        const [names, tasks, closed, lastJob, snaps] = await Promise.all([
             orgNames([p.org_id]),
             db().from('vms_remediation_tasks').select('status').eq('org_id', p.org_id).limit(5000),
             db().from('vms_findings').select('status').eq('org_id', p.org_id).in('status', ['verified', 'risk_accepted', 'false_positive']).limit(20_000),
             db().from('vms_scan_jobs').select('kind, status, finished_at').eq('org_id', p.org_id).not('finished_at', 'is', null).order('finished_at', { ascending: false }).limit(1).maybeSingle(),
+            // Same daily snapshot the national overview reads, scoped to this one organisation —
+            // for the Executive report's "historical trends where data exists" (R3.3B Stage 6).
+            // Absent days stay absent, never filled, same as the national trend's own rule.
+            db().from('vms_risk_snapshots').select('day, open_total, kev_open, internet_open, risk_mean, critical_exposures').eq('org_id', p.org_id).gte('day', new Date(Date.now() - 90 * DAY).toISOString().slice(0, 10)).order('day').limit(1000),
         ]);
         const per = new Map<string, { open: number; severity: Record<string, number>; max_risk: number | null }>();
         for (const f of recs.findings) {
@@ -259,8 +326,9 @@ router.get('/orgs/:org', can, async (req: AuthRequest, res) => {
             remediation: { findings_open_by_status: tally(recs.findings), findings_closed_by_status: tally(closed.data ?? []), tasks_by_status: tally(tasks.data ?? []) },
             sources: sources(recs.findings),
             cves: cves.map((c) => ({ cve_id: c, kev: recs.kev.has(c), findings: recs.findings.filter((f) => (f.cve_ids ?? []).includes(c)).length })),
-            assets: recs.assets.map((a) => ({ id: a.id, value: a.value, asset_type: a.asset_type, exposure: a.exposure, criticality: a.criticality, last_seen: a.last_seen, last_assessed_at: a.last_assessed_at ?? null, findings: per.get(a.id) ?? { open: 0, severity: {}, max_risk: null } })),
+            assets: recs.assets.map((a) => ({ id: a.id, value: a.value, asset_type: a.asset_type, exposure: a.exposure, criticality: a.criticality, last_seen: a.last_seen, last_assessed_at: a.last_assessed_at ?? null, findings: per.get(a.id) ?? { open: 0, severity: {}, max_risk: null }, threat_intelligence: tiSummary([a.id], recs) })),
             findings: recs.findings.map((f) => ({ id: f.id, asset_id: f.asset_id, asset_value: f.asset_value, port: f.port, title: f.title, rule_id: f.rule_id, cve_ids: f.cve_ids ?? [], scanner_cvss: f.scanner_cvss, risk_score: f.risk_score, priority: f.priority, severity: f.scanner_severity, status: f.status, detected_by: f.source_class === 'wazuh' ? ['wazuh'] : f.detected_by ?? [], kev: (f.cve_ids ?? []).some((c) => recs.kev.has(c)), first_seen: f.first_seen, last_seen: f.last_seen, due_at: f.due_at, evidence_class: f.evidence_class ?? null })),
+            trend: snaps.data ?? [],
         });
     } catch { res.status(502).json({ error: 'Could not read CNII records' }); }
 });
@@ -277,16 +345,27 @@ router.get('/orgs/:org/assets/:id', can, async (req: AuthRequest, res) => {
     ]);
     const fs = (findings.data ?? []) as (Finding & { description: string | null; remediation: string | null })[];
     const ids = fs.map((f) => f.id);
-    const [evidence, events, intel, tasks] = await Promise.all([
+    const [evidence, events, intel, tasks, ti] = await Promise.all([
         ids.length ? db().from('vms_finding_evidence').select('finding_id, source, observed_at, matched_at, evidence').eq('org_id', p.org_id).in('finding_id', ids).order('observed_at', { ascending: false }).limit(2000) : Promise.resolve({ data: [] }),
         ids.length ? db().from('vms_finding_events').select('finding_id, at, action, from_value, to_value').eq('org_id', p.org_id).in('finding_id', ids).in('action', ['detected', 'status', 'verified', 'reopened', 'verification_queued']).order('at').limit(2000) : Promise.resolve({ data: [] }),
         (() => { const c = [...new Set(fs.flatMap((f) => f.cve_ids ?? []))]; return c.length ? db().from('cve_intel').select('cve_id, kev, epss_score, cvss_score').in('cve_id', c.slice(0, 200)) : Promise.resolve({ data: [] }); })(),
         ids.length ? db().from('vms_remediation_tasks').select('finding_id, title, status, due_at').eq('org_id', p.org_id).in('finding_id', ids).neq('status', 'cancelled') : Promise.resolve({ data: [] }),
+        loadTi([a.id]),
     ]);
     const intelBy = new Map((intel.data ?? []).map((c) => [c.cve_id as string, c]));
+    const tiRows = ti.tiByAsset.get(a.id) ?? [];
     res.json({
         organisation: { slug: p.org_id, name: names.get(p.org_id) ?? p.org_id, sector: p.sector_id, designation: p.designation },
         asset: { id: a.id, value: a.value, asset_type: a.asset_type, exposure: a.exposure, criticality: a.criticality, hostnames: a.hostnames ?? [], ips: a.ips ?? [], discovery_sources: a.discovery_sources ?? [], first_seen: a.first_seen, last_seen: a.last_seen, last_assessed_at: a.last_assessed_at ?? null, last_assessment: a.last_assessment ?? null },
+        // R3.3B Stage 4: each match keeps its own verdict distinction — 'promoted' or a linked
+        // case means an analyst confirmed it, 'new'/'reviewed' is contextual only, never implied
+        // to be a confirmed attack on this asset.
+        threat_intelligence: tiRows.map((m) => ({
+            indicator_type: m.indicator?.type ?? null, indicator_value: m.indicator?.value ?? null,
+            confidence: m.indicator?.max_confidence ?? null, malware_families: m.indicator?.malware_families ?? [], threat_types: m.indicator?.threat_types ?? [],
+            verified: m.status === 'promoted' || !!m.case_id, status: m.status, case_id: m.case_id,
+            tlp: ti.tlpByIndicator.get(m.indicator_id) ?? 'amber',
+        })),
         findings: fs.map((f) => {
             // Evidence summary only: when, where and by what; never the raw scanner output.
             const ev = (evidence.data ?? []).filter((e) => e.finding_id === f.id);
