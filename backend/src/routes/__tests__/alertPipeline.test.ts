@@ -321,6 +321,21 @@ test('alert detail surfaces threat intelligence correlation: dismissed excluded,
     assert.equal(m.tlp, 'red', 'the most restrictive of the indicator\'s two sources');
     assert.equal(m.indicator_value, '203.0.113.9');
     assert.deepEqual(m.malware_families, ['cobaltstrike']);
+    assert.equal(m.indicator_active, true, 'R3.3D: the indicator is still active');
+});
+
+// R3.3D: an indicator's own lifecycle state (active/expired) used to be fetched by
+// lib/tiCorrelation.ts and then silently dropped — a match whose indicator has since expired
+// looked identical to a current one. It is now surfaced so the UI can say so.
+test('alert detail flags a match whose indicator has since expired', async () => {
+    const alertId = randomUUID();
+    db.tables.alerts.push({ id: alertId, org_id: A, wazuh_alert_id: `expired-ti-${alertId}`, case_id: null, status: 'new', raw_truncated: false });
+    const indicator = { id: randomUUID(), type: 'ip', value: '198.51.100.5', max_confidence: null, malware_families: [], threat_types: [], status: 'expired' };
+    db.tables.ti_indicators.push(indicator);
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, entity_type: 'alert', entity_id: alertId, indicator_id: indicator.id, status: 'new', case_id: null });
+    const detail = await user('GET', `/api/alerts/${alertId}`, 'analyst', A);
+    assert.equal(detail.data.threat_intelligence.length, 1);
+    assert.equal(detail.data.threat_intelligence[0].indicator_active, false);
 });
 
 // ── Group map admin ───────────────────────────────────────────────────────────────────────────

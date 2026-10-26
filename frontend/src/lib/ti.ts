@@ -25,6 +25,23 @@ export interface TiMatch {
     first_matched_at: string; last_matched_at: string; status: 'new' | 'reviewed' | 'promoted' | 'dismissed'; reviewed_by: string | null; case_id: string | null;
     ti_indicators?: Pick<TiIndicator, 'type' | 'value' | 'max_confidence' | 'malware_families' | 'threat_types' | 'source_count' | 'status'> | null;
 }
+
+// ── Relevance & reporting (R3.3D) ───────────────────────────────────────────────────────────
+export type RelevanceTier = 'critical' | 'high' | 'medium' | 'low';
+export interface RelevantItem {
+    match_id: string; indicator_id: string; indicator_type: IndicatorType; indicator_value: string;
+    malware_families: string[]; threat_types: string[]; confidence: number | null;
+    entity_type: TiMatch['entity_type']; entity_id: string; matched_field: string; last_matched_at: string;
+    status: TiMatch['status']; verified: boolean; case_id: string | null;
+    kev: boolean; asset_criticality: 'low' | 'medium' | 'high' | 'critical' | null; asset_value: string | null;
+    tier: RelevanceTier; reasons: string[]; labels_hidden?: boolean;
+}
+export interface RelevantIntel { generated_at: string; items: RelevantItem[]; by_tier: Record<RelevanceTier, number> }
+export const TIER_LABEL: Record<RelevanceTier, string> = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' };
+export const TIER_STYLE: Record<RelevanceTier, string> = {
+    critical: 'bg-red/10 text-red border-red/30', high: 'bg-orange/10 text-orange border-orange/30',
+    medium: 'bg-blue/10 text-blue border-blue/30', low: 'bg-card-muted text-foreground-muted border-border',
+};
 export interface TiFeedback { id: string; verdict: 'confirmed_malicious' | 'suspicious' | 'benign' | 'false_positive'; note: string | null; actor: string; at: string }
 
 export const VERDICT_LABEL: Record<TiFeedback['verdict'], string> = {
@@ -85,6 +102,7 @@ export interface TiSources {
     enrichment: { nvd: { last_fetch: string | null; configured_key: boolean; cves_tracked: number }; epss: { last_fetch: string | null } };
     misp: { configured: boolean; writes_enabled: boolean; last_check: MispCheck | null };
     ai: { provider: 'nvidia' | 'ollama'; configured: boolean; model: string; reachable: boolean; detail: string };
+    engine: { correlation_last_run_at: string | null; correlation_errors: string[] | null };
     sharing: { source_records_by_tlp: Record<Tlp, number> };
     exchange: { taxii_discovery: string; api_root: string; collections: { id: string; alias: string; title: string; description: string }[]; active_clients: number | null };
 }

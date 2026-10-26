@@ -13,7 +13,7 @@ import { useVmsData } from '@/components/features/vms/data';
 import { AiPanel } from '@/components/shared/AiPanel';
 import { fmtWat } from '@/lib/vms';
 import { TlpBadge, Freshness, Citation } from './common';
-import { FEED_NAME, ago, type TiFeed, type TiMatch, type MapData, type TiVulnerability } from '@/lib/ti';
+import { FEED_NAME, ago, entityHref, TIER_LABEL, TIER_STYLE, type TiFeed, type TiMatch, type MapData, type TiVulnerability, type RelevantIntel } from '@/lib/ti';
 
 interface Overview { indicators: { active: number; new_last_24h: number; by_type: Record<string, number> }; matches: { new: number; total: number }; feeds: TiFeed[] }
 
@@ -22,6 +22,7 @@ export function TiOverview() {
     const map = useVmsData<MapData>('/api/ti/map?days=30');
     const matches = useVmsData<{ matches: TiMatch[] }>('/api/ti/matches?status=new');
     const kev = useVmsData<{ total: number; vulnerabilities: TiVulnerability[] }>('/api/ti/vulnerabilities?days=30&page_size=5');
+    const relevant = useVmsData<RelevantIntel>('/api/ti/relevant');
     const now = ov.at ?? 0;
     const feeds = (ov.data?.feeds ?? []).filter((f) => f.id !== 'opencti');
     const healthy = feeds.filter((f) => f.configured !== false && f.enabled && !f.failing && !f.stale).length;
@@ -115,6 +116,24 @@ export function TiOverview() {
                     ) : <EmptyState compact title="No new KEV entries" body="CISA added nothing to the catalogue in the last 30 days (or the KEV feed has not run)." />}
                 </Card>
             </div>
+
+            <Card>
+                <SectionTitle title="Relevant intelligence" hint="What is worth acting on right now, from evidence already in the platform — never an invented score" action={<Link href="/admin/ti/report" className={btn('ghost')}>Full report</Link>} />
+                {relevant.load.state === 'loading' ? <Skeleton className="h-28" /> : relevant.load.state === 'error' ? <ErrorState error={relevant.load.error} status={relevant.load.status} onRetry={relevant.reload} /> : relevant.data!.items.length ? (
+                    <ul className="divide-y divide-border">
+                        {relevant.data!.items.slice(0, 5).map((m) => (
+                            <li key={m.match_id} className="py-2 flex items-start justify-between gap-3">
+                                <span className="min-w-0">
+                                    <span className={`inline-block text-[9px] font-bold px-1.5 py-0.5 rounded-full border uppercase mr-1.5 ${TIER_STYLE[m.tier]}`}>{TIER_LABEL[m.tier]}</span>
+                                    <Link href={entityHref(m) ?? '/admin/ti/matches'} className="text-xs font-mono font-semibold text-foreground hover:text-purple">{m.indicator_type}: {m.indicator_value}</Link>
+                                    <span className="block text-[11px] text-foreground-muted truncate">{m.reasons[0]}</span>
+                                </span>
+                                <span className="text-[11px] text-foreground-muted shrink-0">{ago(m.last_matched_at, now)}</span>
+                            </li>
+                        ))}
+                    </ul>
+                ) : <EmptyState compact title="Nothing rated relevant" body="No current match combines real evidence of exposure strongly enough to flag." />}
+            </Card>
 
             <AiPanel purpose="threat_briefing" subjectId="7d" title="AI briefing" purposes={[
                 { value: 'threat_briefing', label: 'Threat briefing' }, { value: 'nigeria_briefing', label: 'Nigeria briefing' },

@@ -66,7 +66,7 @@ interface LinkedCase { id: string; case_number: string; title: string; severity:
 // R3.3C: already computed by services/threatInfo.ts, newly surfaced on GET /api/cases/:id.
 // "verified" means an analyst promoted the match or linked it to a case — a confirmed
 // indicator-to-asset association, never a confirmed attack or compromise on its own.
-interface TiMatch { indicator_type: string | null; indicator_value: string | null; confidence: number | null; malware_families: string[]; threat_types: string[]; verified: boolean; status: string; case_id: string | null; tlp: string }
+interface TiMatch { indicator_type: string | null; indicator_value: string | null; confidence: number | null; malware_families: string[]; threat_types: string[]; verified: boolean; status: string; case_id: string | null; tlp: string; indicator_active: boolean }
 interface CaseDetail { case: CaseItem; notes: CaseNote[]; tasks: CaseTask[]; timeline: TimelineEntry[]; iocs: CaseIoc[]; linked?: LinkedCase[]; threat_intelligence?: TiMatch[] }
 interface TeamMember { name: string; email: string }
 
@@ -970,6 +970,7 @@ export function CaseWorkbench() {
                                                                 <div className="flex flex-wrap items-center gap-1.5">
                                                                     <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border uppercase ${m.verified ? 'bg-red-500/10 text-red-500 border-red-500/30' : 'bg-card-muted text-foreground-muted border-border'}`}>{m.verified ? 'Verified' : 'Contextual'}</span>
                                                                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-border bg-card-muted text-foreground-muted uppercase">TLP:{m.tlp.toUpperCase()}</span>
+                                                                    {!m.indicator_active && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-600 uppercase" title="This indicator is past its validity window — kept here as a record of what matched at the time, not as current intelligence.">Expired</span>}
                                                                 </div>
                                                                 <p className="text-xs font-mono text-foreground mt-1 break-all">{m.indicator_type}: {m.indicator_value}</p>
                                                                 {m.malware_families.length > 0 && <p className="text-[10px] text-foreground-muted">{m.malware_families.join(', ')}</p>}

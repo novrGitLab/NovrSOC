@@ -55,7 +55,7 @@ interface AlertEvent { at: string; actor: string; action: string; from_value: st
 // R3.3C: already computed by services/threatInfo.ts, newly surfaced on GET /api/alerts/:id.
 // "verified" means an analyst promoted the match or linked it to a case — a confirmed
 // indicator-to-asset association, never a confirmed attack or compromise on its own.
-interface TiMatch { indicator_type: string | null; indicator_value: string | null; confidence: number | null; malware_families: string[]; threat_types: string[]; verified: boolean; status: string; case_id: string | null; tlp: string }
+interface TiMatch { indicator_type: string | null; indicator_value: string | null; confidence: number | null; malware_families: string[]; threat_types: string[]; verified: boolean; status: string; case_id: string | null; tlp: string; indicator_active: boolean }
 const EVENT_LABEL: Record<string, string> = { status: 'Status', assign: 'Assigned', acknowledge: 'Acknowledged', note: 'Note', case_link: 'Linked to case' };
 
 /** GET /api/client/secops/summary, as far as this page uses it. */
@@ -442,6 +442,7 @@ export function AlertQueue({ mode = 'staff' }: { mode?: 'staff' | 'client' }) {
                                                 <span className="font-mono text-foreground">{m.indicator_type}: {m.indicator_value}</span>
                                                 {m.malware_families.length > 0 && <span className="text-foreground-muted">{m.malware_families.join(', ')}</span>}
                                                 <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase bg-card-muted text-foreground-muted">TLP:{m.tlp.toUpperCase()}</span>
+                                                {!m.indicator_active && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase bg-amber-500/10 text-amber-600" title="This indicator is past its validity window — kept here as a record of what matched at the time, not as current intelligence.">Indicator now expired</span>}
                                             </li>
                                         ))}
                                     </ul>

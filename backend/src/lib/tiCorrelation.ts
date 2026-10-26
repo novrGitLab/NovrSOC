@@ -63,6 +63,12 @@ export interface TiMatchView {
     status: string;
     case_id: string | null;
     tlp: Tlp;
+    /** The indicator's own lifecycle state when it matched. R3.3D: this was already fetched
+     * (matchesFor's embed includes it) but silently dropped before this view, so a match whose
+     * indicator later expired looked identical to one still active — stale intelligence shown as
+     * current. 'active' when the indicator record is missing is the conservative default (most
+     * matches predate this field; absence is not evidence of expiry). */
+    indicator_active: boolean;
 }
 
 /** Full detail view for one entity's matches, ready to put straight in a detail response. */
@@ -75,5 +81,6 @@ export async function tiDetailFor(entityType: 'alert' | 'case', entityId: string
         confidence: m.indicator?.max_confidence ?? null, malware_families: m.indicator?.malware_families ?? [], threat_types: m.indicator?.threat_types ?? [],
         verified: m.status === 'promoted' || !!m.case_id, status: m.status, case_id: m.case_id,
         tlp: tlpByIndicator.get(m.indicator_id) ?? 'amber',
+        indicator_active: m.indicator?.status !== 'expired',
     }));
 }

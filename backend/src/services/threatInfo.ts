@@ -505,3 +505,105 @@ export async function correlateOrg(org: string): Promise<{ candidates: number; m
     await supabase.from('ti_correlation_state').upsert({ org_id: org, last_alert_seen: lastAlert, last_run_at: now, last_result: out }, { onConflict: 'org_id' });
     return out;
 }
+
+// ── Relevance (R3.3D) ────────────────────────────────────────────────────────────────────────
+// Which of this organisation's matches are worth an analyst's attention right now, from evidence
+// already in the platform — never an invented probability. A tier is a transparent combination of
+// real signals (never a lone opaque number): an analyst-verified association, the matched CVE
+// being on CISA's KEV list, the asset's own stated business criticality (lib/riskScore.ts's own
+// scale), source-stated confidence, and whether the match is recent. Expired indicators and
+// dismissed matches are never "relevant" — nor is a match against a vulnerability finding that
+// has since been resolved, even though the match row itself is kept as a historical record.
+
+export type RelevanceTier = 'critical' | 'high' | 'medium' | 'low';
+export interface RelevantItem {
+    match_id: string; indicator_id: string; indicator_type: IndicatorType; indicator_value: string;
+    malware_families: string[]; threat_types: string[]; confidence: number | null;
+    entity_type: Candidate['entity_type']; entity_id: string; matched_field: string; last_matched_at: string;
+    status: 'new' | 'reviewed' | 'promoted' | 'dismissed'; verified: boolean; case_id: string | null;
+    kev: boolean; asset_criticality: 'low' | 'medium' | 'high' | 'critical' | null; asset_value: string | null;
+    tier: RelevanceTier; reasons: string[];
+}
+export interface RelevantIntel { generated_at: string; items: RelevantItem[]; by_tier: Record<RelevanceTier, number> }
+
+const OPEN_FINDING_STATUSES = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'];
+
+export async function relevantIntel(org: string, limit = 500): Promise<RelevantIntel> {
+    const supabase = getSupabase()!;
+    const empty: RelevantIntel = { generated_at: new Date().toISOString(), items: [], by_tier: { critical: 0, high: 0, medium: 0, low: 0 } };
+    const { data: matches } = await supabase.from('ti_matches')
+        .select('id, indicator_id, entity_type, entity_id, matched_field, status, case_id, last_matched_at, ti_indicators(id, type, value, status, max_confidence, malware_families, threat_types)')
+        .eq('org_id', org).neq('status', 'dismissed').order('last_matched_at', { ascending: false }).limit(limit);
+    interface Row { id: string; indicator_id: string; entity_type: Candidate['entity_type']; entity_id: string; matched_field: string; status: string; case_id: string | null; last_matched_at: string; ti_indicators: { id: string; type: IndicatorType; value: string; status: string; max_confidence: number | null; malware_families: string[] | null; threat_types: string[] | null } | null }
+    // Indicators past their validity are not current intelligence — never "relevant now".
+    const rows = ((matches ?? []) as unknown as Row[]).filter((m) => m.ti_indicators?.status === 'active');
+    if (!rows.length) return empty;
+
+    const indicatorIds = [...new Set(rows.map((m) => m.indicator_id))];
+    const kevIds = new Set<string>();
+    for (let i = 0; i < indicatorIds.length; i += 300) {
+        const { data } = await supabase.from('ti_indicator_sources').select('indicator_id').eq('feed_id', 'cisa_kev').in('indicator_id', indicatorIds.slice(i, i + 300));
+        for (const s of data ?? []) kevIds.add(s.indicator_id as string);
+    }
+
+    const findingIds = [...new Set(rows.filter((m) => m.entity_type === 'finding').map((m) => m.entity_id))];
+    const findingById = new Map<string, { asset_id: string | null; asset_value: string | null; status: string }>();
+    for (let i = 0; i < findingIds.length; i += 300) {
+        const { data } = await supabase.from('vms_findings').select('id, asset_id, asset_value, status').eq('org_id', org).in('id', findingIds.slice(i, i + 300));
+        for (const f of data ?? []) findingById.set(f.id as string, f as never);
+    }
+
+    const assetIds = new Set<string>();
+    for (const m of rows) if (m.entity_type === 'asset') assetIds.add(m.entity_id);
+    for (const f of findingById.values()) if (f.asset_id) assetIds.add(f.asset_id);
+    const assetById = new Map<string, { value: string; criticality: string }>();
+    const assetIdList = [...assetIds];
+    for (let i = 0; i < assetIdList.length; i += 300) {
+        const { data } = await supabase.from('vms_assets').select('id, value, criticality').eq('org_id', org).in('id', assetIdList.slice(i, i + 300));
+        for (const a of data ?? []) assetById.set(a.id as string, { value: a.value as string, criticality: a.criticality as string });
+    }
+
+    const nowMs = Date.now();
+    const items: RelevantItem[] = [];
+    for (const m of rows) {
+        const finding = m.entity_type === 'finding' ? findingById.get(m.entity_id) ?? null : null;
+        // The finding this matched has since been resolved/closed — not an open exposure any more.
+        if (m.entity_type === 'finding' && (!finding || !OPEN_FINDING_STATUSES.includes(finding.status))) continue;
+        const ind = m.ti_indicators!;
+        const verified = m.status === 'promoted' || !!m.case_id;
+        const kev = kevIds.has(m.indicator_id);
+        const asset = m.entity_type === 'asset' ? assetById.get(m.entity_id) : finding?.asset_id ? assetById.get(finding.asset_id) : undefined;
+        const criticality = (asset?.criticality as RelevantItem['asset_criticality']) ?? null;
+        const exposedAsset = m.entity_type === 'asset' || m.entity_type === 'finding';
+        const highConfidence = typeof ind.max_confidence === 'number' && ind.max_confidence >= 75;
+        const freshDays = (nowMs - Date.parse(m.last_matched_at)) / 86_400_000;
+        const fresh = Number.isFinite(freshDays) && freshDays <= 7;
+
+        const reasons: string[] = [];
+        if (verified) reasons.push(m.case_id ? 'Linked to an open investigation' : 'Promoted by an analyst');
+        if (kev) reasons.push("The matched CVE is on CISA's Known Exploited Vulnerabilities list");
+        if (criticality === 'critical' || criticality === 'high') reasons.push(`Matched against a ${criticality}-criticality asset`);
+        if (exposedAsset) reasons.push(m.entity_type === 'finding' ? 'Matched an open vulnerability finding' : "Matched this organisation's own asset inventory");
+        else reasons.push(m.entity_type === 'case' ? 'Matched an open case' : 'Matched a stored alert — a mention, not a confirmed compromise');
+        if (highConfidence) reasons.push(`Source-stated confidence ${ind.max_confidence}`);
+        if (fresh) reasons.push('Seen in the last 7 days');
+
+        const tier: RelevanceTier = verified && (kev || criticality === 'critical') ? 'critical'
+            : verified || (kev && exposedAsset) || ((criticality === 'critical' || criticality === 'high') && exposedAsset) ? 'high'
+                : exposedAsset && (fresh || highConfidence) ? 'medium' : 'low';
+
+        items.push({
+            match_id: m.id, indicator_id: m.indicator_id, indicator_type: ind.type, indicator_value: ind.value,
+            malware_families: ind.malware_families ?? [], threat_types: ind.threat_types ?? [], confidence: ind.max_confidence,
+            entity_type: m.entity_type, entity_id: m.entity_id, matched_field: m.matched_field, last_matched_at: m.last_matched_at,
+            status: m.status as RelevantItem['status'], verified, case_id: m.case_id, kev, asset_criticality: criticality,
+            asset_value: asset?.value ?? finding?.asset_value ?? null, tier, reasons,
+        });
+    }
+
+    const order: Record<RelevanceTier, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+    items.sort((a, b) => order[a.tier] - order[b.tier] || Date.parse(b.last_matched_at) - Date.parse(a.last_matched_at));
+    const by_tier: Record<RelevanceTier, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (const it of items) by_tier[it.tier]++;
+    return { generated_at: new Date().toISOString(), items, by_tier };
+}

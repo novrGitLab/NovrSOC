@@ -38,7 +38,8 @@ import { requestOrg, isStaffRole } from '../lib/resolveOrg';
 import { getSupabase } from '../services/geoEnrichment';
 import { dbErrorMessage, isUuid, createCase, addTimeline } from '../services/cases';
 import { logAudit } from '../lib/audit';
-import { runFeed, FEED_STALE_HOURS, feedConfigured, normalizeIndicator, isRunnableFeed, RETIRED_FEEDS, type IndicatorType } from '../services/threatInfo';
+import { runFeed, FEED_STALE_HOURS, feedConfigured, normalizeIndicator, isRunnableFeed, RETIRED_FEEDS, relevantIntel, type IndicatorType, type RelevantItem } from '../services/threatInfo';
+import { lastThreatInfoRun } from '../jobs/threatInfoJob';
 import { TLP_ORDER, isTlp, isCeiling, COLLECTIONS, collectionById, exportBlockReason, type Tlp } from '../services/tiPolicy';
 import { exchangePage } from '../services/tiExchange';
 import { bundle, malwareGraph, type BuiltIndicator } from '../services/tiStix';
@@ -266,6 +267,81 @@ router.get('/kev', requirePermission('intel:read'), async (req: AuthRequest, res
     });
 });
 
+// ── Relevance & reporting (R3.3D) ────────────────────────────────────────────────────────────
+// What this organisation should actually act on, from evidence already in the platform
+// (services/threatInfo.ts relevantIntel) — a transparent tier plus the real reasons for it,
+// never an invented score. TLP-restricted labels are blanked the same way /indicators does it.
+async function relevantForViewer(req: AuthRequest) {
+    const r = await relevantIntel(requestOrg(req));
+    const withId = r.items.map((it) => ({ ...it, id: it.indicator_id }));
+    const shown = (await hideRestrictedLabels(req, withId)) as unknown as (RelevantItem & { id: string; labels_hidden?: boolean })[];
+    return { ...r, items: shown.map(({ id: _id, ...rest }) => rest) };
+}
+
+router.get('/relevant', requirePermission('intel:read'), async (req: AuthRequest, res) => {
+    try { res.json(await relevantForViewer(req)); } catch (err) { failP25(res, { message: err instanceof Error ? err.message : String(err) }); }
+});
+
+router.get('/report', requirePermission('intel:read'), async (req: AuthRequest, res) => {
+    const supabase = getSupabase()!;
+    const org = requestOrg(req);
+    const days = num(req.query.days, 30, 1, 365);
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    try {
+        const [relevant, feedsRes, activeCount, newIndicators, matchesAll, verifiedCount, kevRes] = await Promise.all([
+            relevantForViewer(req),
+            supabase.from('ti_feeds').select('*').order('id'),
+            supabase.from('ti_indicators').select('id', { count: 'exact', head: true }).eq('status', 'active'),
+            supabase.from('ti_indicators').select('first_seen').eq('status', 'active').gte('first_seen', since).limit(10_000),
+            supabase.from('ti_matches').select('status, first_matched_at').eq('org_id', org).neq('status', 'dismissed').limit(10_000),
+            supabase.from('ti_matches').select('id', { count: 'exact', head: true }).eq('org_id', org).or('status.eq.promoted,case_id.not.is.null'),
+            supabase.from('ti_indicators').select('id, value, first_seen').eq('type', 'cve').gte('first_seen', since).order('first_seen', { ascending: false }).limit(500),
+        ]);
+        if (feedsRes.error) { fail(res, feedsRes.error); return; }
+        const byType: Record<string, number> = {};
+        await Promise.all(TYPES.map(async (t) => {
+            const { count: c } = await supabase.from('ti_indicators').select('id', { count: 'exact', head: true }).eq('status', 'active').eq('type', t);
+            byType[t] = c ?? 0;
+        }));
+        const dayBucket = (iso: string) => iso.slice(0, 10);
+        const bucket = (rows: { at: string }[]) => {
+            const m = new Map<string, number>();
+            for (const r of rows) m.set(dayBucket(r.at), (m.get(dayBucket(r.at)) ?? 0) + 1);
+            return [...m.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([day, count]) => ({ day, count }));
+        };
+        const matchesByStatus: Record<string, number> = { new: 0, reviewed: 0, promoted: 0 };
+        for (const m of matchesAll.data ?? []) matchesByStatus[m.status as string] = (matchesByStatus[m.status as string] ?? 0) + 1;
+        const kevIds = (kevRes.data ?? []).map((d) => d.id as string);
+        const kevCves = (kevRes.data ?? []).map((d) => d.value as string);
+        const kevFindings = kevCves.length ? await supabase.from('vms_findings').select('id, cve_ids').eq('org_id', org).overlaps('cve_ids', kevCves).in('status', ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened']) : { data: [] as { id: string; cve_ids: string[] }[] };
+        const feeds = (feedsRes.data ?? []).map((f) => ({
+            ...f, stale: !f.last_success_at || Date.now() - Date.parse(f.last_success_at) > (FEED_STALE_HOURS[f.id] ?? 24) * 3_600_000, failing: !!f.last_error, configured: feedConfigured(f.id), retired: RETIRED_FEEDS.has(f.id),
+        }));
+        const notConfigured = feeds.filter((f) => !f.retired && !f.configured).map((f) => f.id);
+        const notCurrent = feeds.filter((f) => !f.retired && f.configured && (f.stale || f.failing)).map((f) => f.id);
+        const correlationAt = lastThreatInfoRun.at;
+        const limitations = [
+            'Relevance tiers and KEV cross-references are computed from stored records at the time this report was opened; a source feed that has not run recently may be missing from them (see Source freshness).',
+            notConfigured.length ? `Not configured: ${notConfigured.join(', ')} — no credentials set, so these never ran.` : null,
+            notCurrent.length ? `Not currently healthy: ${notCurrent.join(', ')} — stale or failing; see Sources for the reason.` : null,
+            !correlationAt ? 'The correlation engine (matches new records against active indicators) has not completed a run since this process started.' : null,
+            'A threat indicator matching a record is an association, not proof of compromise; only an analyst-promoted or case-linked match is shown as verified.',
+        ].filter((l): l is string => !!l);
+        res.json({
+            period: { days, from: since, to: new Date().toISOString() },
+            indicators: { active: activeCount.count ?? 0, new_in_period: (newIndicators.data ?? []).length, by_type: byType },
+            matches: { total: (matchesAll.data ?? []).length, by_status: matchesByStatus, verified: verifiedCount.count ?? 0 },
+            relevant: { by_tier: relevant.by_tier, top: relevant.items.slice(0, 20) },
+            kev: { new_in_period: kevIds.length, your_open_findings: (kevFindings.data ?? []).length },
+            trend: { new_indicators_by_day: bucket((newIndicators.data ?? []).map((d) => ({ at: d.first_seen as string }))), new_matches_by_day: bucket((matchesAll.data ?? []).filter((m) => m.first_matched_at >= since).map((m) => ({ at: m.first_matched_at as string }))) },
+            engine: { correlation_last_run_at: correlationAt },
+            limitations,
+            sources: ['ti_indicators', 'ti_matches', 'ti_indicator_sources (CISA KEV)', 'vms_findings', 'vms_assets'],
+            generated_at: new Date().toISOString(),
+        });
+    } catch (err) { failP25(res, { message: err instanceof Error ? err.message : String(err) }); }
+});
+
 // ── Threat Intelligence V1 (phase P25) ───────────────────────────────────────────────────────
 
 router.get('/indicators/:id/related', requirePermission('intel:read'), async (req: AuthRequest, res) => {
@@ -442,6 +518,16 @@ router.get('/sources', requirePermission('intel:read'), async (req: AuthRequest,
         },
         misp: { configured: isMISPConfigured(), writes_enabled: process.env.MISP_WRITE_ENABLED === 'true', last_check: lastMispCheck },
         ai,
+        // R3.3D: the correlation engine (matches new alerts/assets/findings/cases against active
+        // indicators, services/threatInfo.ts correlateOrg, every 15 min) wrote its last result to
+        // an in-memory variable nothing ever read — a feed can show healthy while the engine that
+        // actually turns indicators into this organisation's matches has silently stopped.
+        engine: {
+            correlation_last_run_at: lastThreatInfoRun.at,
+            correlation_errors: lastThreatInfoRun.correlation
+                ? Object.entries(lastThreatInfoRun.correlation).filter(([, v]) => v && typeof v === 'object' && 'error' in (v as object)).map(([org]) => org)
+                : null,
+        },
         sharing: { source_records_by_tlp: Object.fromEntries(tlps) },
         exchange: {
             taxii_discovery: `${host}/taxii2/`, api_root: `${host}/taxii2/api1/`,

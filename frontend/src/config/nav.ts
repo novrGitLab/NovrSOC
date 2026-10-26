@@ -132,6 +132,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'ti-vulnerabilities', label: 'Vulnerabilities & Advisories', href: '/admin/ti/vulnerabilities', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: ShieldAlert },
             { id: 'ti-analyst', label: 'AI Intelligence Analyst', href: '/admin/ti/analyst', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Sparkles },
             { id: 'ti-sources', label: 'Sources & Exchange', href: '/admin/ti/sources', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: Radio },
+            { id: 'ti-report', label: 'Reports', href: '/admin/ti/report', domain: 'threat-intel', status: 'WORKING', roles: VMS_READ, icon: FileBarChart },
         ],
     },
     {

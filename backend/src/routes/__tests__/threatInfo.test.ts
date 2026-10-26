@@ -16,7 +16,7 @@ import { requireAuth } from '../../middleware/auth';
 import { startFakePostgrest, type FakePostgrest, type Row } from './fakePostgrest';
 import threatInfoRouter from '../threatInfo';
 import {
-    normalizeIndicator, fromThreatFox, fromUrlhaus, fromFeodo, fromKev, runFeed, expireIndicators, correlateOrg, alertCandidates, FEEDS, type SourceRecord,
+    normalizeIndicator, fromThreatFox, fromUrlhaus, fromFeodo, fromKev, runFeed, expireIndicators, correlateOrg, alertCandidates, relevantIntel, FEEDS, type SourceRecord,
 } from '../../services/threatInfo';
 
 const A = 'org-a';
@@ -298,4 +298,88 @@ test('KEV view shows this organisation\'s open findings for each new KEV entry o
     const r = await http('GET', '/api/ti/kev?days=30', AN);
     assert.equal(r.status, 200);
     assert.deepEqual(r.data.kev[0].your_open_findings, [{ id: 'f-a', asset: 'vpn.a.test' }]);
+});
+
+// ── Relevance & reporting (R3.3D) ─────────────────────────────────────────────────────────────
+async function seedIndicatorFull(over: Partial<Row> = {}) {
+    const id = randomUUID();
+    db.tables.ti_indicators.push({ id, type: 'ip', value: '203.0.113.9', status: 'active', max_confidence: null, malware_families: [], threat_types: [], first_seen: new Date().toISOString(), last_seen: new Date().toISOString(), ...over });
+    return id;
+}
+const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+
+test('relevantIntel: tiers reflect real evidence — verified+KEV+critical asset is critical, KEV on an exposed asset without verification is high, a fresh asset-only match is medium, an old alert mention is low', async () => {
+    // Critical: verified (case-linked), matched a finding whose CVE is KEV, on a critical asset.
+    const cveId = await seedIndicatorFull({ type: 'cve', value: 'CVE-2024-9999' });
+    db.tables.ti_indicator_sources.push({ id: randomUUID(), indicator_id: cveId, feed_id: 'cisa_kev', source_ref: 'CVE-2024-9999' });
+    db.tables.vms_assets.push({ id: 'asset-crit', org_id: A, value: 'vpn.a.test', criticality: 'critical' });
+    db.tables.vms_findings.push({ id: 'finding-open', org_id: A, asset_id: 'asset-crit', asset_value: 'vpn.a.test', cve_ids: ['CVE-2024-9999'], status: 'open' });
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: cveId, entity_type: 'finding', entity_id: 'finding-open', matched_field: 'cve_ids', status: 'new', case_id: 'case-x', last_matched_at: daysAgo(1) });
+
+    // High: KEV, exposed asset (another finding), but never verified.
+    const cveId2 = await seedIndicatorFull({ type: 'cve', value: 'CVE-2024-8888' });
+    db.tables.ti_indicator_sources.push({ id: randomUUID(), indicator_id: cveId2, feed_id: 'cisa_kev', source_ref: 'CVE-2024-8888' });
+    db.tables.vms_assets.push({ id: 'asset-med', org_id: A, value: 'web.a.test', criticality: 'medium' });
+    db.tables.vms_findings.push({ id: 'finding-open-2', org_id: A, asset_id: 'asset-med', asset_value: 'web.a.test', cve_ids: ['CVE-2024-8888'], status: 'acknowledged' });
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: cveId2, entity_type: 'finding', entity_id: 'finding-open-2', matched_field: 'cve_ids', status: 'new', case_id: null, last_matched_at: daysAgo(1) });
+
+    // Medium: matched the asset inventory directly, no KEV, not critical, but fresh.
+    const ipId = await seedIndicatorFull();
+    db.tables.vms_assets.push({ id: 'asset-ip', org_id: A, value: 'ws-07', criticality: 'medium' });
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: ipId, entity_type: 'asset', entity_id: 'asset-ip', matched_field: 'ips', status: 'new', case_id: null, last_matched_at: daysAgo(1) });
+
+    // Low: only an old alert mention — no exposed asset, not fresh, not verified.
+    const ipId2 = await seedIndicatorFull({ value: '198.51.100.1' });
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: ipId2, entity_type: 'alert', entity_id: 'alert-old', matched_field: 'data.srcip', status: 'new', case_id: null, last_matched_at: daysAgo(30) });
+
+    // Excluded: dismissed, expired indicator, and a finding that has since been resolved.
+    const ipId3 = await seedIndicatorFull({ value: '198.51.100.2' });
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: ipId3, entity_type: 'alert', entity_id: 'alert-dismissed', matched_field: 'data.srcip', status: 'dismissed', case_id: null, last_matched_at: daysAgo(1) });
+    const expiredId = await seedIndicatorFull({ value: '198.51.100.3', status: 'expired' });
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: expiredId, entity_type: 'alert', entity_id: 'alert-expired', matched_field: 'data.srcip', status: 'new', case_id: null, last_matched_at: daysAgo(1) });
+    db.tables.vms_findings.push({ id: 'finding-resolved', org_id: A, asset_id: 'asset-crit', asset_value: 'vpn.a.test', cve_ids: ['CVE-2024-9999'], status: 'resolved' });
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: cveId, entity_type: 'finding', entity_id: 'finding-resolved', matched_field: 'cve_ids', status: 'new', case_id: null, last_matched_at: daysAgo(1) });
+
+    // Another org's identical evidence must never appear in A's list.
+    db.tables.vms_assets.push({ id: 'asset-b', org_id: B, value: 'vpn.b.test', criticality: 'critical' });
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: B, indicator_id: cveId, entity_type: 'asset', entity_id: 'asset-b', matched_field: 'ips', status: 'promoted', case_id: 'case-b', last_matched_at: daysAgo(1) });
+
+    const r = await relevantIntel(A);
+    assert.equal(r.items.length, 4, 'dismissed, expired-indicator and resolved-finding matches are excluded, and org B never appears');
+    assert.deepEqual(r.items.map((i) => i.tier), ['critical', 'high', 'medium', 'low'], 'sorted most relevant first');
+    assert.equal(r.by_tier.critical, 1); assert.equal(r.by_tier.high, 1); assert.equal(r.by_tier.medium, 1); assert.equal(r.by_tier.low, 1);
+    const critical = r.items[0];
+    assert.ok(critical.reasons.some((x) => /investigation/.test(x)));
+    assert.ok(critical.reasons.some((x) => /Known Exploited/.test(x)));
+    assert.equal(critical.asset_criticality, 'critical');
+    assert.equal(critical.kev, true);
+});
+
+test('GET /api/ti/relevant: permissions and org scoping match /api/ti/overview', async () => {
+    assert.equal((await http('GET', '/api/ti/relevant')).status, 401);
+    assert.equal((await http('GET', '/api/ti/relevant', tok('portal_user'))).status, 403);
+    const ipId = await seedIndicatorFull();
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: ipId, entity_type: 'alert', entity_id: 'al-1', matched_field: 'data.srcip', status: 'new', case_id: null, last_matched_at: new Date().toISOString() });
+    const r = await http('GET', '/api/ti/relevant', EXEC);
+    assert.equal(r.status, 200);
+    assert.equal(r.data.items.length, 1);
+    assert.equal(r.data.items[0].entity_id, 'al-1');
+});
+
+test('GET /api/ti/report: counts, KEV cross-reference and honest limitations', async () => {
+    const cveId = await seedIndicatorFull({ type: 'cve', value: 'CVE-2024-7777', first_seen: new Date().toISOString() });
+    db.tables.ti_indicator_sources.push({ id: randomUUID(), indicator_id: cveId, feed_id: 'cisa_kev', source_ref: 'CVE-2024-7777' });
+    db.tables.vms_findings.push({ id: 'f-report', org_id: A, cve_ids: ['CVE-2024-7777'], asset_value: 'db.a.test', status: 'open' });
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: cveId, entity_type: 'finding', entity_id: 'f-report', matched_field: 'cve_ids', status: 'promoted', case_id: 'case-y', last_matched_at: new Date().toISOString() });
+    db.tables.ti_feeds[0].last_error = 'THREATFOX_API_KEY is not set'; // threatfox: not configured in this test env anyway
+
+    const r = await http('GET', '/api/ti/report?days=30', MGR);
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.matches.verified, 1);
+    assert.equal(r.data.kev.new_in_period, 1);
+    assert.equal(r.data.kev.your_open_findings, 1);
+    assert.equal(r.data.relevant.by_tier.critical, 1, 'verified + KEV + exposed finding');
+    assert.ok(r.data.limitations.some((l: string) => /not proof of compromise/.test(l)));
+    assert.ok(r.data.limitations.some((l: string) => /correlation engine/.test(l)), 'the engine has not run in this test process');
+    assert.equal(r.data.engine.correlation_last_run_at, null);
 });

@@ -271,4 +271,5 @@ test('case detail surfaces threat intelligence correlation: dismissed excluded, 
     assert.equal(m.verified, true, 'linked to this case\'s own id counts as a verified association, even with status still "new"');
     assert.equal(m.tlp, 'amber', 'no ti_indicator_sources rows for this indicator — the conservative default, not "clear"');
     assert.equal(m.indicator_value, 'evil.test');
+    assert.equal(m.indicator_active, true, 'R3.3D: the indicator is still active');
 });

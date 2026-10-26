@@ -128,6 +128,14 @@ export function TiSources() {
                             <dl className="grid grid-cols-1 gap-3">
                                 <Field label="NVD (CVSS, descriptions)">{d.enrichment.nvd.last_fetch ? `${ago(d.enrichment.nvd.last_fetch, now)} · ${nf.format(d.enrichment.nvd.cves_tracked)} CVEs tracked` : 'never fetched'}{d.enrichment.nvd.configured_key ? '' : ' · no NVD_API_KEY (slower rate limit)'}</Field>
                                 <Field label="EPSS (FIRST)">{d.enrichment.epss.last_fetch ? ago(d.enrichment.epss.last_fetch, now) : 'never fetched'}</Field>
+                                <Field label="Correlation engine">
+                                    {d.engine.correlation_last_run_at ? (
+                                        <>
+                                            {ago(d.engine.correlation_last_run_at, now)}
+                                            {d.engine.correlation_errors && d.engine.correlation_errors.length > 0 && <span className="text-red font-semibold"> · failed for {d.engine.correlation_errors.join(', ')}</span>}
+                                        </>
+                                    ) : <span className="text-amber font-semibold">has not completed a run yet</span>}
+                                </Field>
                             </dl>
                         </Card>
                         <Card>
