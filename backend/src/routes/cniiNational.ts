@@ -73,7 +73,7 @@ interface TiMatchRow { org_id: string; entity_id: string; status: string; case_i
  * appearing is never itself proof an actor attacked the asset. TLP is the most restrictive marking
  * among an indicator's sources (services/tiPolicy.ts mostRestrictive) — an indicator with no
  * source row is treated the same conservative way tlpFromTags() treats an untagged record. */
-async function loadTi(assetIds: string[]) {
+export async function loadTi(assetIds: string[]) {
     const tiByAsset = new Map<string, TiMatchRow[]>();
     const tlpByIndicator = new Map<string, Tlp>();
     if (!assetIds.length) return { tiByAsset, tlpByIndicator };
@@ -190,8 +190,9 @@ async function orgNames(slugs: string[]) {
 const DEFINITIONS = {
     infrastructure_risk: 'Mean NovrSOC contextual risk score (0–100) of open non-informational findings on monitored assets, with the highest score beside it. It weighs CVSS 45%, exploitation evidence (KEV, EPSS) 30%, exposure 15% and asset criticality 10% — it is not an average of CVSS.',
     assets_requiring_attention: 'Assets with at least one open critical or high finding, a P1/P2 finding, or a CVE in the CISA KEV catalogue.',
-    monitoring_coverage: 'Organisations with real, recent evidence of collection — an authorised scope alone is not enough. "Connected — stale" (collection ran, but not within 8 days) and "configured — not yet receiving data" (a scope exists but nothing has ever been collected) are shown apart, never counted as covered.',
+    monitoring_coverage: 'Organisations with a recent authorised passive collection run (an external scan, not continuous endpoint telemetry — CNII Watch never reads Wazuh). An authorised scope alone is not enough: "passive collection has run, but not recently" (not within 8 days) and "authorised, but no passive collection has run yet" are shown apart, never counted as covered.',
     organisations: 'Organisations with a recorded CNII profile (sector set by a manager). Candidates are classified but not yet formally designated.',
+    threat_intelligence: '"Verified" means an analyst promoted the match, or linked it to a case — a confirmed indicator-to-asset association, recorded as a deliberate human decision. It is NOT a confirmed attack, compromise or breach: it states only that this indicator is genuinely associated with this asset. "Contextual" matches (new or reviewed, not yet promoted) are a shared indicator or CVE appearing — never implied as proof of anything on their own.',
 };
 
 // ── National overview ─────────────────────────────────────────────────────────────────────────

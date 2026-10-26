@@ -60,6 +60,7 @@ import { ingestPassiveClaims } from '../services/vmsFindings';
 import { cleanAsHolder } from '../lib/spiderfoot';
 import rateLimit from 'express-rate-limit';
 import { parseIntake, parseIntakeList, submitIntake, decideIntake, assessIntake, scheduleIntake, intakeResults, registerManual, authoriseIntake, revokeIntakeAuthorisation, isMissingP17, P17_MISSING, SCHEDULE_MAX_DAYS, MAX_BULK, MAX_AUTH_DAYS, type Submission } from '../services/cniiIntake';
+import { loadTi } from './cniiNational';
 
 const router = Router();
 const OPEN = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'];
@@ -283,8 +284,22 @@ router.get('/profile', requirePermission('cnii:read'), async (req: AuthRequest, 
     ]);
     if (p.error) { fail(res, p.error); return; }
     try {
-        const [scopes, stats] = await Promise.all([scopesOf(org), orgStats([org])]);
-        res.json({ organisation: o.data ?? { slug: org }, profile: p.data ?? null, history: h.data ?? [], scopes, stats: stats[org], gaps: gaps(stats[org]) });
+        const [scopes, stats, assetIds] = await Promise.all([
+            scopesOf(org), orgStats([org]),
+            db().from('vms_assets').select('id').eq('org_id', org).eq('status', 'active').limit(50_000),
+        ]);
+        // R3.3B correction: the executive's own-organisation report (cnii:read, never cnii:sector)
+        // needs the same coverage state and threat-intelligence summary the staff national view
+        // already carries — reusing routes/cniiNational.ts's loadTi() verbatim rather than a second
+        // implementation of the same verified-vs-contextual, TLP-aware join.
+        const ti = await loadTi((assetIds.data ?? []).map((a) => a.id as string));
+        const rows = [...ti.tiByAsset.values()].flat();
+        const verifiedCount = rows.filter((m) => m.status === 'promoted' || !!m.case_id).length;
+        res.json({
+            organisation: o.data ?? { slug: org }, profile: p.data ?? null, history: h.data ?? [], scopes, stats: stats[org], gaps: gaps(stats[org]),
+            coverage_state: coverageState(stats[org]),
+            threat_intelligence: { total: rows.length, verified: verifiedCount, contextual: rows.length - verifiedCount },
+        });
     } catch (e) { fail(res, e as { message?: string }); }
 });
 

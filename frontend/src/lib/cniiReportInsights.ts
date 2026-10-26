@@ -5,12 +5,15 @@
 
 export type CoverageState = 'connected_fresh' | 'connected_stale' | 'configured_not_receiving' | 'not_connected' | 'unknown';
 
+// CNII Watch has no continuous endpoint agent of its own (it never reads Wazuh) — "connected"
+// here means a recent authorised passive collection run, a point-in-time external scan, not
+// continuous telemetry. Every line below says "passive collection" explicitly for this reason.
 const COVERAGE_RECOMMENDATION: Record<CoverageState, string | null> = {
     connected_fresh: null,
-    connected_stale: 'Monitoring telemetry for this organisation is stale — collection has not run recently enough to trust the figures below as current.',
+    connected_stale: 'This organisation\'s last authorised passive collection is stale (more than 8 days ago) — not recent enough to trust the figures below as current.',
     configured_not_receiving: 'An authorised scope exists, but no passive collection has ever run for this organisation — the figures below reflect only what was known before, or nothing at all.',
-    not_connected: 'This organisation has no active authorised scope — nothing is actively monitored. The figures below are historical, not current.',
-    unknown: 'This organisation\'s monitoring status could not be determined — treat the figures below as unverified.',
+    not_connected: 'This organisation has no active authorised scope, so no passive collection can run — the figures below are historical, not current.',
+    unknown: 'This organisation\'s passive-collection status could not be determined — treat the figures below as unverified.',
 };
 
 export interface CniiReportInput {

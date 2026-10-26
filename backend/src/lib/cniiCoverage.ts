@@ -3,16 +3,24 @@
 // no new table. Replaces a binary "Monitored"/"No scope" read with the five states the release
 // asks for, so "we have never heard from this organisation" is never shown the same as "healthy".
 //
+// What this measures: CNII Watch has no continuous endpoint agent of its own (it deliberately
+// never reads Wazuh — routes/cnii.ts's own header comment). "Connected" here means the
+// organisation has an active authorised scope AND a recent periodic passive OSINT collection run
+// (services/cniiPassive.ts, queued on demand or on a schedule) — a point-in-time external scan,
+// not continuous telemetry the way a Wazuh agent or an EDR sensor reports. The label and every
+// definition string below say "passive collection" explicitly so this is never mistaken for
+// continuous endpoint monitoring.
+//
 // The critical rule this exists to enforce: unknown monitoring is not healthy monitoring. A
 // missing or unparseable timestamp is 'unknown', never 'connected_fresh'.
 
 export type CoverageState = 'connected_fresh' | 'connected_stale' | 'configured_not_receiving' | 'not_connected' | 'unknown';
 
 export const COVERAGE_LABEL: Record<CoverageState, string> = {
-    connected_fresh: 'Connected — receiving telemetry',
-    connected_stale: 'Connected — stale',
-    configured_not_receiving: 'Configured — not yet receiving data',
-    not_connected: 'Not connected',
+    connected_fresh: 'Recent authorised passive collection',
+    connected_stale: 'Passive collection has run, but not recently',
+    configured_not_receiving: 'Authorised, but no passive collection has run yet',
+    not_connected: 'No active authorised scope — not connected',
     unknown: 'Monitoring status unknown',
 };
 

@@ -37,7 +37,7 @@ async function call(method: string, p: string, bearer: string | null, body?: unk
 }
 const future = (d = 30) => new Date(Date.now() + d * 86_400_000).toISOString();
 const past = (d = 1) => new Date(Date.now() - d * 86_400_000).toISOString();
-const TABLES = ['staff_org_assignments', 'organisations', 'org_access_audit', 'audit_log', 'cnii_org_profiles', 'cnii_profile_events', 'cnii_assets', 'vms_scopes', 'vms_scan_jobs', 'vms_assets', 'vms_asset_events', 'vms_observations', 'vms_services', 'vms_findings', 'vms_finding_evidence', 'vms_finding_events', 'cve_intel', 'ti_indicators', 'ti_matches'];
+const TABLES = ['staff_org_assignments', 'organisations', 'org_access_audit', 'audit_log', 'cnii_org_profiles', 'cnii_profile_events', 'cnii_assets', 'vms_scopes', 'vms_scan_jobs', 'vms_assets', 'vms_asset_events', 'vms_observations', 'vms_services', 'vms_findings', 'vms_finding_evidence', 'vms_finding_events', 'cve_intel', 'ti_indicators', 'ti_matches', 'ti_indicator_sources'];
 
 before(async () => {
     db = await startFakePostgrest(
@@ -127,6 +127,40 @@ test('profile: managers classify with a reference for designation; every change 
     const g = await call('GET', '/profile', tok('executive', B));
     assert.equal(g.data.profile.sector_id, 'power');
     assert.equal(g.data.history.length, 2);
+});
+
+// R3.3B correction: the executive's own-organisation report reads this exact route (cnii:read,
+// never cnii:sector) — coverage_state and threat_intelligence must be correct and org-isolated
+// here, not only in the staff national view.
+test('profile: coverage_state and threat_intelligence are correct for the executive\'s own organisation and never leak another org\'s, whatever X-Org-Id says', async () => {
+    profile(A); profile(B);
+    scope(A); // active scope, no recorded passive collection yet -> configured_not_receiving
+    scope(B);
+    db.tables.vms_scan_jobs.push({ id: randomUUID(), org_id: B, kind: 'passive_osint', status: 'succeeded', finished_at: new Date().toISOString() });
+    const aAsset = asset(A, 'a-asset.test');
+    const bAsset = asset(B, 'b-asset.test');
+    const indicator = { id: randomUUID(), type: 'ip', value: '203.0.113.9', max_confidence: 80, malware_families: [], threat_types: [], status: 'active' };
+    db.tables.ti_indicators = [indicator];
+    db.tables.ti_indicator_sources = [{ id: randomUUID(), indicator_id: indicator.id, feed_id: 'f', source_ref: 'r', tlp: 'red' }];
+    db.tables.ti_matches = [
+        { id: randomUUID(), org_id: A, entity_type: 'asset', entity_id: aAsset.id, indicator_id: indicator.id, status: 'promoted', case_id: null },
+        { id: randomUUID(), org_id: B, entity_type: 'asset', entity_id: bAsset.id, indicator_id: indicator.id, status: 'new', case_id: null },
+    ];
+
+    const execA = await call('GET', '/profile', tok('executive', A));
+    assert.equal(execA.status, 200);
+    assert.equal(execA.data.coverage_state, 'configured_not_receiving');
+    assert.deepEqual(execA.data.threat_intelligence, { total: 1, verified: 1, contextual: 0 }, 'A\'s match is promoted — verified');
+
+    const execB = await call('GET', '/profile', tok('executive', B));
+    assert.equal(execB.data.coverage_state, 'connected_fresh');
+    assert.deepEqual(execB.data.threat_intelligence, { total: 1, verified: 0, contextual: 1 }, 'B\'s match is only "new" — contextual, not verified');
+
+    // A forged X-Org-Id must not move the executive off their own organisation's figures.
+    const spoofed = await call('GET', '/profile', tok('executive', A), undefined, B);
+    assert.deepEqual(spoofed.data.threat_intelligence, execA.data.threat_intelligence, 'X-Org-Id is ignored for a client role');
+    assert.equal(spoofed.data.coverage_state, execA.data.coverage_state);
+    assert.equal(db.tables.org_access_audit.length, 0, 'a client role\'s X-Org-Id is not even a cross-org attempt');
 });
 
 test('sector view: confirmed and unconfirmed findings are counted apart; unmonitored organisations are visible', async () => {

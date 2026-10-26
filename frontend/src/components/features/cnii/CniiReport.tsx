@@ -17,7 +17,9 @@ import { PageHeader, Segmented, btn, KpiCard, ExportCsvButton, ErrorState } from
 import { useVmsData } from '../vms/data';
 import type { OrgData } from './CniiNational';
 
-const COVERAGE_LABEL: Record<string, string> = { connected_fresh: 'Connected — receiving telemetry', connected_stale: 'Connected — stale', configured_not_receiving: 'Configured — not yet receiving data', not_connected: 'Not connected', unknown: 'Monitoring status unknown' };
+// CNII Watch has no continuous endpoint agent of its own: "connected" means a recent authorised
+// *passive collection* (a point-in-time external scan), never continuous Wazuh/EDR telemetry.
+const COVERAGE_LABEL: Record<string, string> = { connected_fresh: 'Recent authorised passive collection', connected_stale: 'Passive collection has run, but not recently', configured_not_receiving: 'Authorised, but no passive collection has run yet', not_connected: 'No active authorised scope — not connected', unknown: 'Monitoring status unknown' };
 const section = 'bg-card border border-border rounded-2xl p-4 text-xs space-y-1';
 const pairs = (o: Record<string, number>) => Object.entries(o).filter(([, v]) => v).length ? Object.entries(o).filter(([, v]) => v).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`).join(' · ') : 'none';
 

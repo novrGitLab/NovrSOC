@@ -87,7 +87,9 @@ const designationTag = (d: string) => d === 'designated' ? <StatusPill tone="goo
 // R3.3B Stage 2: five real states, not a binary "has a scope" pill — a scope with no recorded
 // collection, or one that stopped reporting, must never read the same as fresh telemetry.
 const COVERAGE_TONE: Record<CoverageState, Tone> = { connected_fresh: 'good', connected_stale: 'warning', configured_not_receiving: 'warning', not_connected: 'critical', unknown: 'neutral' };
-const COVERAGE_LABEL: Record<CoverageState, string> = { connected_fresh: 'Connected — receiving telemetry', connected_stale: 'Connected — stale', configured_not_receiving: 'Configured — not yet receiving data', not_connected: 'Not connected', unknown: 'Monitoring status unknown' };
+// CNII Watch has no continuous endpoint agent of its own: "connected" means a recent authorised
+// *passive collection* (a point-in-time external scan), never continuous Wazuh/EDR telemetry.
+const COVERAGE_LABEL: Record<CoverageState, string> = { connected_fresh: 'Recent authorised passive collection', connected_stale: 'Passive collection has run, but not recently', configured_not_receiving: 'Authorised, but no passive collection has run yet', not_connected: 'No active authorised scope — not connected', unknown: 'Monitoring status unknown' };
 function CoverageBadge({ state, detail }: { state: CoverageState; detail?: string }) {
     return <StatusPill tone={COVERAGE_TONE[state]} label={detail ? `${COVERAGE_LABEL[state]} · ${detail}` : COVERAGE_LABEL[state]} />;
 }
@@ -400,7 +402,8 @@ export function CniiNationalOrg({ org }: { org: string }) {
                     <KpiCard label="Remediation progress" value={d ? (openAll + closed ? Math.round((closed / (openAll + closed)) * 100) : null) : undefined} suffix="%" reason={d ? 'No findings on record' : 'Loading'} sub={d ? `${closed} closed (verified, accepted or false positive) · ${openAll} open` : undefined} />
                     <KpiCard label="Assets assessed (30 days)" value={s?.monitoring.assets_assessed_30d} suffix={s ? ` / ${s.assets}` : ''} reason="Loading" />
                     <KpiCard label="Threat intelligence matches" value={s?.threat_intelligence.total} reason="Loading" tone={s && s.threat_intelligence.verified > 0 ? 'critical' : s ? 'good' : undefined}
-                        sub={s ? (s.threat_intelligence.total ? `${s.threat_intelligence.verified} verified · ${s.threat_intelligence.contextual} contextual only` : 'No indicator matches') : undefined} />
+                        hint={d?.definitions.threat_intelligence}
+                        sub={s ? (s.threat_intelligence.total ? `${s.threat_intelligence.verified} verified association(s) · ${s.threat_intelligence.contextual} contextual only — not a confirmed attack or compromise` : 'No indicator matches') : undefined} />
                 </section>
                 <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
                     <ChartCard title="Severity (CVSS)" loading={loading} empty={d && !Object.values(d.summary.severity).some(Boolean) ? { title: 'No open findings' } : null}>{d && <Donut label="Findings by severity" centerLabel="open" slices={sevSlices(d.summary.severity)} />}</ChartCard>
@@ -462,11 +465,11 @@ export function CniiNationalAsset({ org, id }: { org: string; id: string }) {
             </section>
             {d.threat_intelligence.length > 0 && (
                 <Card>
-                    <SectionTitle title="Threat intelligence" hint="Each match keeps its own verdict — a shared indicator is never itself proof this asset was attacked." />
+                    <SectionTitle title="Threat intelligence" hint="Verified means an analyst promoted this match or linked it to a case — a confirmed indicator-to-asset association, not a confirmed attack, compromise or breach. Contextual is an unreviewed, shared indicator or CVE appearing — never proof of anything on its own." />
                     <ul className="divide-y divide-border">
                         {d.threat_intelligence.map((m, i) => (
                             <li key={i} className="py-2.5 flex flex-wrap items-center gap-2">
-                                <StatusPill tone={m.verified ? 'critical' : 'neutral'} label={m.verified ? 'Verified association' : 'Contextual only'} />
+                                <StatusPill tone={m.verified ? 'critical' : 'neutral'} label={m.verified ? 'Verified association — not a confirmed attack' : 'Contextual only — not yet confirmed'} />
                                 <span className="text-xs font-mono text-foreground">{m.indicator_type}: {m.indicator_value}</span>
                                 {m.malware_families.length > 0 && <Tag>{m.malware_families.join(', ')}</Tag>}
                                 {m.threat_types.length > 0 && <span className="text-[11px] text-foreground-muted">{m.threat_types.join(', ')}</span>}

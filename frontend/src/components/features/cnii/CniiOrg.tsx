@@ -83,7 +83,10 @@ export function CniiOrg({ org }: { org: string }) {
                     <h1 className="text-lg font-black text-foreground flex items-center gap-2"><Building2 className="w-5 h-5" /> {data?.organisation.name ?? org}</h1>
                     <p className="text-xs text-foreground-muted">{data?.profile ? `${sector?.label ?? data.profile.sector_id}${data.profile.subfield ? ` · ${data.profile.subfield}` : ''} · ${data.profile.designation}${data.profile.designation_reference ? ` (${data.profile.designation_reference})` : ''}` : 'Not classified into a CNII sector'}</p>
                 </div>
-                {isManager && <button onClick={() => setEditing((e) => !e)} className="text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1.5">{data?.profile ? 'Change classification' : 'Classify'}</button>}
+                <div className="flex items-center gap-2">
+                    <Link href={`/admin/cnii/org/${org}/report`} className="text-[11px] font-semibold text-purple dark:text-[var(--vz-prog-4)]">Report →</Link>
+                    {isManager && <button onClick={() => setEditing((e) => !e)} className="text-[11px] font-bold text-white bg-purple rounded-lg px-3 py-1.5">{data?.profile ? 'Change classification' : 'Classify'}</button>}
+                </div>
             </div>
             {error && <p role="alert" className="text-xs text-red font-semibold">{error}</p>}
             {msg && <p role="status" className="text-xs text-foreground font-semibold">{msg}</p>}
