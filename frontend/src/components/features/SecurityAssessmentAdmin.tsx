@@ -18,7 +18,7 @@ interface ClientRow {
     closed_this_month: number; resolved_30d: number; sla_rate: number | null; posture: Posture; trend: Trend | null; last_updated: string | null;
 }
 interface Overview {
-    summary: { active_clients: number; avg_detection_time_hrs: null; avg_close_time_hrs: number | null; open_cases: number; sla_rate: number | null; clients_below_sla: number };
+    summary: { active_clients: number; avg_detection_time_hrs: null; avg_close_time_hrs: number | null; open_cases: number; sla_rate: number | null; clients_below_sla: number; pending_approvals: number };
     clients: ClientRow[];
     monthly: SlaPoint[];
     definitions: { sla_target_hours: Record<string, number>; sla_secure_threshold_pct: number; detection_time: string };
@@ -72,6 +72,7 @@ export function SecurityAssessmentAdmin({ presence }: { presence?: React.ReactNo
         { label: 'Open Cases', value: s ? String(s.open_cases) : '—', note: 'All clients' },
         { label: 'SLA Compliance', value: s ? fmtPct(s.sla_rate) : '—', note: 'Last 30 days' },
         { label: 'Clients Below SLA', value: s ? String(s.clients_below_sla) : '—', note: data ? `Under ${data.definitions.sla_secure_threshold_pct}%` : undefined, alert: (s?.clients_below_sla ?? 0) > 0 },
+        { label: 'Pending Approvals', value: s ? String(s.pending_approvals) : '—', note: 'All clients, response actions', alert: (s?.pending_approvals ?? 0) > 0 },
     ];
 
     return (

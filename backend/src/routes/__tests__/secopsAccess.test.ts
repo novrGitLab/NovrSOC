@@ -31,7 +31,8 @@ import searchRouter from '../search';
 import communicationsRouter from '../communications';
 import secopsRouter from '../secops';
 import handoverRouter from '../handover';
-import { clientRouter as securityAssessmentClientRouter } from '../securityAssessment';
+import { adminRouter as securityAssessmentAdminRouter, clientRouter as securityAssessmentClientRouter } from '../securityAssessment';
+import { orgMetrics } from '../../services/securityAssessment';
 
 const A = 'org-a';
 const B = 'org-b';
@@ -118,6 +119,7 @@ before(async () => {
     app.use('/api/secops', requireAuth, secopsRouter);
     app.use('/api/handover', requireAuth, handoverRouter);
     app.use('/api/client/security-assessment', requireAuth, securityAssessmentClientRouter);
+    app.use('/api/admin/security-assessment', requireAuth, securityAssessmentAdminRouter);
     server = app.listen(0);
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -336,6 +338,49 @@ test('security assessment: client roles always get their own org; staff pick wit
     assert.equal(staff.data.org_id, B);
     assert.equal(staff.data.orgs.length, 2);
     assert.equal((await call('GET', `${path}?org=${B}`, { role: 'analyst', org: A })).data.org_id, A, '?org is no longer read');
+
+    // R3.3C: workload groups open cases by analyst name (a staff identity) — the client-facing
+    // report card never exposes it, the same rule VMS/CNII's own client responses already follow.
+    // investigation_age and pending_approvals are this organisation's own counts, not an
+    // identity, so those are still present.
+    const exec = await call('GET', `${path}?org=${B}`, { role: 'executive', org: A, asOrg: B });
+    assert.ok(!('workload' in exec.data), 'workload is never sent to a client role');
+    assert.ok('investigation_age' in exec.data && 'pending_approvals' in exec.data, 'non-identity figures are kept');
+});
+
+// R3.3C: GET /api/admin/security-assessment/overview has no per-caller org filter — it returns
+// every active organisation's posture, by design, for a platform-wide staff view. 'executive' is
+// a CLIENT_ROLE confined to one organisation everywhere else, so it must never reach this route;
+// it already gets its own organisation correctly from GET /api/client/security-assessment above.
+test('security assessment overview (all organisations): staff only, never executive — it has no per-caller org filter', async () => {
+    assert.equal((await call('GET', '/api/admin/security-assessment/overview')).status, 401);
+    assert.equal((await call('GET', '/api/admin/security-assessment/overview', { role: 'executive', org: A })).status, 403, 'a CLIENT_ROLE must never reach the all-organisations view');
+    assert.equal((await call('GET', '/api/admin/security-assessment/overview', { role: 'portal_user', org: A })).status, 403);
+    const asManager = await call('GET', '/api/admin/security-assessment/overview', { role: 'soc_manager', org: A });
+    assert.equal(asManager.status, 200);
+    assert.deepEqual(asManager.data.clients.map((c: Row) => c.org_id).sort(), [A, B].sort(), 'a manager genuinely sees every active organisation here, by design');
+});
+
+// R3.3C Stage 4: investigation age, case workload and the response-approval backlog, computed
+// from real, already-queried case/approval rows — org A's caseA (open, 2h old, unassigned) and
+// org B's caseB are kept apart, and a pending approval in org B never shows up in org A's count.
+test('orgMetrics: investigation age, workload and pending approvals are real and org-scoped', async () => {
+    db.tables.response_approvals = db.tables.response_approvals ?? [];
+    db.tables.response_approvals.push(
+        { id: randomUUID(), org_id: B, status: 'pending', action: 'block_ip', target: '203.0.113.9', target_label: null, reason: 'x', source: 'case', requested_by: 'b', requested_at: ago(1) },
+        { id: randomUUID(), org_id: B, status: 'executed', action: 'block_ip', target: '203.0.113.10', target_label: null, reason: 'x', source: 'case', requested_by: 'b', requested_at: ago(2) },
+    );
+    const a = await orgMetrics(A, 'Org A');
+    assert.equal(a.pending_approvals, 0, 'org B\'s pending approval is not org A\'s');
+    // Other tests in this file (no beforeEach reset) may have opened further unassigned org-A
+    // cases by the time this runs — assert the shape and that caseA is counted, not an exact total.
+    assert.equal(a.workload.length, 1, 'every open org-A case so far is unassigned');
+    assert.equal(a.workload[0].assigned_to, 'Unassigned');
+    assert.ok(a.workload[0].open_cases >= 1);
+    assert.ok(a.investigation_age.oldest_hrs !== null && a.investigation_age.oldest_hrs >= 1.9, 'caseA (2h old) is at least as old as the oldest open org-A case');
+
+    const b = await orgMetrics(B, 'Org B');
+    assert.equal(b.pending_approvals, 1, 'exactly the one pending approval seeded for org B');
 });
 
 // Phase P26: the IOC cache is per organisation — each organisation's escalation writes its own

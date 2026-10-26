@@ -50,6 +50,10 @@ export interface OrgMetrics {
     monthly: MonthPoint[];
     last_closed: ClosedCase[];
     last_updated: string | null;
+    // R3.3C Stage 4 additions — all computed from records already queried above, real counts only.
+    investigation_age: { oldest_hrs: number | null; mean_hrs: number | null };
+    workload: { assigned_to: string; open_cases: number }[];
+    pending_approvals: number;
 }
 
 interface WorkedRow { id: string; case_number: string; title: string; severity: string; status: string; created_at: string; resolved_at: string | null; updated_at: string | null }
@@ -90,7 +94,7 @@ export async function orgMetrics(orgSlug: string, orgName: string): Promise<OrgM
     const sixMonthsAgo = new Date(watMonthStart(-5)).toISOString();
     const thirtyDaysAgo = new Date(now - 30 * DAY).toISOString();
 
-    const [worked, openCount, engineCases] = await Promise.all([
+    const [worked, openCount, engineCases, openRows, pendingApprovals] = await Promise.all([
         fetchPaged<WorkedRow>((a, b) => supabase.from('cases')
             .select('id, case_number, title, severity, status, created_at, resolved_at, updated_at')
             .eq('org_id', orgSlug).eq('auto_closed', false).gte('created_at', sixMonthsAgo)
@@ -99,8 +103,25 @@ export async function orgMetrics(orgSlug: string, orgName: string): Promise<OrgM
         fetchPaged<{ source_id: string | null; created_at: string }>((a, b) => supabase.from('cases')
             .select('source_id, created_at').eq('org_id', orgSlug).eq('source', 'wazuh').gte('created_at', thirtyDaysAgo)
             .range(a, b), 10000),
+        // Every currently open case, with no 6-month window (worked above is windowed, so an
+        // investigation older than that would otherwise be missing from its own age/workload).
+        fetchPaged<{ id: string; created_at: string; assigned_to: string | null; severity: string }>((a, b) => supabase.from('cases')
+            .select('id, created_at, assigned_to, severity').eq('org_id', orgSlug).neq('status', 'resolved').range(a, b)),
+        supabase.from('response_approvals').select('id', { count: 'exact', head: true }).eq('org_id', orgSlug).eq('status', 'pending'),
     ]);
     if (openCount.error) throw new Error(dbErrorMessage(openCount.error));
+    if (pendingApprovals.error) throw new Error(dbErrorMessage(pendingApprovals.error));
+
+    const ageHrs = openRows.map((r) => hours(now - Date.parse(r.created_at)));
+    const investigationAge = {
+        oldest_hrs: ageHrs.length ? Math.max(...ageHrs) : null,
+        mean_hrs: ageHrs.length ? hours(ageHrs.reduce((s, x) => s + x, 0) / ageHrs.length) : null,
+    };
+    // Grouped by assigned_to (a name — routes/cases.ts resolves it from platform_users at
+    // assignment time, same as the dashboard's "My Cases" filter relies on), unassigned apart.
+    const workloadMap = new Map<string, number>();
+    for (const r of openRows) { const k = r.assigned_to ?? 'Unassigned'; workloadMap.set(k, (workloadMap.get(k) ?? 0) + 1); }
+    const workload = [...workloadMap.entries()].map(([assigned_to, open_cases]) => ({ assigned_to, open_cases })).sort((a, b) => b.open_cases - a.open_cases);
 
     const resolved = worked.filter((r) => r.status === 'resolved' && r.resolved_at);
     const resolved30 = resolved.filter((r) => Date.parse(r.resolved_at!) >= now - 30 * DAY);
@@ -153,6 +174,9 @@ export async function orgMetrics(orgSlug: string, orgName: string): Promise<OrgM
             close_time_hrs: hours(Date.parse(r.resolved_at!) - Date.parse(r.created_at)), within_sla: withinSla(r), resolved_at: r.resolved_at!,
         })),
         last_updated: lastUpdated,
+        investigation_age: investigationAge,
+        workload,
+        pending_approvals: pendingApprovals.count ?? 0,
     };
 }
 

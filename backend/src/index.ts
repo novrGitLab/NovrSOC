@@ -80,6 +80,7 @@ import { startVmsIntelJob } from './jobs/vmsIntelJob';
 import { startThreatInfoJob } from './jobs/threatInfoJob';
 import { startVmsContinuousJob } from './jobs/vmsContinuousJob';
 import { startCniiPassiveJob } from './jobs/cniiPassiveJob';
+import { startAlertRetentionJob } from './jobs/alertRetentionJob';
 import { announceJobPolicy } from './lib/runtimeEnv';
 import { announceVerificationSecret } from './services/emailsec/verification';
 import platformRouter from './routes/platform';
@@ -476,4 +477,7 @@ if (announceJobPolicy()) {
     // CNII passive collection (SpiderFoot passive modules, CT logs, DNS, RIPE Stat, OpenCTI) for
     // passive_osint jobs in the VMS queue — jobs/cniiPassiveJob.ts. Off with CNII_PASSIVE_ENABLED=false.
     startCniiPassiveJob();
+    // Alert store retention (sql/2026-10-09_alert_retention.sql's purge_old_alerts) — defined in
+    // SQL with nothing ever scheduling it until now. jobs/alertRetentionJob.ts.
+    startAlertRetentionJob();
 }

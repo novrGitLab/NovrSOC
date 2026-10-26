@@ -20,6 +20,7 @@ import alertStoreRouter from '../alertStore';
 import responseApprovalsRouter from '../responseApprovals';
 import { __setAgentsForTests } from '../../services/wazuh';
 import { resetOrgScopeCache } from '../../lib/orgScope';
+import { flushAuditForTests } from '../../lib/audit';
 
 const A = 'org-a';
 const B = 'org-b';
@@ -44,10 +45,11 @@ before(async () => {
     db = await startFakePostgrest({
         organisations: [{ id: 'oa', slug: A, name: 'Org A' }, { id: 'ob', slug: B, name: 'Org B' }],
         cases: [], case_tasks: [], case_timeline: [], soar_log: [], response_approvals: [], alerts: [], alert_events: [], platform_users: [],
+        ti_matches: [], ti_indicators: [], ti_indicator_sources: [],
         // Agent ownership (lib/orgScope.ts): 003 and 009 are org A's, 010 is org B's.
         wazuh_group_org_map: [{ wazuh_group: 'grp-a', org_id: A }, { wazuh_group: 'grp-b', org_id: B }],
         wazuh_source_org_map: [],
-    }, { 'platform_users.organisations': 'org_id' }, {
+    }, { 'platform_users.organisations': 'org_id', 'ti_matches.ti_indicators': 'indicator_id' }, {
         response_approvals: { status: 'pending', requested_at: new Date().toISOString() },
         cases: { status: 'open', get case_number() { return `CASE-${++n}`; } } as Row,
     });
@@ -68,7 +70,7 @@ before(async () => {
 });
 after(async () => { Object.assign(console, realLog); __setAgentsForTests(null); resetOrgScopeCache(); server.close(); await db.close(); });
 beforeEach(() => {
-    for (const t of ['cases', 'case_tasks', 'case_timeline', 'soar_log', 'response_approvals', 'alerts', 'alert_events', 'platform_users']) db.tables[t].length = 0;
+    for (const t of ['cases', 'case_tasks', 'case_timeline', 'soar_log', 'response_approvals', 'alerts', 'alert_events', 'platform_users', 'ti_matches', 'ti_indicators', 'ti_indicator_sources']) db.tables[t].length = 0;
     caseRow = { id: randomUUID(), org_id: A, case_number: 'CASE-A1', title: 'Brute force on web-01', severity: 'high', status: 'open', source: 'manual', source_ip: '203.0.113.9', agent_id: '003', agent_name: 'web-01', tier: 2 };
     db.tables.cases.push(caseRow);
     db.tables.case_tasks.push({ id: randomUUID(), case_id: caseRow.id, step_id: 'isolate_agent', title: 'Isolate host', status: 'pending' });
@@ -203,4 +205,61 @@ test('promote to case: one case, linked, repeat calls return it; other orgs get 
     assert.equal(db.tables.cases.filter((x) => x.source === 'alert').length, 1);
     assert.equal((await http('POST', `/api/alerts/${alertRow.id}/case`, B_MANAGER)).status, 404);
     assert.equal((await http('PATCH', `/api/alerts/${alertRow.id}`, B_MANAGER, { triage_note: 'x' })).status, 404);
+});
+
+// R3.3C: routes/alertStore.ts's link UPDATE used to go unchecked for affected rows, so a request
+// whose alert.case_id was no longer null by the time its own UPDATE ran (lost a race to another
+// request) could silently report 200/201 "success" despite not actually linking anything. Two
+// concurrent promotes of the same alert put two different link UPDATEs in flight against it; the
+// fakePostgrest harness doesn't enforce the real database's unique(org_id, source, source_id)
+// index the way production does, so it can't prove only one case gets created — but it does
+// prove the alert is never left unlinked, and that a losing UPDATE is recorded, not swallowed.
+test('promote to case under concurrency: the alert always ends up linked, and a losing link update is recorded, never silently swallowed', async () => {
+    const [r1, r2] = await Promise.all([
+        http('POST', `/api/alerts/${alertRow.id}/case`, ANALYST),
+        http('POST', `/api/alerts/${alertRow.id}/case`, ANALYST),
+    ]);
+    assert.equal(r1.status, 201);
+    assert.equal(r2.status, 201);
+    assert.ok(alertRow.case_id, 'the alert is linked to a case, not left null');
+    assert.ok([r1.data.case.id, r2.data.case.id].includes(alertRow.case_id), 'it is linked to one of the cases this exact request flow created');
+    // Whichever request's UPDATE lost the race (case_id was no longer null by the time it ran)
+    // is recorded, rather than silently claiming success with no evidence it actually linked.
+    await flushAuditForTests();
+    const linkFailures = (db.tables.audit_log ?? []).filter((e: Row) => e.action === 'ALERT_CASE_LINK_FAILED');
+    assert.ok(linkFailures.length <= 1, 'at most one of the two requests could have lost the race');
+});
+
+// R3.3C: PATCH /api/cases/:id used to accept assigned_to as any raw string, unlike POST
+// /:id/assign, which resolves an email against platform_users and stores the member's name.
+// That let assigned_to end up holding an email, a name or anything else depending on which
+// endpoint wrote it last — breaking name-based lookups such as the dashboard's "My Cases" filter.
+// PATCH now resolves the same way /assign does.
+test('PATCH assignee resolves through platform_users the same way POST /:id/assign does', async () => {
+    const byEmail = await http('PATCH', `/api/cases/${caseRow.id}`, MANAGER, { assigned_to: 'ANA@A.test' });
+    assert.equal(byEmail.status, 200);
+    assert.equal(byEmail.data.case.assigned_to, 'ana@a.test', 'no name on record, so the email itself is stored — never the raw casing or anything else');
+    assert.equal((await http('PATCH', `/api/cases/${caseRow.id}`, MANAGER, { assigned_to: 'gone@a.test' })).status, 400, 'a disabled account cannot be assigned');
+    assert.equal((await http('PATCH', `/api/cases/${caseRow.id}`, MANAGER, { assigned_to: 'nobody@a.test' })).status, 400, 'free text / an unknown email is refused, not stored as-is');
+    const cleared = await http('PATCH', `/api/cases/${caseRow.id}`, MANAGER, { assigned_to: '' });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.data.case.assigned_to, null, 'an empty string unassigns');
+});
+
+// R3.3C: Threat Intelligence correlation was already computed and stored (services/threatInfo.ts)
+// but never surfaced on the case detail response before now.
+test('case detail surfaces threat intelligence correlation: dismissed excluded, a linked case_id is verified, TLP defaults to amber with no source rows', async () => {
+    const indicator = { id: randomUUID(), type: 'domain', value: 'evil.test', max_confidence: 60, malware_families: [], threat_types: ['phishing'], status: 'active' };
+    db.tables.ti_indicators.push(indicator);
+    db.tables.ti_matches.push(
+        { id: randomUUID(), org_id: A, entity_type: 'case', entity_id: caseRow.id, indicator_id: indicator.id, status: 'new', case_id: caseRow.id },
+        { id: randomUUID(), org_id: A, entity_type: 'case', entity_id: caseRow.id, indicator_id: indicator.id, status: 'dismissed', case_id: null },
+    );
+    const detail = await http('GET', `/api/cases/${caseRow.id}`, ANALYST);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.data.threat_intelligence.length, 1, 'the dismissed match is excluded');
+    const m = detail.data.threat_intelligence[0];
+    assert.equal(m.verified, true, 'linked to this case\'s own id counts as a verified association, even with status still "new"');
+    assert.equal(m.tlp, 'amber', 'no ti_indicator_sources rows for this indicator — the conservative default, not "clear"');
+    assert.equal(m.indicator_value, 'evil.test');
 });

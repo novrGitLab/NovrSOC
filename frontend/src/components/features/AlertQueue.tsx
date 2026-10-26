@@ -52,6 +52,10 @@ const REFRESH_MS = 30_000;
 
 type Page = { alerts: StoredAlert[]; next_cursor: string | null };
 interface AlertEvent { at: string; actor: string; action: string; from_value: string | null; to_value: string | null; details: string | null }
+// R3.3C: already computed by services/threatInfo.ts, newly surfaced on GET /api/alerts/:id.
+// "verified" means an analyst promoted the match or linked it to a case — a confirmed
+// indicator-to-asset association, never a confirmed attack or compromise on its own.
+interface TiMatch { indicator_type: string | null; indicator_value: string | null; confidence: number | null; malware_families: string[]; threat_types: string[]; verified: boolean; status: string; case_id: string | null; tlp: string }
 const EVENT_LABEL: Record<string, string> = { status: 'Status', assign: 'Assigned', acknowledge: 'Acknowledged', note: 'Note', case_link: 'Linked to case' };
 
 /** GET /api/client/secops/summary, as far as this page uses it. */
@@ -80,6 +84,7 @@ export function AlertQueue({ mode = 'staff' }: { mode?: 'staff' | 'client' }) {
     const [error, setError] = useState<string | null>(null);
     const [checkedAt, setCheckedAt] = useState<string | null>(null);
     const [selected, setSelected] = useState<StoredAlert | null>(null);
+    const [ti, setTi] = useState<TiMatch[] | null>(null);
     const [busy, setBusy] = useState(false);
     const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
     const [reloadKey, setReloadKey] = useState(0);
@@ -154,9 +159,10 @@ export function AlertQueue({ mode = 'staff' }: { mode?: 'staff' | 'client' }) {
         setActionMsg(null);
         setEvents(null);
         setNote(a.triage_note ?? '');
+        setTi(null);
         if (client) return; // the list row is the client's whole view of the alert
-        const r = await loadJson<{ alert: StoredAlert }>(`/api/alerts/${a.id}`);
-        if (r.ok) { setSelected(r.data.alert); setNote(r.data.alert.triage_note ?? ''); }
+        const r = await loadJson<{ alert: StoredAlert; threat_intelligence: TiMatch[] }>(`/api/alerts/${a.id}`);
+        if (r.ok) { setSelected(r.data.alert); setNote(r.data.alert.triage_note ?? ''); setTi(r.data.threat_intelligence ?? []); }
         void loadEvents(a.id);
     }
 
@@ -423,6 +429,23 @@ export function AlertQueue({ mode = 'staff' }: { mode?: 'staff' | 'client' }) {
                                             </div>
                                         ))}
                                     </div>
+                                </div>
+                            )}
+
+                            {!client && ti && ti.length > 0 && (
+                                <div className="border border-border rounded-lg p-3">
+                                    <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-2">Threat intelligence</p>
+                                    <ul className="space-y-1.5">
+                                        {ti.map((m, i) => (
+                                            <li key={i} className="flex flex-wrap items-center gap-2 text-xs">
+                                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${m.verified ? 'bg-red-500/10 text-red-500' : 'bg-card-muted text-foreground-muted'}`}>{m.verified ? 'Verified' : 'Contextual'}</span>
+                                                <span className="font-mono text-foreground">{m.indicator_type}: {m.indicator_value}</span>
+                                                {m.malware_families.length > 0 && <span className="text-foreground-muted">{m.malware_families.join(', ')}</span>}
+                                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase bg-card-muted text-foreground-muted">TLP:{m.tlp.toUpperCase()}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                    <p className="text-[10px] text-foreground-muted mt-1.5">Verified means an analyst promoted the match or linked it to a case — not a confirmed attack or compromise on its own.</p>
                                 </div>
                             )}
 

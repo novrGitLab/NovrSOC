@@ -17,6 +17,7 @@ import ingestRouter, { RAW_MAX_BYTES } from '../ingest';
 import alertStoreRouter from '../alertStore';
 import wazuhGroupMapRouter from '../wazuhGroupMap';
 import { getAuditLog } from '../../lib/audit';
+import { purgeOldAlerts } from '../../jobs/alertRetentionJob';
 
 const A = 'org-a';
 const B = 'org-b';
@@ -64,7 +65,23 @@ before(async () => {
         ],
         alerts: [],
         alert_ingest_rejects: [],
-    }, {}, { alerts: { status: 'new', received_at: new Date().toISOString(), raw_truncated: false } });
+        ti_matches: [], ti_indicators: [], ti_indicator_sources: [],
+    }, { 'ti_matches.ti_indicators': 'indicator_id' }, { alerts: { status: 'new', received_at: new Date().toISOString(), raw_truncated: false } }, {
+        // Mirrors sql/2026-10-09_alert_retention.sql's purge_old_alerts() closely enough for a
+        // unit test: an alert is deleted only with case_id IS NULL and both timestamps past
+        // retain_days; alert_ingest_rejects past reject_days.
+        purge_old_alerts: (args, tables) => {
+            const retainDays = Number(args.retain_days ?? 90);
+            const rejectDays = Number(args.reject_days ?? 14);
+            const alertCutoff = Date.now() - retainDays * 86_400_000;
+            const rejectCutoff = Date.now() - rejectDays * 86_400_000;
+            const purge = tables.alerts.filter((a) => a.case_id === null && Date.parse(a.event_time as string) < alertCutoff && Date.parse(a.received_at as string) < alertCutoff);
+            const purgeRejects = tables.alert_ingest_rejects.filter((r) => Date.parse(r.received_at as string) < rejectCutoff);
+            for (const a of purge) tables.alerts.splice(tables.alerts.indexOf(a), 1);
+            for (const r of purgeRejects) tables.alert_ingest_rejects.splice(tables.alert_ingest_rejects.indexOf(r), 1);
+            return [{ alerts_deleted: purge.length, rejects_deleted: purgeRejects.length }];
+        },
+    });
     process.env.SUPABASE_URL = db.url;
     process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
 
@@ -285,6 +302,27 @@ test('triage: alerts:triage required, status validated, change audited', async (
     assert.ok('raw' in detail.data.alert, 'detail includes raw');
 });
 
+// R3.3C: Threat Intelligence correlation (ti_matches/ti_indicators) was already computed and
+// stored by services/threatInfo.ts, but never surfaced in the alert detail response before now.
+test('alert detail surfaces threat intelligence correlation: dismissed excluded, promoted is verified, TLP is the most restrictive source', async () => {
+    const aAlert = alertsOf(A)[0];
+    const indicator = { id: randomUUID(), type: 'ip', value: '203.0.113.9', max_confidence: 80, malware_families: ['cobaltstrike'], threat_types: ['c2'], status: 'active' };
+    db.tables.ti_indicators.push(indicator);
+    db.tables.ti_indicator_sources.push({ id: randomUUID(), indicator_id: indicator.id, feed_id: 'f', source_ref: 'r1', tlp: 'green' }, { id: randomUUID(), indicator_id: indicator.id, feed_id: 'f', source_ref: 'r2', tlp: 'red' });
+    db.tables.ti_matches.push(
+        { id: randomUUID(), org_id: A, entity_type: 'alert', entity_id: aAlert.id, indicator_id: indicator.id, status: 'promoted', case_id: null },
+        { id: randomUUID(), org_id: A, entity_type: 'alert', entity_id: aAlert.id, indicator_id: indicator.id, status: 'dismissed', case_id: null },
+    );
+    const detail = await user('GET', `/api/alerts/${aAlert.id}`, 'analyst', A);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.data.threat_intelligence.length, 1, 'the dismissed match is excluded');
+    const m = detail.data.threat_intelligence[0];
+    assert.equal(m.verified, true, '"promoted" is a verified association');
+    assert.equal(m.tlp, 'red', 'the most restrictive of the indicator\'s two sources');
+    assert.equal(m.indicator_value, '203.0.113.9');
+    assert.deepEqual(m.malware_families, ['cobaltstrike']);
+});
+
 // ── Group map admin ───────────────────────────────────────────────────────────────────────────
 
 test('wazuh group map: super_admin only; unknown org 400; null removes; audited', async () => {
@@ -310,4 +348,31 @@ test('wazuh group map: super_admin only; unknown org 400; null removes; audited'
     // The new mapping takes effect for ingest; the removed one now rejects.
     assert.equal((await ingest([wazuhAlert({ groups: ['new-group'] })])).data.accepted, 1);
     assert.equal((await ingest([wazuhAlert({ groups: ['acme-laptops'] })])).data.rejected, 1);
+});
+
+// ── Retention (R3.3C) ─────────────────────────────────────────────────────────────────────────
+// purge_old_alerts (sql/2026-10-09_alert_retention.sql) existed with its pg_cron line commented
+// out and nothing in Node ever called it. jobs/alertRetentionJob.ts now calls it daily; this
+// exercises the RPC call and its field mapping directly.
+test('purgeOldAlerts purges only old, case-less alerts and old ingest rejects; linked and recent alerts are kept', async () => {
+    const old = new Date(Date.now() - 200 * 86_400_000).toISOString();
+    const recent = new Date().toISOString();
+    db.tables.alerts.push(
+        { id: randomUUID(), org_id: A, wazuh_alert_id: `retention-old-${randomUUID()}`, case_id: null, event_time: old, received_at: old, status: 'new', raw_truncated: false },
+        { id: randomUUID(), org_id: A, wazuh_alert_id: `retention-old-linked-${randomUUID()}`, case_id: randomUUID(), event_time: old, received_at: old, status: 'triaged', raw_truncated: false },
+        { id: randomUUID(), org_id: A, wazuh_alert_id: `retention-recent-${randomUUID()}`, case_id: null, event_time: recent, received_at: recent, status: 'new', raw_truncated: false },
+    );
+    db.tables.alert_ingest_rejects.push(
+        { id: randomUUID(), org_id: A, received_at: old, reason: 'old reject' },
+        { id: randomUUID(), org_id: A, received_at: recent, reason: 'recent reject' },
+    );
+    const before = db.tables.alerts.length;
+    const r = await purgeOldAlerts();
+    assert.deepEqual(r, { alerts_deleted: 1, rejects_deleted: 1 });
+    assert.equal(db.tables.alerts.length, before - 1);
+    assert.ok(db.tables.alerts.some((a) => (a.wazuh_alert_id as string).startsWith('retention-old-linked-')), 'a case-linked alert is never purged, however old');
+    assert.ok(db.tables.alerts.some((a) => (a.wazuh_alert_id as string).startsWith('retention-recent-')), 'a recent alert is kept');
+    assert.ok(!db.tables.alerts.some((a) => (a.wazuh_alert_id as string).startsWith('retention-old-') && !(a.wazuh_alert_id as string).startsWith('retention-old-linked-')), 'the old, unlinked alert is gone');
+    assert.ok(db.tables.alert_ingest_rejects.some((r) => r.reason === 'recent reject'));
+    assert.ok(!db.tables.alert_ingest_rejects.some((r) => r.reason === 'old reject'));
 });

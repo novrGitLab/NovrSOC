@@ -20,7 +20,14 @@ const definitions = {
 };
 
 // GET /api/admin/security-assessment/overview — every active client organisation.
-adminRouter.get('/overview', requireRole('super_admin', 'soc_manager', 'executive'), async (_req, res) => {
+//
+// R3.3C: 'executive' was removed from this list. It is a CLIENT_ROLE (lib/resolveOrg.ts),
+// confined to exactly one organisation everywhere else in this codebase — but this route has no
+// per-caller org filter at all (it loops over every active organisation unconditionally), so
+// 'executive' here would see every other client's open-case counts, SLA rate and posture, not
+// just their own. An executive's own organisation is already correctly served by
+// GET /api/client/security-assessment below.
+adminRouter.get('/overview', requireRole('super_admin', 'soc_manager'), async (_req, res) => {
     try {
         const orgs = await activeOrgs();
         const rows: OrgMetrics[] = [];
@@ -46,6 +53,7 @@ adminRouter.get('/overview', requireRole('super_admin', 'soc_manager', 'executiv
                 open_cases: rows.reduce((s, r) => s + r.open_cases, 0),
                 sla_rate: resolvedTotal > 0 ? Math.round((withSla.reduce((s, r) => s + (r.sla_rate as number) * r.resolved_30d, 0) / resolvedTotal) * 10) / 10 : null,
                 clients_below_sla: withSla.filter((r) => (r.sla_rate as number) < SLA_SECURE_THRESHOLD).length,
+                pending_approvals: rows.reduce((s, r) => s + r.pending_approvals, 0),
             },
             clients: rows.map(({ last_closed: _lc, ...r }) => r),
             monthly,
@@ -71,8 +79,13 @@ clientRouter.get('/', requireOrg, async (req: AuthRequest, res) => {
         const org = orgs.find((o) => o.slug === wanted);
         if (!org) { res.status(404).json({ error: 'Organisation not found or not active' }); return; }
         const metrics = await orgMetrics(org.slug, org.name);
+        // R3.3C: workload is grouped by analyst name (routes/cases.ts assigned_to) — a staff
+        // identity, which this client-facing route never exposes (same rule as VMS/CNII's own
+        // client responses: "no staff identities"). investigation_age and pending_approvals are
+        // this organisation's own counts, not anyone's identity, so those are kept.
+        const { workload: _workload, ...clientSafeMetrics } = metrics;
         res.json({
-            ...metrics,
+            ...clientSafeMetrics,
             engagement: {
                 score: null,
                 components: [

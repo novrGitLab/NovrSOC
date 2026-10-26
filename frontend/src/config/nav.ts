@@ -104,7 +104,11 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'soar', label: 'SOAR Automation', href: '/admin/secops/soar', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: Zap },
             { id: 'response-approvals', label: 'Response Approvals', href: '/admin/secops/approvals', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: ShieldCheck },
             { id: 'weekly-insights', label: 'Weekly Insights', href: '/admin/secops/insights', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: CalendarRange },
-            { id: 'security-assessment', label: 'Security Assessment', href: '/admin/secops/security-assessment', domain: 'secops', status: 'WORKING', roles: MANAGER_PLUS_EXEC, icon: ClipboardCheck },
+            // R3.3C: staff-only, not MANAGER_PLUS_EXEC — this page's backend (GET /api/admin/
+            // security-assessment/overview) has no per-caller org filter; it returns every
+            // active client organisation's posture. An executive's own org is served correctly
+            // by the client-report-card entry below.
+            { id: 'security-assessment', label: 'Security Assessment', href: '/admin/secops/security-assessment', domain: 'secops', status: 'WORKING', roles: ['super_admin', 'soc_manager'], icon: ClipboardCheck },
             { id: 'secops-management', label: 'Sec Ops Management', href: '/admin/secops/management', domain: 'secops', status: 'PARTIAL', roles: MANAGER_ONLY, icon: Settings },
         ],
     },

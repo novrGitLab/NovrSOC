@@ -22,6 +22,10 @@ interface ReportCard {
     engagement: { score: number | null; components: EngagementComponent[] };
     orgs: { slug: string; name: string }[];
     definitions: { sla_target_hours: Record<string, number>; detection_time: string };
+    // R3.3C. workload (open cases per analyst, a staff identity) is deliberately never included
+    // in this route's response — see routes/securityAssessment.ts's client handler.
+    investigation_age: { oldest_hrs: number | null; mean_hrs: number | null };
+    pending_approvals: number;
 }
 
 const BRAND = { blue: '#2B3BCC', red: '#CC2B2B', purple: '#6B1FA8', muted: '#7A8099' };
@@ -133,6 +137,14 @@ export function SecurityReportCard({ mode }: { mode: 'client' | 'staff' }) {
                     <Tile label="SLA Compliance" value={d.sla_rate === null ? '—' : `${d.sla_rate}%`} note={d.sla_rate === null ? 'No cases resolved in 30 days' : `${d.resolved_30d} resolved, 30 days`} />
                 </div>
             </section>
+
+            {/* R3.3C — investigation age and the response-approval backlog; real counts only. */}
+            <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Tile label="Oldest Open Investigation" value={d.investigation_age.oldest_hrs === null ? '—' : `${d.investigation_age.oldest_hrs}h`} note={d.investigation_age.oldest_hrs === null ? 'No open cases' : undefined} />
+                <Tile label="Mean Open Investigation Age" value={d.investigation_age.mean_hrs === null ? '—' : `${d.investigation_age.mean_hrs}h`} note={d.investigation_age.mean_hrs === null ? 'No open cases' : undefined} />
+                <Tile label="Pending Response Approvals" value={String(d.pending_approvals)} note="Awaiting a manager's decision" />
+            </section>
+
 
             {/* 2 — Case activity */}
             <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">

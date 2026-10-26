@@ -10,6 +10,7 @@ import { logAudit } from '../lib/audit';
 import { executeStep, isExecutableStep, EXECUTABLE_STEPS } from '../services/responseActions';
 import { requestApproval, isConsequential } from '../services/responseApprovals';
 import { requirePermission, hasPermission, requestOrg } from '../lib/permissions';
+import { tiDetailFor } from '../lib/tiCorrelation';
 
 // Cases API — Supabase-backed.
 //
@@ -190,6 +191,9 @@ router.get('/:id', requirePermission('cases:read'), async (req: AuthRequest, res
         timeline: timelineRes.data ?? [],
         iocs: iocsRes.data ?? [],
         linked: await linkedCases(caseRes.data as CaseRow),
+        // R3.3C: Threat Intelligence correlation (services/threatInfo.ts, written by
+        // jobs/threatInfoJob.ts) — already computed, just never surfaced here before now.
+        threat_intelligence: await tiDetailFor('case', id),
     });
 });
 
@@ -261,7 +265,8 @@ router.post('/:id/close', requirePermission('cases:close'), async (req: AuthRequ
     });
 });
 
-// PATCH /api/cases/:id — status / assignee / severity.
+// PATCH /api/cases/:id — status / assignee / severity. assigned_to/assignee is an active team
+// member's email, resolved the same way POST /:id/assign does; '' unassigns.
 router.patch('/:id', requirePermission('cases:write'), async (req: AuthRequest, res) => {
     if (noStore(res)) return;
     const { id } = req.params;
@@ -283,6 +288,20 @@ router.patch('/:id', requirePermission('cases:write'), async (req: AuthRequest, 
         res.status(403).json({ error: 'Insufficient permissions', required: 'cases:close', current: req.user?.role ?? null });
         return;
     }
+    // Same resolution as POST /:id/assign: an email naming an active team member, stored as
+    // their name — never arbitrary free text. Before this fix, PATCH accepted any string
+    // unvalidated, so assigned_to could end up holding an email, a name or anything else
+    // depending on which endpoint wrote it last, silently breaking name-based lookups such as
+    // the dashboard's "My Cases" filter (lib/priorityQueue.ts, frontend).
+    let assignedName: string | null | undefined;
+    if (typeof assignee === 'string') {
+        if (assignee.trim() === '') { assignedName = null; }
+        else {
+            const { data: member } = await supabase.from('platform_users').select('email, name, status').ilike('email', assignee.trim().toLowerCase()).maybeSingle();
+            if (!member || (member.status && member.status !== 'active')) { res.status(400).json({ error: 'That analyst is not an active team member' }); return; }
+            assignedName = member.name || member.email;
+        }
+    }
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     const changes: string[] = [];
@@ -292,7 +311,7 @@ router.patch('/:id', requirePermission('cases:write'), async (req: AuthRequest, 
         updates.resolved_at = status === 'resolved' ? new Date().toISOString() : null;
         changes.push(`Status changed to ${status}`);
     }
-    if (typeof assignee === 'string') { updates.assigned_to = assignee || null; changes.push(assignee ? `Assigned to ${assignee}` : 'Unassigned'); }
+    if (assignedName !== undefined) { updates.assigned_to = assignedName; changes.push(assignedName ? `Assigned to ${assignedName}` : 'Unassigned'); }
     if (isCaseSeverity(severity)) { updates.severity = severity; changes.push(`Severity set to ${severity}`); }
     if (dueAt !== undefined) { updates.due_at = dueAt === null ? null : new Date(dueAt as string).toISOString(); changes.push(dueAt === null ? 'Deadline cleared' : `Deadline set to ${formatWAT(updates.due_at as string)}`); }
     if (changes.length === 0) { res.status(400).json({ error: 'Nothing to update — send status, assigned_to, severity or due_at' }); return; }

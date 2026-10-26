@@ -24,6 +24,7 @@ import { SEVERITIES, type Severity } from '../lib/severity';
 import { logAudit } from '../lib/audit';
 import { NETWORK_COLUMNS, missingNetworkColumns } from '../lib/alertNetwork';
 import { isIP } from 'net';
+import { tiDetailFor } from '../lib/tiCorrelation';
 
 const router = Router();
 
@@ -211,7 +212,10 @@ router.get('/:id', requirePermission('alerts:read'), async (req: AuthRequest, re
     const { data, error } = await getSupabase()!.from('alerts').select('*').eq('id', id).eq('org_id', requestOrg(req)).maybeSingle();
     if (error) { res.status(502).json({ error: dbErrorMessage(error) }); return; }
     if (!data) { res.status(404).json({ error: 'Alert not found' }); return; }
-    res.json({ alert: data });
+    // R3.3C: Threat Intelligence correlation already computed by services/threatInfo.ts and
+    // written by jobs/threatInfoJob.ts, just never surfaced here before now.
+    const threat_intelligence = await tiDetailFor('alert', id);
+    res.json({ alert: data, threat_intelligence });
 });
 
 // PATCH /api/alerts/:id/status { status } — triage.
@@ -331,8 +335,18 @@ router.post('/:id/case', requirePermission('cases:write'), async (req: AuthReque
         rule_id: a.rule_id, rule_level: a.rule_level, mitre_technique: a.mitre_ids?.[0] ?? null, tags: ['from-alert'],
     }, actor);
     if (!r.ok) { res.status(r.status).json({ success: false, error: r.error }); return; }
-    const link = await supabase.from('alerts').update({ case_id: r.case.id }).eq('id', id).eq('org_id', org).is('case_id', null);
-    if (link.error) console.error('[alerts] case link failed:', link.error.message.slice(0, 160));
+    // .select('id') so an unexpected 0-row update (a race: something else already set this
+    // alert's case_id between the read above and this write) is visible, not silently assumed
+    // to have worked — the case itself was created either way, but the alert this request named
+    // may not actually be the one now pointing at it.
+    const link = await supabase.from('alerts').update({ case_id: r.case.id }).eq('id', id).eq('org_id', org).is('case_id', null).select('id');
+    if (link.error) {
+        console.error('[alerts] case link failed:', link.error.message.slice(0, 160));
+        logAudit({ user: actor, action: 'ALERT_CASE_LINK_FAILED', resource: 'alert', resource_id: id, org_id: org, ip: req.ip ?? 'unknown', result: 'failed', severity: 'warning', details: `case ${r.case.case_number}: ${link.error.message.slice(0, 160)}` });
+    } else if (!link.data || link.data.length === 0) {
+        console.error(`[alerts] case link for alert ${id} affected 0 rows — its case_id was no longer null when the write ran`);
+        logAudit({ user: actor, action: 'ALERT_CASE_LINK_FAILED', resource: 'alert', resource_id: id, org_id: org, ip: req.ip ?? 'unknown', result: 'failed', severity: 'warning', details: `case ${r.case.case_number}: alert's case_id was no longer null; link not applied` });
+    }
     await recordEvent(id, org, actor, 'case_link', null, r.case.id, `Case ${r.case.case_number}`);
     if (r.created) await addTimeline(r.case.id, actor, `Opened from alert ${a.wazuh_alert_id}`);
     logAudit({ user: actor, action: 'ALERT_PROMOTED_TO_CASE', resource: 'alert', resource_id: id, org_id: org, ip: req.ip ?? 'unknown', result: 'success', details: `case ${r.case.case_number}` });
