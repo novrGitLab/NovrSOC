@@ -532,9 +532,9 @@ export async function relevantIntel(org: string, limit = 500): Promise<RelevantI
     const supabase = getSupabase()!;
     const empty: RelevantIntel = { generated_at: new Date().toISOString(), items: [], by_tier: { critical: 0, high: 0, medium: 0, low: 0 } };
     const { data: matches } = await supabase.from('ti_matches')
-        .select('id, indicator_id, entity_type, entity_id, matched_field, status, case_id, last_matched_at, ti_indicators(id, type, value, status, max_confidence, malware_families, threat_types)')
+        .select('id, indicator_id, entity_type, entity_id, matched_field, status, case_id, last_matched_at, ti_indicators(id, type, value, status, max_confidence, malware_families, threat_types, last_seen)')
         .eq('org_id', org).neq('status', 'dismissed').order('last_matched_at', { ascending: false }).limit(limit);
-    interface Row { id: string; indicator_id: string; entity_type: Candidate['entity_type']; entity_id: string; matched_field: string; status: string; case_id: string | null; last_matched_at: string; ti_indicators: { id: string; type: IndicatorType; value: string; status: string; max_confidence: number | null; malware_families: string[] | null; threat_types: string[] | null } | null }
+    interface Row { id: string; indicator_id: string; entity_type: Candidate['entity_type']; entity_id: string; matched_field: string; status: string; case_id: string | null; last_matched_at: string; ti_indicators: { id: string; type: IndicatorType; value: string; status: string; max_confidence: number | null; malware_families: string[] | null; threat_types: string[] | null; last_seen: string | null } | null }
     // Indicators past their validity are not current intelligence — never "relevant now".
     const rows = ((matches ?? []) as unknown as Row[]).filter((m) => m.ti_indicators?.status === 'active');
     if (!rows.length) return empty;
@@ -576,8 +576,13 @@ export async function relevantIntel(org: string, limit = 500): Promise<RelevantI
         const criticality = (asset?.criticality as RelevantItem['asset_criticality']) ?? null;
         const exposedAsset = m.entity_type === 'asset' || m.entity_type === 'finding';
         const highConfidence = typeof ind.max_confidence === 'number' && ind.max_confidence >= 75;
-        const freshDays = (nowMs - Date.parse(m.last_matched_at)) / 86_400_000;
-        const fresh = Number.isFinite(freshDays) && freshDays <= 7;
+        // Freshness must reflect the intelligence itself, not the correlation engine: correlateOrg()
+        // re-stamps last_matched_at on every 15-minute cycle for as long as the matched entity still
+        // exists, so a months-old indicator against a long-lived asset would always look "just
+        // seen" if freshness were measured from the match. ind.last_seen is when a SOURCE last
+        // reported this indicator — the only honest freshness signal available.
+        const freshDays = ind.last_seen ? (nowMs - Date.parse(ind.last_seen)) / 86_400_000 : null;
+        const fresh = freshDays !== null && Number.isFinite(freshDays) && freshDays <= 7;
 
         const reasons: string[] = [];
         if (verified) reasons.push(m.case_id ? 'Linked to an open investigation' : 'Promoted by an analyst');
@@ -586,7 +591,7 @@ export async function relevantIntel(org: string, limit = 500): Promise<RelevantI
         if (exposedAsset) reasons.push(m.entity_type === 'finding' ? 'Matched an open vulnerability finding' : "Matched this organisation's own asset inventory");
         else reasons.push(m.entity_type === 'case' ? 'Matched an open case' : 'Matched a stored alert — a mention, not a confirmed compromise');
         if (highConfidence) reasons.push(`Source-stated confidence ${ind.max_confidence}`);
-        if (fresh) reasons.push('Seen in the last 7 days');
+        if (fresh) reasons.push('A source reported seeing this indicator in the last 7 days');
 
         const tier: RelevanceTier = verified && (kev || criticality === 'critical') ? 'critical'
             : verified || (kev && exposedAsset) || ((criticality === 'critical' || criticality === 'high') && exposedAsset) ? 'high'

@@ -134,7 +134,11 @@ export function TiSources() {
                                             {ago(d.engine.correlation_last_run_at, now)}
                                             {d.engine.correlation_errors && d.engine.correlation_errors.length > 0 && <span className="text-red font-semibold"> · failed for {d.engine.correlation_errors.join(', ')}</span>}
                                         </>
-                                    ) : <span className="text-amber font-semibold">has not completed a run yet</span>}
+                                    ) : (
+                                        <span className="text-amber font-semibold" title="This status is held in the memory of the process that answered this request and resets on every restart or deploy — a fresh process not having run yet is not, on its own, evidence the engine is broken.">
+                                            No run yet in this process{d.engine.correlation_process_started_at ? ` (process started ${ago(d.engine.correlation_process_started_at, now)})` : ''}
+                                        </span>
+                                    )}
                                 </Field>
                             </dl>
                         </Card>

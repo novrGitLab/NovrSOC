@@ -319,12 +319,21 @@ router.get('/report', requirePermission('intel:read'), async (req: AuthRequest, 
         }));
         const notConfigured = feeds.filter((f) => !f.retired && !f.configured).map((f) => f.id);
         const notCurrent = feeds.filter((f) => !f.retired && f.configured && (f.stale || f.failing)).map((f) => f.id);
+        // lastThreatInfoRun is this process's own memory (jobs/threatInfoJob.ts), the same as
+        // jobs/stellarPush.ts's pushRuntime — a restart or deploy resets it, which is not evidence
+        // the engine is broken. The first run is chained after the feeds, roughly 90s+ after start,
+        // so only flag it once the process has been up a good while with still no run.
         const correlationAt = lastThreatInfoRun.at;
+        const processStartedAt = lastThreatInfoRun.process_started_at;
+        const processUpMs = processStartedAt ? Date.now() - Date.parse(processStartedAt) : null;
+        const correlationOverdue = !correlationAt && processUpMs !== null && processUpMs > 20 * 60_000;
         const limitations = [
             'Relevance tiers and KEV cross-references are computed from stored records at the time this report was opened; a source feed that has not run recently may be missing from them (see Source freshness).',
             notConfigured.length ? `Not configured: ${notConfigured.join(', ')} — no credentials set, so these never ran.` : null,
             notCurrent.length ? `Not currently healthy: ${notCurrent.join(', ')} — stale or failing; see Sources for the reason.` : null,
-            !correlationAt ? 'The correlation engine (matches new records against active indicators) has not completed a run since this process started.' : null,
+            correlationOverdue ? 'The correlation engine (matches new records against active indicators) has been running for a while in this process without completing a run — check Sources.'
+                : !correlationAt ? 'The correlation engine has not completed a run yet in this process (it started recently, or restarted) — figures above may not include its most recent matches. This status is local to the process answering this request and resets on every restart or deploy.'
+                    : null,
             'A threat indicator matching a record is an association, not proof of compromise; only an analyst-promoted or case-linked match is shown as verified.',
         ].filter((l): l is string => !!l);
         res.json({
@@ -334,7 +343,8 @@ router.get('/report', requirePermission('intel:read'), async (req: AuthRequest, 
             relevant: { by_tier: relevant.by_tier, top: relevant.items.slice(0, 20) },
             kev: { new_in_period: kevIds.length, your_open_findings: (kevFindings.data ?? []).length },
             trend: { new_indicators_by_day: bucket((newIndicators.data ?? []).map((d) => ({ at: d.first_seen as string }))), new_matches_by_day: bucket((matchesAll.data ?? []).filter((m) => m.first_matched_at >= since).map((m) => ({ at: m.first_matched_at as string }))) },
-            engine: { correlation_last_run_at: correlationAt },
+            // Instance-local (see the comment above) — never a platform-wide engine-health claim.
+            engine: { correlation_last_run_at: correlationAt, correlation_process_started_at: processStartedAt, scope: 'this_process_only' },
             limitations,
             sources: ['ti_indicators', 'ti_matches', 'ti_indicator_sources (CISA KEV)', 'vms_findings', 'vms_assets'],
             generated_at: new Date().toISOString(),
@@ -522,11 +532,18 @@ router.get('/sources', requirePermission('intel:read'), async (req: AuthRequest,
         // indicators, services/threatInfo.ts correlateOrg, every 15 min) wrote its last result to
         // an in-memory variable nothing ever read — a feed can show healthy while the engine that
         // actually turns indicators into this organisation's matches has silently stopped.
+        // Pre-merge check (R3.3D conditional approval, item 3): that memory is this one process's
+        // own (the same as jobs/stellarPush.ts's pushRuntime) — a restart or deploy resets it to
+        // null, which is not evidence the engine itself has failed. process_started_at and
+        // scope are included so a viewer (and the frontend) never reads a fresh process's null as
+        // a platform-wide outage.
         engine: {
             correlation_last_run_at: lastThreatInfoRun.at,
+            correlation_process_started_at: lastThreatInfoRun.process_started_at,
             correlation_errors: lastThreatInfoRun.correlation
                 ? Object.entries(lastThreatInfoRun.correlation).filter(([, v]) => v && typeof v === 'object' && 'error' in (v as object)).map(([org]) => org)
                 : null,
+            scope: 'this_process_only' as const,
         },
         sharing: { source_records_by_tlp: Object.fromEntries(tlps) },
         exchange: {

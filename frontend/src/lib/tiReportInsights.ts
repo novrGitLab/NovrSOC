@@ -29,7 +29,7 @@ export function keyRecommendations(r: TiReportForRecommendations): string[] {
         out.push(`${r.matches.verified} of ${r.matches.total} current match${r.matches.total === 1 ? '' : 'es'} ${r.matches.verified === 1 ? 'is' : 'are'} a verified association — promoted by an analyst or linked to a case.`);
     }
     if (!r.engine.correlation_last_run_at) {
-        out.push('The correlation engine that turns new records into matches has not reported a completed run — figures above may not reflect the latest alerts, assets or findings.');
+        out.push('The correlation engine that turns new records into matches has not reported a completed run in the process serving this report — figures above may not reflect the latest alerts, assets or findings. This resets on every restart or deploy, so on its own it is not evidence the engine is broken.');
     }
 
     if (out.length === 0) out.push('No critical- or high-relevance intelligence currently applies to this organisation\'s records.');

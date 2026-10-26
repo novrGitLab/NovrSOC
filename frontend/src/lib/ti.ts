@@ -102,7 +102,9 @@ export interface TiSources {
     enrichment: { nvd: { last_fetch: string | null; configured_key: boolean; cves_tracked: number }; epss: { last_fetch: string | null } };
     misp: { configured: boolean; writes_enabled: boolean; last_check: MispCheck | null };
     ai: { provider: 'nvidia' | 'ollama'; configured: boolean; model: string; reachable: boolean; detail: string };
-    engine: { correlation_last_run_at: string | null; correlation_errors: string[] | null };
+    /** Held only in the process that answered this request (like Stellar push's runtime status)
+     * — a restart or deploy resets it to null, which is not evidence the engine has stopped. */
+    engine: { correlation_last_run_at: string | null; correlation_process_started_at: string | null; correlation_errors: string[] | null; scope: 'this_process_only' };
     sharing: { source_records_by_tlp: Record<Tlp, number> };
     exchange: { taxii_discovery: string; api_root: string; collections: { id: string; alias: string; title: string; description: string }[]; active_clients: number | null };
 }

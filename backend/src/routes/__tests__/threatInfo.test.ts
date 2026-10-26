@@ -355,6 +355,35 @@ test('relevantIntel: tiers reflect real evidence — verified+KEV+critical asset
     assert.equal(critical.kev, true);
 });
 
+// Pre-merge check (R3.3D conditional approval, item 2): correlateOrg() re-stamps a match's
+// last_matched_at on every 15-minute cycle for as long as the matched entity still exists — using
+// it as the freshness signal would make a months-old indicator look "just seen" forever. Freshness
+// must come from the indicator's own last_seen (when a source last actually reported it).
+test('relevantIntel: freshness reflects the source\'s last_seen, not the correlation engine\'s re-stamped last_matched_at', async () => {
+    const staleIndicator = await seedIndicatorFull({ last_seen: daysAgo(60) }); // a source last saw this 60 days ago
+    db.tables.vms_assets.push({ id: 'asset-stale', org_id: A, value: 'ws-old', criticality: 'medium' });
+    // The correlation engine re-confirmed this match five minutes ago — it is still "current" in
+    // the sense that the asset still exists, but the underlying intelligence itself is stale.
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: staleIndicator, entity_type: 'asset', entity_id: 'asset-stale', matched_field: 'ips', status: 'new', case_id: null, last_matched_at: new Date().toISOString() });
+    const r = await relevantIntel(A);
+    assert.equal(r.items.length, 1);
+    assert.equal(r.items[0].tier, 'low', 'exposed to a real asset but the source has not reported it in 60 days, and nothing else elevates it');
+    assert.ok(!r.items[0].reasons.some((x) => /last 7 days/.test(x)));
+});
+
+// Missing confidence (no source ever stated one) must never be treated as high confidence, and
+// must not crash the tier computation.
+test('relevantIntel: a missing confidence value is never treated as high confidence', async () => {
+    const indicatorId = await seedIndicatorFull({ max_confidence: null });
+    db.tables.vms_assets.push({ id: 'asset-noconf', org_id: A, value: 'ws-09', criticality: 'low' });
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: indicatorId, entity_type: 'asset', entity_id: 'asset-noconf', matched_field: 'ips', status: 'new', case_id: null, last_matched_at: new Date().toISOString() });
+    const r = await relevantIntel(A);
+    assert.equal(r.items[0].confidence, null);
+    assert.ok(!r.items[0].reasons.some((x) => /confidence/.test(x)));
+    // Still medium: exposed to a real asset and the source reported it recently (seedIndicatorFull's default last_seen).
+    assert.equal(r.items[0].tier, 'medium');
+});
+
 test('GET /api/ti/relevant: permissions and org scoping match /api/ti/overview', async () => {
     assert.equal((await http('GET', '/api/ti/relevant')).status, 401);
     assert.equal((await http('GET', '/api/ti/relevant', tok('portal_user'))).status, 403);
@@ -382,4 +411,34 @@ test('GET /api/ti/report: counts, KEV cross-reference and honest limitations', a
     assert.ok(r.data.limitations.some((l: string) => /not proof of compromise/.test(l)));
     assert.ok(r.data.limitations.some((l: string) => /correlation engine/.test(l)), 'the engine has not run in this test process');
     assert.equal(r.data.engine.correlation_last_run_at, null);
+});
+
+// Pre-merge check (R3.3D conditional approval, item 1): /relevant and /report reuse
+// hideRestrictedLabels — the same TLP gate /indicators already relies on — but neither route had
+// ever actually been exercised against a restricted source before now.
+test('TLP enforcement: /relevant and /report blank malware/threat labels from a source a client role may not see; staff see them', async () => {
+    const indicator = { id: randomUUID(), type: 'domain', value: 'evil.example.com', status: 'active', max_confidence: 70, malware_families: ['Cobalt Strike'], threat_types: ['c2'], first_seen: new Date().toISOString(), last_seen: new Date().toISOString() };
+    db.tables.ti_indicators.push(indicator);
+    db.tables.ti_indicator_sources.push(
+        { id: randomUUID(), indicator_id: indicator.id, feed_id: 'f', source_ref: 'r1', tlp: 'green' },
+        { id: randomUUID(), indicator_id: indicator.id, feed_id: 'f', source_ref: 'r2', tlp: 'red' },
+    );
+    db.tables.ti_matches.push({ id: randomUUID(), org_id: A, indicator_id: indicator.id, entity_type: 'alert', entity_id: 'al-tlp', matched_field: 'data.srcip', status: 'new', case_id: null, last_matched_at: new Date().toISOString() });
+
+    const asExec = await http('GET', '/api/ti/relevant', EXEC);
+    assert.equal(asExec.status, 200);
+    assert.equal(asExec.data.items.length, 1);
+    assert.deepEqual(asExec.data.items[0].malware_families, [], 'a RED source exists — a client role (ceiling AMBER) never sees its labels');
+    assert.deepEqual(asExec.data.items[0].threat_types, []);
+    assert.equal(asExec.data.items[0].labels_hidden, true);
+    assert.equal(asExec.data.items[0].indicator_value, 'evil.example.com', 'the bare indicator value itself is not treated as restricted, same as /indicators');
+
+    const asStaff = await http('GET', '/api/ti/relevant', AN);
+    assert.deepEqual(asStaff.data.items[0].malware_families, ['Cobalt Strike'], 'staff (ceiling RED) see everything');
+    assert.ok(!asStaff.data.items[0].labels_hidden);
+
+    const report = await http('GET', '/api/ti/report', EXEC);
+    assert.equal(report.status, 200);
+    assert.deepEqual(report.data.relevant.top[0].malware_families, [], '/report reuses the same gate for its relevant.top list');
+    assert.equal(report.data.relevant.top[0].labels_hidden, true);
 });

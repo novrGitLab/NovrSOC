@@ -14,7 +14,11 @@ import { getSupabase } from '../services/geoEnrichment';
 import { runFeed, expireIndicators, correlateOrg, feedConfigured } from '../services/threatInfo';
 import { locateIndicators } from '../services/tiGeo';
 
-export const lastThreatInfoRun: { correlation: Record<string, unknown> | null; at: string | null } = { correlation: null, at: null };
+// Held only in this process's memory, like jobs/stellarPush.ts's pushRuntime — every restart or
+// deploy resets it to its initial state. process_started_at lets a consumer tell "this process
+// just started, the first correlation run is still ~90s + feed time away" apart from "this
+// process has been up for hours and correlation has still never run."
+export const lastThreatInfoRun: { correlation: Record<string, unknown> | null; at: string | null; process_started_at: string | null } = { correlation: null, at: null, process_started_at: null };
 
 /** Organisations to correlate: those with Wazuh groups mapped or VMS scope. */
 export async function correlationOrgs(): Promise<string[]> {
@@ -29,6 +33,7 @@ export async function correlationOrgs(): Promise<string[]> {
 
 export function startThreatInfoJob(): void {
     if (process.env.TI_ENABLED === 'false') { console.log('[ti] disabled by TI_ENABLED=false'); return; }
+    lastThreatInfoRun.process_started_at = new Date().toISOString();
     const busy = new Set<string>();
     const once = (name: string, fn: () => Promise<void>) => async () => {
         if (busy.has(name)) return;
