@@ -137,7 +137,7 @@ const pick = (row: Row, cols: string[] | null) => (cols ? Object.fromEntries(col
 /** A test-supplied stand-in for a Postgres function called through POST /rest/v1/rpc/<name>. */
 export type FakeRpc = (args: Record<string, unknown>, tables: Record<string, Row[]>) => unknown;
 
-export async function startFakePostgrest(tables: Record<string, Row[]> = {}, relations: Record<string, string> = {}, defaults: Record<string, Row> = {}, rpcs: Record<string, FakeRpc> = {}): Promise<FakePostgrest> {
+export async function startFakePostgrest(tables: Record<string, Row[]> = {}, relations: Record<string, string> = {}, defaults: Record<string, Row> = {}, rpcs: Record<string, FakeRpc> = {}, uniqueConstraints: Record<string, string[][]> = {}): Promise<FakePostgrest> {
     const rel = { ...DEFAULT_RELATIONS, ...relations };
     const log: string[] = [];
     const missingColumns: Record<string, string[]> = {};
@@ -248,6 +248,14 @@ export async function startFakePostgrest(tables: Record<string, Row[]> = {}, rel
                         if (existing && ignore) continue;
                         if (existing && merge) { Object.assign(existing, input); out.push(existing); continue; }
                         if (existing) { send(409, { code: '23505', message: 'duplicate key value violates unique constraint', details: null, hint: null }); return; }
+                        // A declared unique index (uniqueConstraints[table]), checked on every insert —
+                        // not only one naming on_conflict — the same as a real Postgres unique index.
+                        // Columns null/undefined on the input never collide, matching Postgres' own
+                        // "NULL is never equal to NULL" unique-index semantics.
+                        const racedConstraint = (uniqueConstraints[table] ?? []).find((cols) =>
+                            cols.every((c) => input[c] !== null && input[c] !== undefined) &&
+                            rows.some((r) => cols.every((c) => r[c] === input[c])));
+                        if (racedConstraint) { send(409, { code: '23505', message: `duplicate key value violates unique constraint "${table}_${racedConstraint.join('_')}_key"`, details: null, hint: null }); return; }
                         const row = { id: randomUUID(), created_at: new Date().toISOString(), ...(defaults[table] ?? {}), ...input };
                         rows.push(row);
                         out.push(row);

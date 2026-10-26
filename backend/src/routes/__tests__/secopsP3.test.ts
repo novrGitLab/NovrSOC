@@ -52,6 +52,11 @@ before(async () => {
     }, { 'platform_users.organisations': 'org_id', 'ti_matches.ti_indicators': 'indicator_id' }, {
         response_approvals: { status: 'pending', requested_at: new Date().toISOString() },
         cases: { status: 'open', get case_number() { return `CASE-${++n}`; } } as Row,
+    }, {}, {
+        // The real database's unique index (sql/2026-10-08_cases_unique_per_org.sql,
+        // cases_org_source_source_id_key): services/cases.ts's createCase() relies on this to
+        // detect a race and return the already-created case instead of inserting a duplicate.
+        cases: [['org_id', 'source', 'source_id']],
     });
     process.env.SUPABASE_URL = db.url;
     process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
@@ -209,25 +214,29 @@ test('promote to case: one case, linked, repeat calls return it; other orgs get 
 
 // R3.3C: routes/alertStore.ts's link UPDATE used to go unchecked for affected rows, so a request
 // whose alert.case_id was no longer null by the time its own UPDATE ran (lost a race to another
-// request) could silently report 200/201 "success" despite not actually linking anything. Two
-// concurrent promotes of the same alert put two different link UPDATEs in flight against it; the
-// fakePostgrest harness doesn't enforce the real database's unique(org_id, source, source_id)
-// index the way production does, so it can't prove only one case gets created — but it does
-// prove the alert is never left unlinked, and that a losing UPDATE is recorded, not swallowed.
-test('promote to case under concurrency: the alert always ends up linked, and a losing link update is recorded, never silently swallowed', async () => {
+// request) could silently report 200/201 "success" despite not actually linking anything. The
+// fakePostgrest harness now enforces the same unique index production does
+// (cases_org_source_source_id_key, declared above), so this proves what production actually
+// guarantees: two concurrent promotes of the same alert create exactly one case (the loser's
+// insert hits 23505 and services/cases.ts's createCase() returns the winner's row instead), both
+// requests report the same case, and the alert ends up linked to it. The second UPDATE still
+// finds case_id no longer null — but since it's the same case either caller would have written,
+// that is a benign race, not a failure, and must not be logged as one.
+test('promote to case under concurrency: exactly one case is created, both requests agree on it, and the benign race is not logged as a failure', async () => {
     const [r1, r2] = await Promise.all([
         http('POST', `/api/alerts/${alertRow.id}/case`, ANALYST),
         http('POST', `/api/alerts/${alertRow.id}/case`, ANALYST),
     ]);
-    assert.equal(r1.status, 201);
-    assert.equal(r2.status, 201);
-    assert.ok(alertRow.case_id, 'the alert is linked to a case, not left null');
-    assert.ok([r1.data.case.id, r2.data.case.id].includes(alertRow.case_id), 'it is linked to one of the cases this exact request flow created');
-    // Whichever request's UPDATE lost the race (case_id was no longer null by the time it ran)
-    // is recorded, rather than silently claiming success with no evidence it actually linked.
+    // One request wins the insert race (201, created: true); the other hits the unique index,
+    // and createCase() correctly reports the winner's case instead of failing (200, created:
+    // false) — exactly the "found existing" response a repeat call also gets.
+    assert.deepEqual([r1.status, r2.status].sort(), [200, 201], 'one request created the case, the other found it already existed');
+    assert.equal(r1.data.case.id, r2.data.case.id, 'both requests must resolve to the same case — the unique index forbids a second one');
+    assert.equal(db.tables.cases.filter((c) => c.source === 'alert' && c.source_id === alertRow.id).length, 1, 'exactly one case was ever inserted for this alert');
+    assert.equal(alertRow.case_id, r1.data.case.id, 'the alert is linked to that one case, not left null');
     await flushAuditForTests();
     const linkFailures = (db.tables.audit_log ?? []).filter((e: Row) => e.action === 'ALERT_CASE_LINK_FAILED');
-    assert.ok(linkFailures.length <= 1, 'at most one of the two requests could have lost the race');
+    assert.equal(linkFailures.length, 0, 'losing the UPDATE race to an identical, already-correct case_id is not a failure');
 });
 
 // R3.3C: PATCH /api/cases/:id used to accept assigned_to as any raw string, unlike POST

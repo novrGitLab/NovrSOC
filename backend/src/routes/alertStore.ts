@@ -344,8 +344,15 @@ router.post('/:id/case', requirePermission('cases:write'), async (req: AuthReque
         console.error('[alerts] case link failed:', link.error.message.slice(0, 160));
         logAudit({ user: actor, action: 'ALERT_CASE_LINK_FAILED', resource: 'alert', resource_id: id, org_id: org, ip: req.ip ?? 'unknown', result: 'failed', severity: 'warning', details: `case ${r.case.case_number}: ${link.error.message.slice(0, 160)}` });
     } else if (!link.data || link.data.length === 0) {
-        console.error(`[alerts] case link for alert ${id} affected 0 rows — its case_id was no longer null when the write ran`);
-        logAudit({ user: actor, action: 'ALERT_CASE_LINK_FAILED', resource: 'alert', resource_id: id, org_id: org, ip: req.ip ?? 'unknown', result: 'failed', severity: 'warning', details: `case ${r.case.case_number}: alert's case_id was no longer null; link not applied` });
+        // case_id was no longer null when this write ran. Benign if a concurrent promote of the
+        // same alert already linked it to this exact case — createCase()'s own dedup (the
+        // cases_org_source_source_id_key unique index) guarantees a concurrent caller gets this
+        // same case, never a different one — so only a mismatch is a real, reportable failure.
+        const { data: now } = await supabase.from('alerts').select('case_id').eq('id', id).eq('org_id', org).maybeSingle();
+        if (now?.case_id !== r.case.id) {
+            console.error(`[alerts] case link for alert ${id} affected 0 rows and it is linked to a different case than expected`);
+            logAudit({ user: actor, action: 'ALERT_CASE_LINK_FAILED', resource: 'alert', resource_id: id, org_id: org, ip: req.ip ?? 'unknown', result: 'failed', severity: 'warning', details: `case ${r.case.case_number}: alert is linked to ${now?.case_id ?? 'no case'}, not this one` });
+        }
     }
     await recordEvent(id, org, actor, 'case_link', null, r.case.id, `Case ${r.case.case_number}`);
     if (r.created) await addTimeline(r.case.id, actor, `Opened from alert ${a.wazuh_alert_id}`);
