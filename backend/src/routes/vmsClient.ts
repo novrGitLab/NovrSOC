@@ -13,13 +13,14 @@
 //   GET /findings/:id     one vulnerability: description, fix, CVE context, tasks, status history
 //   GET /tasks            remediation tasks with their vulnerability
 //   GET /report?days=30   the period report (services/vmsContinuous.ts periodReport)
+//   GET /trends?days=30   daily risk-snapshot trend (services/vmsContinuous.ts riskTrends)
 
 import { Router } from 'express';
 import type { AuthRequest } from '../middleware/auth';
 import { requirePermission, requestOrg } from '../lib/permissions';
 import { getSupabase } from '../services/geoEnrichment';
 import { isUuid } from '../services/cases';
-import { periodReport } from '../services/vmsContinuous';
+import { periodReport, riskTrends } from '../services/vmsContinuous';
 
 const router = Router();
 const OPEN = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'];
@@ -157,6 +158,15 @@ router.get('/tasks', can, async (req: AuthRequest, res) => {
 router.get('/report', can, async (req: AuthRequest, res) => {
     const days = Math.min(Math.max(Math.round(Number(req.query.days) || 30), 7), 365);
     try { res.json(await periodReport(requestOrg(req), days)); } catch { res.status(502).json({ error: 'Could not build the report' }); }
+});
+
+// R3.3A: the same daily risk-snapshot trend the staff report reads at GET /api/vms/trends
+// (services/vmsContinuous.ts riskTrends) — exposed here too so the client-portal Executive report
+// can show historical risk trends honestly instead of a 403 (portal_user holds vms:client, not
+// vms:read, so it could never reach the staff-only route).
+router.get('/trends', can, async (req: AuthRequest, res) => {
+    const days = Math.min(Math.max(Math.round(Number(req.query.days) || 30), 7), 365);
+    try { res.json(await riskTrends(requestOrg(req), days)); } catch { res.status(502).json({ error: 'Could not build the trend' }); }
 });
 
 export default router;

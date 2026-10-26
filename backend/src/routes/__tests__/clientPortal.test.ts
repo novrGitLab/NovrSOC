@@ -183,6 +183,23 @@ test('a client sees only its own organisation, whatever X-Org-Id says', async ()
     assert.equal(db.tables.org_access_audit.length, 0, 'X-Org-Id from a client is not even a cross-org attempt');
 });
 
+// R3.3A: GET /trends backs the client-portal Executive report's historical risk trend — added
+// alongside the already-existing /report so portal_user is not stuck with a 403 for this one
+// section (vms:client, not vms:read, so it could never reach the staff-only GET /api/vms/trends).
+test('client Executive report trend: scoped to the client\'s own organisation, same as every other client route', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    db.tables.vms_risk_snapshots.push(
+        { org_id: A.slug, day: today, open_total: 2, open_by_priority: {}, overdue: 0, kev_open: 1, internet_open: 0, assets_active: 1, assets_internet: 0, new_findings: 0, verified: 0, reopened: 0 },
+        { org_id: B.slug, day: today, open_total: 99, open_by_priority: {}, overdue: 0, kev_open: 0, internet_open: 0, assets_active: 1, assets_internet: 0, new_findings: 0, verified: 0, reopened: 0 },
+    );
+    const t = (await portalSignin('ciso@client-a.test')).data.token;
+    const r = await http('GET', '/api/client/vms/trends?days=30', { bearer: t, asOrg: B.slug });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.snapshots.length, 1);
+    assert.equal(r.data.snapshots[0].open_total, 2, 'org A\'s own snapshot, not org B\'s, whatever X-Org-Id says');
+    assert.equal((await http('GET', '/api/client/vms/trends', { bearer: staff('analyst', A.slug) })).status, 403, 'staff use the admin-side /api/vms/trends, not this one');
+});
+
 test('client responses leave out scanner operations, raw evidence, staff identities and internal notes', async () => {
     const t = (await portalSignin('ciso@client-a.test')).data.token;
     const d = await http('GET', `/api/client/vms/findings/${fA.id}`, { bearer: t });

@@ -12,11 +12,26 @@
 //   PCI-DSS v4.0 Req 6.3.1     — Identify and manage security vulnerabilities
 //   NDPA 2023 s.39             — Technical and organisational measures for data security
 //   CBN Risk-Based Cybersecurity Framework — patch management
+//   NIST CSF 2.0 PR.PS-02      — Software is maintained, replaced and removed commensurate
+//                                 with risk (patching)
+//   GDPR Art. 32(1)(b)         — Ability to ensure ongoing confidentiality, integrity,
+//                                 availability and resilience of processing systems
+//   NCC Guidelines for the Nigerian Communications Sector — network and information security
+//                                 obligations for licensees (no single numbered clause is cited
+//                                 here, unlike the others, because the Commission's guidelines
+//                                 do not publish one for this specific control the way ISO/PCI/
+//                                 GDPR do — the domain is still named precisely, not invented)
 //
 // Note the ISO numbering: the 2022 revision reorganised the old Annex A, so the technical
 // vulnerability control is A.8.8, NOT the A.12.6.1 it was under ISO 27001:2013. The rest of this
 // platform tracks ISO/IEC 27001:2022 (see the compliance pages), so citing 2013 numbering here
 // would send an analyst looking for a control their own framework doesn't list.
+//
+// NIST CSF 2.0's own ID.RA-1 ("vulnerabilities are identified, validated and recorded") is
+// deliberately NOT cited as a failure here: a finding existing in this platform is proof that
+// identification worked, not that it failed. The control actually at risk once a vulnerability
+// sits unpatched is PR.PS-02 (maintaining software commensurate with risk), so that is the one
+// mapped below.
 
 export type ControlStatus = 'FAIL' | 'AT RISK';
 
@@ -74,6 +89,24 @@ export function mapCVEToCompliance(vuln: MappableVulnerability): ComplianceImpac
             control: 's.39 — Appropriate technical and organisational measures',
             status: 'AT RISK',
             rationale: 'Known exploitable weakness on a system that may process personal data.',
+        },
+        {
+            framework: 'NIST CSF',
+            control: 'PR.PS-02 — Software is maintained, replaced and removed commensurate with risk',
+            status: 'FAIL',
+            rationale: `Unpatched ${severity} vulnerability: software maintenance has not kept pace with its risk.`,
+        },
+        {
+            framework: 'GDPR',
+            control: 'Art. 32(1)(b) — Ongoing confidentiality, integrity, availability and resilience of processing systems',
+            status: 'AT RISK',
+            rationale: 'Known exploitable weakness on a system that may process personal data in scope of GDPR.',
+        },
+        {
+            framework: 'NCC',
+            control: 'Guidelines for the Nigerian Communications Sector — network and information security obligations',
+            status: 'AT RISK',
+            rationale: `Unpatched ${severity} vulnerability on a monitored network asset.`,
         },
     ];
 

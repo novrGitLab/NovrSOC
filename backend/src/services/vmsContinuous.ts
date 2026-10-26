@@ -15,6 +15,7 @@ import { isEmailEnabled, sendVmsDigestEmail, socNotificationRecipients } from '.
 import { wazuhFreshness } from './wazuhVulnSync';
 import { describe, createAssessment, type AssessmentRow } from './vmsAssessments';
 import { runVerificationSchedule } from './vmsVerification';
+import { getComplianceImpact } from './complianceMapping';
 
 export const OPEN_STATUSES = ['open', 'acknowledged', 'in_progress', 'fixed_pending_verification', 'reopened'] as const;
 const PRIORITIES = ['P1', 'P2', 'P3', 'P4'] as const;
@@ -128,10 +129,10 @@ export async function runDueSchedules(now = Date.now()): Promise<ScheduleRun[]> 
 }
 
 // ── Snapshots and trends ──────────────────────────────────────────────────────────────────────
-type FindingRow = { id: string; priority: string | null; status: string; due_at: string | null; cve_ids: string[] | null; asset_id: string | null; first_seen: string; verified_at: string | null; rule_id: string; title: string; asset_value: string; risk_score?: number | null; scanner_severity?: string | null };
+type FindingRow = { id: string; priority: string | null; status: string; due_at: string | null; cve_ids: string[] | null; asset_id: string | null; first_seen: string; verified_at: string | null; rule_id: string; title: string; asset_value: string; risk_score?: number | null; scanner_severity?: string | null; scanner_cvss?: number | null };
 
 async function openFindings(org: string): Promise<FindingRow[]> {
-    const { data, error } = await getSupabase()!.from('vms_findings').select('id, priority, status, due_at, cve_ids, asset_id, first_seen, verified_at, rule_id, title, asset_value, risk_score, scanner_severity').eq('org_id', org).in('status', [...OPEN_STATUSES]).limit(20_000);
+    const { data, error } = await getSupabase()!.from('vms_findings').select('id, priority, status, due_at, cve_ids, asset_id, first_seen, verified_at, rule_id, title, asset_value, risk_score, scanner_severity, scanner_cvss').eq('org_id', org).in('status', [...OPEN_STATUSES]).limit(20_000);
     if (error) throw new Error(`findings unreadable: ${error.message}`);
     return (data ?? []) as FindingRow[];
 }
@@ -315,6 +316,18 @@ export async function periodReport(org: string, days: number, now = new Date()) 
     const tally = <T,>(rows: T[] | null | undefined, key: (r: T) => string) => (rows ?? []).reduce<Record<string, number>>((acc, r) => { const k = key(r); acc[k] = (acc[k] ?? 0) + 1; return acc; }, {});
     const byPriority: Record<string, number> = Object.fromEntries(PRIORITIES.map((p) => [p, 0]));
     for (const f of open) if (f.priority) byPriority[f.priority]++;
+    // KEV and affected-assets, same reasoning and chunking as snapshotOrg's daily snapshot —
+    // reused here against the `open` rows already fetched above, not a fresh scan of the table.
+    const cves = [...new Set(open.flatMap((f) => f.cve_ids ?? []))];
+    const kevSet = new Set<string>();
+    for (let i = 0; i < cves.length; i += 200) {
+        const { data } = await supabase.from('cve_intel').select('cve_id').eq('kev', true).in('cve_id', cves.slice(i, i + 200));
+        for (const k of data ?? []) kevSet.add(k.cve_id);
+    }
+    const affectedAssets = new Set(open.map((f) => f.asset_id).filter((id): id is string => !!id)).size;
+    // services/complianceMapping.ts: a deterministic rules table, not an audit — see its own
+    // `note` field, carried through in the response so no caller can drop the disclaimer.
+    const compliance = getComplianceImpact(open.map((f) => ({ severity: f.scanner_severity ?? undefined, cvss: f.scanner_cvss ?? undefined })));
     const limitations: string[] = [];
     if ((scopes.count ?? 0) === 0) limitations.push('No active authorised scope: no active scanning was possible at the end of the period.');
     if (!(jobs.data ?? []).some((j) => j.status === 'succeeded')) limitations.push('No scan succeeded in the period: findings reflect earlier scans and Wazuh only.');
@@ -325,19 +338,34 @@ export async function periodReport(org: string, days: number, now = new Date()) 
     limitations.push('Only assets inside authorised scope and endpoints with a Wazuh agent are covered; anything else is unknown, not clean.');
     return {
         period: { from: since, to: until, days },
-        open_now: { total: open.length, by_priority: byPriority, overdue: open.filter((f) => f.due_at && Date.parse(f.due_at) < now.getTime()).length },
+        open_now: {
+            total: open.length,
+            by_priority: byPriority,
+            by_severity: tally(open, (f) => f.scanner_severity ?? 'unscored'),
+            overdue: open.filter((f) => f.due_at && Date.parse(f.due_at) < now.getTime()).length,
+            known_exploited: open.filter((f) => (f.cve_ids ?? []).some((c) => kevSet.has(c))).length,
+            affected_assets: affectedAssets,
+        },
         new_in_period: { total: (newF.data ?? []).length, by_priority: tally(newF.data, (f) => f.priority ?? 'unscored'), by_source: tally(newF.data, (f) => f.source_class) },
         status_changes: tally(events.data, (e) => (e.action === 'status' ? `status:${e.to_value}` : e.action)),
         time_to_remediate: await timeToRemediate(org, since, until),
         scans: tally(jobs.data, (j) => `${j.kind}:${j.status}${j.schedule_id ? ':scheduled' : ''}`),
         attack_surface_changes: tally(assetEvents.data, (e) => e.event),
-        top_open: open.filter((f) => f.priority === 'P1' || f.priority === 'P2').slice(0, 15).map((f) => ({ id: f.id, title: f.title, asset: f.asset_value, priority: f.priority, due_at: f.due_at, status: f.status })),
+        // Technical depth for the headline findings (Stage 2): CVE/CVSS/severity/KEV are all
+        // already on the `open` row or in `kevSet` above — the finding's full evidence, CWE and
+        // EPSS context stay one click away at GET /findings/:id, not duplicated here.
+        top_open: open.filter((f) => f.priority === 'P1' || f.priority === 'P2').slice(0, 15).map((f) => ({
+            id: f.id, title: f.title, asset: f.asset_value, priority: f.priority, due_at: f.due_at, status: f.status,
+            severity: f.scanner_severity ?? null, cvss: f.scanner_cvss ?? null, cve_ids: f.cve_ids ?? [],
+            known_exploited: (f.cve_ids ?? []).some((c) => kevSet.has(c)),
+        })),
         recurring: await recurring(org, since, open),
         closure: await closureInPeriod(org, since, until),
         coverage: await coverageInPeriod(org, since, until),
+        compliance,
         wazuh_sync: wazuh.data ?? null,
         wazuh_freshness: wf,
-        sources: ['vms_findings', 'vms_finding_events', 'vms_remediation_tasks', 'vms_scan_jobs', 'vms_asset_events', 'vms_assets', 'vms_assessments', 'vms_wazuh_sync'],
+        sources: ['vms_findings', 'vms_finding_events', 'vms_remediation_tasks', 'vms_scan_jobs', 'vms_asset_events', 'vms_assets', 'vms_assessments', 'vms_wazuh_sync', 'cve_intel'],
         limitations,
     };
 }

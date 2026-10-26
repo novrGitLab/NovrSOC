@@ -18,6 +18,7 @@ import vmsRouter from '../vms';
 import vmsContinuousRouter from '../vmsContinuous';
 import { nextRunAfter, runDueSchedules, snapshotOrg, riskTrends, periodReport, notifyChanges } from '../../services/vmsContinuous';
 import { vmsChecks } from '../../services/pipelineHealth';
+import { purgeVmsHistory } from '../../jobs/vmsContinuousJob';
 
 const A = 'org-a';
 const B = 'org-b';
@@ -30,6 +31,8 @@ const tok = (role: string, org = A) => jwt.sign({ sub: randomUUID(), email: `${r
 const MGR = tok('soc_manager');
 const MGR_B = tok('soc_manager', B);
 const AN = tok('analyst');
+const EXEC = tok('executive');
+const EXEC_B = tok('executive', B);
 async function http(method: string, path: string, bearer?: string, body?: unknown) {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (bearer) headers.Authorization = `Bearer ${bearer}`;
@@ -45,6 +48,21 @@ before(async () => {
         {
             vms_scan_jobs: { status: 'queued', attempts: 0, cancel_requested: false, progress: {}, purpose: 'assessment', get requested_at() { return new Date().toISOString(); } } as Row,
             vms_scan_schedules: { enabled: true, targets: [] },
+        },
+        {
+            // Mirrors sql/2026-10-16_p7_vms_continuous.sql's purge_vms_history() closely enough for
+            // a unit test: same three tables, same age cutoffs, same deleted-count shape.
+            purge_vms_history: (_args, tables) => {
+                const cutoff = (days: number) => Date.now() - days * 86_400_000;
+                const before = (rows: Row[], at: (r: Row) => string | null | undefined, days: number) => rows.filter((r) => { const v = at(r); return v && Date.parse(v) < cutoff(days); });
+                const events = before(tables.vms_asset_events, (r) => r.at as string, 365);
+                const jobs = before(tables.vms_scan_jobs, (r) => (r.finished_at ?? r.requested_at) as string, 365).filter((r) => ['succeeded', 'failed', 'cancelled'].includes(r.status as string));
+                const snaps = tables.vms_risk_snapshots.filter((r) => Date.parse(`${r.day}T00:00:00Z`) < cutoff(730));
+                for (const r of events) tables.vms_asset_events.splice(tables.vms_asset_events.indexOf(r), 1);
+                for (const r of jobs) tables.vms_scan_jobs.splice(tables.vms_scan_jobs.indexOf(r), 1);
+                for (const r of snaps) tables.vms_risk_snapshots.splice(tables.vms_risk_snapshots.indexOf(r), 1);
+                return [{ events_deleted: events.length, jobs_deleted: jobs.length, snapshots_deleted: snaps.length }];
+            },
         },
     );
     process.env.SUPABASE_URL = db.url;
@@ -190,6 +208,46 @@ test('period report states its limitations instead of implying coverage', async 
     assert.equal(api.data.period.days, 7);
 });
 
+// R3.3A: executive/technical reporting reuses this same period report, extended with severity,
+// KEV, affected-assets and a compliance-impact summary — all computed from the `open` rows this
+// function already fetches, no new query beyond the existing chunked KEV lookup.
+test('period report adds severity breakdown, KEV, affected assets and a compliance summary', async () => {
+    const asset1 = { id: randomUUID(), org_id: A, status: 'active', exposure: 'internet' };
+    const asset2 = { id: randomUUID(), org_id: A, status: 'active', exposure: 'internal' };
+    db.tables.vms_assets.push(asset1, asset2);
+    db.tables.cve_intel.push({ cve_id: 'CVE-2024-3400', kev: true });
+    finding({ scanner_severity: 'critical', cve_ids: ['CVE-2024-3400'], asset_id: asset1.id });
+    finding({ scanner_severity: 'high', asset_id: asset2.id });
+    finding({ scanner_severity: 'low', asset_id: asset2.id }); // same asset as the high finding — affected_assets still counts it once
+    const r = await periodReport(A, 30);
+    assert.deepEqual(r.open_now.by_severity, { critical: 1, high: 1, low: 1 });
+    assert.equal(r.open_now.known_exploited, 1);
+    assert.equal(r.open_now.affected_assets, 2);
+    assert.equal(r.compliance.overall_impact, 'Medium impact'); // critical + high findings, same as complianceMapping.test.ts
+    assert.match(r.compliance.note, /[Nn]ot an audit result/);
+    assert.equal(r.compliance.unmapped, 1); // the low-severity finding maps to nothing
+});
+
+// R3.3A Stage 6: "client executive" means the executive role (a CLIENT_ROLE, lib/resolveOrg.ts)
+// reading the same staff-facing /api/vms/report with vms:read — not /api/client/vms/report,
+// which executives are refused (see clientPortal.test.ts). resolveOrg pins a CLIENT_ROLE to its
+// own token org_id regardless of X-Org-Id, so this is the tenant-isolation boundary that matters.
+test('executive (client role) reads /api/vms/report for its own organisation only, with the new fields intact', async () => {
+    finding({ scanner_severity: 'critical', priority: 'P1' });
+    finding({ org_id: B, scanner_severity: 'critical', priority: 'P1' });
+    const mine = await http('GET', '/api/vms/report?days=30', EXEC);
+    assert.equal(mine.status, 200);
+    assert.equal(mine.data.open_now.by_severity.critical, 1, 'only org A\'s finding is counted');
+    assert.ok(mine.data.compliance, 'the compliance summary is present for the client-role path too');
+    const spoofed = await (async () => {
+        const r = await fetch(`${base}/api/vms/report?days=30`, { headers: { Authorization: `Bearer ${EXEC}`, 'X-Org-Id': B } });
+        return { status: r.status, data: await r.json() };
+    })();
+    assert.equal(spoofed.data.open_now.by_severity.critical, 1, 'an X-Org-Id header cannot move a client role off its own org');
+    const other = await http('GET', '/api/vms/report?days=30', EXEC_B);
+    assert.equal(other.data.open_now.by_severity.critical, 1, 'org B\'s own executive sees org B\'s own finding, not org A\'s');
+});
+
 // ── Notifications ─────────────────────────────────────────────────────────────────────────────
 test('notifyChanges starts from now, reports internet-facing changes and new P1/P2, and says when email is off', async () => {
     let r = await notifyChanges(A);
@@ -226,4 +284,27 @@ test('VMS health: waiting scans with no worker is down; schedules stopped by sco
     assert.equal(by['VMS scan queue'].status, 'degraded');
     assert.equal(by['VMS schedules'].status, 'degraded');
     assert.match(by['VMS schedules'].detail, /1 stopped because their scope ended/);
+});
+
+// ── Retention (R3.3A) ─────────────────────────────────────────────────────────────────────────
+// purge_vms_history (sql/2026-10-16_p7_vms_continuous.sql) existed with its pg_cron line
+// commented out and nothing in Node ever called it — jobs/vmsMaintenance.ts only purges raw scan
+// evidence (purge_vms_job_evidence), a different function. jobs/vmsContinuousJob.ts now calls
+// this one daily; this test exercises the RPC call and its field mapping directly.
+test('purgeVmsHistory purges old asset events, finished jobs and snapshots; findings are never touched', async () => {
+    const old = new Date(Date.now() - 400 * 86_400_000).toISOString();
+    const recent = new Date().toISOString();
+    db.tables.vms_asset_events.push({ id: randomUUID(), org_id: A, asset_id: null, event: 'asset_new', at: old, details: {} });
+    db.tables.vms_asset_events.push({ id: randomUUID(), org_id: A, asset_id: null, event: 'asset_new', at: recent, details: {} });
+    db.tables.vms_scan_jobs.push({ id: randomUUID(), org_id: A, status: 'succeeded', requested_at: old, finished_at: old });
+    db.tables.vms_scan_jobs.push({ id: randomUUID(), org_id: A, status: 'queued', requested_at: old }); // not finished — kept regardless of age
+    db.tables.vms_risk_snapshots.push({ org_id: A, day: '2024-01-01', open_total: 0 }); // long past 730 days
+    db.tables.vms_risk_snapshots.push({ org_id: A, day: new Date().toISOString().slice(0, 10), open_total: 0 });
+    finding({ priority: 'P1', first_seen: old }); // findings are the remediation record — never purged by this function
+    const r = await purgeVmsHistory();
+    assert.deepEqual(r, { events_deleted: 1, jobs_deleted: 1, snapshots_deleted: 1 });
+    assert.equal(db.tables.vms_asset_events.length, 1);
+    assert.equal(db.tables.vms_scan_jobs.length, 1, 'the still-queued job is kept regardless of age');
+    assert.equal(db.tables.vms_risk_snapshots.length, 1);
+    assert.equal(db.tables.vms_findings.length, 1, 'findings and their history are never purged');
 });
