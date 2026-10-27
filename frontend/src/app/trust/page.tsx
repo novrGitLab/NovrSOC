@@ -50,9 +50,9 @@ export default function TrustPage() {
                         Data is encrypted in transit and at rest.
                         {/* TODO: confirm specific algorithms/key management for public disclosure */}
                     </DetailItem>
-                    <DetailItem title="Uptime SLA">
-                        99.9% uptime SLA.
-                        {/* TODO: confirm this SLA is contractually offered today */}
+                    <DetailItem title="Availability">
+                        Availability commitments are confirmed as part of procurement, not published as a standing number here
+                        without a contract behind it.
                     </DetailItem>
                 </div>
             </section>

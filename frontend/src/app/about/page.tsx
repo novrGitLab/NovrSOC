@@ -57,14 +57,18 @@ export default function AboutPage() {
 
             <section className="py-20">
                 <div className="max-w-4xl mx-auto px-6">
-                    <div className="inline-flex items-center gap-2 bg-purple-100 border border-purple-200 rounded-full px-4 py-2 mb-6">
-                        <span className="text-purple-700 text-xs font-bold">Trust & assurance</span>
+                    <div className="inline-flex items-center gap-2 bg-blue-100 border border-blue-200 rounded-full px-4 py-2 mb-6">
+                        <span className="text-blue-700 text-xs font-bold">Trust & assurance</span>
                     </div>
-                    <h2 className="text-3xl font-black text-gray-900 mb-4">Built on certified infrastructure.</h2>
+                    <h2 className="text-3xl font-black text-gray-900 mb-4">Built around Nigerian regulatory context.</h2>
                     <p className="text-gray-500 leading-relaxed">
-                        NovrSOC runs on ISO/IEC 27001:2022-certified infrastructure, scoped to MSSP and SOC services, with
-                        Nigerian regulatory frameworks including NDPA, the CBN Cybersecurity Framework and NCC Consumer
-                        Protection supported out of the box.
+                        NovrSOC tracks Nigerian regulatory frameworks — NDPA, the CBN Cybersecurity Framework and NCC
+                        Consumer Protection — as a platform capability. See <a href="/trust" className="text-blue-700 font-semibold hover:underline">Trust &amp; Deployment</a> for
+                        what is confirmed today about how the platform itself is run, isolated and secured.
+                        {/* The earlier "ISO/IEC 27001:2022-certified infrastructure" claim here named a
+                            specific certification nothing in this repository or its records substantiates
+                            — removed rather than carried forward (see Footer.tsx and page.tsx for the
+                            same correction). */}
                     </p>
                 </div>
             </section>

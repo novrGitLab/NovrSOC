@@ -30,22 +30,22 @@ export function ContactForm() {
                 <div>
                     <label htmlFor="name" className="block text-xs font-bold text-gray-700 mb-1.5">Full name *</label>
                     <input id="name" name="name" required placeholder="Your full name"
-                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500" />
+                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
                 </div>
                 <div>
                     <label htmlFor="email" className="block text-xs font-bold text-gray-700 mb-1.5">Work email *</label>
                     <input id="email" name="email" type="email" required placeholder="name@company.com"
-                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500" />
+                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
                 </div>
                 <div>
                     <label htmlFor="company" className="block text-xs font-bold text-gray-700 mb-1.5">Organisation *</label>
                     <input id="company" name="company" required placeholder="Your organisation"
-                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500" />
+                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
                 </div>
                 <div>
                     <label htmlFor="interest" className="block text-xs font-bold text-gray-700 mb-1.5">Interested in</label>
                     <select id="interest" name="interest"
-                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500">
+                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
                         <option>NovrSOC Platform</option>
                         <option>CNII Watch</option>
                         <option>Vulnerability Management</option>
@@ -57,13 +57,13 @@ export function ContactForm() {
                 <div>
                     <label htmlFor="message" className="block text-xs font-bold text-gray-700 mb-1.5">What would you like to discuss?</label>
                     <textarea id="message" name="message" rows={5} placeholder="Tell us about your priorities..."
-                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500" />
+                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
                 </div>
                 <button type="submit"
-                    className="w-full bg-purple-700 text-white font-black py-3.5 rounded-xl hover:bg-purple-800 transition-colors">
+                    className="w-full bg-gradient-to-r from-sky-500 to-blue-600 text-white font-black py-3.5 rounded-xl hover:from-sky-400 hover:to-blue-500 transition-all">
                     Prepare email ↗
                 </button>
-                {note && <p className="text-xs text-purple-700 font-medium" aria-live="polite">{note}</p>}
+                {note && <p className="text-xs text-blue-700 font-medium" aria-live="polite">{note}</p>}
             </div>
         </form>
     );

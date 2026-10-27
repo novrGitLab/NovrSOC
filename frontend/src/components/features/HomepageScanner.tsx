@@ -84,15 +84,15 @@ export function HomepageScanner() {
                     placeholder="185.220.101.47 · malware.example.com · https://phishing-site.com"
                     aria-label="URL, IP address, or domain to scan"
                     className="flex-1 border border-gray-200 rounded-xl px-4 py-3.5 text-sm text-gray-900
-                               focus:outline-none focus:border-purple-500 focus:ring-2
-                               focus:ring-purple-100 placeholder-gray-300"
+                               focus:outline-none focus:border-blue-500 focus:ring-2
+                               focus:ring-blue-100 placeholder-gray-300"
                 />
                 <button
                     onClick={() => void handleScan()}
                     disabled={scanning || !input.trim()}
-                    className="bg-purple-700 text-white font-bold px-6 py-3.5 rounded-xl
-                               hover:bg-purple-800 disabled:opacity-40 disabled:cursor-not-allowed
-                               transition-colors whitespace-nowrap text-sm shadow-sm min-w-[120px]"
+                    className="bg-gradient-to-r from-sky-500 to-blue-600 text-white font-bold px-6 py-3.5 rounded-xl
+                               hover:from-sky-400 hover:to-blue-500 disabled:opacity-40 disabled:cursor-not-allowed
+                               transition-all whitespace-nowrap text-sm shadow-sm min-w-[120px]"
                 >
                     {scanning ? (
                         <span className="flex items-center gap-2 justify-center">
@@ -111,7 +111,7 @@ export function HomepageScanner() {
                         onClick={() => { setInput(ex); void handleScan(ex); }}
                         disabled={scanning}
                         className="text-[10px] bg-gray-100 text-gray-500 px-2 py-1 rounded-full
-                                   hover:bg-purple-100 hover:text-purple-700 disabled:opacity-40 transition-colors"
+                                   hover:bg-blue-100 hover:text-blue-700 disabled:opacity-40 transition-colors"
                     >
                         {ex}
                     </button>
@@ -157,7 +157,7 @@ export function HomepageScanner() {
                         <p className="text-[10px] text-gray-400">
                             Full report includes source-by-source breakdown, historical data, and remediation guidance.
                         </p>
-                        <a href="/login" className="text-xs font-bold text-purple-700 hover:underline whitespace-nowrap">
+                        <a href="/login" className="text-xs font-bold text-blue-700 hover:underline whitespace-nowrap">
                             Full Report →
                         </a>
                     </div>
