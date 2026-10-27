@@ -14,10 +14,10 @@ export function RelatedLinks({
                 <div className="grid md:grid-cols-3 gap-5">
                     {items.map((item) => (
                         <Link key={item.href} href={item.href}
-                            className="bg-white border border-gray-100 rounded-2xl p-6 hover:border-blue-200 hover:shadow-lg transition-all block">
+                            className="bg-white border border-gray-100 rounded-2xl p-6 hover:border-purple-200 hover:shadow-lg transition-all block">
                             <h3 className="font-black text-gray-900 mb-2">{item.title}</h3>
                             <p className="text-sm text-gray-500 leading-relaxed mb-3">{item.desc}</p>
-                            <span className="text-sm font-bold text-blue-700">Explore →</span>
+                            <span className="text-sm font-bold text-purple">Explore →</span>
                         </Link>
                     ))}
                 </div>

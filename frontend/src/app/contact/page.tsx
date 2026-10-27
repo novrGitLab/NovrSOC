@@ -13,7 +13,7 @@ export default function ContactPage() {
         <div className="min-h-screen bg-white font-sans">
             <LandingNav />
 
-            <section className="pt-36 pb-16 bg-gradient-to-br from-gray-950 via-purple-950 to-blue-950">
+            <section className="pt-36 pb-16 bg-gradient-to-br from-gray-950 via-purple-950 to-purple-900">
                 <div className="max-w-4xl mx-auto px-6">
                     <div className="inline-flex items-center gap-2 bg-white/10 border border-white/20 rounded-full px-4 py-2 mb-6">
                         <span className="text-white/80 text-xs font-bold uppercase tracking-wider">Let&apos;s connect</span>

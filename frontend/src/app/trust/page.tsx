@@ -39,8 +39,8 @@ export default function TrustPage() {
                         Each tenant&apos;s data is logically separated, with access scoped by organisation.
                     </DetailItem>
                     <DetailItem title="Access control">
-                        Role-based access control, multi-factor authentication, and SSO via SAML or OAuth.
-                        {/* TODO: confirm MFA and SSO are live today, not roadmap */}
+                        Role-based access control, scoped by organisation and role, with Google sign-in support today.
+                        Broader SSO (SAML) and multi-factor authentication are on the roadmap, not yet implemented.
                     </DetailItem>
                     <DetailItem title="Audit trails">
                         Scans, access and configuration changes are logged for later review.

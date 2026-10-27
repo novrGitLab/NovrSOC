@@ -44,7 +44,7 @@ export default function TermsPage() {
                         stated otherwise.
                     </DetailItem>
                     <DetailItem title="Contact">
-                        Questions about these terms, or a request for full commercial terms: <a href="mailto:soc@cybernovr.com" className="text-blue-700 font-semibold hover:underline">soc@cybernovr.com</a>.
+                        Questions about these terms, or a request for full commercial terms: <a href="mailto:soc@cybernovr.com" className="text-purple font-semibold hover:underline">soc@cybernovr.com</a>.
                     </DetailItem>
                 </div>
             </section>

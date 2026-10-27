@@ -62,7 +62,7 @@ export function Footer() {
                             <ul className="space-y-2.5">
                                 {col.links.map((link) => (
                                     <li key={link.href}>
-                                        <Link href={link.href} className="text-xs text-white/40 hover:text-sky-300 transition-colors">
+                                        <Link href={link.href} className="text-xs text-white/40 hover:text-purple-300 transition-colors">
                                             {link.label}
                                         </Link>
                                     </li>
@@ -75,17 +75,17 @@ export function Footer() {
                         <div className="text-xs font-bold text-white/60 uppercase tracking-widest mb-4">Connect</div>
                         <ul className="space-y-2.5">
                             <li>
-                                <a href="mailto:soc@cybernovr.com" className="text-xs text-white/40 hover:text-sky-300 transition-colors">
+                                <a href="mailto:soc@cybernovr.com" className="text-xs text-white/40 hover:text-purple-300 transition-colors">
                                     soc@cybernovr.com
                                 </a>
                             </li>
                             <li>
-                                <Link href="/contact" className="text-xs text-white/40 hover:text-sky-300 transition-colors">
+                                <Link href="/contact" className="text-xs text-white/40 hover:text-purple-300 transition-colors">
                                     Request a consultation
                                 </Link>
                             </li>
                             <li>
-                                <Link href="/login" className="text-xs text-white/40 hover:text-sky-300 transition-colors">
+                                <Link href="/login" className="text-xs text-white/40 hover:text-purple-300 transition-colors">
                                     Sign in
                                 </Link>
                             </li>

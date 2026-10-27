@@ -40,7 +40,7 @@ export default function PrivacyPage() {
                     </DetailItem>
                     <DetailItem title="The NovrSOC platform">
                         Each client organisation&apos;s data is logically separated and scoped by role — see{' '}
-                        <a href="/trust" className="text-blue-700 font-semibold hover:underline">Trust &amp; Deployment</a> for
+                        <a href="/trust" className="text-purple font-semibold hover:underline">Trust &amp; Deployment</a> for
                         tenant isolation, access control and audit trail detail.
                     </DetailItem>
                     <DetailItem title="Nigerian data protection">
@@ -49,7 +49,7 @@ export default function PrivacyPage() {
                         directly on request.
                     </DetailItem>
                     <DetailItem title="Contact">
-                        Questions about this policy, or a request for the full document: <a href="mailto:soc@cybernovr.com" className="text-blue-700 font-semibold hover:underline">soc@cybernovr.com</a>.
+                        Questions about this policy, or a request for the full document: <a href="mailto:soc@cybernovr.com" className="text-purple font-semibold hover:underline">soc@cybernovr.com</a>.
                     </DetailItem>
                 </div>
             </section>

@@ -93,7 +93,7 @@ export function LandingNav() {
                                                     href={c.href}
                                                     target={c.external ? '_blank' : undefined}
                                                     rel={c.external ? 'noopener' : undefined}
-                                                    className="px-3 py-2.5 rounded-lg text-sm font-semibold text-white/75 hover:bg-white/5 hover:text-sky-300 transition-colors whitespace-nowrap"
+                                                    className="px-3 py-2.5 rounded-lg text-sm font-semibold text-white/75 hover:bg-white/5 hover:text-purple-300 transition-colors whitespace-nowrap"
                                                 >
                                                     {c.label}{c.external ? ' ↗' : ''}
                                                 </a>
@@ -119,7 +119,7 @@ export function LandingNav() {
                         Sign In
                     </Link>
                     <Link href="/contact"
-                        className="bg-gradient-to-r from-sky-500 to-blue-600 text-white text-sm font-bold px-5 py-2.5 rounded-xl hover:from-sky-400 hover:to-blue-500 transition-all shadow-lg shadow-blue-900/40">
+                        className="bg-purple text-white text-sm font-bold px-5 py-2.5 rounded-xl hover:bg-purple-hover transition-colors shadow-lg shadow-black/30">
                         Request Demo
                     </Link>
                     <button className="lg:hidden p-2" onClick={() => setMenuOpen(!menuOpen)}
@@ -158,7 +158,7 @@ export function LandingNav() {
                             </Link>
                         )
                     )}
-                    <Link href="/login" className="block text-sm font-bold text-sky-300 pt-2">Sign In →</Link>
+                    <Link href="/login" className="block text-sm font-bold text-purple-300 pt-2">Sign In →</Link>
                 </div>
             )}
         </nav>

@@ -32,6 +32,34 @@ export default function AboutPage() {
                 </div>
             </section>
 
+            <section className="py-20 bg-gray-950">
+                <div className="max-w-4xl mx-auto px-6">
+                    <div className="inline-flex items-center gap-2 bg-white/5 border border-purple-400/20 rounded-full px-4 py-2 mb-6">
+                        <span className="text-xl">🇳🇬</span>
+                        <span className="text-purple-300 text-xs font-bold uppercase tracking-wider">Engineered in Nigeria</span>
+                    </div>
+                    <h2 className="text-3xl md:text-4xl font-black text-white mb-5">Proudly Engineered in Nigeria.</h2>
+                    <p className="text-white/50 leading-relaxed mb-6">
+                        Novr VTEM is built by Nigerian developers and security engineers, out of Cybernovr&apos;s Lagos
+                        office, to address real operational challenges facing security teams across Africa and
+                        beyond — not as a feature checklist, but from direct experience running detection, response
+                        and vulnerability management for organisations that need it to actually work.
+                    </p>
+                    <ul className="space-y-3 mb-2">
+                        {[
+                            'Designed with Nigerian organisations, MSSPs, CERTs, CSIRTs and critical infrastructure environments in mind — ngCERT, NCC-CSIRT and CBN frameworks are first-class, not bolted on.',
+                            'Built for both Nigerian and international organisations: the same platform serving sector-wide CERT visibility is used for single-organisation vulnerability and threat operations anywhere.',
+                            'A commitment to locally developed cybersecurity innovation, grown alongside Novr Academy\'s security training and awareness work.',
+                        ].map((t) => (
+                            <li key={t} className="flex items-start gap-3">
+                                <div className="w-1.5 h-1.5 rounded-full bg-purple-400 mt-2 flex-shrink-0" />
+                                <p className="text-sm text-white/60 leading-relaxed">{t}</p>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            </section>
+
             <section className="py-20 bg-gray-50 border-y border-gray-100">
                 <div className="max-w-7xl mx-auto px-6">
                     <div className="inline-flex items-center gap-2 bg-purple-100 border border-purple-200 rounded-full px-4 py-2 mb-6">
@@ -57,13 +85,13 @@ export default function AboutPage() {
 
             <section className="py-20">
                 <div className="max-w-4xl mx-auto px-6">
-                    <div className="inline-flex items-center gap-2 bg-blue-100 border border-blue-200 rounded-full px-4 py-2 mb-6">
-                        <span className="text-blue-700 text-xs font-bold">Trust & assurance</span>
+                    <div className="inline-flex items-center gap-2 bg-purple-100 border border-purple-200 rounded-full px-4 py-2 mb-6">
+                        <span className="text-purple text-xs font-bold">Trust & assurance</span>
                     </div>
                     <h2 className="text-3xl font-black text-gray-900 mb-4">Built around Nigerian regulatory context.</h2>
                     <p className="text-gray-500 leading-relaxed">
                         NovrSOC tracks Nigerian regulatory frameworks — NDPA, the CBN Cybersecurity Framework and NCC
-                        Consumer Protection — as a platform capability. See <a href="/trust" className="text-blue-700 font-semibold hover:underline">Trust &amp; Deployment</a> for
+                        Consumer Protection — as a platform capability. See <a href="/trust" className="text-purple font-semibold hover:underline">Trust &amp; Deployment</a> for
                         what is confirmed today about how the platform itself is run, isolated and secured.
                         {/* The earlier "ISO/IEC 27001:2022-certified infrastructure" claim here named a
                             specific certification nothing in this repository or its records substantiates
