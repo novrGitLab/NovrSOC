@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { LandingNav } from '@/components/features/LandingNav';
+import { Footer } from '@/components/features/Footer';
 import { HomepageScanner } from '@/components/features/HomepageScanner';
 
 // Marketing landing page. Deliberately a SERVER component — every interactive piece lives in its
@@ -9,43 +10,43 @@ import { HomepageScanner } from '@/components/features/HomepageScanner';
 const STATS = [
     { value: '99+', label: 'Platform Features' },
     { value: '9', label: 'CTI Data Sources' },
-    { value: '37', label: 'Nigerian States Monitored' },
+    { value: '36+FCT', label: 'Nigerian States Monitored' },
     { value: '24/7', label: 'AI Threat Detection' },
 ];
 
 const FEATURES = [
     {
-        icon: '🛡️', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
+        icon: '🛡️', tag: 'LIVE', tagColor: 'bg-purple-50 text-purple-600',
         title: 'Real-Time Threat Detection',
         desc: 'Our SIEM monitors every endpoint 24/7 against 37,000+ detection rules, with MITRE ATT&CK mapping on each alert and automatic case creation for anything that matters.',
         items: ['SSH brute force detection', 'Malware behavioural analysis', 'Lateral movement tracking'],
     },
     {
-        icon: '⚡', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
+        icon: '⚡', tag: 'LIVE', tagColor: 'bg-purple-50 text-purple-600',
         title: 'SOAR Automation',
         desc: 'Detection → case created automatically → analyst notified in seconds → low-severity cases auto-close after 30 minutes with no analyst time spent.',
         items: ['Zero-touch case creation', 'Automated CISO escalation', 'Playbook-guided response'],
     },
     {
-        icon: '🇳🇬', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
+        icon: '🇳🇬', tag: 'LIVE', tagColor: 'bg-purple-50 text-purple-600',
         title: 'Nigerian Threat Intelligence',
-        desc: 'Real-time threat heatmap across all 37 states and the FCT, built on live scanning telemetry for Nigerian ASNs, with ngCERT, NCC-CSIRT and CBN advisory integration.',
+        desc: 'Real-time threat heatmap across all 36 states and the FCT, built on live scanning telemetry for Nigerian ASNs, with ngCERT, NCC-CSIRT and CBN advisory integration.',
         items: ['Live Nigerian ASN telemetry', 'ngCERT advisory feed', 'State-level threat heatmap'],
     },
     {
-        icon: '🔍', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
+        icon: '🔍', tag: 'LIVE', tagColor: 'bg-purple-50 text-purple-600',
         title: 'Multi-Source CTI Platform',
         desc: 'Enrich any IP, domain, hash or URL across nine intelligence sources at once, with cached results and STIX 2.1 export for sharing with partners and regulators.',
         items: ['9 simultaneous sources', 'STIX 2.1 export', 'IOC history and caching'],
     },
     {
-        icon: '🏢', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
+        icon: '🏢', tag: 'LIVE', tagColor: 'bg-purple-50 text-purple-600',
         title: 'Brand Protection Suite',
         desc: 'Monitor domains, social media, app stores, and code repositories. Detect typosquatting, impersonation, and credential leaks in real time.',
         items: ['Domain lookalike detection', 'Executive breach monitoring', 'Source code leak scanning'],
     },
     {
-        icon: '📧', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
+        icon: '📧', tag: 'LIVE', tagColor: 'bg-purple-50 text-purple-600',
         title: 'Email Security',
         desc: 'DMARC, SPF and DKIM monitoring, AI-powered phishing detection, real-time blocklist checking and full email header analysis.',
         items: ['DMARC / SPF / DKIM check', 'AI phishing classifier', 'Real-time RBL checking'],
@@ -57,7 +58,7 @@ const FEATURES = [
         items: ['Case triage guidance', 'MITRE technique mapping', 'Compliance Q&A (NDPA/CBN)'],
     },
     {
-        icon: '✅', tag: 'LIVE', tagColor: 'bg-green-100 text-green-700',
+        icon: '✅', tag: 'LIVE', tagColor: 'bg-purple-50 text-purple-600',
         title: 'Nigerian Compliance',
         desc: 'Track NDPA, CBN Cybersecurity Framework, NCC, ISO 27001, and PCI-DSS compliance. Auto-generate evidence reports for auditors.',
         items: ['5 compliance frameworks', 'Control-level assessment', 'Auditor evidence export'],
@@ -86,13 +87,6 @@ const FRAMEWORKS = [
     { code: 'PCI', name: 'PCI-DSS v4.0', req: 'Required for card payment processing' },
 ];
 
-const CERT_TILES = [
-    { icon: '🔒', title: 'SOC 2 Type II', sub: 'In progress' },
-    { icon: '🌍', title: 'GDPR Ready', sub: 'Data residency options' },
-    { icon: '🏛️', title: 'CBN Compliant', sub: 'Financial sector ready' },
-    { icon: '📋', title: 'NDPA Aligned', sub: 'Nigerian data law' },
-];
-
 const SECTORS = [
     'Banking & Finance', 'Telecommunications', 'Oil & Gas', 'Government',
     'Fintech', 'Healthcare', 'Insurance', 'Manufacturing',
@@ -116,12 +110,6 @@ const PLANS = [
     },
 ];
 
-const FOOTER_COLS = [
-    { title: 'Platform', links: ['Features', 'Pricing', 'Security', 'Roadmap'] },
-    { title: 'Solutions', links: ['Banking & Finance', 'Telecommunications', 'Government', 'Fintech'] },
-    { title: 'Company', links: ['About Cybernovr', 'Careers', 'Blog', 'Contact'] },
-];
-
 export default function LandingPage() {
     return (
         <div className="min-h-screen bg-white font-sans">
@@ -135,7 +123,7 @@ export default function LandingPage() {
                 <div className="max-w-7xl mx-auto px-6 relative">
                     <div className="text-center max-w-4xl mx-auto">
                         <div className="inline-flex items-center gap-2 bg-white/10 border border-white/20 rounded-full px-4 py-2 mb-8">
-                            <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                            <div className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
                             <span className="text-white/80 text-xs font-medium">
                                 Live threat monitoring across Nigeria and West Africa
                             </span>
@@ -290,7 +278,7 @@ export default function LandingPage() {
                                             <div className="text-sm font-bold text-gray-900">{f.name}</div>
                                             <div className="text-[10px] text-gray-400 mt-0.5">{f.req}</div>
                                         </div>
-                                        <div className="ml-auto text-[10px] text-green-600 font-bold whitespace-nowrap">✓ Supported</div>
+                                        <div className="ml-auto text-[10px] text-purple-600 font-bold whitespace-nowrap">✓ Supported</div>
                                     </div>
                                 ))}
                             </div>
@@ -335,45 +323,12 @@ export default function LandingPage() {
                             ))}
                         </div>
 
-                        <div className="inline-flex items-center gap-2 bg-green-50 border border-green-200 
+                        <div className="inline-flex items-center gap-2 bg-purple-50 border border-purple-200 
                                         rounded-full px-4 py-2">
-                            <div className="w-2 h-2 rounded-full bg-green-500" />
-                            <span className="text-xs text-green-700 font-bold">Certificate Active & Verified</span>
+                            <div className="w-2 h-2 rounded-full bg-purple-500" />
+                            <span className="text-xs text-purple-700 font-bold">Certificate Active & Verified</span>
                         </div>
                         </div>
-
-                        2. FOOTER — Add ISO badge to the footer brand section:
-
-                        After the NovrSOC logo and description in the footer, add:
-
-                        <div className="flex items-center gap-3 mt-4">
-                        {/* ISO Badge */}
-                        <div className="flex items-center gap-2 bg-white/5 border border-white/10 
-                                        rounded-xl px-3 py-2">
-                            <div className="w-8 h-8 rounded-full border-2 border-purple-400 flex items-center 
-                                            justify-center bg-transparent flex-shrink-0">
-                            <div className="text-center">
-                                <div className="text-purple-400 text-[7px] font-black leading-none">ISO</div>
-                                <div className="text-purple-400 text-[8px] font-black leading-none">27001</div>
-                            </div>
-                            </div>
-                            <div>
-                            <div className="text-[9px] text-white/60 font-bold">ISO 27001:2022</div>
-                            <div className="text-[8px] text-white/30">Certified ISMS</div>
-                            </div>
-                        </div>
-
-                        {/* Nigeria flag indicator */}
-                        <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 
-                                        rounded-xl px-3 py-2">
-                            <span className="text-base">🇳🇬</span>
-                            <div>
-                            <div className="text-[9px] text-white/60 font-bold">Lagos, Nigeria</div>
-                            <div className="text-[8px] text-white/30">RC: 123456</div>
-                            </div>
-                        </div>
-                        </div>
-
                     </div>
                 </div>
             </section>
@@ -466,46 +421,7 @@ export default function LandingPage() {
                 </div>
             </section>
 
-            {/* ── FOOTER ───────────────────────────────────────────────── */}
-            <footer className="py-12 bg-gray-950 border-t border-white/5">
-                <div className="max-w-7xl mx-auto px-6">
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-8 mb-10">
-                        <div className="col-span-2">
-                            {/* eslint-disable-next-line @next/next/no-img-element -- fixed small brand mark */}
-                            <img src="/novrsoc.jpg" alt="NovrSOC by Cybernovr"
-                                className="h-8 w-auto object-contain mb-4" />
-                            <p className="text-xs text-white/40 leading-relaxed max-w-xs">
-                                AI-powered MSSP and SOC-as-a-Service platform for Nigerian and African
-                                enterprises, built on ISO 27001 certified infrastructure.
-                            </p>
-                        </div>
-
-                        {FOOTER_COLS.map((col) => (
-                            <div key={col.title}>
-                                <div className="text-xs font-bold text-white/60 uppercase tracking-widest mb-4">{col.title}</div>
-                                <ul className="space-y-2.5">
-                                    {col.links.map((link) => (
-                                        <li key={link}>
-                                            <a href="#" className="text-xs text-white/30 hover:text-white/70 transition-colors">{link}</a>
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-                        ))}
-                    </div>
-
-                    <div className="border-t border-white/5 pt-8 flex flex-col md:flex-row items-center justify-between gap-4">
-                        <div className="text-xs text-white/25">
-                            © 2026 Cybernovr Limited. All rights reserved. Lagos, Nigeria.
-                        </div>
-                        <div className="flex gap-6 flex-wrap justify-center">
-                            {['Privacy Policy', 'Terms of Service', 'Security Policy', 'Cookie Policy'].map((link) => (
-                                <a key={link} href="#" className="text-xs text-white/25 hover:text-white/50 transition-colors">{link}</a>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            </footer>
+            <Footer />
         </div>
     );
 }
