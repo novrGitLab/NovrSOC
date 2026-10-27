@@ -1,0 +1,19 @@
+
+> frontend@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.9 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://10.0.0.2:3000
+- Environments: .env.local
+✓ Ready in 2.4s
+⚠ Slow filesystem detected. The benchmark took 312ms. If C:\Users\USER\NovrSOC\frontend\.next/dev is a network drive, consider moving it to a local folder.
+See more: https://nextjs.org/docs/app/guides/local-development
+Error: EBUSY: resource busy or locked, open 'C:\Users\USER\NovrSOC\frontend\.next\dev\types\validator.ts'
+    at ignore-listed frames {
+  errno: -4082,
+  code: 'EBUSY',
+  syscall: 'open',
+  path: 'C:\\Users\\USER\\NovrSOC\\frontend\\.next\\dev\\types\\validator.ts'
+}
+[?25h

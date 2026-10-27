@@ -64,8 +64,8 @@ export function LandingNav() {
             <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
                 {/* novrsoc.jpg is the full wordmark -- see HomepageScanner's header comment for why
                     this stays a plain <img> with its natural aspect ratio. */}
-                {/* eslint-disable-next-line @next/next/no-img-element -- fixed small brand mark */}
                 <Link href="/" aria-label="NovrSOC home">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- fixed small brand mark */}
                     <img src="/novrsoc.jpg" alt="NovrSOC by Cybernovr" className="h-9 w-auto object-contain" />
                 </Link>
 

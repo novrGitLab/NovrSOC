@@ -1,0 +1,11 @@
+[emailsec] Domain verification: development: using JWT_SECRET because EMAILSEC_VERIFICATION_SECRET is not set.
+
+[env] ================================================================
+[env] Scheduled jobs that write data are DISABLED — NOVRSOC_DISABLE_JOBS=true.
+[env] This protects the production database from a local/staging run.
+[env] To run them against a development database: set SUPABASE_URL to that
+[env] database and SUPABASE_ENV=development. Production is unaffected.
+[env] ================================================================
+
+CTI Watcher: Wazuh indexer unavailable, will retry (WAZUH_INDEXER_HOST environment variable is not set)
+novrsoc-backend listening on http://localhost:8010

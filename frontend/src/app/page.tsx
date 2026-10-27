@@ -87,13 +87,6 @@ const FRAMEWORKS = [
     { code: 'PCI', name: 'PCI-DSS v4.0', req: 'Required for card payment processing' },
 ];
 
-const CERT_TILES = [
-    { icon: '🔒', title: 'SOC 2 Type II', sub: 'In progress' },
-    { icon: '🌍', title: 'GDPR Ready', sub: 'Data residency options' },
-    { icon: '🏛️', title: 'CBN Compliant', sub: 'Financial sector ready' },
-    { icon: '📋', title: 'NDPA Aligned', sub: 'Nigerian data law' },
-];
-
 const SECTORS = [
     'Banking & Finance', 'Telecommunications', 'Oil & Gas', 'Government',
     'Fintech', 'Healthcare', 'Insurance', 'Manufacturing',
