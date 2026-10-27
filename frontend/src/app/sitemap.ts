@@ -3,10 +3,12 @@ import type { MetadataRoute } from 'next';
 // Public marketing routes only — authenticated /admin and /client routes are intentionally left
 // out of the sitemap, since they require sign-in and carry no public SEO value.
 //
-// render.yaml defines no custom domain for novrsoc-frontend, so this is that service's real
-// Render URL, not a guessed vanity domain — update it here (and in layout.tsx's metadataBase)
-// if a custom domain is ever configured.
-const SITE = 'https://novrsoc-frontend.onrender.com';
+// The first domain guessed here (novrsoc-frontend.onrender.com, from render.yaml's service name)
+// does not exist — confirmed by curl (404): that Render service was defined but never actually
+// deployed. docs/runbooks/deploy-p1-p8.md:51 documents the real one (FRONTEND_URL's value), and a
+// live curl confirms it: https://novr-soc.vercel.app serves this site today. Update this (and
+// layout.tsx's metadataBase) if a custom domain is ever configured instead.
+const SITE = 'https://novr-soc.vercel.app';
 
 const ROUTES: { path: string; priority: number; changeFrequency: MetadataRoute.Sitemap[number]['changeFrequency'] }[] = [
     { path: '/', priority: 1, changeFrequency: 'weekly' },

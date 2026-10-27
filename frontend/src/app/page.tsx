@@ -130,7 +130,7 @@ export default function LandingPage() {
                         <div>
                             <div className="inline-flex items-center gap-2 bg-white/5 border border-sky-400/20 rounded-full px-4 py-2 mb-7">
                                 <div className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
-                                <span className="text-sky-300 text-xs font-bold uppercase tracking-wider">Novr VTEM · Open XDR for Managed Security Services</span>
+                                <span className="text-sky-300 text-xs font-bold uppercase tracking-wider">Novr VTEM · Open XDR Platform</span>
                             </div>
 
                             <h1 className="text-4xl md:text-6xl font-black text-white mb-6 leading-[1.08] tracking-tight">
@@ -154,7 +154,7 @@ export default function LandingPage() {
                                 </Link>
                             </div>
 
-                            <div className="grid grid-cols-4 gap-6 max-w-lg">
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-5 max-w-lg">
                                 {[['4', 'Connected disciplines'], ['IT + OT', 'Coverage'], ['Multi-tenant', 'Architecture'], ['Evidence-led', 'Prioritisation']].map(([v, l]) => (
                                     <div key={l}>
                                         <div className="text-lg md:text-xl font-black text-white mb-0.5">{v}</div>
@@ -367,7 +367,7 @@ export default function LandingPage() {
                                 <div className="w-2.5 h-2.5 rounded-full bg-green-500/60" />
                                 <span className="ml-3 text-[10px] text-white/30 font-mono">curl — public scan endpoint</span>
                             </div>
-                            <pre className="p-5 text-[11px] font-mono text-sky-200 overflow-x-auto leading-relaxed">{`curl -X POST https://api.novrsoc.com/api/public/scan \\
+                            <pre className="p-5 text-[11px] font-mono text-sky-200 overflow-x-auto leading-relaxed">{`curl -X POST https://novrsoc.onrender.com/api/public/scan \\
   -H "Content-Type: application/json" \\
   -d '{"target": "185.220.101.47"}'
 

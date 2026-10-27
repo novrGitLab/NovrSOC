@@ -22,7 +22,9 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
-const SITE_URL = "https://novrsoc-frontend.onrender.com";
+// The real production domain, confirmed live by curl — see sitemap.ts for how this was found
+// (the first guess, novrsoc-frontend.onrender.com, 404s: that Render service was never deployed).
+const SITE_URL = "https://novr-soc.vercel.app";
 const DEFAULT_TITLE = "Novr VTEM — Unified Vulnerability and Threat Exposure Management | NovrSOC by Cybernovr";
 const DEFAULT_DESCRIPTION = "Unify vulnerability management, threat intelligence, security monitoring, investigation and response across IT and OT environments — through one integrated, vendor-agnostic Open XDR platform.";
 

@@ -5,6 +5,6 @@ export default function robots(): MetadataRoute.Robots {
         rules: [
             { userAgent: '*', allow: '/', disallow: ['/admin', '/client', '/api', '/login', '/set-password'] },
         ],
-        sitemap: 'https://novrsoc-frontend.onrender.com/sitemap.xml',
+        sitemap: 'https://novr-soc.vercel.app/sitemap.xml',
     };
 }
