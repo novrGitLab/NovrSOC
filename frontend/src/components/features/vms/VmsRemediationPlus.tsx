@@ -13,6 +13,7 @@ import { Sparkles, ScanSearch, ListPlus } from 'lucide-react';
 import { fmtWat, SCAN_KIND_LABEL, OUTCOME_LABEL, type VmsScan } from '@/lib/vms';
 import { AiPanel } from '@/components/shared/AiPanel';
 import { Card, SectionTitle, StatusPill } from './ui';
+import { ChartCard, TimeChart, type Series } from './charts';
 import { PageHeader, KpiCard, PriorityBadge, SeverityBadge, Segmented, Drawer, ConfirmDialog, ErrorState, Notice, EmptyState, Tag, btn, relTime, type Msg } from './kit';
 import { DataTable, type Column } from './table';
 import { FindingDetail, STATUS_LABEL, type Finding } from './FindingDetail';
@@ -124,6 +125,41 @@ export function VmsVerification() {
     const vScans = useMemo(() => scans.data?.scans.filter((s) => s.purpose === 'verification') ?? null, [scans.data]);
     const recentVerified = useMemo(() => verified.data?.findings.filter((f) => f.verified_at && Date.parse(f.verified_at) > now - 30 * 86_400_000) ?? null, [verified.data, now]);
 
+    // Remediation lifecycle, by day, over the last 30 days — built only from timestamps the
+    // backend actually records (verification scans' requested_at/finished_at, findings'
+    // verified_at). Deliberately NOT charted: when a finding entered "awaiting verification" or
+    // was reopened — neither transition has its own timestamp in this list view (only
+    // first_seen/last_seen, which are scan-contact times, not state-change times), so a day-by-
+    // day count for either would be invented, not recorded. The "Reopened" KPI above stays a
+    // plain current count for that reason.
+    const lifecycle = useMemo(() => {
+        if (!vScans || !verified.data) return null;
+        const days = 30;
+        const buckets = new Map<string, { succeeded: number; failed: number; verified: number }>();
+        const dayKey = (iso: string) => iso.slice(0, 10);
+        const cutoff = now - days * 86_400_000;
+        for (const s of vScans) {
+            const at = s.finished_at ?? s.requested_at;
+            if (!at || Date.parse(at) < cutoff) continue;
+            const b = buckets.get(dayKey(at)) ?? { succeeded: 0, failed: 0, verified: 0 };
+            if (s.status === 'succeeded') b.succeeded++; else if (s.status === 'failed') b.failed++;
+            buckets.set(dayKey(at), b);
+        }
+        for (const f of verified.data.findings) {
+            if (!f.verified_at || Date.parse(f.verified_at) < cutoff) continue;
+            const b = buckets.get(dayKey(f.verified_at)) ?? { succeeded: 0, failed: 0, verified: 0 };
+            b.verified++;
+            buckets.set(dayKey(f.verified_at), b);
+        }
+        if (buckets.size === 0) return [];
+        return [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, b]) => ({ day, ...b }));
+    }, [vScans, verified.data, now]);
+    const lifecycleSeries: Series[] = [
+        { key: 'succeeded', label: 'Verification scan succeeded', token: '--vz-good' },
+        { key: 'failed', label: 'Verification scan failed', token: '--vz-sev-high' },
+        { key: 'verified', label: 'Finding verified fixed', token: '--vz-prog-2' },
+    ];
+
     async function verify(f: Finding) {
         const r = await vmsSend<{ queued: boolean; message?: string }>('POST', `/api/vms/findings/${f.id}/verify`, {});
         setMsg(r.ok ? { ok: true, text: r.data.message ?? 'Verification scan queued' } : { ok: false, text: r.error });
@@ -152,6 +188,10 @@ export function VmsVerification() {
                 <KpiCard label="Verified fixed (30 days)" value={recentVerified?.length} reason="Loading" tone={recentVerified?.length ? 'good' : undefined} />
                 <KpiCard label="Reopened" value={reopened.data?.findings.length} reason="Loading" tone={reopened.data?.findings.length ? 'critical' : undefined} sub="Still present when rescanned" />
             </section>
+            <ChartCard title="Remediation activity, last 30 days" hint="Verification scan outcomes and confirmed fixes, by the day each was actually recorded"
+                loading={!lifecycle} empty={lifecycle && lifecycle.length === 0 ? { title: 'No verification activity in the last 30 days', body: 'No verification scan ran and no finding was confirmed fixed in this window.' } : null}>
+                {lifecycle && lifecycle.length > 0 && <TimeChart data={lifecycle} series={lifecycleSeries} kind="bar" stacked={false} label="Remediation activity, last 30 days" />}
+            </ChartCard>
             <Notice msg={msg} />
             {[awaiting, verified, reopened].map((x, i) => x.load.state === 'error' ? <ErrorState key={i} error={x.load.error} status={x.load.status} onRetry={x.reload} /> : null)}
             <Segmented label="List" value={tab} onChange={setTab} options={[['awaiting', 'Awaiting verification'], ['scans', 'Verification scans'], ['verified', 'Verified fixed'], ['reopened', 'Reopened']]} />

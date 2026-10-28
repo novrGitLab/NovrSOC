@@ -48,6 +48,10 @@ export function AttackSurfaceMap({ assetId, onOpenAsset }: { assetId: string; on
     const [sel, setSel] = useState<string | null>(null);
     const [view, setView] = useState({ x: 0, y: 0, w: W, h: H });
     const drag = useRef<{ x: number; y: number } | null>(null);
+    // Touch: one finger pans (same math as the mouse drag above), two fingers pinch-zoom. Kept
+    // in one ref rather than React state since it updates on every touchmove frame.
+    const touch = useRef<{ mode: 'pan'; x: number; y: number } | { mode: 'pinch'; dist: number } | null>(null);
+    const touchDist = (a: { clientX: number; clientY: number }, b: { clientX: number; clientY: number }) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
 
     useEffect(() => {
         let active = true;
@@ -82,11 +86,32 @@ export function AttackSurfaceMap({ assetId, onOpenAsset }: { assetId: string; on
                 <button onClick={() => zoom(1.25)} aria-label="Zoom out"><ZoomOut className="w-4 h-4" /></button>
                 <button onClick={() => setView({ x: 0, y: 0, w: W, h: H })} aria-label="Reset view"><Maximize2 className="w-4 h-4" /></button>
             </div>
-            <svg viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`} className="w-full h-[420px] bg-card-muted rounded-lg border border-border cursor-grab select-none" role="img" aria-label="Attack-surface relationship map"
+            <svg viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`} className="w-full h-[420px] bg-card-muted rounded-lg border border-border cursor-grab select-none touch-none" role="img" aria-label="Attack-surface relationship map"
                 onWheel={(e) => zoom(e.deltaY > 0 ? 1.1 : 0.9)}
                 onMouseDown={(e) => { drag.current = { x: e.clientX, y: e.clientY }; }}
                 onMouseUp={() => { drag.current = null; }} onMouseLeave={() => { drag.current = null; }}
-                onMouseMove={(e) => { if (!drag.current) return; const k = view.w / e.currentTarget.clientWidth; const dx = (e.clientX - drag.current.x) * k; const dy = (e.clientY - drag.current.y) * k; drag.current = { x: e.clientX, y: e.clientY }; setView((v) => ({ ...v, x: v.x - dx, y: v.y - dy })); }}>
+                onMouseMove={(e) => { if (!drag.current) return; const k = view.w / e.currentTarget.clientWidth; const dx = (e.clientX - drag.current.x) * k; const dy = (e.clientY - drag.current.y) * k; drag.current = { x: e.clientX, y: e.clientY }; setView((v) => ({ ...v, x: v.x - dx, y: v.y - dy })); }}
+                onTouchStart={(e) => {
+                    if (e.touches.length === 2) touch.current = { mode: 'pinch', dist: touchDist(e.touches[0], e.touches[1]) };
+                    else if (e.touches.length === 1) touch.current = { mode: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY };
+                }}
+                onTouchEnd={() => { touch.current = null; }}
+                onTouchCancel={() => { touch.current = null; }}
+                onTouchMove={(e) => {
+                    const t = touch.current;
+                    if (!t) return;
+                    if (t.mode === 'pinch' && e.touches.length === 2) {
+                        const d = touchDist(e.touches[0], e.touches[1]);
+                        if (d > 0 && t.dist > 0) zoom(t.dist / d); // fingers spreading (d > t.dist) zooms in, same convention as the buttons/wheel
+                        touch.current = { mode: 'pinch', dist: d };
+                    } else if (t.mode === 'pan' && e.touches.length === 1) {
+                        const k = view.w / e.currentTarget.clientWidth;
+                        const dx = (e.touches[0].clientX - t.x) * k;
+                        const dy = (e.touches[0].clientY - t.y) * k;
+                        touch.current = { mode: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY };
+                        setView((v) => ({ ...v, x: v.x - dx, y: v.y - dy }));
+                    }
+                }}>
                 {edges.map((e, i) => {
                     const a = pos.get(e.from); const b = pos.get(e.to);
                     if (!a || !b) return null;
@@ -98,7 +123,9 @@ export function AttackSurfaceMap({ assetId, onOpenAsset }: { assetId: string; on
                     if (!p) return null;
                     const root = n.id === graph.root;
                     return (
-                        <g key={n.id} transform={`translate(${p.x},${p.y})`} onClick={() => setSel(n.id)} className="cursor-pointer">
+                        <g key={n.id} transform={`translate(${p.x},${p.y})`} onClick={() => setSel(n.id)} className="cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-purple"
+                            tabIndex={0} role="button" aria-label={`${n.label}, ${n.kind}${selected?.id === n.id ? ' (selected)' : ''}`}
+                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSel(n.id); } }}>
                             <circle r={root ? 14 : 9} fill={KIND_COLOR[n.kind]} stroke={match(n) ? '#f59e0b' : sel === n.id ? '#111827' : '#fff'} strokeWidth={match(n) || sel === n.id ? 3 : 1.5} />
                             <text y={root ? 28 : 21} textAnchor="middle" fontSize="11" fill="currentColor" className="text-foreground">{n.label.length > 28 ? `${n.label.slice(0, 27)}…` : n.label}</text>
                         </g>

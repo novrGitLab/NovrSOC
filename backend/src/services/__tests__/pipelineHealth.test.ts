@@ -13,13 +13,34 @@ const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString(
 const byName = async () => Object.fromEntries((await pipelineChecks()).map((c) => [c.name, c]));
 
 before(async () => {
-    db = await startFakePostgrest({ alerts: [], alert_quarantine: [], push_state: [], audit_log: [] });
+    db = await startFakePostgrest({ alerts: [], alert_quarantine: [], push_state: [], audit_log: [], collectors: [], collector_log_events: [] });
     process.env.SUPABASE_URL = db.url;
     process.env.SUPABASE_SERVICE_KEY = 'test-service-key';
     for (const k of ['log', 'warn', 'error'] as const) console[k] = () => undefined;
 });
 after(async () => { Object.assign(console, realLog); await db.close(); });
-beforeEach(() => { for (const t of ['alerts', 'alert_quarantine', 'push_state', 'audit_log']) db.tables[t].length = 0; });
+beforeEach(() => { for (const t of ['alerts', 'alert_quarantine', 'push_state', 'audit_log', 'collectors', 'collector_log_events']) db.tables[t].length = 0; });
+
+test('collectors (P31): no collector enrolled is "off", not "down"; a stale heartbeat degrades, and total silence from every collector is down', async () => {
+    assert.equal((await byName())['Log collectors'].status, 'off');
+    db.tables.collectors.push({ status: 'connected', last_heartbeat_at: minutesAgo(2) }, { status: 'connected', last_heartbeat_at: minutesAgo(2) });
+    assert.equal((await byName())['Log collectors'].status, 'up');
+    db.tables.collectors[1].last_heartbeat_at = minutesAgo(30);
+    { const c = await byName(); assert.equal(c['Log collectors'].status, 'degraded'); assert.match(c['Log collectors'].detail, /^1\/2/); }
+    db.tables.collectors[0].last_heartbeat_at = minutesAgo(30);
+    assert.equal((await byName())['Log collectors'].status, 'down');
+    // A revoked collector is excluded from the count entirely, not counted as stale.
+    db.tables.collectors.push({ status: 'revoked', last_heartbeat_at: null });
+    assert.match((await byName())['Log collectors'].detail, /^0\/2/);
+});
+
+test('collector log ingestion (P31): off with nothing ever received, up when fresh, degraded when stale', async () => {
+    assert.equal((await byName())['Collector log ingestion'].status, 'off');
+    db.tables.collector_log_events.push({ received_at: minutesAgo(5) });
+    assert.equal((await byName())['Collector log ingestion'].status, 'up');
+    db.tables.collector_log_events[0].received_at = minutesAgo(45);
+    assert.equal((await byName())['Collector log ingestion'].status, 'degraded');
+});
 
 test('ingestion: fresh is up, an hour+ is degraded, the four-day outage is down, empty is down', async () => {
     assert.equal((await byName())['Alert ingestion'].status, 'down');

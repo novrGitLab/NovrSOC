@@ -14,9 +14,14 @@ import { NIGERIA_STATE_PATHS, NIGERIA_VIEWBOX } from './nigeriaPaths';
 // The outline file spells it "Nassarawa"; the data uses the official "Nasarawa".
 const stateKey = (name: string) => (name === 'Nassarawa' ? 'Nasarawa' : name);
 const SHADES = ['var(--card-muted)', 'color-mix(in oklab, var(--vz-prog-1) 45%, var(--card))', 'var(--vz-prog-2)', 'var(--vz-prog-3)', 'var(--vz-prog-4)'];
-const shade = (n: number, max: number) => (n <= 0 ? SHADES[0] : SHADES[Math.min(4, 1 + Math.floor((n / Math.max(1, max)) * 3.999))]);
+/** Traffic-light severity shades (green/yellow/orange/red), already in the design system's token
+ * set — same tokens used for status pills elsewhere — rather than the default intensity
+ * progression above. Opt in with shades="severity" for a view that is literally about severity
+ * (e.g. a threat heatmap), not a plain magnitude count. */
+const SEVERITY_SHADES = ['var(--card-muted)', 'var(--vz-good)', 'var(--vz-warning)', 'var(--vz-serious)', 'var(--vz-critical)'];
+const shade = (n: number, max: number, shades: string[]) => (n <= 0 ? shades[0] : shades[Math.min(4, 1 + Math.floor((n / Math.max(1, max)) * 3.999))]);
 
-export function NigeriaStateMap({ counts, layer, selected, onSelect, countLabel, compact = false }: {
+export function NigeriaStateMap({ counts, layer, selected, onSelect, countLabel, compact = false, shades = 'progression' }: {
     counts: Map<string, number>;
     /** Only used to word the accessible label for each state ("N hosted indicator(s)" / "N match(es)"). */
     layer: 'hosted' | 'exposure' | 'other';
@@ -26,7 +31,12 @@ export function NigeriaStateMap({ counts, layer, selected, onSelect, countLabel,
     countLabel?: string;
     /** Smaller legend text for a tight dashboard card. */
     compact?: boolean;
+    /** "severity" shades low/moderate/high/critical as green/yellow/orange/red instead of the
+     * default purple intensity progression — for a view whose count IS a severity, not a plain
+     * magnitude. */
+    shades?: 'progression' | 'severity';
 }) {
+    const palette = shades === 'severity' ? SEVERITY_SHADES : SHADES;
     const max = Math.max(0, ...counts.values());
     const unit = countLabel ?? (layer === 'hosted' ? 'hosted indicator(s)' : layer === 'exposure' ? 'match(es)' : 'record(s)');
     return (
@@ -37,7 +47,7 @@ export function NigeriaStateMap({ counts, layer, selected, onSelect, countLabel,
                     const n = counts.get(name) ?? 0;
                     const active = selected === name;
                     return (
-                        <path key={p.code} d={p.d} fill={shade(n, max)} stroke={active ? 'var(--color-purple)' : 'var(--color-border)'} strokeWidth={active ? 3 : 1}
+                        <path key={p.code} d={p.d} fill={shade(n, max, palette)} stroke={active ? 'var(--color-purple)' : 'var(--color-border)'} strokeWidth={active ? 3 : 1}
                             className={onSelect ? 'cursor-pointer outline-none focus-visible:[stroke:var(--color-purple)] focus-visible:[stroke-width:3px] hover:opacity-90' : undefined}
                             tabIndex={onSelect ? 0 : undefined} role={onSelect ? 'button' : undefined} aria-label={`${name}: ${n} ${unit}`}
                             onClick={onSelect ? () => onSelect(name) : undefined}
@@ -48,8 +58,10 @@ export function NigeriaStateMap({ counts, layer, selected, onSelect, countLabel,
                 })}
             </svg>
             <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 ${compact ? 'text-[10px]' : 'text-[11px]'} text-foreground-muted`}>
-                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm border border-border" style={{ background: SHADES[0] }} /> none</span>
-                {SHADES.slice(1).map((c, i) => <span key={c} className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: c }} /> {i === 3 ? `up to ${max}` : ''}</span>)}
+                <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm border border-border" style={{ background: palette[0] }} /> none</span>
+                {shades === 'severity'
+                    ? (['Low', 'Moderate', 'High', 'Critical'] as const).map((label, i) => <span key={label} className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: palette[i + 1] }} /> {label}</span>)
+                    : palette.slice(1).map((c, i) => <span key={c} className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: c }} /> {i === 3 ? `up to ${max}` : ''}</span>)}
                 {!compact && <span className="flex items-center gap-1"><Info className="w-3 h-3" aria-hidden /> Placed on a state only when the provider named it.</span>}
             </div>
         </>

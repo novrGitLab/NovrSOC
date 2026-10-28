@@ -27,20 +27,32 @@ before(() => {
 });
 after(() => { server.close(); });
 
-test('role map: super_admin holds every permission, soc_manager all but approving scan authorisation; executives read VMS, intelligence and their own CNII profile and approve their scan authorisation; portal_user only the client VMS and client security views', () => {
+test('role map: super_admin holds every permission, soc_manager all but approving scan authorisation; executives read VMS, intelligence, their own CNII profile and the Reporting Center, and approve their scan authorisation; portal_user only the client VMS and client security views', () => {
     assert.deepEqual([...ROLE_PERMISSIONS.super_admin], [...PERMISSIONS]);
     // P27: managers request scan authorisation; only the organisation (executive) or a super_admin approves it.
     assert.deepEqual([...ROLE_PERMISSIONS.soc_manager], PERMISSIONS.filter((p) => p !== 'vms:authorize'));
     assert.deepEqual([...ROLE_PERMISSIONS.super_admin], [...PERMISSIONS]);
-    assert.deepEqual([...ROLE_PERMISSIONS.executive], ['vms:read', 'intel:read', 'cnii:read', 'vms:authorize']);
+    // P30/R3.3E: executives read the Reporting Center but never manage it — schedule/recipient
+    // administration can add an external email address, a staff decision like every other :manage.
+    assert.deepEqual([...ROLE_PERMISSIONS.executive], ['vms:read', 'intel:read', 'cnii:read', 'vms:authorize', 'reports:read']);
     assert.ok(!ROLE_PERMISSIONS.analyst.includes('vms:authorize'));
+    assert.ok(!ROLE_PERMISSIONS.executive.includes('reports:manage'));
     assert.ok(!ROLE_PERMISSIONS.executive.some((p) => /^(alerts|cases|response|handover):/.test(p)), 'no SecOps access for executives');
     // Client portal: its own organisation's VMS view and security monitoring (P24), nothing else.
     assert.deepEqual([...ROLE_PERMISSIONS.portal_user], ['vms:client', 'secops:client']);
+    // P31: Collector Management is manager-tier infrastructure access — analyst, executive and
+    // portal_user hold neither collectors:read nor collectors:manage.
+    assert.equal(hasPermission('super_admin', 'collectors:manage'), true);
+    assert.equal(hasPermission('soc_manager', 'collectors:manage'), true);
+    assert.equal(hasPermission('analyst', 'collectors:read'), false);
+    assert.equal(hasPermission('executive', 'collectors:read'), false);
+    assert.equal(hasPermission('portal_user', 'collectors:read'), false);
     assert.equal(hasPermission('analyst', 'response:contain'), true);
     assert.equal(hasPermission('analyst', 'response:approve'), false);
     assert.equal(hasPermission('analyst', 'vms:scan'), true);
     assert.equal(hasPermission('analyst', 'vms:scope'), false, 'approving what may be scanned is a manager decision');
+    assert.equal(hasPermission('analyst', 'reports:manage'), true);
+    assert.equal(hasPermission('portal_user', 'reports:read'), false);
 });
 
 test('unknown or missing roles hold no permissions', () => {

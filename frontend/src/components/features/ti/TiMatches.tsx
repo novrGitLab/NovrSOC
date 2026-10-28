@@ -9,17 +9,23 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Target } from 'lucide-react';
 import { PageHeader, EmptyState, ErrorState, Segmented, Notice, Tag, btn, type Msg } from '@/components/features/vms/kit';
-import { Card } from '@/components/features/vms/ui';
+import { Card, SectionTitle, Skeleton } from '@/components/features/vms/ui';
+import { Donut, type Slice } from '@/components/features/vms/charts';
 import { DataTable, type Column } from '@/components/features/vms/table';
 import { useVmsData, useVmsCan, vmsSend } from '@/components/features/vms/data';
 import { fmtWat } from '@/lib/vms';
 import { MATCH_STATUS_STYLE, entityHref, ago, type TiMatch } from '@/lib/ti';
 
 type Status = 'new' | 'reviewed' | 'promoted' | 'dismissed' | 'all';
+const STATUS_TOKEN = { new: '--vz-sev-high', reviewed: '--vz-prog-2', promoted: '--vz-good', dismissed: '--vz-neutral' } as const;
+const STATUS_LABEL: Record<keyof typeof STATUS_TOKEN, string> = { new: 'New', reviewed: 'Reviewed', promoted: 'Case opened', dismissed: 'Dismissed' };
 
 export function TiMatches() {
     const [status, setStatus] = useState<Status>('new');
     const { load, data, reload, at } = useVmsData<{ matches: TiMatch[] }>(`/api/ti/matches${status === 'all' ? '' : `?status=${status}`}`);
+    // A separate, unfiltered fetch purely to chart the status breakdown — the table above filters
+    // to one status at a time, but the breakdown needs all of them at once.
+    const all = useVmsData<{ matches: TiMatch[] }>('/api/ti/matches');
     const can = useVmsCan();
     const [msg, setMsg] = useState<Msg>(null);
     const [busy, setBusy] = useState<string | null>(null);
@@ -57,6 +63,17 @@ export function TiMatches() {
                 description="Indicators found in this organisation's alerts, assets, vulnerability findings and cases. A match means the value was seen — the source's labels say why it may be malicious."
                 actions={<Segmented label="Status" value={status} onChange={setStatus} options={[['new', 'New'], ['reviewed', 'Reviewed'], ['promoted', 'Case opened'], ['dismissed', 'Dismissed'], ['all', 'All']] as const} />} />
             <Notice msg={msg} />
+            <Card>
+                <SectionTitle title="Matches by status" />
+                {all.load.state === 'loading' ? <Skeleton className="h-36" /> : all.load.state === 'error' ? null : (() => {
+                    const counts: Record<string, number> = {};
+                    for (const m of all.data?.matches ?? []) counts[m.status] = (counts[m.status] ?? 0) + 1;
+                    const slices: Slice[] = (Object.keys(STATUS_TOKEN) as (keyof typeof STATUS_TOKEN)[]).map((s) => ({ key: s, label: STATUS_LABEL[s], value: counts[s] ?? 0, token: STATUS_TOKEN[s] }));
+                    return slices.every((s) => s.value === 0)
+                        ? <EmptyState compact title="No matches yet" body="Correlation runs every 15 minutes over new alerts and the current assets, findings and cases." />
+                        : <Donut slices={slices} centerLabel="total matches" label="Matches by status" />;
+                })()}
+            </Card>
             <Card>
                 {load.state === 'error' ? <ErrorState error={load.error} status={load.status} onRetry={reload} /> : (
                     <DataTable caption="Matches" rows={data?.matches ?? null} columns={columns} rowKey={(m) => m.id} initialSort={{ key: 'first', dir: 'desc' }}

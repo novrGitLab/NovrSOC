@@ -34,6 +34,7 @@ const NO_MOUNT_GATE: Record<string, { reason: string; router?: string }> = {
     '/api/email': { reason: 'gated per route; the Mailgun DMARC inbox uses its own signature', router: 'routes/email.ts' },
     '/api/email-proxy': { reason: 'gated per route; the mail-gateway feed uses its own token', router: 'routes/emailProxy.ts' },
     '/api/vms/worker': { reason: 'machine credential (VMS_WORKER_TOKEN) for the scanner worker', router: 'routes/vmsWorker.ts' },
+    '/api/collectors/ingest': { reason: 'per-collector credential, resolved server-side to its organisation (phase P31)', router: 'routes/collectorIngest.ts' },
 };
 
 const mounts = [...index.matchAll(/^app\.use\('(\/api[^']*)'(.*)$/gm)].map((m) => ({ path: m[1], rest: m[2] }));

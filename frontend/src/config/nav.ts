@@ -32,7 +32,7 @@ import { VMS_SECTIONS } from './vmsSections';
 export type NavStatus = 'WORKING' | 'PARTIAL' | 'MOCK' | 'BROKEN' | 'PLANNED';
 export type NavDomain =
     | 'overview' | 'secops' | 'vms' | 'threat-intel' | 'cnii' | 'brand' | 'infra' | 'email'
-    | 'compliance' | 'ai' | 'data' | 'clients' | 'settings' | 'account';
+    | 'compliance' | 'ai' | 'data' | 'clients' | 'settings' | 'account' | 'reports' | 'collectors';
 
 export interface NavItemConfig {
     id: string;
@@ -84,6 +84,25 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         items: [
             { id: 'dashboard', label: 'Dashboard', href: '/admin/dashboard', domain: 'overview', status: 'PARTIAL', roles: 'all', icon: LayoutDashboard },
             { id: 'executive-report', label: 'Executive Report', href: '/admin/dashboard/executive', domain: 'overview', status: 'WORKING', roles: MANAGER_PLUS_EXEC, icon: FileBarChart },
+        ],
+    },
+    {
+        // Reporting Center (phase P30, R3.3E): schedule/recipient administration and generate-now
+        // need reports:manage (not executive — recipient management can add an external email
+        // address); viewing uses reports:read, held by the same roles as VMS_READ.
+        section: 'Reporting Center', collapsible: true, icon: FileBarChart, groupLabel: 'Reporting Center',
+        items: [
+            { id: 'reporting-center', label: 'Reporting Center', href: '/admin/reports', domain: 'reports', status: 'WORKING', roles: VMS_READ, icon: FileBarChart },
+        ],
+    },
+    {
+        // Collector Management (phase P31, Collector V1): manager-tier infrastructure access — a
+        // collector's credential reaches live client-site log plumbing, closer to Wazuh Groups /
+        // Sec Ops Management than to day-to-day SOC analysis. Not analyst, executive or
+        // portal_user — matches the backend's collectors:read/collectors:manage exactly.
+        section: 'Collector Management', collapsible: true, icon: Server, groupLabel: 'Collector Management',
+        items: [
+            { id: 'collector-management', label: 'Collector Management', href: '/admin/collectors', domain: 'collectors', status: 'WORKING', roles: MANAGER_ONLY, icon: Server },
         ],
     },
     {

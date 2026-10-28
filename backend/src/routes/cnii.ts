@@ -135,8 +135,9 @@ async function profiles(sector?: string) {
     return q;
 }
 
-/** Gaps an analyst must know before trusting the figures. */
-function gaps(s: OrgStats): string[] {
+/** Gaps an analyst must know before trusting the figures. Exported for reuse by R3.3E's report
+ * generation service — the exact same client-safe figures /profile already returns. */
+export function gaps(s: OrgStats): string[] {
     const g: string[] = [];
     if (!s.active_scopes) g.push('no active authorised scope: nothing is monitored');
     if (s.active_scopes && !s.last_collection) g.push('passive collection has never run');

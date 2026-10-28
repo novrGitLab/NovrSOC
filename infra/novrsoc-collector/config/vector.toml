@@ -1,0 +1,123 @@
+# NovrSOC Collector V1 — Vector configuration.
+#
+# This file sets up the collection side only (syslog TCP/UDP/TLS in, NovrSOC out). It carries no
+# collector identity, no organisation id and no secret — those live only in .env (never checked
+# into git, never baked into this image). See ../README.md for enrollment.
+#
+# A Windows Event Forwarding source is NOT configured here: Vector does not speak Microsoft's
+# native WEF subscription protocol, and this file does not claim it does. A Windows Event
+# Collector forwards ITS OWN output to this appliance over syslog instead — see
+# ../../../docs/collector-v1/WINDOWS_EVENT_FORWARDING.md for that bridge, which then arrives here
+# as an ordinary syslog_tcp/syslog_tls source like any other sender.
+
+data_dir = "/var/lib/vector"
+
+# ── API (loopback only; scraped by the heartbeat sidecar over the private compose network) ────
+[api]
+enabled = true
+address = "0.0.0.0:8686"
+playground = false
+
+# ── Sources ──────────────────────────────────────────────────────────────────────────────────────
+[sources.syslog_tcp]
+type = "syslog"
+mode = "tcp"
+address = "0.0.0.0:6514"
+
+[sources.syslog_udp]
+type = "syslog"
+mode = "udp"
+address = "0.0.0.0:5514"
+
+# TLS syslog — for senders that support it. verify_certificate is left false by default because
+# most legacy/agentless syslog senders (firewalls, switches, legacy WEF bridges) cannot present a
+# client certificate; set NOVRSOC_SYSLOG_TLS_VERIFY_CLIENT=true in .env and supply ca.crt once your
+# fleet does.
+[sources.syslog_tls]
+type = "syslog"
+mode = "tcp"
+address = "0.0.0.0:6515"
+[sources.syslog_tls.tls]
+enabled = true
+crt_file = "/etc/novrsoc-collector/tls/collector.crt"
+key_file = "/etc/novrsoc-collector/tls/collector.key"
+ca_file = "/etc/novrsoc-collector/tls/ca.crt"
+verify_certificate = "${NOVRSOC_SYSLOG_TLS_VERIFY_CLIENT:-false}"
+
+# Vector's own throughput/error counters — scraped by the heartbeat sidecar, never by anything
+# outside this compose network. This is how "events received/forwarded/delivery failures" in the
+# NovrSOC heartbeat are actually measured: real Vector counters, not estimated or invented figures.
+[sources.internal_metrics]
+type = "internal_metrics"
+
+# ── Transforms ───────────────────────────────────────────────────────────────────────────────────
+# Normalises every syslog source to the shape the NovrSOC ingestion gateway expects
+# (POST /api/collectors/ingest/events), and preserves the ORIGINAL device's own identity
+# (hostname/IP as it reported itself) rather than Vector's own container hostname.
+[transforms.to_novrsoc]
+type = "remap"
+inputs = ["syslog_tcp", "syslog_udp", "syslog_tls"]
+source = '''
+. = {
+  "source_key": .source_type ?? "syslog",
+  "host": .hostname ?? .host ?? .appname ?? "unknown",
+  "event_time": to_string(.timestamp) ?? format_timestamp!(now(), format: "%+"),
+  "message": .message ?? encode_json(.),
+}
+'''
+
+# ── Sinks ────────────────────────────────────────────────────────────────────────────────────────
+# A disk-backed buffer: a network outage to NovrSOC queues events on disk (bounded by
+# NOVRSOC_BUFFER_MAX_BYTES) instead of dropping them or blocking the syslog listeners upstream.
+[sinks.novrsoc_events]
+type = "http"
+inputs = ["to_novrsoc"]
+uri = "${NOVRSOC_BACKEND_URL}/api/collectors/ingest/events"
+method = "post"
+encoding.codec = "json"
+encoding.framing.method = "newline_delimited"
+# The gateway (backend/src/routes/collectorIngest.ts) accepts both { events: [...] } and a bare
+# NDJSON/array batch — Vector's own batched wire shape — specifically so this sink needs no
+# custom body template to match it.
+request.headers.Authorization = "Bearer ${NOVRSOC_COLLECTOR_TOKEN}"
+request.headers.Content-Type = "application/json"
+batch.max_events = 200
+batch.timeout_secs = 5
+buffer.type = "disk"
+buffer.max_size = 268435488  # ~256 MB; override via NOVRSOC_BUFFER_MAX_BYTES in a drop-in if needed
+buffer.when_full = "block"
+request.retry_attempts = 10
+request.retry_initial_backoff_secs = 2
+request.retry_max_duration_secs = 300
+
+# Exposes Vector's own counters as Prometheus text on the private compose network only — read by
+# the heartbeat sidecar (scripts/heartbeat.sh), never published outside this appliance.
+[sinks.metrics_export]
+type = "prometheus_exporter"
+inputs = ["internal_metrics"]
+address = "0.0.0.0:9598"
+
+# ── Optional: also relay to Wazuh's own syslog listener (disabled by default) ───────────────────
+# See docs/collector-v1/WAZUH_COMPATIBILITY.md "Reaching Wazuh detection too" — Option A (pointing
+# the sending device at both the collector and Wazuh's existing syslog listener directly) needs no
+# code at all and carries no risk; prefer it. Uncomment the two blocks below ONLY for a device
+# that genuinely cannot send to two destinations itself, and read that doc's explicit caveat
+# first: the syslog reconstruction below has not been validated against a live Wazuh decoder.
+#
+# [transforms.to_wazuh_relay]
+# type = "remap"
+# inputs = ["syslog_tcp", "syslog_udp", "syslog_tls"]
+# source = '''
+# pri = (int!(.facility ?? 1) * 8) + int!(.severity ?? 6)
+# ts = format_timestamp!(to_timestamp!(.timestamp ?? now()), format: "%b %d %H:%M:%S")
+# host = .hostname ?? .host ?? "unknown"
+# app = .appname ?? "novrsoc-collector"
+# . = { "message": "<" + to_string(pri) + ">" + ts + " " + host + " " + app + ": " + to_string(.message ?? encode_json(.)) }
+# '''
+#
+# [sinks.wazuh_relay]
+# type = "socket"
+# inputs = ["to_wazuh_relay"]
+# address = "${WAZUH_MANAGER_SYSLOG_HOST}:${WAZUH_MANAGER_SYSLOG_PORT:-514}"
+# mode = "udp"
+# encoding.codec = "text"

@@ -13,6 +13,7 @@ import { getAdminUser } from '@/lib/admin-auth';
 import { CNII_SECTORS, SECTOR_BY_ID } from '@/lib/cnii-sectors';
 import { cniiGet, apiSend, timeAgo, type SectorSummary, type CniiProfile } from '@/lib/cnii-types';
 import { CniiIntake } from './CniiIntake';
+import { DashboardNigeriaMap } from '@/components/dashboards/DashboardNigeriaMap';
 
 interface OrgRow { slug: string; name: string; industry: string | null; profile: CniiProfile | null }
 interface LegacyRow { id: string; ip: string; hostname: string | null; org: string | null; asn: string | null; sector_id: string; open_ports: number[] | null; vuln_count: number | null; last_seen: string; imported_org_id: string | null; imported_at: string | null }
@@ -73,6 +74,9 @@ export function CniiOverview() {
             </div>
             {error && <p role="alert" className="text-xs text-red font-semibold">{error}</p>}
             {msg && <p role="status" className="text-xs text-foreground font-semibold">{msg}</p>}
+
+            <DashboardNigeriaMap context="cnii" title="Nigeria Threat Heatmap" description="State-level critical-infrastructure threat activity" />
+
             {sectors && <CniiIntake orgs={orgs} isManager={isManager} canScan={isManager || role === 'analyst'} />}
 
             {sectors && (

@@ -9,11 +9,15 @@ import Link from 'next/link';
 import { Crosshair, Target, Fingerprint, Map as MapIcon, ShieldAlert, Radio } from 'lucide-react';
 import { PageHeader, KpiCard, EmptyState, ErrorState, Tag, btn } from '@/components/features/vms/kit';
 import { Card, SectionTitle, Skeleton } from '@/components/features/vms/ui';
+import { Donut, BarList, type Slice, type BarItem } from '@/components/features/vms/charts';
 import { useVmsData } from '@/components/features/vms/data';
 import { AiPanel } from '@/components/shared/AiPanel';
 import { fmtWat } from '@/lib/vms';
 import { TlpBadge, Freshness, Citation } from './common';
 import { FEED_NAME, ago, entityHref, TIER_LABEL, TIER_STYLE, type TiFeed, type TiMatch, type MapData, type TiVulnerability, type RelevantIntel } from '@/lib/ti';
+
+const TIER_TOKEN = { critical: '--vz-sev-critical', high: '--vz-sev-high', medium: '--vz-sev-medium', low: '--vz-sev-low' } as const;
+const TYPE_TOKENS = ['--vz-cat-1', '--vz-cat-3', '--vz-prog-1', '--vz-prog-2', '--vz-prog-3', '--vz-prog-4', '--vz-neutral'] as const;
 
 interface Overview { indicators: { active: number; new_last_24h: number; by_type: Record<string, number> }; matches: { new: number; total: number }; feeds: TiFeed[] }
 
@@ -114,6 +118,26 @@ export function TiOverview() {
                             ))}
                         </ul>
                     ) : <EmptyState compact title="No new KEV entries" body="CISA added nothing to the catalogue in the last 30 days (or the KEV feed has not run)." />}
+                </Card>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                <Card>
+                    <SectionTitle title="Relevant intelligence, by tier" hint="Current matches rated by how strongly they combine with real evidence of exposure" />
+                    {relevant.load.state === 'loading' ? <Skeleton className="h-40" /> : relevant.load.state === 'error' ? <ErrorState error={relevant.load.error} status={relevant.load.status} onRetry={relevant.reload} /> : (() => {
+                        const slices: Slice[] = (['critical', 'high', 'medium', 'low'] as const).map((t) => ({ key: t, label: TIER_LABEL[t], value: relevant.data!.by_tier[t] ?? 0, token: TIER_TOKEN[t], href: '/admin/ti/matches' }));
+                        return slices.every((s) => s.value === 0)
+                            ? <EmptyState compact title="Nothing rated" body="No current match has been tiered yet." />
+                            : <Donut slices={slices} centerLabel="rated matches" label="Relevant intelligence by tier" />;
+                    })()}
+                </Card>
+                <Card className="xl:col-span-2">
+                    <SectionTitle title="Active indicators, by type" hint="What kind of indicator the active feed set is currently tracking" action={<Link href="/admin/ti/indicators" className={btn('ghost')}>Indicators</Link>} />
+                    {ov.load.state === 'loading' ? <Skeleton className="h-40" /> : ov.load.state === 'error' ? <ErrorState error={ov.load.error} status={ov.load.status} onRetry={ov.reload} /> : (() => {
+                        const entries = Object.entries(ov.data?.indicators.by_type ?? {}).sort((a, b) => b[1] - a[1]);
+                        const items: BarItem[] = entries.map(([type, value], i) => ({ key: type, label: type, value, token: TYPE_TOKENS[i % TYPE_TOKENS.length], href: `/admin/ti/indicators?type=${type}` }));
+                        return items.length === 0 ? <EmptyState compact title="No active indicators" body="No indicator is currently within its source's validity window." /> : <BarList items={items} label="Active indicators by type" />;
+                    })()}
                 </Card>
             </div>
 

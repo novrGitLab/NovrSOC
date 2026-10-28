@@ -1,0 +1,25 @@
+# Example: a firewall or switch pointed at this collector over plain UDP syslog.
+#
+# This is a REFERENCE snippet, not something Vector loads automatically — config/vector.toml
+# already defines syslog_tcp/syslog_udp/syslog_tls once, for all senders, on fixed ports. You
+# don't add a Vector source per device; you point each device's syslog client at this appliance's
+# host and the port matching its transport. This file exists to show:
+#   1. What to configure on the SENDING device (the comment block below).
+#   2. How you'd add a SEPARATE Vector source if a device needs its own port or its own parsing
+#      rules that the shared syslog sources don't cover (rare — most senders are plain RFC 3164/
+#      5424 syslog and need nothing extra).
+#
+# ── On the sending device (example: a firewall's syslog client) ──────────────────────────────
+#   Destination:  <this collector's host>
+#   Port:         5514 (UDP) / 6514 (TCP) / 6515 (TLS) — see .env's SYSLOG_*_PORT
+#   Format:       RFC 3164 or RFC 5424 (both are accepted by Vector's `syslog` source)
+#   Facility:     any — not filtered here; filter in NovrSOC if you need to, not on the wire
+#
+# ── Only if this device needs its own Vector source (e.g. a non-standard port) ───────────────
+# Copy this block into config/vector.toml, give it a unique name, and add that name to the
+# [transforms.to_novrsoc] inputs list.
+#
+# [sources.example_custom_syslog]
+# type = "syslog"
+# mode = "udp"
+# address = "0.0.0.0:5515"

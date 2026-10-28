@@ -127,11 +127,16 @@ function getSMTPTransporter(): Transporter | null {
 // blocks outbound SMTP on port 587), then SMTP, then SendGrid as the last resort. A hard
 // failure on all three throws, same as an sgMail.send() failure always has — callers
 // (routes/email.ts) already catch and report that.
-async function sendEmail(params: { to: string | string[]; subject: string; html: string }): Promise<void> {
+/** Which provider actually sent a message — every caller that doesn't need this just discards it
+ * (none did before R3.3E; report delivery is the first caller that records it). */
+export type EmailProvider = 'brevo' | 'resend' | 'smtp' | 'sendgrid';
+interface SendResult { provider: EmailProvider }
+
+async function sendEmail(params: { to: string | string[]; subject: string; html: string }): Promise<SendResult> {
     if (isBrevoConfigured()) {
         try {
             await sendViaBrevo(params);
-            return;
+            return { provider: 'brevo' };
         } catch (err) {
             console.error('[email] Brevo send failed, falling back to Resend/SMTP/SendGrid:', err instanceof Error ? err.message : err);
         }
@@ -147,7 +152,7 @@ async function sendEmail(params: { to: string | string[]; subject: string; html:
                 html: params.html,
             });
             if (error) throw new Error(error.message);
-            return;
+            return { provider: 'resend' };
         } catch (err) {
             console.error('[email] Resend send failed, falling back to SMTP/SendGrid:', err instanceof Error ? err.message : err);
             // falls through to SMTP below
@@ -163,7 +168,7 @@ async function sendEmail(params: { to: string | string[]; subject: string; html:
                 subject: params.subject,
                 html: params.html,
             });
-            return;
+            return { provider: 'smtp' };
         } catch (err) {
             console.error('[email] SMTP send failed, falling back to SendGrid:', err instanceof Error ? err.message : err);
             // falls through to SendGrid below
@@ -175,6 +180,7 @@ async function sendEmail(params: { to: string | string[]; subject: string; html:
     }
     ensureInitialized();
     await sgMail.send({ to: params.to, from: FROM, subject: params.subject, html: params.html });
+    return { provider: 'sendgrid' };
 }
 
 // Sends one message through Resend ONLY — no SMTP/SendGrid fallback — and returns Resend's own
@@ -897,6 +903,43 @@ export async function sendVmsDigestEmail(params: { to: string[]; org: string; li
         to: params.to,
         subject: `[NovrSOC] VMS: ${params.lines.length} change(s) for ${params.org}`,
         html: baseTemplate('Vulnerability Management changes', `${params.lines.length} change(s) for ${params.org}`, body),
+    });
+}
+
+// Scheduled/manual client report delivery (R3.3E). Deliberately NOT an attachment: the message
+// links to an authenticated download (the recipient still has to sign in — or, for an
+// external_email recipient, use the single-use token the link carries — rather than a PDF/CSV of
+// an organisation's findings sitting unprotected in an inbox or a mail gateway's attachment
+// scanner). Returns which provider actually sent it and throws with the provider's own error on
+// failure — routes/reports.ts records both outcomes in report_deliveries; this function itself
+// never decides "delivered" (that needs a provider webhook this codebase doesn't have yet — see
+// its own report for that limitation), only "sent" (the provider accepted it) or thrown/"failed".
+const REPORT_TYPE_LABEL: Record<string, string> = { vms: 'Vulnerability & Exposure', cnii: 'CNII Watch', threat_intel: 'Threat Intelligence', executive_summary: 'Executive Summary' };
+export async function sendReportEmail(params: {
+    to: string;
+    org: string;
+    reportType: 'vms' | 'cnii' | 'threat_intel' | 'executive_summary';
+    format: 'executive' | 'technical';
+    periodDays: number;
+    downloadUrl: string;
+    generatedAt: string;
+}): Promise<SendResult> {
+    if (!isEmailEnabled()) throw new Error('Email not configured (EMAIL_ENABLED and a provider key)');
+    const label = REPORT_TYPE_LABEL[params.reportType] ?? params.reportType;
+    const body = `
+      <tr>
+        <td style="padding:32px;">
+          <p style="color:#7A8099;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin:0 0 8px;">${escapeHtml(label)} Report &middot; ${escapeHtml(params.org)}</p>
+          <h2 style="color:#1C1F2E;font-size:18px;margin:0 0 12px;">Your ${params.format === 'executive' ? 'Executive' : 'Technical'} report is ready</h2>
+          <p style="color:#1C1F2E;font-size:13px;line-height:1.6;margin:0 0 4px;">Covering the last ${params.periodDays} days, generated ${escapeHtml(params.generatedAt)}.</p>
+          <p style="color:#7A8099;font-size:12px;margin:0 0 20px;">For your security, this report is not attached — the link below requires signing in to view or download it.</p>
+          <a href="${params.downloadUrl}" style="display:inline-block;background:#520385;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;">View report in NovrSOC →</a>
+        </td>
+      </tr>`;
+    return sendEmail({
+        to: params.to,
+        subject: `[NovrSOC] ${label} Report — ${params.org}`,
+        html: baseTemplate(`${label} Report`, `Your ${params.format} report for ${params.org} is ready`, body),
     });
 }
 

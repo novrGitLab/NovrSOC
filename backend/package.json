@@ -19,6 +19,7 @@
     "test:google": "tsx src/scripts/testGoogleAPIs.ts",
     "smoke:nvidia": "tsx src/scripts/smokeNvidia.ts",
     "misp:check": "tsx src/scripts/mispCheck.ts",
+    "demo:collector-v1": "tsx src/scripts/collectorV1Demo.ts",
     "geoip:download": "node scripts/downloadGeoIP.js",
     "security:audit": "npm audit --audit-level=high",
     "security:check": "npm audit --audit-level=moderate --json | node -e \"const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); if(d.metadata.vulnerabilities.high>0||d.metadata.vulnerabilities.critical>0) process.exit(1)\""
@@ -32,6 +33,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.2.0",
     "@types/nodemailer": "^8.0.1",
+    "@types/pdfkit": "^0.17.7",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -44,6 +46,7 @@
     "multer": "^2.2.0",
     "nodemailer": "^9.0.6",
     "openai": "^7.28.0",
+    "pdfkit": "^0.20.2",
     "resend": "^6.25.0",
     "zod": "^4.4.3"
   },

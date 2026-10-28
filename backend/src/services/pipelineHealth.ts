@@ -87,6 +87,35 @@ export async function pipelineChecks(): Promise<PipelineCheck[]> {
     }
     out.push(...await vmsChecks());
     out.push(...await cniiChecks());
+    out.push(...await collectorChecks());
+    return out;
+}
+
+/** Collector V1 (phase P31): is any enrolled collector actually heartbeating, and are its logs
+ * actually arriving. 'off' (not 'down') when the table doesn't exist yet or nothing is enrolled
+ * — there being no collector is not a failure. */
+async function collectorChecks(): Promise<PipelineCheck[]> {
+    const supabase = getSupabase();
+    if (!supabase) return [];
+    const out: PipelineCheck[] = [];
+    const collectors = await supabase.from('collectors').select('status, last_heartbeat_at').neq('status', 'revoked');
+    if (collectors.error) return [{ name: 'Log collectors', status: 'off', detail: 'Collector tables not created yet' }];
+    const rows = collectors.data ?? [];
+    if (rows.length === 0) out.push({ name: 'Log collectors', status: 'off', detail: 'No collector enrolled' });
+    else {
+        const stale = rows.filter((c) => !c.last_heartbeat_at || Date.now() - Date.parse(c.last_heartbeat_at as string) > 10 * 60_000);
+        out.push({
+            name: 'Log collectors',
+            status: stale.length === 0 ? 'up' : stale.length === rows.length ? 'down' : 'degraded',
+            detail: `${rows.length - stale.length}/${rows.length} heartbeating within 10 min`,
+        });
+    }
+    const newest = await supabase.from('collector_log_events').select('received_at').order('received_at', { ascending: false }).limit(1).maybeSingle();
+    if (!newest.error) {
+        out.push(!newest.data
+            ? { name: 'Collector log ingestion', status: 'off', detail: 'No log event has ever been received' }
+            : { name: 'Collector log ingestion', status: (Date.now() - Date.parse(newest.data.received_at as string)) / 60_000 <= 30 ? 'up' : 'degraded', detail: `Newest log event received ${ago(newest.data.received_at as string)}` });
+    }
     return out;
 }
 

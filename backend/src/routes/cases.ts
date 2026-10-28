@@ -95,7 +95,7 @@ router.get('/', requirePermission('cases:read'), async (req: AuthRequest, res) =
     const base = () => supabase.from('cases').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('auto_closed', false);
 
     try {
-        const [{ data, error, count: total }, open, investigating, contained, critical, resolved, resolvedToday] = await Promise.all([
+        const [{ data, error, count: total }, open, investigating, contained, critical, resolved, resolvedToday, high, medium, low] = await Promise.all([
             query,
             count((b) => b.eq('status', 'open')),
             count((b) => b.eq('status', 'investigating')),
@@ -103,13 +103,19 @@ router.get('/', requirePermission('cases:read'), async (req: AuthRequest, res) =
             count((b) => b.eq('severity', 'critical').neq('status', 'resolved')),
             count((b) => b.eq('status', 'resolved')),
             count((b) => b.eq('status', 'resolved').gte('resolved_at', startOfTodayWAT().toISOString())),
+            // Severity breakdown (unresolved only, same convention as `critical` above) — every
+            // count here is its own head-only query, so this covers every case, not just the
+            // page returned, the same reasoning as the status counts above.
+            count((b) => b.eq('severity', 'high').neq('status', 'resolved')),
+            count((b) => b.eq('severity', 'medium').neq('status', 'resolved')),
+            count((b) => b.eq('severity', 'low').neq('status', 'resolved')),
         ]);
         if (error) throw error;
 
         res.json({
             cases: data ?? [],
             total: total ?? 0,
-            summary: { open, investigating, contained, active: open + investigating + contained, critical, resolved, resolvedToday },
+            summary: { open, investigating, contained, active: open + investigating + contained, critical, resolved, resolvedToday, severity: { critical, high, medium, low } },
         });
     } catch (err) {
         console.error('[cases] list failed:', dbErrorMessage(err));

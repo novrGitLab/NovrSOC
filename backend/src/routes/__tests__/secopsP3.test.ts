@@ -76,7 +76,7 @@ before(async () => {
 after(async () => { Object.assign(console, realLog); __setAgentsForTests(null); resetOrgScopeCache(); server.close(); await db.close(); });
 beforeEach(() => {
     for (const t of ['cases', 'case_tasks', 'case_timeline', 'soar_log', 'response_approvals', 'alerts', 'alert_events', 'platform_users', 'ti_matches', 'ti_indicators', 'ti_indicator_sources']) db.tables[t].length = 0;
-    caseRow = { id: randomUUID(), org_id: A, case_number: 'CASE-A1', title: 'Brute force on web-01', severity: 'high', status: 'open', source: 'manual', source_ip: '203.0.113.9', agent_id: '003', agent_name: 'web-01', tier: 2 };
+    caseRow = { id: randomUUID(), org_id: A, case_number: 'CASE-A1', title: 'Brute force on web-01', severity: 'high', status: 'open', source: 'manual', source_ip: '203.0.113.9', agent_id: '003', agent_name: 'web-01', tier: 2, auto_closed: false };
     db.tables.cases.push(caseRow);
     db.tables.case_tasks.push({ id: randomUUID(), case_id: caseRow.id, step_id: 'isolate_agent', title: 'Isolate host', status: 'pending' });
     alertRow = { id: randomUUID(), org_id: A, wazuh_alert_id: 'w-1', rule_id: '5710', rule_level: 10, rule_description: 'sshd: authentication failed', agent_id: '003', agent_name: 'web-01', severity: 'high', mitre_ids: ['T1110'], status: 'new', case_id: null, event_time: '2026-10-14T08:00:00Z', received_at: '2026-10-14T08:00:05Z', raw: { data: { srcip: '203.0.113.9' } }, raw_truncated: false, assigned_to: null, acknowledged_at: null, triage_note: null };
@@ -272,4 +272,22 @@ test('case detail surfaces threat intelligence correlation: dismissed excluded, 
     assert.equal(m.tlp, 'amber', 'no ti_indicator_sources rows for this indicator — the conservative default, not "clear"');
     assert.equal(m.indicator_value, 'evil.test');
     assert.equal(m.indicator_active, true, 'R3.3D: the indicator is still active');
+});
+
+// Sprint 3 (frontend A3): a severity breakdown for CaseWorkbench's severity-distribution chart.
+// Each count is its own head-only query over every case, not just the page returned, same as the
+// pre-existing status counts — never a tally of whatever page happened to load.
+test('cases summary: severity breakdown covers every unresolved case, not just the returned page', async () => {
+    db.tables.cases.push(
+        { id: randomUUID(), org_id: A, case_number: 'CASE-A2', title: 'c2', severity: 'critical', status: 'open', source: 'manual', tier: 1, auto_closed: false },
+        { id: randomUUID(), org_id: A, case_number: 'CASE-A3', title: 'c3', severity: 'medium', status: 'investigating', source: 'manual', tier: 3, auto_closed: false },
+        { id: randomUUID(), org_id: A, case_number: 'CASE-A4', title: 'c4', severity: 'low', status: 'contained', source: 'manual', tier: 4, auto_closed: false },
+        // Resolved cases are excluded from the severity breakdown, same convention as `critical`.
+        { id: randomUUID(), org_id: A, case_number: 'CASE-A5', title: 'c5', severity: 'critical', status: 'resolved', source: 'manual', tier: 1, auto_closed: false },
+    );
+    const r = await http('GET', '/api/cases?limit=1', ANALYST);
+    assert.equal(r.status, 200);
+    // caseRow itself (from beforeEach) is severity 'high', status 'open' — included.
+    assert.deepEqual(r.data.summary.severity, { critical: 1, high: 1, medium: 1, low: 1 });
+    assert.ok(r.data.cases.length < 5, 'the page is smaller than the full set, to prove the summary is not just counting the page');
 });
