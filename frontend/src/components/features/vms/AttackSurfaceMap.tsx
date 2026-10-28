@@ -98,7 +98,9 @@ export function AttackSurfaceMap({ assetId, onOpenAsset }: { assetId: string; on
                     if (!p) return null;
                     const root = n.id === graph.root;
                     return (
-                        <g key={n.id} transform={`translate(${p.x},${p.y})`} onClick={() => setSel(n.id)} className="cursor-pointer">
+                        <g key={n.id} transform={`translate(${p.x},${p.y})`} onClick={() => setSel(n.id)} className="cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-purple"
+                            tabIndex={0} role="button" aria-label={`${n.label}, ${n.kind}${selected?.id === n.id ? ' (selected)' : ''}`}
+                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSel(n.id); } }}>
                             <circle r={root ? 14 : 9} fill={KIND_COLOR[n.kind]} stroke={match(n) ? '#f59e0b' : sel === n.id ? '#111827' : '#fff'} strokeWidth={match(n) || sel === n.id ? 3 : 1.5} />
                             <text y={root ? 28 : 21} textAnchor="middle" fontSize="11" fill="currentColor" className="text-foreground">{n.label.length > 28 ? `${n.label.slice(0, 27)}…` : n.label}</text>
                         </g>

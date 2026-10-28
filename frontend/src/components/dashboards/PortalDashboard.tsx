@@ -12,6 +12,10 @@ import { loadJson, watTime, endpoint, type StoredAlert } from '@/lib/alerts';
 import { AlertFeedStatus } from '@/components/shared/AlertFeedStatus';
 import { usePolling } from '@/lib/usePolling';
 import type { Severity } from '@/lib/severity';
+import { Donut, type Slice } from '@/components/features/vms/charts';
+
+const SEV_TOKEN = { critical: '--vz-sev-critical', high: '--vz-sev-high', medium: '--vz-sev-medium', low: '--vz-sev-low' } as const;
+const SEV_LABEL: Record<Severity, string> = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' };
 
 interface Summary {
     alerts_24h: { total: number; by_severity: Record<Severity, number> };
@@ -136,6 +140,24 @@ export const PortalDashboard = () => {
                         {k.sub && <p className="text-[10px] text-foreground-muted mt-1">{k.sub}</p>}
                     </div>
                 ))}
+            </div>
+
+            <div className="bg-card border border-border rounded-xl overflow-hidden">
+                <div className="h-[3px] bg-blue" />
+                <div className="p-4">
+                    <p className="text-xs font-black text-foreground">Alerts by Severity (7 days)</p>
+                    <p className="text-[10px] text-foreground-muted">How your last 7 days of alerts break down — a quick read on whether your attention is needed now.</p>
+                </div>
+                <div className="px-4 pb-5">
+                    {loading ? <div className="h-36 bg-card-muted rounded animate-pulse" />
+                        : !summary ? <p className="text-xs text-foreground-muted text-center py-6">Not available — see above.</p>
+                        : (() => {
+                            const slices: Slice[] = (['critical', 'high', 'medium', 'low'] as const).map((s) => ({ key: s, label: SEV_LABEL[s], value: summary.alerts_7d.by_severity[s] ?? 0, token: SEV_TOKEN[s], href: '/client/secops/threats' }));
+                            return slices.every((s) => s.value === 0)
+                                ? <p className="text-xs text-foreground-muted text-center py-6">No alerts in the last 7 days.</p>
+                                : <Donut slices={slices} centerLabel="alerts, 7d" label="Alerts by severity, last 7 days" />;
+                        })()}
+                </div>
             </div>
 
             {state.loaded && agents && agents.total === 0 && (

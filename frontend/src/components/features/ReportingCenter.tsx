@@ -15,6 +15,7 @@ import { FileBarChart, Calendar, Users, History as HistoryIcon, Activity, Downlo
 import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
 import { getAdminUser } from '@/lib/admin-auth';
+import { Donut, type Slice } from '@/components/features/vms/charts';
 
 type ReportType = 'vms' | 'cnii' | 'threat_intel' | 'executive_summary';
 type ReportFormat = 'executive' | 'technical';
@@ -320,11 +321,24 @@ function RecipientsPanel({ recipients, canManage, busy, onCreate, onToggle, onAu
     );
 }
 
+const JOB_STATUS_TOKEN = { completed: '--vz-good', partial: '--vz-warning', failed: '--vz-critical', running: '--vz-prog-2', queued: '--vz-neutral' } as const;
+const JOB_STATUS_LABEL: Record<keyof typeof JOB_STATUS_TOKEN, string> = { completed: 'Completed', partial: 'Partial', failed: 'Failed', running: 'Running', queued: 'Queued' };
+
 function HistoryPanel({ jobs, canManage, busy, onRetry }: { jobs: Job[] | null; canManage: boolean; busy: boolean; onRetry: (deliveryId: string) => void }) {
     if (jobs === null) return <p className="text-xs text-foreground-muted">Not connected.</p>;
     if (jobs.length === 0) return <p className="text-xs text-foreground-muted">No reports generated yet.</p>;
+    const counts: Record<string, number> = {};
+    for (const j of jobs) counts[j.status] = (counts[j.status] ?? 0) + 1;
+    const slices: Slice[] = (Object.keys(JOB_STATUS_TOKEN) as (keyof typeof JOB_STATUS_TOKEN)[]).filter((s) => counts[s]).map((s) => ({ key: s, label: JOB_STATUS_LABEL[s], value: counts[s], token: JOB_STATUS_TOKEN[s] }));
     return (
-        <div className="bg-card border border-border rounded-xl divide-y divide-border">
+        <div className="space-y-3">
+            {slices.length > 0 && (
+                <div className="bg-card border border-border rounded-xl p-4">
+                    <p className="text-xs font-black text-foreground mb-3">Report runs by outcome</p>
+                    <Donut slices={slices} centerLabel={`${jobs.length} runs`} label="Report runs by outcome" size={140} />
+                </div>
+            )}
+            <div className="bg-card border border-border rounded-xl divide-y divide-border">
             {jobs.map((j) => (
                 <div key={j.id} className="p-3 space-y-2 text-xs">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -351,6 +365,7 @@ function HistoryPanel({ jobs, canManage, busy, onRetry }: { jobs: Job[] | null; 
                     )}
                 </div>
             ))}
+            </div>
         </div>
     );
 }
