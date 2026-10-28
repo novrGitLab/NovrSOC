@@ -16,6 +16,7 @@ import { vmsSend } from '@/components/features/vms/data';
 import { AiPanel } from '@/components/shared/AiPanel';
 import { fmtWat } from '@/lib/vms';
 import { BasisBadge, type Basis } from './common';
+import { AiThreatIntelligenceDemo } from './AiThreatIntelligenceDemo';
 
 interface SourceRef { ref: string; type: string; id: string; label?: string }
 interface Answer {
@@ -126,12 +127,17 @@ export function TiAnalyst() {
             })}
 
             <Card>
-                <SectionTitle title="Reports" hint="Grounded in the period's records only" action={<Segmented label="Period" value={period} onChange={setPeriod} options={[['7d', '7 days'], ['30d', '30 days']] as const} />} />
+                <SectionTitle title="Executive AI Briefing" hint="Real AI, grounded in the period's stored records only — the platform's actual capability, not a demo" action={<Segmented label="Period" value={period} onChange={setPeriod} options={[['7d', '7 days'], ['30d', '30 days']] as const} />} />
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                     <AiPanel key={`b-${period}`} purpose="threat_briefing" subjectId={period} title={`Threat report — ${period === '7d' ? '7' : '30'} days`} />
                     <AiPanel key={`n-${period}`} purpose="nigeria_briefing" subjectId={period} title={`Nigeria briefing — ${period === '7d' ? '7' : '30'} days`} />
                 </div>
             </Card>
+
+            <div>
+                <h2 className="text-sm font-black text-foreground mb-3">AI Threat Intelligence &amp; Behavioral Analysis</h2>
+                <AiThreatIntelligenceDemo />
+            </div>
         </div>
     );
 }
