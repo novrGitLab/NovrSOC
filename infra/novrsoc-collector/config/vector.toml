@@ -96,3 +96,28 @@ request.retry_max_duration_secs = 300
 type = "prometheus_exporter"
 inputs = ["internal_metrics"]
 address = "0.0.0.0:9598"
+
+# ── Optional: also relay to Wazuh's own syslog listener (disabled by default) ───────────────────
+# See docs/collector-v1/WAZUH_COMPATIBILITY.md "Reaching Wazuh detection too" — Option A (pointing
+# the sending device at both the collector and Wazuh's existing syslog listener directly) needs no
+# code at all and carries no risk; prefer it. Uncomment the two blocks below ONLY for a device
+# that genuinely cannot send to two destinations itself, and read that doc's explicit caveat
+# first: the syslog reconstruction below has not been validated against a live Wazuh decoder.
+#
+# [transforms.to_wazuh_relay]
+# type = "remap"
+# inputs = ["syslog_tcp", "syslog_udp", "syslog_tls"]
+# source = '''
+# pri = (int!(.facility ?? 1) * 8) + int!(.severity ?? 6)
+# ts = format_timestamp!(to_timestamp!(.timestamp ?? now()), format: "%b %d %H:%M:%S")
+# host = .hostname ?? .host ?? "unknown"
+# app = .appname ?? "novrsoc-collector"
+# . = { "message": "<" + to_string(pri) + ">" + ts + " " + host + " " + app + ": " + to_string(.message ?? encode_json(.)) }
+# '''
+#
+# [sinks.wazuh_relay]
+# type = "socket"
+# inputs = ["to_wazuh_relay"]
+# address = "${WAZUH_MANAGER_SYSLOG_HOST}:${WAZUH_MANAGER_SYSLOG_PORT:-514}"
+# mode = "udp"
+# encoding.codec = "text"

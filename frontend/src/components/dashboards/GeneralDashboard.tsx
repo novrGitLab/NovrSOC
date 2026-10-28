@@ -6,6 +6,7 @@ import {
     Monitor, Siren, ShieldAlert, Shield, Clock, Laptop, Server, ChevronRight, Building2, Activity,
     CheckCircle, Bell, ClipboardCheck, Bug, Target, Flame, Bot, ListChecks,
 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { KpiCard, type KpiCardProps } from '../shared/KpiCard';
 import { ChartWrapper } from '../shared/ChartWrapper';
 import { DashboardNigeriaMap } from './DashboardNigeriaMap';
@@ -771,6 +772,11 @@ export const GeneralDashboard = () => {
     const [currentUserName] = useState<string>(() => (typeof window === 'undefined' ? '' : getAdminUser().name));
 
     const [trendData, setTrendData] = useState<{ label: string; alerts: number; incidents: number; critical: number }[] | null>(null);
+    // Distinct from trendData === null: an empty-but-successful response means zero alerts in
+    // every bucket for this range (a real "nothing happened"), not that the trend couldn't be
+    // read. The two used to be conflated (both rendered as the same "no data" message) — fixed
+    // so a genuine outage/unreachable-backend reads differently from a quiet period.
+    const [trendError, setTrendError] = useState<string | null>(null);
     const [trendLoading, setTrendLoading] = useState(true);
     const [trendRange, setTrendRange] = useState<'24h' | '7d' | '30d'>('7d');
     useEffect(() => {
@@ -778,9 +784,14 @@ export const GeneralDashboard = () => {
         // below, so switching organisation left the previous organisation's trend bars on screen
         // until the range buttons were next clicked.
         apiFetch(apiUrl(`/api/wazuh/trend?range=${trendRange}`), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-            .then(r => r.json())
-            .then(data => setTrendData(Array.isArray(data) && data.length > 0 ? data : null))
-            .catch(() => setTrendData(null))
+            .then(async (r) => {
+                const data = await r.json().catch(() => null);
+                if (!r.ok) { setTrendData(null); setTrendError((data && typeof data === 'object' && 'error' in data ? String(data.error) : null) ?? `HTTP ${r.status}`); return; }
+                if (!Array.isArray(data)) { setTrendData(null); setTrendError('Unexpected response shape'); return; }
+                setTrendData(data); // kept even when empty — an empty array is a real answer, not an error
+                setTrendError(null);
+            })
+            .catch(() => { setTrendData(null); setTrendError('Could not reach the backend'); })
             .finally(() => setTrendLoading(false));
     }, [trendRange, org]);
 
@@ -820,15 +831,9 @@ export const GeneralDashboard = () => {
         setOverdueTotal(null);
         setVulnExposureFailure(null);
         setTrendData(null);
+        setTrendError(null);
         setTrendLoading(true);
     }
-
-    const trendBars = trendData
-        ? (() => {
-            const maxAlerts = Math.max(...trendData.map(d => d.alerts), 1);
-            return trendData.map(d => ({ heightPct: Math.max(4, Math.round((d.alerts / maxAlerts) * 100)), label: d.label, title: `${d.alerts} alerts, ${d.incidents} high severity, ${d.critical} critical`, critical: d.critical > 0 }));
-        })()
-        : [];
 
     const health = platformHealthDisplay(isSuperAdmin, platformHealth);
     const openCases = openCasesDisplay(incidentKpis, incidentsFailed);
@@ -945,7 +950,7 @@ export const GeneralDashboard = () => {
                 <OnboardedClientsWidget clients={clients} loading={clientsLoading} failure={customersFailed ? 'Client list unavailable' : null} />
             )}
 
-            <ChartWrapper title="Security Posture & Alert Activity Trends">
+            <ChartWrapper title="Security Posture & Alert Activity Trends" live={!trendError}>
                 <div className="flex items-center gap-2 mb-3">
                     {([['24h', 'Last 24 Hours'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days']] as const).map(([val, label]) => (
                         <button key={val} onClick={() => { setTrendLoading(true); setTrendRange(val); }}
@@ -962,19 +967,29 @@ export const GeneralDashboard = () => {
                             </div>
                         ))}
                     </div>
-                ) : trendBars.length === 0 ? (
+                ) : trendError ? (
                     <div className="w-full h-full flex items-center justify-center">
-                        <p className="text-xs text-foreground-muted">No trend data for this range yet.</p>
+                        <p className="text-xs text-red font-semibold">Trend data unavailable: {trendError}</p>
+                    </div>
+                ) : !trendData || trendData.length === 0 ? (
+                    <div className="w-full h-full flex items-center justify-center">
+                        <p className="text-xs text-foreground-muted">No alerts recorded in this range — a real zero, not a failed read.</p>
                     </div>
                 ) : (
-                    <div className="w-full h-full flex items-end gap-2 pt-4">
-                        {trendBars.map((bar, i) => (
-                            <div key={i} className="flex-1 flex flex-col items-center group" title={bar.title}>
-                                <div style={{ height: `${bar.heightPct}%`, backgroundColor: bar.critical ? '#EF4444' : '#D97706' }} className="w-full rounded-t opacity-70 group-hover:opacity-100 transition-all duration-200" />
-                                <span className="text-[9px] text-foreground-muted mt-1.5 font-medium">{bar.label}</span>
-                            </div>
-                        ))}
-                    </div>
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={trendData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                            <XAxis dataKey="label" tick={{ fill: 'var(--foreground-muted)', fontSize: 10 }} tickLine={false} axisLine={{ stroke: 'var(--border)' }} />
+                            <YAxis allowDecimals={false} tick={{ fill: 'var(--foreground-muted)', fontSize: 10 }} tickLine={false} axisLine={false} width={32} />
+                            <RTooltip contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11 }} />
+                            <Legend wrapperStyle={{ fontSize: 10 }} />
+                            {/* Grouped, not stacked: incidents/critical are sub-counts within alerts (not
+                                disjoint), so stacking them would double-count and misrepresent the total. */}
+                            <Bar dataKey="alerts" name="Alerts" fill="#D97706" radius={[2, 2, 0, 0]} isAnimationActive={false} />
+                            <Bar dataKey="incidents" name="High severity" fill="#F59E0B" radius={[2, 2, 0, 0]} isAnimationActive={false} />
+                            <Bar dataKey="critical" name="Critical" fill="#EF4444" radius={[2, 2, 0, 0]} isAnimationActive={false} />
+                        </BarChart>
+                    </ResponsiveContainer>
                 )}
             </ChartWrapper>
         </div>

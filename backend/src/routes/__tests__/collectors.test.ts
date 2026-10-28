@@ -17,6 +17,7 @@ import { requireAuth } from '../../middleware/auth';
 import { startFakePostgrest, type FakePostgrest } from './fakePostgrest';
 import collectorsRouter from '../collectors';
 import collectorIngestRouter from '../collectorIngest';
+import { effectiveStatus } from '../../services/collectors';
 
 const A = 'org-a';
 const B = 'org-b';
@@ -179,6 +180,46 @@ test('events: a bare array and newline-delimited JSON are both accepted — the 
     assert.equal(r.accepted, 1);
     assert.equal(r.invalid, 1);
     assert.equal((await http('GET', `/api/collectors/${id}/events`, MGR)).data.events.length, 4);
+});
+
+// Sprint 3 (Workstream B2): the secret must never appear anywhere other than the one-time
+// issuance response — not in server logs (console output), and not in any other route's
+// response body, even ones that identify the same collector by id.
+test('security: the plaintext secret never appears in logs or in any response other than its one-time issuance', async () => {
+    const { id, token } = await enroll(MGR);
+    const secret = token.split('.')[1];
+    const captured: string[] = [];
+    console.log = (...a: unknown[]) => { captured.push(a.map(String).join(' ')); };
+    console.warn = (...a: unknown[]) => { captured.push(a.map(String).join(' ')); };
+    console.error = (...a: unknown[]) => { captured.push(a.map(String).join(' ')); };
+    try {
+        await fetch(`${base}/api/collectors/ingest/heartbeat`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ events_received: 1, events_forwarded: 1, delivery_failures: 0, sources: [] }) });
+        await fetch(`${base}/api/collectors/ingest/events`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ events: [{ source_key: 's', message: 'm' }] }) });
+        const list = await http('GET', '/api/collectors', MGR);
+        const detail = await http('GET', `/api/collectors/${id}`, MGR);
+        const rotated = await http('POST', `/api/collectors/${id}/rotate`, MGR);
+        await http('POST', `/api/collectors/${id}/revoke`, MGR);
+        assert.equal(captured.some((line) => line.includes(secret)), false, 'the secret must never be logged, under any outcome');
+        assert.equal(JSON.stringify(list.data).includes(secret), false);
+        assert.equal(JSON.stringify(detail.data).includes(secret), false);
+        // The rotate response legitimately carries the NEW secret (one-time issuance) — only the
+        // OLD one, already shown once by enroll(), must never reappear anywhere.
+        assert.ok(rotated.data.enrollment_token, 'rotate does issue a new one-time secret, by design');
+    } finally {
+        for (const k of ['log', 'warn', 'error'] as const) console[k] = realLog[k];
+    }
+});
+
+// Sprint 3 (Workstream B2): "connected" is read from the one real observed signal (heartbeat
+// recency), not held at whatever status was last written — a collector that goes quiet reads as
+// disconnected on its own, with no sweep job required to notice.
+test('effectiveStatus: derived only from observed heartbeat recency, never frozen at a stale "connected"', () => {
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+    assert.equal(effectiveStatus({ status: 'connected', last_heartbeat_at: minutesAgo(1) }), 'connected');
+    assert.equal(effectiveStatus({ status: 'connected', last_heartbeat_at: minutesAgo(30) }), 'disconnected', 'quiet past the staleness window reads as disconnected, even though the stored status column still says connected');
+    assert.equal(effectiveStatus({ status: 'connected', last_heartbeat_at: null }), 'disconnected', 'connected with no heartbeat ever recorded is not trusted at face value');
+    assert.equal(effectiveStatus({ status: 'enrolling', last_heartbeat_at: null }), 'enrolling');
+    assert.equal(effectiveStatus({ status: 'revoked', last_heartbeat_at: minutesAgo(1) }), 'revoked', 'revocation is authoritative regardless of how recent the last heartbeat was');
 });
 
 test('rotate: issues a new secret that works and invalidates the old one', async () => {

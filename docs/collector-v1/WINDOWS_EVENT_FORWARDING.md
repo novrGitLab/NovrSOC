@@ -1,9 +1,10 @@
-# Windows Event Forwarding → NovrSOC Collector V1
+# Windows Event Forwarding → NovrSOC Collector V1 — pilot guide
 
-**This is a documented integration plan, not shipped code.** Nothing in `infra/novrsoc-collector/`
-speaks Microsoft's native WEF subscription protocol, and nothing here claims it does — Vector has
-no WEF source. A real Windows Event Collector (WEC) server does the WEF side; it then forwards
-its own output into the Vector appliance as an ordinary syslog sender, the same as any firewall.
+**This is a documented integration plan, not shipped code, and not yet run against a real
+Windows domain.** Nothing in `infra/novrsoc-collector/` speaks Microsoft's native WEF subscription
+protocol, and nothing here claims it does — Vector has no WEF source. A real Windows Event
+Collector (WEC) server does the WEF side; it then forwards its own output into the Vector
+appliance as an ordinary syslog sender, the same as any firewall.
 
 ```
 Windows source computers  --(WEF, source-initiated)-->  Windows Event Collector server
@@ -12,6 +13,27 @@ Windows source computers  --(WEF, source-initiated)-->  Windows Event Collector 
                                                                v
                                              NovrSOC Collector V1 appliance (syslog_tcp/tls)
 ```
+
+## Pilot scope — do this before any fleet-wide GPO rollout
+
+A WEF Subscription Manager GPO applies to every computer in whatever OU/security group it
+targets, so start deliberately small and confirm end-to-end before widening it:
+
+1. **Pick 2–5 pilot machines** (a mix of a workstation and a server, if both exist in the fleet)
+   and put them in a dedicated security group — e.g. `WEF-Pilot-NovrSOC` — created for this pilot
+   specifically. Do not point the Subscription Manager GPO at an existing broad OU yet.
+2. **Scope the GPOs in step 3 below to that group only** (GPO Security Filtering, not just the
+   OU link) — this is what actually limits the blast radius, since GPO *links* and GPO *security
+   filtering* are different settings and only the latter restricts who the policy applies to.
+3. Work through steps 1–6 below against the pilot group only. Confirm `wecutil gr` shows every
+   pilot machine as `Active`, and confirm real events for all of them are both in the WEC's
+   `ForwardedEvents` log and arriving at NovrSOC (per step 6's cross-check).
+4. **Only after that's confirmed working for the full pilot group**, widen the security group's
+   membership in stages (e.g. by site or department), re-checking `wecutil gr` after each stage —
+   never by re-pointing the GPO at a broader OU before the group-based approach is proven.
+5. **Rollback for the pilot**: removing the pilot machines from `WEF-Pilot-NovrSOC` (or disabling
+   the GPO link) stops forwarding immediately; it does not uninstall anything or touch the Event
+   Log service on the source computers, since WEF is a read subscription, not an agent install.
 
 ## 1. Prerequisites
 
@@ -64,8 +86,9 @@ A minimal `subscription.xml` (forward Security, System and a chosen Application/
 </Subscription>
 ```
 
-`AllowedSourceDomainComputers` above allows Domain Computers and Network Service — tighten this to
-a specific security group in production (e.g. a "WEF-Forwarders" group), not every domain computer.
+`AllowedSourceDomainComputers` above allows Domain Computers and Network Service — for the pilot,
+tighten this to the `WEF-Pilot-NovrSOC` group from the pilot-scope section above, not every
+domain computer; widen it only in the later rollout stages.
 
 ## 3. Group Policy requirements
 

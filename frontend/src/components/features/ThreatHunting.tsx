@@ -1,9 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Plus, X, Download, Save, Play, RefreshCw, Crosshair } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
-import { levelTextClass } from '@/lib/severity';
+import { levelTextClass, severityFromLevel, type Severity } from '@/lib/severity';
+import { Donut, ChartCard, type Slice } from '@/components/features/vms/charts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer } from 'recharts';
 
 // Wired to the real Wazuh Indexer via POST /api/wazuh/hunt (routes/wazuh.ts). Saved Hunt
 // Templates and Export Results are still frontend-only — a template just fills the query
@@ -21,6 +23,7 @@ const TIME_RANGES = [
 
 interface Condition { field: string; op: string; value: string }
 interface HuntEvent { ts: string; agent: string; rule_id: string | number | null; level: number; srcip: string | null; description: string }
+const SEV_TOKEN: Record<Severity, '--vz-sev-critical' | '--vz-sev-high' | '--vz-sev-medium' | '--vz-sev-low'> = { critical: '--vz-sev-critical', high: '--vz-sev-high', medium: '--vz-sev-medium', low: '--vz-sev-low' };
 
 const HUNT_TEMPLATES: Array<{ name: string; description: string; filters: Condition[]; time_window: string }> = [
     { name: 'Failed Login Spike', description: 'Find accounts with multiple failed logins in short time', filters: [{ field: 'rule.groups', op: 'contains', value: 'authentication_failed' }], time_window: '1h' },
@@ -120,6 +123,32 @@ export function ThreatHunting() {
         setResults(null);
     };
 
+    // Both visualizations below are computed only from the events this hunt actually returned —
+    // nothing is backfilled or estimated for events outside the query's own time_range/limit.
+    const severitySlices: Slice[] | null = useMemo(() => {
+        if (!results || results.length === 0) return null;
+        const counts: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+        for (const r of results) counts[severityFromLevel(r.level)]++;
+        return (['critical', 'high', 'medium', 'low'] as const).map((s) => ({ key: s, label: s[0].toUpperCase() + s.slice(1), value: counts[s], token: SEV_TOKEN[s] }));
+    }, [results]);
+    const activityBuckets = useMemo(() => {
+        if (!results || results.length === 0) return null;
+        // 7d of events bucketed by hour would be an unreadable number of bars; everything else
+        // (1h/6h/24h) is readable hourly. Daily buckets only for the 7-day range.
+        const byDay = timeRange === '7d';
+        const counts = new Map<string, number>();
+        for (const r of results) {
+            const t = Date.parse(r.ts);
+            if (Number.isNaN(t)) continue;
+            // Full date+hour as the bucket key even when showing only the hour — otherwise the
+            // same hour on two different days would wrongly merge into one bucket.
+            const key = new Date(t).toISOString().slice(0, byDay ? 10 : 13);
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        return [...counts.entries()].sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, count]) => ({ bucket: byDay ? key : `${key.slice(11, 13)}:00`, count }));
+    }, [results, timeRange]);
+
     return (
         <div className="space-y-4">
             <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -172,6 +201,28 @@ export function ThreatHunting() {
 
             {error && (
                 <div className="bg-red/10 border border-red/30 rounded-xl p-4 text-sm text-red">{error}</div>
+            )}
+
+            {results && !error && results.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-card border border-border rounded-xl p-4">
+                        <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-3">Matched events, by severity</p>
+                        {severitySlices && <Donut slices={severitySlices} centerLabel="events" label="Matched events by severity" size={140} />}
+                    </div>
+                    <div className="md:col-span-2">
+                        <ChartCard title="Investigation activity" hint={`Matched events over ${TIME_RANGES.find((t) => t.value === timeRange)?.label.toLowerCase() ?? 'the selected range'}`} height={200}>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={activityBuckets ?? []} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                                    <XAxis dataKey="bucket" tick={{ fill: 'var(--foreground-muted)', fontSize: 10 }} tickLine={false} axisLine={{ stroke: 'var(--border)' }} />
+                                    <YAxis allowDecimals={false} tick={{ fill: 'var(--foreground-muted)', fontSize: 10 }} tickLine={false} axisLine={false} width={28} />
+                                    <RTooltip contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11 }} />
+                                    <Bar dataKey="count" name="Matched events" fill="#7C3AED" radius={[2, 2, 0, 0]} isAnimationActive={false} />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        </ChartCard>
+                    </div>
+                </div>
             )}
 
             {/* Results */}

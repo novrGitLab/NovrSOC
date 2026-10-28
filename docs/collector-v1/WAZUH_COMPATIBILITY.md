@@ -57,13 +57,46 @@ acceptable, so `collector_log_events` is its own table, labelled honestly as uns
   the same organisation without interfering — they write to different tables and use different
   authentication. There is no reason a client couldn't have both a Wazuh agent AND a Collector V1
   appliance forwarding, say, a firewall's syslog that the agent fleet doesn't cover.
-- If a future release wants Collector V1's logs to also reach Wazuh's own detection engine (so
-  Wazuh's rules evaluate them, not just NovrSOC's raw storage), the correct integration point is
-  pointing the **Wazuh manager's own syslog listener** at the same devices — i.e. extending the
-  existing P24 pattern (`wazuh_source_org_map`) to more senders — not routing Collector V1's
-  already-collected events into Wazuh after the fact. That is a Wazuh-side configuration change on
-  the manager, explicitly out of scope for this release ("do not alter production Wazuh decoders,
-  rules, or manager configuration during this task").
+## Reaching Wazuh detection too (Sprint 3, optional — two ways, pick one per device)
+
+A site that wants a device's logs BOTH stored in NovrSOC (Collector V1) AND actually evaluated by
+Wazuh's own rules has two options. Neither alters live Wazuh infrastructure; neither is required
+— without either, Collector V1 works exactly as described above, honestly storing unscored logs.
+
+### Option A (recommended): point the device at both destinations directly
+
+The device itself (firewall, switch, etc.) sends syslog to **two** destinations: the Collector V1
+appliance (as already documented in `docs/collector-v1/LINUX_SYSLOG_ONBOARDING.md`) and the Wazuh
+manager's existing syslog listener (the P24 pattern — `docs/runbooks/deploy-p24-wazuh-tenancy.md`'s
+"Syslog listener" section), independently and in parallel. Most syslog clients support more than
+one destination natively (e.g. multiple `<remote>`/`syslog server` entries); where a device truly
+cannot, a local `socat`/firewall port-mirror rule at the device's own network edge duplicates the
+UDP stream to both addresses — outside NovrSOC entirely, nothing in this repository changes.
+
+This is the recommended option because it needs **zero new code and nothing newly unverified**:
+Wazuh receives the exact original wire-format syslog packet, byte for byte, through the identical
+path P24 already proved; Collector V1 receives its own independent copy through its own already-
+tested gateway. Source identity and tenant attribution are preserved because each path keeps its
+own existing resolution (`wazuh_source_org_map` for Wazuh's copy, the collector's bound
+organisation for NovrSOC's copy) — neither path's logic changes to make this work.
+
+### Option B: an optional Vector-side relay, for a device that genuinely cannot send twice
+
+`infra/novrsoc-collector/config/vector.toml` includes a **disabled-by-default**, commented-out
+`[sinks.wazuh_relay]` block that re-emits received syslog to the Wazuh manager's syslog port as a
+second Vector sink, for the rare device that cannot be configured with two destinations itself.
+Enabling it needs no Wazuh-side change (it sends to the same already-open syslog listener P24
+documents) and no NovrSOC backend change — it is pure appliance-side Vector configuration.
+
+**Explicitly unverified, stated rather than hidden**: the relay reconstructs an RFC 3164-shaped
+syslog line from Vector's already-parsed fields (priority, timestamp, hostname, message) in VRL,
+because Vector's `syslog` source does not retain the original raw wire bytes once parsed. This
+reconstruction has not been validated against a live Wazuh decoder in the environment this was
+built in (no Docker/Vector/Wazuh available — see the appliance README's "Known limitations").
+Before relying on it: enable it, send one test event, and check the indexer
+(`GET wazuh-alerts-4.x-*/_search?q=agent.id:000`) decodes it as cleanly as a directly-sent event —
+the exact same live-verification step `deploy-p24-wazuh-tenancy.md` already asks for its own
+decoder. If the reconstruction doesn't decode cleanly, use Option A instead — it has no such risk.
 
 ## Verified vs. assumed
 
@@ -73,4 +106,6 @@ acceptable, so `collector_log_events` is its own table, labelled honestly as uns
 - **Not verified**: the exact Wazuh manager/indexer version running in any specific client
   deployment — `docs/runbooks/deploy-p13-p14-vms-platform.md` notes elsewhere that this is only
   ever confirmed live, post-deploy, never pinned in code. Collector V1 has no dependency on that
-  number either way, since it never talks to Wazuh at all.
+  number either way, since it never talks to Wazuh at all. Option B's VRL syslog reconstruction
+  (above) is separately, explicitly unverified against a live decoder — Option A carries no such
+  risk, which is why it's the recommended path.

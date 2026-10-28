@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { exportDataAsPDF } from '@/lib/exportPDF';
 import { AiPanel } from '@/components/shared/AiPanel';
+import { Donut, TimeChart, type Slice, type Series } from '@/components/features/vms/charts';
 import {
     AlertTriangle, Clock, CheckCircle, RefreshCw, TrendingUp, FileText, ChevronRight, MessageSquarePlus,
     FileDown, Briefcase, Server, Terminal, UserCheck, ListChecks, Plus, X, UserPlus, BookOpen,
@@ -22,6 +23,7 @@ type NoteType = 'Update' | 'Evidence' | 'Decision' | 'Escalation';
 type Filter = 'all' | CaseStatus | 'escalated';
 type SevFilter = 'all' | Severity;
 
+const NO_CASES: CaseItem[] = [];
 const FILTERS: { id: Filter; label: string }[] = [
     { id: 'all', label: 'All' }, { id: 'open', label: 'Open' }, { id: 'investigating', label: 'Investigating' },
     { id: 'contained', label: 'Contained' }, { id: 'escalated', label: 'Escalated' }, { id: 'resolved', label: 'Closed' },
@@ -70,7 +72,7 @@ interface TiMatch { indicator_type: string | null; indicator_value: string | nul
 interface CaseDetail { case: CaseItem; notes: CaseNote[]; tasks: CaseTask[]; timeline: TimelineEntry[]; iocs: CaseIoc[]; linked?: LinkedCase[]; threat_intelligence?: TiMatch[] }
 interface TeamMember { name: string; email: string }
 
-interface Summary { open: number; investigating: number; contained: number; active: number; critical: number; resolved: number; resolvedToday: number }
+interface Summary { open: number; investigating: number; contained: number; active: number; critical: number; resolved: number; resolvedToday: number; severity?: { critical: number; high: number; medium: number; low: number } }
 
 interface PlaybookSummary {
     id: string;
@@ -132,7 +134,7 @@ const wat = (iso: string | null | undefined) =>
 
 type ListState =
     | { kind: 'loading' }
-    | { kind: 'ready'; cases: CaseItem[]; total: number; summary: Summary | null }
+    | { kind: 'ready'; cases: CaseItem[]; total: number; summary: Summary | null; loadedAt: number }
     | { kind: 'unauthorised' }
     | { kind: 'error'; message: string };
 
@@ -148,7 +150,7 @@ function loadCases(f: Filter, sev: SevFilter, setList: (s: ListState) => void) {
             if (r.status === 401 || r.status === 403) { setList({ kind: 'unauthorised' }); return; }
             const data = await r.json();
             if (!r.ok) { setList({ kind: 'error', message: data?.error ?? `HTTP ${r.status}` }); return; }
-            setList({ kind: 'ready', cases: Array.isArray(data?.cases) ? data.cases : [], total: data?.total ?? 0, summary: data?.summary ?? null });
+            setList({ kind: 'ready', cases: Array.isArray(data?.cases) ? data.cases : [], total: data?.total ?? 0, summary: data?.summary ?? null, loadedAt: Date.now() });
         })
         .catch(() => setList({ kind: 'error', message: 'Could not reach the backend' }));
 }
@@ -239,9 +241,27 @@ export function CaseWorkbench() {
         void loadCases(f, sev, setList);
     };
 
-    const cases = list.kind === 'ready' ? list.cases : [];
+    const cases = list.kind === 'ready' ? list.cases : NO_CASES;
+    const total = list.kind === 'ready' ? list.total : 0;
     const summary = list.kind === 'ready' ? list.summary : null;
     const selected = detail && detail.case.id === selectedId ? detail : null;
+
+    // Investigation activity, by day, over the currently loaded cases (this queue's view — see
+    // the caption below when that's fewer than every matching case). Opened and resolved are
+    // each the case's own recorded timestamp, never inferred.
+    const loadedAt = list.kind === 'ready' ? list.loadedAt : 0;
+    const activity = useMemo(() => {
+        if (cases.length === 0) return [];
+        const cutoff = loadedAt - 14 * 86_400_000;
+        const buckets = new Map<string, { opened: number; resolved: number }>();
+        const dayKey = (iso: string) => iso.slice(0, 10);
+        for (const c of cases) {
+            if (Date.parse(c.created_at) >= cutoff) { const b = buckets.get(dayKey(c.created_at)) ?? { opened: 0, resolved: 0 }; b.opened++; buckets.set(dayKey(c.created_at), b); }
+            if (c.resolved_at && Date.parse(c.resolved_at) >= cutoff) { const b = buckets.get(dayKey(c.resolved_at)) ?? { opened: 0, resolved: 0 }; b.resolved++; buckets.set(dayKey(c.resolved_at), b); }
+        }
+        return [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, b]) => ({ day, ...b }));
+    }, [cases, loadedAt]);
+    const activitySeries: Series[] = [{ key: 'opened', label: 'Opened', token: '--vz-sev-high' }, { key: 'resolved', label: 'Resolved', token: '--vz-good' }];
 
     // Applies a server-returned case to both the queue row and the open detail.
     const applyCase = (c: CaseItem) => {
@@ -504,6 +524,43 @@ export function CaseWorkbench() {
                     </div>
                 ))}
             </div>
+
+            {summary && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                    <div className="bg-card border border-border rounded-xl p-4">
+                        <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-3">Status distribution</p>
+                        {(() => {
+                            const slices: Slice[] = [
+                                { key: 'open', label: 'Open', value: summary.open, token: '--vz-sev-high' },
+                                { key: 'investigating', label: 'Investigating', value: summary.investigating, token: '--vz-prog-2' },
+                                { key: 'contained', label: 'Contained', value: summary.contained, token: '--vz-prog-3' },
+                                { key: 'resolved', label: 'Resolved', value: summary.resolved, token: '--vz-good' },
+                            ];
+                            return slices.every((s) => s.value === 0) ? <p className="text-xs text-foreground-muted">No cases recorded yet.</p> : <Donut slices={slices} centerLabel="cases" label="Case status distribution" size={140} />;
+                        })()}
+                    </div>
+                    <div className="bg-card border border-border rounded-xl p-4">
+                        <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-3">Severity distribution (unresolved)</p>
+                        {!summary.severity ? <p className="text-xs text-foreground-muted">Not available from this backend yet.</p> : (() => {
+                            const slices: Slice[] = [
+                                { key: 'critical', label: 'Critical', value: summary.severity!.critical, token: '--vz-sev-critical' },
+                                { key: 'high', label: 'High', value: summary.severity!.high, token: '--vz-sev-high' },
+                                { key: 'medium', label: 'Medium', value: summary.severity!.medium, token: '--vz-sev-medium' },
+                                { key: 'low', label: 'Low', value: summary.severity!.low, token: '--vz-sev-low' },
+                            ];
+                            return slices.every((s) => s.value === 0) ? <p className="text-xs text-foreground-muted">No unresolved cases.</p> : <Donut slices={slices} centerLabel="unresolved" label="Case severity distribution" size={140} />;
+                        })()}
+                    </div>
+                </div>
+            )}
+
+            {cases.length > 0 && (
+                <div className="bg-card border border-border rounded-xl p-4">
+                    <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-1">Investigation activity, last 14 days</p>
+                    {cases.length < total && <p className="text-[10px] text-amber mb-2">Based on the {cases.length} of {total} matching cases currently loaded — not every case, if more match the active filter.</p>}
+                    {activity.length === 0 ? <p className="text-xs text-foreground-muted">No case was opened or resolved in the last 14 days, among those loaded.</p> : <TimeChart data={activity} series={activitySeries} kind="bar" stacked={false} height={180} label="Investigation activity, last 14 days" />}
+                </div>
+            )}
 
             <div className="flex items-center gap-2 flex-wrap">
                 <div className="flex items-center gap-1.5 bg-card border border-border rounded-lg p-1 w-fit max-w-full overflow-x-auto" role="tablist" aria-label="Status">
