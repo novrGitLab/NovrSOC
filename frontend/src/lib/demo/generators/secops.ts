@@ -1,6 +1,7 @@
 import type { DemoOrgId } from '../types';
 import { seeded } from '../rng';
 import { DEMO_SCENARIOS } from '../scenario';
+import { applyDemoOverlay } from '../mutations';
 
 const ago = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 const agoH = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
@@ -9,7 +10,7 @@ const STATUSES = ['open', 'investigating', 'contained', 'resolved'] as const;
 
 export function demoCases(org: DemoOrgId, statusFilter?: string) {
     const s = DEMO_SCENARIOS[org];
-    const all = seeded(`cases:${org}`, (r) => {
+    const seededAll = seeded(`cases:${org}`, (r) => {
         const featured = {
             id: s.caseId, case_number: s.caseNumber, title: `[DEMO] ${s.caseTitle}`, description: `[DEMO] ${s.narrative}`,
             severity: 'critical' as const, status: 'investigating' as const, source: 'manual', agent_id: null, agent_name: null,
@@ -32,6 +33,9 @@ export function demoCases(org: DemoOrgId, statusFilter?: string) {
         });
         return [featured, ...rest];
     });
+    // Reflects any simulated status change / escalation / assignment made earlier in this session
+    // (lib/demo/mutations.ts) — updateStatus/assign/close/escalate are not no-ops in Demo Mode.
+    const all = seededAll.map((c) => applyDemoOverlay(org, 'cases', c));
     const cases = statusFilter && statusFilter !== 'all' ? all.filter((c) => c.status === statusFilter) : all;
     const unresolved = all.filter((c) => c.status !== 'resolved');
     const by = (pred: (c: typeof all[number]) => boolean) => all.filter(pred).length;
@@ -51,22 +55,37 @@ export function demoCaseDetail(org: DemoOrgId, caseId: string) {
     const match = demoCases(org).cases.find((c) => c.id === caseId);
     if (!match) return null;
     const isFeatured = caseId === s.caseId;
+    interface Note { id: string; author: string; type: string; content: string; created_at: string }
+    interface Task { id: string; step_id: string; title: string; description: string; status: string }
+    interface TimelineEntry { id: string; actor: string; action: string; details: string; automated: boolean; created_at: string }
+    const overlay = applyDemoOverlay(org, 'cases', { id: caseId } as { id: string; notes?: Note[]; timeline?: TimelineEntry[]; tasks?: Task[] });
+    const baseNotes: Note[] = isFeatured ? [{ id: 'n1', author: 'SOC Analyst (Demo)', type: 'Update', content: `[DEMO] Confirmed ${s.indicatorValue} matches a known indicator; escalating.`, created_at: agoH(3) }] : [];
+    const baseTasks: Task[] = isFeatured ? [{ id: 't1', step_id: 'isolate_agent', title: 'Block source address at the perimeter', description: 'Demo containment step', status: 'pending' }] : [];
+    const baseTimeline: TimelineEntry[] = [
+        { id: 'tl1', actor: 'system', action: 'Case created', details: '[DEMO] Opened from correlated detection', automated: true, created_at: ago(1) },
+        ...(isFeatured ? [{ id: 'tl2', actor: 'SOC Analyst (Demo)', action: 'Investigation started', details: '[DEMO] Reviewing authentication logs and TI match', automated: false, created_at: agoH(4) }] : []),
+    ];
     return {
         case: match,
-        notes: isFeatured ? [{ id: 'n1', author: 'SOC Analyst (Demo)', type: 'Update' as const, content: `[DEMO] Confirmed ${s.indicatorValue} matches a known indicator; escalating.`, created_at: agoH(3) }] : [],
-        tasks: isFeatured ? [{ id: 't1', step_id: 'isolate_agent', title: 'Block source address at the perimeter', description: 'Demo containment step', status: 'pending' }] : [],
-        timeline: [
-            { id: 'tl1', actor: 'system', action: 'Case created', details: '[DEMO] Opened from correlated detection', automated: true, created_at: ago(1) },
-            ...(isFeatured ? [{ id: 'tl2', actor: 'SOC Analyst (Demo)', action: 'Investigation started', details: '[DEMO] Reviewing authentication logs and TI match', automated: false, created_at: agoH(4) }] : []),
-        ],
+        // Session-simulated notes/timeline entries (addNote, close, escalate — lib/demo/mutations.ts)
+        // are prepended ahead of the seeded baseline, so a click during the walkthrough shows up
+        // immediately rather than only affecting the case's status field.
+        notes: [...(overlay.notes ?? []), ...baseNotes],
+        tasks: overlay.tasks ?? baseTasks,
+        timeline: [...(overlay.timeline ?? []), ...baseTimeline],
         iocs: isFeatured ? [{ id: 'ioc1', type: 'ip', value: s.indicatorValue, verdict: 'malicious', risk_score: 88 }] : [],
         linked: [],
         threat_intelligence: isFeatured ? [{ indicator_type: 'ip', indicator_value: s.indicatorValue, confidence: 80, malware_families: ['Demo-Stealer'], threat_types: ['credential-theft'], verified: true, status: 'new', case_id: s.caseId, tlp: 'amber', indicator_active: true }] : [],
     };
 }
 
-export function demoResponseApprovals(org: DemoOrgId) {
-    return seeded(`approvals:${org}`, (r) => ({ approvals: Array.from({ length: r.int(0, 2) }, (_, i) => ({ id: `demo-${org}-approval-${i}`, action: 'block_ip', target: `198.51.100.${r.int(10, 200)}`, target_label: null, reason: '[DEMO] Suspicious activity', case_id: null, threat_id: null, source: 'demo', status: 'pending', requested_by: 'SOC Analyst (Demo)', requested_at: ago(1), decided_by: null, decided_at: null, decision_note: null, result: null })) }));
+export function demoResponseApprovals(org: DemoOrgId, statusFilter?: string) {
+    const seededAll = seeded(`approvals:${org}`, (r) => Array.from({ length: Math.max(2, r.int(1, 3)) }, (_, i) => ({ id: `demo-${org}-approval-${i}`, action: 'block_ip' as const, target: `198.51.100.${r.int(10, 200)}`, target_label: null, reason: '[DEMO] Suspicious activity', case_id: null, threat_id: null, source: 'demo', status: 'pending', requested_by: 'SOC Analyst (Demo)', requested_at: ago(1), decided_by: null, decided_at: null, decision_note: null, result: null })));
+    // Reflects any simulated approve/reject/cancel click made earlier in this session
+    // (lib/demo/mutations.ts) — approving one here actually removes it from "pending".
+    const all = seededAll.map((a) => applyDemoOverlay(org, 'response-approvals', a));
+    const approvals = statusFilter && statusFilter !== 'all' ? all.filter((a) => a.status === statusFilter) : all;
+    return { approvals };
 }
 
 export function demoSoarStats(org: DemoOrgId) {

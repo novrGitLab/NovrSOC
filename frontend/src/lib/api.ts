@@ -84,9 +84,17 @@ function demoFetch(input: string, init: RequestInit): Promise<Response> {
         // leave pathname empty — demoResponseFor() won't match anything, so the generic
         // empty-body fallback below still applies.
     }
-    const body = demoResponseFor(pathname, search, init.method ?? 'GET', getDemoOrg()) ?? {};
+    let requestBody: unknown;
+    if (typeof init.body === 'string') {
+        try { requestBody = JSON.parse(init.body); } catch { /* not JSON — leave undefined, as if no body was sent */ }
+    }
+    const result = (demoResponseFor(pathname, search, init.method ?? 'GET', getDemoOrg(), requestBody) ?? {}) as Record<string, unknown>;
+    // '__demoStatus' (router.ts's withStatus()) lets a handful of endpoints answer with a
+    // non-200 — e.g. AiPanel.tsx's existing "AI unavailable" state — instead of every demo
+    // response being a fixed 200.
+    const { __demoStatus, ...body } = result;
     const res = new Response(JSON.stringify(body), {
-        status: 200,
+        status: typeof __demoStatus === 'number' ? __demoStatus : 200,
         headers: { 'Content-Type': 'application/json', 'X-Demo-Mode': '1' },
     });
     return Promise.resolve(res);

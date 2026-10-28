@@ -1,6 +1,7 @@
 import type { DemoOrgId } from '../types';
 import { seeded } from '../rng';
 import { DEMO_SCENARIOS } from '../scenario';
+import { applyDemoOverlay } from '../mutations';
 
 export interface DemoFinding {
     id: string; asset_id: string | null; asset_value: string; port: number | null; protocol: string | null;
@@ -24,7 +25,7 @@ const ahead = (days: number) => new Date(Date.now() + days * 86_400_000).toISOSt
 
 export function demoFindings(org: DemoOrgId): DemoFinding[] {
     const s = DEMO_SCENARIOS[org];
-    return seeded(`findings:${org}`, (r) => {
+    const base = seeded(`findings:${org}`, (r) => {
         const out: DemoFinding[] = [{
             id: s.findingId, asset_id: s.assetId, asset_value: s.assetValue, port: s.dstPort, protocol: s.protocol.toLowerCase(),
             source_class: 'active_scan', detected_by: ['nuclei'], rule_id: 'demo-critical-001', title: s.findingTitle,
@@ -51,6 +52,9 @@ export function demoFindings(org: DemoOrgId): DemoFinding[] {
         }
         return out;
     });
+    // Reflects any simulated "mark verified" / "acknowledge" / status-change click made earlier
+    // in this session (lib/demo/mutations.ts) — a PATCH in Demo Mode is not a no-op.
+    return base.map((f) => applyDemoOverlay(org, 'vms-findings', f));
 }
 
 export function demoFindingsSummary(org: DemoOrgId) {

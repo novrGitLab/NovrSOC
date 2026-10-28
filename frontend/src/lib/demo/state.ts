@@ -11,6 +11,7 @@
 
 import type { DemoOrgId } from './types';
 import { DEMO_ORG_IDS } from './orgs';
+import { clearAllDemoOverlays } from './mutations';
 
 const ENABLED_KEY = 'novrsoc_demo_mode';
 const ORG_KEY = 'novrsoc_demo_org';
@@ -34,6 +35,9 @@ export function setDemoMode(enabled: boolean, org?: DemoOrgId): void {
         sessionStorage.setItem(ENABLED_KEY, enabled ? 'true' : 'false');
         if (org) sessionStorage.setItem(ORG_KEY, org);
     } catch { /* storage blocked: demo mode cannot be turned on, which is the safe failure */ }
+    // Turning Demo Mode off resets every organisation's simulated clicks (lib/demo/mutations.ts)
+    // so the next walkthrough starts from the same clean seeded state as the last one.
+    if (!enabled) clearAllDemoOverlays();
     window.dispatchEvent(new Event(EVENT));
 }
 
