@@ -90,6 +90,8 @@ import secopsRouter from './routes/secops';
 import notificationsRouter from './routes/notifications';
 import playbooksRouter from './routes/playbooks';
 import novrAiRouter from './routes/novr-ai';
+import reportsRouter from './routes/reports';
+import { startReportSchedulerJob } from './jobs/reportSchedulerJob';
 
 const app = express();
 
@@ -412,6 +414,7 @@ app.use('/api/notifications', notificationsRouter);
 // Attach Playbook picker, which the client portal also renders. The mutating CRUD routes are
 // individually gated to super_admin/soc_manager inside routes/playbooks.ts.
 app.use('/api/playbooks', playbooksRouter);
+app.use('/api/reports', requireAuth, reportsRouter); // Reporting Center: schedules, recipients, generation, delivery (phase P30, R3.3E)
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -480,4 +483,7 @@ if (announceJobPolicy()) {
     // Alert store retention (sql/2026-10-09_alert_retention.sql's purge_old_alerts) — defined in
     // SQL with nothing ever scheduling it until now. jobs/alertRetentionJob.ts.
     startAlertRetentionJob();
+    // Report schedule -> job -> delivery pipeline (phase P30, R3.3E) — jobs/reportSchedulerJob.ts.
+    // Off with REPORT_SCHEDULER_ENABLED=false.
+    startReportSchedulerJob();
 }
