@@ -112,7 +112,11 @@ export function CollectorManagement() {
                     <button key={k} onClick={() => setTab(k)} className={`text-[11px] font-bold px-2.5 py-1.5 rounded-md flex items-center gap-1 ${tab === k ? 'bg-blue text-white' : 'text-foreground-muted'}`}><Icon className="w-3.5 h-3.5" /> {label}</button>
                 ))}
             </div>
-            {error && <p role="alert" className="text-xs text-red font-semibold">{error}</p>}
+            {error && (
+                /Could not find the table/i.test(error) ? (
+                    <p role="alert" className="text-xs text-amber font-semibold bg-amber/10 border border-amber/30 rounded-lg px-3 py-2">Setup required — Collector Management&apos;s database migration (backend/sql/2026-11-12_p31_collector_v1.sql) has not been applied to this environment yet. Nothing is broken; apply that migration to enable this page.</p>
+                ) : <p role="alert" className="text-xs text-red font-semibold">{error}</p>
+            )}
 
             {tab === 'overview' && (
                 collectors === null ? <p className="text-xs text-foreground-muted">Not connected.</p> : collectors.length === 0 ? <p className="text-xs text-foreground-muted">No collector enrolled yet.</p> : (
