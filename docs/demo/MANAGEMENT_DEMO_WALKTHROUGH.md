@@ -53,9 +53,11 @@ numbers, CVEs and addresses appear everywhere that organisation's data shows up,
 
 6. **Vulnerability & Remediation workflow** (`/admin/vms/findings` → `/admin/vms/remediation`,
    ~2 min, switch to IKEA)
-   Switch to IKEA. Open the featured P1 finding (grid-control gateway, known-exploited CVE), then
-   the remediation queue showing it moving toward "fixed — pending verification." This is IKEA's
-   scenario: critical vulnerability → remediation → verification → improved risk posture.
+   Switch to IKEA. Open the featured P1 finding (grid-control gateway, known-exploited CVE),
+   "fixed — pending verification." On the Remediation screen's "Awaiting verification" tab, click
+   **Verify** — this is a real, observable action for the rest of the session: the finding moves
+   to "Verified fixed" immediately and the KPI counts update. This is IKEA's scenario end to end:
+   critical vulnerability → remediation → verification → improved risk posture.
 
 7. **CNII Watch** (`/admin/cnii`, ~1.5 min)
    Still on IKEA (Power & Energy sector). Show the sector exposure view and the organisation's
@@ -93,6 +95,17 @@ honest demo and an overpromise.
 - The Nigeria Threat Heatmap's per-state "latest event" detail panel — the choropleth counts
   themselves can be real (TI indicator data); the simulated per-event drill-down illustrates
   where real network event detail would surface once available.
+
+## What's real-feeling vs. honestly static in Demo Mode
+
+A handful of actions a presenter is likely to click actually change what's on screen for the
+rest of the session (no real backend is ever touched — this is a session-local simulation, see
+`lib/demo/mutations.ts`): marking a VMS finding verified, changing a case's status/assignment,
+adding a case note, closing a case with resolution notes, escalating a case, and approving/
+rejecting a response action. Everything else (scheduling a report, adding a recipient, running
+the AI Q&A assistant, generating a report through the Generate tab) gives an explicit "Demo Mode:
+simulated — nothing was sent" message rather than a blank or misleading success, so a presenter
+who clicks something outside the scripted path still gets an honest answer instead of silence.
 
 ## Isolation guarantees worth stating out loud
 
