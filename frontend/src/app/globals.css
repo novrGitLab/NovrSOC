@@ -131,6 +131,30 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Visible keyboard-focus indicator, platform-wide (WCAG 2.2 AA, 2.4.11) — a single global rule
+   rather than adding focus-ring classes to every interactive element individually. Uses :focus-visible
+   so a mouse click never shows the ring, only keyboard/assistive-tech focus does. */
+:focus-visible {
+  outline: 2px solid var(--brand-purple);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+:root.dark :focus-visible {
+  outline-color: #B18CFF;
+}
+
+/* Respect the OS/browser "reduce motion" preference (WCAG 2.2 AA, 2.3.3) — applies to every
+   Tailwind animate-*/transition-* utility and the custom shimmer keyframe below, without needing
+   a motion-reduce: variant on each of the many call sites across the app. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @layer utilities {
   .scrollbar-thin::-webkit-scrollbar {
     width: 4px;
