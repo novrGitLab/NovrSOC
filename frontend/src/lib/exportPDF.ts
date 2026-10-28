@@ -120,16 +120,26 @@ export function exportDataAsPDF(
         pdf.setFont('helvetica', 'normal');
 
         section.rows.forEach((row) => {
-            pdf.setFont('helvetica', 'bold');
-            pdf.text(row.label + ':', 12, y);
-            pdf.setFont('helvetica', 'normal');
-            pdf.text(row.value, 70, y);
-            y += 7;
-
-            if (y > 270) {
+            // Wrap long values instead of letting them run off the page edge invisibly —
+            // confirmed as a real defect by rendering actual output: a long narrative or
+            // methodology sentence (this function's actual callers include case reports, not
+            // just demo documents) was silently clipped at the right margin with no sign
+            // anything was cut, rather than being plainly unreadable.
+            const valueLines: string[] = pdf.splitTextToSize(row.value, pageWidth - 70 - 10);
+            const rowHeight = Math.max(7, valueLines.length * 6 + 1);
+            // A row's label and its value must land on the same page — checked once, before
+            // drawing anything for this row, rather than mid-row, which was a second defect:
+            // a row starting near the page bottom could draw its label on one page and its
+            // (then unlabelled-looking) value on the next.
+            if (y + rowHeight - 7 > 270) {
                 pdf.addPage();
                 y = 20;
             }
+            pdf.setFont('helvetica', 'bold');
+            pdf.text(row.label + ':', 12, y);
+            pdf.setFont('helvetica', 'normal');
+            valueLines.forEach((line, i) => pdf.text(line, 70, y + i * 6));
+            y += rowHeight;
         });
 
         y += 5;
