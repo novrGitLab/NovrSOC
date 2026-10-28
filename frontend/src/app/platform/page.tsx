@@ -26,8 +26,11 @@ const FEATURES = [
     {
         icon: '🇳🇬', tag: 'LIVE', tagColor: 'bg-purple-50 text-purple-600',
         title: 'Nigerian Threat Intelligence',
-        desc: 'A live threat heatmap across all 36 states and the FCT, built on real scanning telemetry, with ngCERT, NCC-CSIRT and CBN advisory integration.',
-        items: ['Live Nigerian ASN telemetry', 'ngCERT advisory feed', 'State-level threat heatmap'],
+        // ngCERT/NCC-CSIRT/CBN advisory ingestion is not live — see /trust and the homepage's own
+        // INTEGRATIONS list, which correctly does not list it. Do not restore this claim without a
+        // working, structured feed from one of those bodies.
+        desc: 'A threat heatmap across all 36 states and the FCT, built on real scanning telemetry — hosting location, not an attack-origin map. MISP and TAXII 2.1 exchange for sharing with partners and regulators.',
+        items: ['Live Nigerian ASN telemetry', 'MISP & TAXII 2.1 exchange', 'State-level threat heatmap'],
     },
     {
         icon: '🔍', tag: 'LIVE', tagColor: 'bg-purple-50 text-purple-600',
@@ -56,8 +59,8 @@ const FEATURES = [
     {
         icon: '✅', tag: 'LIVE', tagColor: 'bg-purple-50 text-purple-600',
         title: 'Nigerian Compliance',
-        desc: 'Track NDPA, the CBN Cybersecurity Framework, NCC, ISO/IEC 27001 and PCI-DSS. Auto-generate evidence reports for auditors.',
-        items: ['5 compliance frameworks', 'Control-level assessment', 'Auditor evidence export'],
+        desc: 'Track NDPA, the CBN Cybersecurity Framework, NCC, ISO/IEC 27001 and PCI-DSS. A deterministic mapping from vulnerability findings to framework clauses, with evidence export for auditors — not a substitute for a formal control audit.',
+        items: ['5 compliance frameworks', 'Finding-to-clause mapping', 'Auditor evidence export'],
         // TODO: flyer claims "tens of international standards" -- reconcile to one true number
     },
     {
