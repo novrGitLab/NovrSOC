@@ -92,6 +92,8 @@ import playbooksRouter from './routes/playbooks';
 import novrAiRouter from './routes/novr-ai';
 import reportsRouter from './routes/reports';
 import { startReportSchedulerJob } from './jobs/reportSchedulerJob';
+import collectorsRouter from './routes/collectors';
+import collectorIngestRouter from './routes/collectorIngest';
 
 const app = express();
 
@@ -259,6 +261,9 @@ if (process.env.NODE_ENV === 'production') {
 // /api limiter: it authenticates with its own service token, parses up to 1 MB itself and has
 // its own rate limit.
 app.use('/api/ingest', ingestRouter);
+// Collector V1 ingestion gateway (routes/collectorIngest.ts): per-collector credential, own
+// parser and own rate limit, same reasoning as routes/ingest.ts above.
+app.use('/api/collectors/ingest', collectorIngestRouter);
 // Vendor export (routes/exportApi.ts): machine credential, own kill switch and rate limits; GET only.
 app.use('/api/export/v1', exportApiRouter);
 // VMS scanner worker (routes/vmsWorker.ts): machine credential VMS_WORKER_TOKEN, own rate limit.
@@ -415,6 +420,7 @@ app.use('/api/notifications', notificationsRouter);
 // individually gated to super_admin/soc_manager inside routes/playbooks.ts.
 app.use('/api/playbooks', playbooksRouter);
 app.use('/api/reports', requireAuth, reportsRouter); // Reporting Center: schedules, recipients, generation, delivery (phase P30, R3.3E)
+app.use('/api/collectors', requireAuth, collectorsRouter); // Collector Management: enrollment, status, revocation (phase P31)
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

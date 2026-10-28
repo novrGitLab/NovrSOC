@@ -40,6 +40,13 @@ test('role map: super_admin holds every permission, soc_manager all but approvin
     assert.ok(!ROLE_PERMISSIONS.executive.some((p) => /^(alerts|cases|response|handover):/.test(p)), 'no SecOps access for executives');
     // Client portal: its own organisation's VMS view and security monitoring (P24), nothing else.
     assert.deepEqual([...ROLE_PERMISSIONS.portal_user], ['vms:client', 'secops:client']);
+    // P31: Collector Management is manager-tier infrastructure access — analyst, executive and
+    // portal_user hold neither collectors:read nor collectors:manage.
+    assert.equal(hasPermission('super_admin', 'collectors:manage'), true);
+    assert.equal(hasPermission('soc_manager', 'collectors:manage'), true);
+    assert.equal(hasPermission('analyst', 'collectors:read'), false);
+    assert.equal(hasPermission('executive', 'collectors:read'), false);
+    assert.equal(hasPermission('portal_user', 'collectors:read'), false);
     assert.equal(hasPermission('analyst', 'response:contain'), true);
     assert.equal(hasPermission('analyst', 'response:approve'), false);
     assert.equal(hasPermission('analyst', 'vms:scan'), true);

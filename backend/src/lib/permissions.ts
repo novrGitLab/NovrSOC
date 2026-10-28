@@ -56,6 +56,13 @@ export const PERMISSIONS = [
     // check), so reports:manage alone cannot see data its holder couldn't already see directly.
     'reports:read',
     'reports:manage',
+    // Collector V1 (phase P31): enrolling, viewing and revoking client-site log collectors. Not
+    // granted to analyst — a collector's credential is a live piece of client infrastructure
+    // access, closer to the manager-only Sec Ops Management / Wazuh Groups settings than to
+    // day-to-day SOC analysis. Never granted to executive/portal_user: this is platform
+    // infrastructure, not an organisation's own security data.
+    'collectors:read',
+    'collectors:manage',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];

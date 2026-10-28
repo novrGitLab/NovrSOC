@@ -19,6 +19,7 @@
     "test:google": "tsx src/scripts/testGoogleAPIs.ts",
     "smoke:nvidia": "tsx src/scripts/smokeNvidia.ts",
     "misp:check": "tsx src/scripts/mispCheck.ts",
+    "demo:collector-v1": "tsx src/scripts/collectorV1Demo.ts",
     "geoip:download": "node scripts/downloadGeoIP.js",
     "security:audit": "npm audit --audit-level=high",
     "security:check": "npm audit --audit-level=moderate --json | node -e \"const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); if(d.metadata.vulnerabilities.high>0||d.metadata.vulnerabilities.critical>0) process.exit(1)\""

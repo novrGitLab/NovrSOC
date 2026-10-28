@@ -32,7 +32,7 @@ import { VMS_SECTIONS } from './vmsSections';
 export type NavStatus = 'WORKING' | 'PARTIAL' | 'MOCK' | 'BROKEN' | 'PLANNED';
 export type NavDomain =
     | 'overview' | 'secops' | 'vms' | 'threat-intel' | 'cnii' | 'brand' | 'infra' | 'email'
-    | 'compliance' | 'ai' | 'data' | 'clients' | 'settings' | 'account' | 'reports';
+    | 'compliance' | 'ai' | 'data' | 'clients' | 'settings' | 'account' | 'reports' | 'collectors';
 
 export interface NavItemConfig {
     id: string;
@@ -93,6 +93,16 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         section: 'Reporting Center', collapsible: true, icon: FileBarChart, groupLabel: 'Reporting Center',
         items: [
             { id: 'reporting-center', label: 'Reporting Center', href: '/admin/reports', domain: 'reports', status: 'WORKING', roles: VMS_READ, icon: FileBarChart },
+        ],
+    },
+    {
+        // Collector Management (phase P31, Collector V1): manager-tier infrastructure access — a
+        // collector's credential reaches live client-site log plumbing, closer to Wazuh Groups /
+        // Sec Ops Management than to day-to-day SOC analysis. Not analyst, executive or
+        // portal_user — matches the backend's collectors:read/collectors:manage exactly.
+        section: 'Collector Management', collapsible: true, icon: Server, groupLabel: 'Collector Management',
+        items: [
+            { id: 'collector-management', label: 'Collector Management', href: '/admin/collectors', domain: 'collectors', status: 'WORKING', roles: MANAGER_ONLY, icon: Server },
         ],
     },
     {

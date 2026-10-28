@@ -1,0 +1,59 @@
+# NovrSOC Collector V1 — local/client-site deployment.
+#
+# Two services:
+#   vector      the actual log collector: syslog TCP/UDP/TLS in, buffered HTTP out to NovrSOC.
+#   heartbeat   a small sidecar that reads Vector's own Prometheus metrics (never invents a
+#               number) and reports them to NovrSOC every HEARTBEAT_INTERVAL_SECONDS, and is also
+#               the thing that activates a newly enrolled collector on its first successful call.
+#
+# Both images are pinned by exact tag (verified against the publisher's own docs/release page —
+# see ../README.md's "Image provenance" section for how and when). Neither image runs privileged;
+# only the syslog ports are published to the host, not Vector's API (8686) or metrics (9598) port,
+# which stay on the private compose network, reachable only by the heartbeat sidecar.
+services:
+  vector:
+    image: timberio/vector:0.60.0-debian
+    container_name: novrsoc-collector-vector
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config/vector.toml:/etc/vector/vector.toml:ro
+      - ./tls:/etc/novrsoc-collector/tls:ro
+      - vector-data:/var/lib/vector
+    ports:
+      - '${SYSLOG_TCP_PORT:-6514}:6514'
+      - '${SYSLOG_UDP_PORT:-5514}:5514/udp'
+      - '${SYSLOG_TLS_PORT:-6515}:6515'
+    command: ['--config', '/etc/vector/vector.toml']
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8686/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    read_only: false # Vector needs to write its disk buffer under /var/lib/vector
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE # only to bind the syslog ports below 1024 if you map them there
+
+  heartbeat:
+    image: curlimages/curl:8.11.1
+    container_name: novrsoc-collector-heartbeat
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - vector
+    volumes:
+      - ./scripts/heartbeat.sh:/heartbeat.sh:ro
+    entrypoint: ['/bin/sh', '/heartbeat.sh']
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  vector-data:
+    driver: local
