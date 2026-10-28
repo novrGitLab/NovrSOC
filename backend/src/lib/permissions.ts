@@ -48,6 +48,14 @@ export const PERMISSIONS = [
     // Client security monitoring (phase P24): read one's own organisation's stored alerts,
     // firewall activity and Wazuh agents through /api/client/secops only.
     'secops:client',
+    // Unified report scheduling and delivery (phase P30, R3.3E): reports:read views the Reporting
+    // Center (schedules, history, delivery status) for one's own organisation; reports:manage adds
+    // schedule/recipient administration and "generate now". Neither bypasses a module's own
+    // permission — generating a VMS/CNII/Threat-Intel report still requires that module's existing
+    // vms:read/cnii:read/intel:read (checked in services/reportGeneration.ts and its service-grant
+    // check), so reports:manage alone cannot see data its holder couldn't already see directly.
+    'reports:read',
+    'reports:manage',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -60,11 +68,14 @@ export const ROLE_PERMISSIONS: Readonly<Record<UserRole, readonly Permission[]>>
     super_admin: PERMISSIONS,
     // Everything except approving scan authorisation: managers request scopes, the organisation approves.
     soc_manager: PERMISSIONS.filter((p) => p !== 'vms:authorize'),
-    analyst: ['alerts:read', 'alerts:triage', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write', 'vms:read', 'vms:scan', 'vms:manage', 'intel:read', 'intel:manage', 'cnii:read', 'cnii:sector'],
+    analyst: ['alerts:read', 'alerts:triage', 'cases:read', 'cases:write', 'cases:close', 'response:contain', 'handover:write', 'vms:read', 'vms:scan', 'vms:manage', 'intel:read', 'intel:manage', 'cnii:read', 'cnii:sector', 'reports:read', 'reports:manage'],
     // Executives see their organisation's attack surface and risk; they change nothing. They never
     // see other organisations, so no sector-wide view.
     // P27: they also approve (or reject) their organisation's scan authorisation requests.
-    executive: ['vms:read', 'intel:read', 'cnii:read', 'vms:authorize'],
+    // reports:read only — no reports:manage: schedule and recipient administration (which can add
+    // an external email address) stays a staff decision, same reasoning as every other :manage
+    // permission executives are denied.
+    executive: ['vms:read', 'intel:read', 'cnii:read', 'vms:authorize', 'reports:read'],
     // Client portal accounts (P21): their own organisation's VMS view, nothing else. requireAuth
     // also refuses their tokens on every route outside /api/client/ (middleware/auth.ts).
     portal_user: ['vms:client', 'secops:client'],
