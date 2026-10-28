@@ -1,0 +1,29 @@
+# Demo vs. Live Capability Comparison
+
+Maps each of the ten screens covered by the management-demo "Demo Mode" (`feat/demo-mode`,
+unmerged, worktree `C:\Users\USER\novr-demo`) to what is actually real and deployed on
+`origin/main` for that same screen, per `VTEM_49_REQUIREMENT_RECONCILIATION.md`. Read this before
+any demo walkthrough that will be followed by a go/no-go or funding conversation — the whole
+point of this table is to stop a convincing demo from being mistaken for delivered capability.
+
+| Demo screen | What the demo shows | What's real on `origin/main` today | Requirement(s) | Verdict |
+|---|---|---|---|---|
+| **Security Command Center** (Dashboard) | Fully synthetic KPIs/charts for three fictional orgs, switchable instantly | Real dashboard, real data for real orgs. Two bugs the original audit flagged here are **confirmed fixed**: stale cross-org data after switching tenants, and (unverified this pass) a possible 403-as-zero defect for the executive role | 21 | Demo UX is real; demo *data* is 100% fake. The org-switching smoothness you see in the demo is itself a fixed, real bug — not staged. |
+| **VMS Findings / Remediation** | Fictional findings per org, a "Verify" button that flips a finding to verified **in your browser only** | Real scan-authorisation (P27), scan windows, asset import (P28) pipeline is genuinely deployed. Risk scoring mechanism is real but not demo-ed with real numbers | 1, 2, 3, 6, 9 | The *workflow shape* (finding → verify → closed) is real. The specific "Verify" click in the demo never queues a real rescan — it's a session-local simulation, explicitly labelled as such. |
+| **Threat Intelligence** (overview/matches) | Fictional indicators/matches per org | Real TI matching exists; distribution is still pull-based, not push — unchanged gap | 12, 41 | Demo screen is cosmetically identical to the real one; underlying push-distribution gap (Req 12/13) is untouched by anything in the demo. |
+| **Nigeria Threat Heatmap** | A "Demo" sub-tab with synthetic per-state events, now variable by selected fictional org | **This is the one screen where the demo sits on top of something genuinely real and already shipped**: the interactive, zoom/click-to-drill-down Nigeria map (`DashboardNigeriaMap.tsx`) is production code, merged *before* Demo Mode existed. Its own "Live" layer shows real indicator-hosting data | 8, 40 | Don't undersell this one — the interactive heatmap itself is real and deployed, independent of the demo. Only the per-event drill-down detail within a state is synthetic (and was, honestly, before Demo Mode existed too). |
+| **AI Behavioral Analysis** | Baseline-vs-observed anomaly scores, a correlated "attack sequence" — persistently DEMO-badged | No behavioral-analytics engine exists anywhere in the codebase. This panel is, and always has been (pre-dating Demo Mode), an honestly-labelled capability preview | 11 | Correctly and consistently labelled as a preview in both the pre-existing and demo-mode-org-aware versions. The most important screen to narrate carefully as "not live yet" during a walkthrough. |
+| **SecOps Cases / Incidents** | Fictional cases per org with real-feeling, session-local status/assign/escalate/close/note actions | Real case lifecycle (create/assign/escalate/execute-step/close/report) is genuinely solid and tested. No evidence of live SOC operations at volume | 19 | The richest, most interactive part of the whole demo — and the one most likely to be over-read as proof the SOC is running at scale today. It isn't evidence of that either way. |
+| **CNII Watch** | Fictional compliance framework scores per org | Real CCI/CNII sector→org→asset hierarchy is genuinely strong; compliance scoring is severity-to-clause mapping, not a control-by-control assessment, for real orgs too | 5, 23 | The hierarchy/navigation you see is real UX on real data (for real orgs); the specific numbers shown in the demo are fictional, and the real scoring methodology has the same "not an assessment" caveat the original audit raised. |
+| **Collector Management** | Fictional heartbeat/throughput/event-log data, looks identical to a real collector's dashboard | Collector V1 (P31) — real client-site log collection, heartbeat/throughput monitoring — is genuinely deployed as a new capability | 7, 29 | The screen itself is real and so is the underlying feature. The demo data on it "looks identical to a real collector's dashboard" by design — be explicit in the room that no real appliance is attached during the walkthrough. |
+| **Reporting Center / Sample Documents** | A demo-only "Sample Documents" tab generating clearly-labelled client-side sample PDFs | A real scheduled generate-and-deliver pipeline (P30) exists: weekly/monthly cadence, a dedicated executive-summary report type, real delivery-status tracking | 10, 12, 23, 45 | The real pipeline is a genuine, substantial capability gain since the last audit. The demo's sample PDFs are a deliberately separate, client-side-only feature that never calls that real pipeline — don't let a sample download substitute for proof the real schedule fires and an email actually arrives. |
+
+## Three things worth saying out loud in the room
+
+1. **The Nigeria heatmap's interactivity is real, not staged** — it's the one place in this
+   comparison where the demo is standing on top of genuinely shipped work, not synthetic data.
+2. **The AI Behavioral Analysis panel is the one screen to narrate most carefully** — it is, and
+   has always been, a labelled preview of where the platform is headed, not a live capability.
+3. **Every other synthetic screen reuses real UI with fake numbers.** That's the whole design
+   intent of Demo Mode — it proves the *product* works, not that any specific requirement is met
+   for a real client today. Use `VTEM_49_REQUIREMENT_RECONCILIATION.md` for that question.
