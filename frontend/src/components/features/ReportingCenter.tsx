@@ -10,12 +10,17 @@
 // permission in this app draws). Scheduler health is staff-only (super_admin/soc_manager), since
 // it is platform-wide, not scoped to one organisation.
 
-import { useCallback, useEffect, useState } from 'react';
-import { FileBarChart, Calendar, Users, History as HistoryIcon, Activity, Download, RefreshCw, ShieldCheck, AlertTriangle, Trash2, Plus } from 'lucide-react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { FileBarChart, Calendar, Users, History as HistoryIcon, Activity, Download, RefreshCw, ShieldCheck, AlertTriangle, Trash2, Plus, FileText } from 'lucide-react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { loadJson } from '@/lib/alerts';
 import { getAdminUser } from '@/lib/admin-auth';
 import { Donut, type Slice } from '@/components/features/vms/charts';
+import { exportDataAsPDF } from '@/lib/exportPDF';
+import { isDemoModeEnabled, getDemoOrg, subscribeDemoMode } from '@/lib/demo/state';
+import { DEMO_ORGS } from '@/lib/demo/orgs';
+import type { DemoOrgId } from '@/lib/demo/types';
+import { DEMO_DOCUMENT_TYPES, demoDocument } from '@/lib/demo/documents';
 
 type ReportType = 'vms' | 'cnii' | 'threat_intel' | 'executive_summary';
 type ReportFormat = 'executive' | 'technical';
@@ -69,7 +74,8 @@ export function ReportingCenter() {
     const me = getAdminUser();
     const canManage = me.role === 'super_admin' || me.role === 'soc_manager' || me.role === 'analyst';
     const isStaff = me.role === 'super_admin' || me.role === 'soc_manager';
-    const [tab, setTab] = useState<'generate' | 'schedules' | 'recipients' | 'history' | 'ops'>('generate');
+    const [tab, setTab] = useState<'generate' | 'schedules' | 'recipients' | 'history' | 'ops' | 'samples'>('generate');
+    const demoMode = useSyncExternalStore(subscribeDemoMode, isDemoModeEnabled, () => false);
     const [types, setTypes] = useState<TypeInfo[] | null>(null);
     const [schedules, setSchedules] = useState<Schedule[] | null>(null);
     const [recipients, setRecipients] = useState<Recipient[] | null>(null);
@@ -114,7 +120,7 @@ export function ReportingCenter() {
                 <p className="text-xs text-foreground-muted">Scheduled and on-demand client reporting across VMS, CNII Watch and Threat Intelligence.</p>
             </div>
             <div className="flex gap-1 bg-card border border-border rounded-lg p-1 flex-wrap">
-                {([['generate', 'Generate', FileBarChart], ['schedules', 'Schedules', Calendar], ['recipients', 'Recipients', Users], ['history', 'History', HistoryIcon], ...(isStaff ? [['ops', 'Scheduler Health', Activity] as const] : [])] as [typeof tab, string, typeof FileBarChart][]).map(([k, label, Icon]) => (
+                {([['generate', 'Generate', FileBarChart], ['schedules', 'Schedules', Calendar], ['recipients', 'Recipients', Users], ['history', 'History', HistoryIcon], ...(isStaff ? [['ops', 'Scheduler Health', Activity] as const] : []), ...(demoMode ? [['samples', 'Sample Documents', FileText] as const] : [])] as [typeof tab, string, typeof FileBarChart][]).map(([k, label, Icon]) => (
                     <button key={k} onClick={() => setTab(k)} className={`text-[11px] font-bold px-2.5 py-1.5 rounded-md flex items-center gap-1 ${tab === k ? 'bg-blue text-white' : 'text-foreground-muted'}`}><Icon className="w-3.5 h-3.5" /> {label}</button>
                 ))}
             </div>
@@ -148,9 +154,39 @@ export function ReportingCenter() {
                     onDelete={(id) => post(`/api/reports/recipients/${id}`, undefined, 'DELETE')} />
             )}
 
-            {tab === 'history' && <HistoryPanel jobs={jobs} canManage={canManage} busy={busy} onRetry={(id) => post(`/api/reports/deliveries/${id}/retry`)} />}
+            {tab === 'history' && <HistoryPanel jobs={jobs} canManage={canManage} busy={busy} demoMode={demoMode} onRetry={(id) => post(`/api/reports/deliveries/${id}/retry`)} />}
 
             {tab === 'ops' && isStaff && <OpsPanel ops={ops} />}
+
+            {tab === 'samples' && demoMode && <SamplesPanel />}
+        </div>
+    );
+}
+
+function SamplesPanel() {
+    const org = useSyncExternalStore(subscribeDemoMode, getDemoOrg, () => 'lapo' as DemoOrgId);
+    return (
+        <div className="space-y-3">
+            <div className="rounded-lg border border-amber/40 bg-amber/10 px-3 py-2 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber shrink-0 mt-0.5" aria-hidden />
+                <p className="text-[11px] text-amber font-semibold">SAMPLE / SIMULATED — these five documents are generated entirely in your browser from the same seeded demo dataset ({DEMO_ORGS[org].name} [DEMO]) shown across every other screen in Demo Mode. No production report-generation API is called and nothing is sent anywhere.</p>
+            </div>
+            <div className="bg-card border border-border rounded-xl divide-y divide-border">
+                {DEMO_DOCUMENT_TYPES.map(({ type, label }) => (
+                    <div key={type} className="p-3 flex items-center justify-between gap-2 flex-wrap text-xs">
+                        <div>
+                            <p className="font-bold text-foreground">{label}</p>
+                            <p className="text-foreground-muted">{DEMO_ORGS[org].name} [DEMO] · SAMPLE document</p>
+                        </div>
+                        <button
+                            onClick={() => { const doc = demoDocument(org, type); exportDataAsPDF(doc.title, doc.filename, doc.sections); }}
+                            className="font-bold px-2 py-1 rounded-md bg-card-muted text-foreground flex items-center gap-1"
+                        >
+                            <Download className="w-3.5 h-3.5" /> PDF
+                        </button>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }
@@ -328,7 +364,7 @@ function RecipientsPanel({ recipients, canManage, busy, onCreate, onToggle, onAu
 const JOB_STATUS_TOKEN = { completed: '--vz-good', partial: '--vz-warning', failed: '--vz-critical', running: '--vz-prog-2', queued: '--vz-neutral' } as const;
 const JOB_STATUS_LABEL: Record<keyof typeof JOB_STATUS_TOKEN, string> = { completed: 'Completed', partial: 'Partial', failed: 'Failed', running: 'Running', queued: 'Queued' };
 
-function HistoryPanel({ jobs, canManage, busy, onRetry }: { jobs: Job[] | null; canManage: boolean; busy: boolean; onRetry: (deliveryId: string) => void }) {
+function HistoryPanel({ jobs, canManage, busy, demoMode, onRetry }: { jobs: Job[] | null; canManage: boolean; busy: boolean; demoMode: boolean; onRetry: (deliveryId: string) => void }) {
     if (jobs === null) return <p className="text-xs text-foreground-muted">Not connected.</p>;
     if (jobs.length === 0) return <p className="text-xs text-foreground-muted">No reports generated yet.</p>;
     const counts: Record<string, number> = {};
@@ -351,10 +387,14 @@ function HistoryPanel({ jobs, canManage, busy, onRetry }: { jobs: Job[] | null; 
                             <p className="text-foreground-muted">{j.trigger === 'manual' ? 'Manual' : 'Scheduled'} · requested {fmt(j.requested_at)}{j.finished_at ? ` · finished ${fmt(j.finished_at)}` : ''}</p>
                             {j.last_error && <p className="text-amber">{j.last_error}</p>}
                         </div>
-                        <div className="flex gap-2">
-                            <button onClick={() => downloadArtifact(j.id, 'pdf')} className="font-bold px-2 py-1 rounded-md bg-card-muted text-foreground flex items-center gap-1"><Download className="w-3.5 h-3.5" /> PDF</button>
-                            <button onClick={() => downloadArtifact(j.id, 'csv')} className="font-bold px-2 py-1 rounded-md bg-card-muted text-foreground flex items-center gap-1"><Download className="w-3.5 h-3.5" /> CSV</button>
-                        </div>
+                        {demoMode ? (
+                            <p className="text-[10px] text-foreground-muted italic">Demo job — see the Sample Documents tab for a downloadable PDF.</p>
+                        ) : (
+                            <div className="flex gap-2">
+                                <button onClick={() => downloadArtifact(j.id, 'pdf')} className="font-bold px-2 py-1 rounded-md bg-card-muted text-foreground flex items-center gap-1"><Download className="w-3.5 h-3.5" /> PDF</button>
+                                <button onClick={() => downloadArtifact(j.id, 'csv')} className="font-bold px-2 py-1 rounded-md bg-card-muted text-foreground flex items-center gap-1"><Download className="w-3.5 h-3.5" /> CSV</button>
+                            </div>
+                        )}
                     </div>
                     {j.deliveries.length > 0 && (
                         <div className="pl-2 border-l-2 border-border space-y-1">

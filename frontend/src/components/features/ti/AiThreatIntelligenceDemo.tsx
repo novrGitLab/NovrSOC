@@ -15,9 +15,13 @@
 // public ATT&CK identifiers used only to illustrate the scenario — they are not a claim that any
 // evidence maps to them.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { AlertTriangle, Activity, Radio, Shield, TrendingUp, X, Network } from 'lucide-react';
 import { useReducedMotion } from '@/components/features/vms/ui';
+import { seededRng } from '@/lib/demo/rng';
+import { getDemoOrg, subscribeDemoMode } from '@/lib/demo/state';
+import { DEMO_SCENARIOS } from '@/lib/demo/scenario';
+import type { DemoOrgId } from '@/lib/demo/types';
 
 type Severity = 'low' | 'medium' | 'high' | 'critical';
 const SEV_STYLE: Record<Severity, string> = { low: 'bg-blue/10 text-blue', medium: 'bg-amber/10 text-amber', high: 'bg-orange/10 text-orange', critical: 'bg-red/10 text-red' };
@@ -30,9 +34,10 @@ interface FeedEvent extends FiveTuple {
 }
 interface SequenceStep extends FiveTuple { stage: string; mitre_tactic: string; mitre_id: string; at: number; asset: string }
 
-const ips = (base: string) => `${base}.${1 + Math.floor(Math.random() * 253)}`;
-const demoSrc = () => ips('203.0.113');
-const demoDst = () => ips('198.18.0');
+type Rng = ReturnType<typeof seededRng>;
+const ips = (r: Rng, base: string) => `${base}.${r.int(1, 254)}`;
+const demoSrc = (r: Rng) => ips(r, '203.0.113');
+const demoDst = (r: Rng) => ips(r, '198.18.0');
 const PORTS = [22, 3389, 443, 80, 8080, 445, 3306, 21];
 const ASSETS = ['web-edge-01', 'db-core-03', 'vpn-gw-01', 'file-srv-02', 'auth-svc-01', 'mail-relay-01'];
 
@@ -43,20 +48,27 @@ const FEED_TEMPLATES: { kind: FeedEvent['kind']; title: string; severity: Severi
     { kind: 'anomaly', title: 'Behavioral Anomaly — Off-Hours Access', severity: 'medium', explanation: 'A login from an account that has never previously authenticated outside its normal working hours, now doing so.', impact: "May be legitimate (a genuine after-hours task) or may indicate the account's credentials are in someone else's hands.", recommendation: "Confirm with the account's owner directly; if they did not initiate this session, treat the credential as compromised." },
 ];
 
-function makeFeedEvent(id: number): FeedEvent {
+// A fresh, unseeded rng for the live-ticking feed only — this supplementary stream is meant to
+// look alive while the demo runs, so it is never required to reproduce between reloads; the
+// scenario-bearing data (initial feed, correlation sequence, baselines) is always org-seeded.
+function makeFeedEvent(r: Rng, id: number): FeedEvent {
     const t = FEED_TEMPLATES[id % FEED_TEMPLATES.length];
     return {
         id: `feed-${id}`, ...t, confidence: id % 3 === 0 ? 'high' : id % 3 === 1 ? 'medium' : 'low',
         asset: ASSETS[id % ASSETS.length], at: Date.now(),
-        src_ip: demoSrc(), dst_ip: demoDst(), src_port: PORTS[id % PORTS.length], dst_port: PORTS[(id + 3) % PORTS.length],
+        src_ip: demoSrc(r), dst_ip: demoDst(r), src_port: PORTS[id % PORTS.length], dst_port: PORTS[(id + 3) % PORTS.length],
         protocol: id % 4 === 0 ? 'UDP' : 'TCP',
     };
 }
 
 // One fixed, illustrative attack sequence — real MITRE ATT&CK tactic/technique names used only to
 // show how a correlation engine would present a chain, not a claim that any evidence maps to them.
-function buildSequence(): SequenceStep[] {
-    const srcIp = demoSrc();
+// Seeded by the globally selected demo org (lib/demo/state.ts) so switching org here changes which
+// asset and addresses appear, and the first stage reuses that org's scenario source address
+// (lib/demo/scenario.ts) so this panel reads as part of the same connected narrative.
+function buildSequence(org: DemoOrgId): SequenceStep[] {
+    const r = seededRng(`ai-ti-sequence:${org}`);
+    const scenario = DEMO_SCENARIOS[org];
     const stages: { stage: string; mitre_tactic: string; mitre_id: string }[] = [
         { stage: 'Initial Access', mitre_tactic: 'Credential Access', mitre_id: 'T1110 (Brute Force)' },
         { stage: 'Valid Account Use', mitre_tactic: 'Persistence', mitre_id: 'T1078 (Valid Accounts)' },
@@ -65,35 +77,49 @@ function buildSequence(): SequenceStep[] {
     ];
     const base = Date.now() - 42 * 60_000;
     return stages.map((s, i) => ({
-        ...s, src_ip: i === 0 ? srcIp : demoSrc(), dst_ip: demoDst(), src_port: PORTS[i], dst_port: PORTS[i + 1] ?? 443,
-        protocol: 'TCP', at: base + i * 11 * 60_000, asset: ASSETS[i],
+        ...s, src_ip: i === 0 ? scenario.srcIp : demoSrc(r), dst_ip: i === 0 ? scenario.dstIp : demoDst(r), src_port: PORTS[i], dst_port: PORTS[i + 1] ?? 443,
+        protocol: 'TCP', at: base + i * 11 * 60_000, asset: i === 0 ? scenario.assetName : ASSETS[i],
     }));
 }
 
 interface Baseline { metric: string; baseline: number; observed: number; anomaly_score: number; confidence: 'low' | 'medium' | 'high'; unit: string }
-function buildBaselines(): Baseline[] {
+function buildBaselines(org: DemoOrgId): Baseline[] {
+    const r = seededRng(`ai-ti-baselines:${org}`);
     return [
-        { metric: 'Failed logins / hour', baseline: 3, observed: 27, anomaly_score: 88, confidence: 'high', unit: '' },
-        { metric: 'Distinct ports probed / host / hour', baseline: 2, observed: 19, anomaly_score: 74, confidence: 'medium', unit: '' },
-        { metric: 'Outbound data volume', baseline: 40, observed: 310, anomaly_score: 81, confidence: 'high', unit: 'MB' },
-        { metric: 'Off-hours authentications', baseline: 1, observed: 4, anomaly_score: 46, confidence: 'low', unit: '' },
+        { metric: 'Failed logins / hour', baseline: 3, observed: r.int(18, 32), anomaly_score: r.int(80, 94), confidence: 'high', unit: '' },
+        { metric: 'Distinct ports probed / host / hour', baseline: 2, observed: r.int(12, 24), anomaly_score: r.int(65, 80), confidence: 'medium', unit: '' },
+        { metric: 'Outbound data volume', baseline: 40, observed: r.int(220, 380), anomaly_score: r.int(72, 88), confidence: 'high', unit: 'MB' },
+        { metric: 'Off-hours authentications', baseline: 1, observed: r.int(2, 6), anomaly_score: r.int(35, 55), confidence: 'low', unit: '' },
     ];
 }
 
 const DemoBadge = () => <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-red/10 text-red tracking-wide">DEMO</span>;
 
 export function AiThreatIntelligenceDemo() {
-    const [feed, setFeed] = useState<FeedEvent[]>(() => Array.from({ length: 4 }, (_, i) => makeFeedEvent(i)));
+    const demoOrg = useSyncExternalStore(subscribeDemoMode, getDemoOrg, () => 'lapo' as DemoOrgId);
+    const [feed, setFeed] = useState<FeedEvent[]>(() => { const r = seededRng(`ai-ti-feed:${demoOrg}`); return Array.from({ length: 4 }, (_, i) => makeFeedEvent(r, i)); });
     const [cursor, setCursor] = useState(4);
     const [selected, setSelected] = useState<FeedEvent | null>(null);
     const [showSequence, setShowSequence] = useState(false);
-    const sequence = useMemo(() => buildSequence(), []);
-    const baselines = useMemo(() => buildBaselines(), []);
+    const [seededOrg, setSeededOrg] = useState(demoOrg);
+    const sequence = useMemo(() => buildSequence(demoOrg), [demoOrg]);
+    const baselines = useMemo(() => buildBaselines(demoOrg), [demoOrg]);
     const reducedMotion = useReducedMotion();
+
+    // Re-seeds the feed whenever the globally selected demo org changes, so this panel switches
+    // to that org's data immediately rather than only on next page load. Adjusting state during
+    // render (React's documented pattern for "reset state when a prop changes") rather than in an
+    // Effect, since setFeed/setCursor here are not synchronizing with any external system.
+    if (demoOrg !== seededOrg) {
+        setSeededOrg(demoOrg);
+        const r = seededRng(`ai-ti-feed:${demoOrg}`);
+        setFeed(Array.from({ length: 4 }, (_, i) => makeFeedEvent(r, i)));
+        setCursor(4);
+    }
 
     useEffect(() => {
         const id = setInterval(() => {
-            setFeed((f) => [makeFeedEvent(cursor), ...f].slice(0, 8));
+            setFeed((f) => [makeFeedEvent(seededRng(`ai-ti-live:${Date.now()}`), cursor), ...f].slice(0, 8));
             setCursor((c) => c + 1);
         }, 2000);
         return () => clearInterval(id);

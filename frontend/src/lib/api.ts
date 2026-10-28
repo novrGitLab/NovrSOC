@@ -2,6 +2,8 @@ import { getAuthToken } from './account';
 import { adminSignOut } from './admin-auth';
 import { portalSignOut } from './portal-auth';
 import { orgContextHeaderFor } from './orgContext';
+import { isDemoModeEnabled, getDemoOrg } from './demo/state';
+import { demoResponseFor } from './demo/router';
 
 // Base URL of the standalone NovrSOC backend (see /backend). All same-origin `/api/...`
 // fetch calls in this app are routed through apiUrl() so the origin lives in one place.
@@ -32,6 +34,15 @@ export function apiUrl(path: string): string {
 // route DOES start enforcing auth, every call site is already sending what it needs — no
 // second migration required.
 export async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+    // Demo Mode (lib/demo/) answers every /api/* call from synthetic, seeded data and NEVER
+    // falls through to the real network — not even for a path this file's router doesn't
+    // recognise (those get a generic empty-but-valid body) — so enabling it can never leak a
+    // real request to Wazuh, Supabase production, or any client endpoint. Checked first, before
+    // auth headers or org context are even built.
+    if (typeof window !== 'undefined' && isDemoModeEnabled()) {
+        return demoFetch(input, init);
+    }
+
     const token = getAuthToken();
     const headers = new Headers(init.headers);
     if (token) headers.set('Authorization', `Bearer ${token}`);
@@ -56,4 +67,27 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
     }
 
     return res;
+}
+
+// Builds a synthetic Response for Demo Mode. `input` is always a full apiUrl() string here, so
+// `new URL()` always succeeds; a malformed/relative input (shouldn't happen — every call site
+// goes through apiUrl()) falls back to a safe empty 200 rather than throwing, since Demo Mode
+// must never be the thing that crashes a screen.
+function demoFetch(input: string, init: RequestInit): Promise<Response> {
+    let pathname = '';
+    let search = new URLSearchParams();
+    try {
+        const u = new URL(input);
+        pathname = u.pathname;
+        search = u.searchParams;
+    } catch {
+        // leave pathname empty — demoResponseFor() won't match anything, so the generic
+        // empty-body fallback below still applies.
+    }
+    const body = demoResponseFor(pathname, search, init.method ?? 'GET', getDemoOrg()) ?? {};
+    const res = new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'X-Demo-Mode': '1' },
+    });
+    return Promise.resolve(res);
 }

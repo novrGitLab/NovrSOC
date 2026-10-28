@@ -10,12 +10,15 @@
 // the brief, nothing here infers a location from an address.
 import Link from 'next/link';
 import { ChevronRight, Map as MapIcon, Radio, X, ZoomIn, ZoomOut, AlertTriangle } from 'lucide-react';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { apiUrl, apiFetch } from '@/lib/api';
 import { NigeriaStateMap } from '@/components/features/ti/NigeriaStateMap';
 import { NIGERIA_STATE_PATHS } from '@/components/features/ti/nigeriaPaths';
 import { useReducedMotion } from '@/components/features/vms/ui';
 import type { MapData } from '@/lib/ti';
+import { seededRng } from '@/lib/demo/rng';
+import { getDemoOrg, subscribeDemoMode } from '@/lib/demo/state';
+import type { DemoOrgId } from '@/lib/demo/types';
 
 type Load = { state: 'loading' } | { state: 'ok'; data: MapData } | { state: 'error'; error: string };
 type Severity = 1 | 2 | 3 | 4;
@@ -30,28 +33,32 @@ const PORTS = [22, 3389, 443, 80, 8080, 445, 3306, 21, 23, 5900];
 
 // IANA-reserved documentation ranges (RFC 5737 / RFC 2544) — guaranteed not to be a real,
 // routable address, so a demo 5-tuple can never be mistaken for a real attacker or asset.
-function demoIp(rangeOctet: 113 | 100 | 2 | 18): string {
+type Rng = ReturnType<typeof seededRng>;
+function demoIp(r: Rng, rangeOctet: 113 | 100 | 2 | 18): string {
     const base = rangeOctet === 113 ? '203.0.113' : rangeOctet === 100 ? '198.51.100' : rangeOctet === 2 ? '192.0.2' : '198.18.0';
-    return `${base}.${1 + Math.floor(Math.random() * 253)}`;
+    return `${base}.${r.int(1, 254)}`;
 }
-function makeEvent(i: number): DemoEvent {
+function makeEvent(r: Rng, i: number): DemoEvent {
     return {
-        id: `demo-${i}-${Math.random().toString(36).slice(2, 8)}`,
-        src_ip: demoIp(113), dst_ip: demoIp(18),
-        src_port: PORTS[Math.floor(Math.random() * PORTS.length)], dst_port: PORTS[Math.floor(Math.random() * PORTS.length)],
-        protocol: Math.random() > 0.3 ? 'TCP' : 'UDP',
-        attack_type: ATTACK_TYPES[Math.floor(Math.random() * ATTACK_TYPES.length)],
+        id: `demo-${i}-${r.int(100000, 999999)}`,
+        src_ip: demoIp(r, 113), dst_ip: demoIp(r, 18),
+        src_port: r.pick(PORTS), dst_port: r.pick(PORTS),
+        protocol: r.bool(0.7) ? 'TCP' : 'UDP',
+        attack_type: r.pick(ATTACK_TYPES),
     };
 }
-/** One fixed-for-this-session synthetic severity + a small rotating event list per state — built
- * once (not re-randomised every render) so a selected state's events stay stable between ticks. */
-function buildDemoData(): Map<string, DemoState> {
+/** One fixed synthetic severity + a small rotating event list per state, seeded by the globally
+ * selected demo organisation — so switching org in the header's Demo Mode switcher changes this
+ * map too, instead of this component running its own disconnected random dataset. Same org +
+ * same state always reproduces the same severities and events (lib/demo/rng.ts). */
+function buildDemoData(org: DemoOrgId): Map<string, DemoState> {
     const out = new Map<string, DemoState>();
     for (const p of NIGERIA_STATE_PATHS) {
-        const r = Math.random();
-        const severity: Severity = r > 0.92 ? 4 : r > 0.75 ? 3 : r > 0.45 ? 2 : 1;
-        const count = severity * 4 + Math.floor(Math.random() * 4);
-        const events = Array.from({ length: severity + 1 }, (_, i) => makeEvent(i));
+        const r = seededRng(`nigeria-map:${org}:${p.name}`);
+        const roll = r.next();
+        const severity: Severity = roll > 0.92 ? 4 : roll > 0.75 ? 3 : roll > 0.45 ? 2 : 1;
+        const count = severity * 4 + r.int(0, 3);
+        const events = Array.from({ length: severity + 1 }, (_, i) => makeEvent(r, i));
         out.set(p.name === 'Nassarawa' ? 'Nasarawa' : p.name, { severity, count, events });
     }
     return out;
@@ -64,7 +71,8 @@ export function DashboardNigeriaMap({ title = 'Nigeria Threat Map', description,
     const [zoom, setZoom] = useState(1);
     const [eventIdx, setEventIdx] = useState(0);
     const reducedMotion = useReducedMotion();
-    const demo = useMemo(() => buildDemoData(), []); // one fixed synthetic dataset per page load, not re-rolled on every render
+    const demoOrg = useSyncExternalStore(subscribeDemoMode, getDemoOrg, () => 'lapo' as DemoOrgId);
+    const demo = useMemo(() => buildDemoData(demoOrg), [demoOrg]);
 
     useEffect(() => {
         let active = true;
