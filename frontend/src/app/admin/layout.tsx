@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AdminSidebar } from '@/components/layout/AdminSidebar';
 import { Header } from '@/components/layout/Header';
+import { DemoBanner } from '@/components/layout/DemoBanner';
 import { HelpAssistant } from '@/components/shared/HelpAssistant';
 import { isAdminAuthenticated, adminSignOut, getAdminUser } from '@/lib/admin-auth';
 import { PresenceHeartbeat, announceSignOut } from '@/components/layout/PresenceHeartbeat';
@@ -43,6 +44,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             <AdminSidebar mobileOpen={navOpen} onClose={() => setNavOpen(false)} user={user} onLogout={signOut} />
 
             <div className="lg:ml-[260px] flex flex-1 min-w-0 min-h-screen flex-col">
+                <DemoBanner />
                 <Header initials={initials} name={user.name} email={user.email} role={user.role} onSignOut={signOut} onMenu={() => setNavOpen(true)} settingsHref={SETTINGS_HREF[user.role]} />
                 <main className="flex-1 min-w-0 p-4 sm:p-6 overflow-y-auto">{children}</main>
             </div>

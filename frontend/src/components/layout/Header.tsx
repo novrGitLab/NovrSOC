@@ -7,6 +7,7 @@ import { Logo } from '@/components/shared/Logo';
 import { GlobalSearch } from './GlobalSearch';
 import { HeaderStatus } from './HeaderStatus';
 import { OrgSwitcher } from './OrgSwitcher';
+import { DemoModeSwitcher } from './DemoModeSwitcher';
 import { UserMenu } from './UserMenu';
 import { useTheme } from '@/components/providers/ThemeProvider';
 import { apiUrl, apiFetch } from '@/lib/api';
@@ -127,6 +128,7 @@ export function Header({ initials, name, email, role, onSignOut, onMenu, setting
                 {/* Staff-only; renders nothing for a client session or a staff account with
                     access to only one organisation (lib/orgContext.ts). */}
                 <OrgSwitcher />
+                <DemoModeSwitcher />
                 <div className="hidden xl:block">
                     <HeaderStatus role={role} />
                 </div>
