@@ -111,12 +111,12 @@ export function DashboardNigeriaMap({ title = 'Nigeria Threat Map', description,
             <div className="p-4 flex items-center justify-between gap-2 flex-wrap">
                 <div>
                     <p className="text-xs font-black text-foreground flex items-center gap-1.5"><MapIcon size={13} aria-hidden /> {title}</p>
-                    <p className="text-[10px] text-foreground-muted">{description ?? (mode === 'live' ? 'Indicator infrastructure hosted or matched in Nigeria, last 30 days · hosting is not an attack origin' : 'Simulated state threat activity for demonstration — see the DEMO badge below')}</p>
+                    <p className="text-[10px] text-foreground-muted">{description ?? (mode === 'live' ? 'Indicator infrastructure hosted or matched in Nigeria, last 30 days · hosting is not an attack origin' : 'Illustrative state threat activity — see the SAMPLE badge below')}</p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                     <div className="flex gap-1 bg-card-muted rounded-lg p-0.5">
                         {(['demo', 'live'] as const).map((m) => (
-                            <button key={m} onClick={() => { setMode(m); setSelected(null); }} className={`text-[10px] font-bold px-2 py-1 rounded-md ${mode === m ? 'bg-blue text-white' : 'text-foreground-muted'}`}>{m === 'demo' ? 'Demo' : 'Live'}</button>
+                            <button key={m} onClick={() => { setMode(m); setSelected(null); }} className={`text-[10px] font-bold px-2 py-1 rounded-md ${mode === m ? 'bg-blue text-white' : 'text-foreground-muted'}`}>{m === 'demo' ? 'Sample' : 'Live'}</button>
                         ))}
                     </div>
                     {context === 'dashboard' && <Link href="/admin/ti/map" className="flex items-center gap-1 text-[10px] font-bold text-blue hover:underline">Open TI <ChevronRight size={12} /></Link>}
@@ -126,7 +126,7 @@ export function DashboardNigeriaMap({ title = 'Nigeria Threat Map', description,
             {mode === 'demo' && (
                 <div className="mx-4 mb-2 rounded-lg border border-amber/40 bg-amber/10 px-3 py-1.5 flex items-center gap-1.5">
                     <AlertTriangle className="w-3.5 h-3.5 text-amber shrink-0" aria-hidden />
-                    <p className="text-[10px] font-bold text-amber">DEMO MODE — every state severity and network event below is simulated for demonstration. None of it is a real threat.</p>
+                    <p className="text-[10px] font-bold text-amber">SAMPLE DATA — every state severity and network event below is illustrative. None of it is a real threat.</p>
                 </div>
             )}
 
@@ -142,7 +142,7 @@ export function DashboardNigeriaMap({ title = 'Nigeria Threat Map', description,
                             <button onClick={() => setZoom((z) => Math.max(1, z - 0.25))} aria-label="Zoom out" className="bg-card border border-border rounded-md p-1 hover:bg-card-muted"><ZoomOut className="w-3.5 h-3.5" /></button>
                         </div>
                         <div style={{ transform: `scale(${zoom})`, transformOrigin: 'center top', transition: reducedMotion ? undefined : 'transform 150ms ease-out' }}>
-                            <NigeriaStateMap counts={counts} layer={mode === 'live' ? 'other' : 'other'} countLabel={mode === 'live' ? 'hosted + matched' : 'simulated threat event(s)'} selected={selected} onSelect={(s) => setSelected((cur) => (cur === s ? null : s))} compact shades="severity" />
+                            <NigeriaStateMap counts={counts} layer={mode === 'live' ? 'other' : 'other'} countLabel={mode === 'live' ? 'hosted + matched' : 'illustrative threat event(s)'} selected={selected} onSelect={(s) => setSelected((cur) => (cur === s ? null : s))} compact shades="severity" />
                         </div>
                     </>
                 )}
@@ -154,7 +154,7 @@ export function DashboardNigeriaMap({ title = 'Nigeria Threat Map', description,
                             <button onClick={() => setSelected(null)} aria-label="Close" className="text-foreground-muted hover:text-foreground"><X className="w-3.5 h-3.5" /></button>
                         </div>
                         {mode === 'live' ? (
-                            <p className="text-[11px] text-foreground-muted">{realCounts.get(selected) ?? 0} hosted/matched record(s) — no live per-event detail for this real layer. Switch to Demo Mode to see simulated event detail, or open the full Threat Intelligence map for real source reports.</p>
+                            <p className="text-[11px] text-foreground-muted">{realCounts.get(selected) ?? 0} hosted/matched record(s) — no live per-event detail for this real layer. Switch to the Sample view to see illustrative event detail, or open the full Threat Intelligence map for real source reports.</p>
                         ) : selectedDemo && (
                             <>
                                 <div className="flex items-center gap-2">
@@ -162,17 +162,17 @@ export function DashboardNigeriaMap({ title = 'Nigeria Threat Map', description,
                                         {!reducedMotion && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red opacity-60" />}
                                         <span className="relative inline-flex h-2 w-2 rounded-full bg-red" />
                                     </span>
-                                    <span className="text-[10px] font-bold text-red">DEMO · {selectedDemo.count} simulated event(s)</span>
+                                    <span className="text-[10px] font-bold text-red">SAMPLE · {selectedDemo.count} illustrative event(s)</span>
                                     <span className={`text-[10px] font-bold ml-auto ${SEVERITY_COLOR[selectedDemo.severity]}`}>{SEVERITY_LABEL[selectedDemo.severity]}</span>
                                 </div>
                                 {currentEvent && (
                                     <div className="rounded-lg bg-card-muted p-2 text-[11px] space-y-1">
-                                        <p className="font-bold text-foreground flex items-center justify-between"><span>{currentEvent.attack_type}</span><span className="text-[9px] text-foreground-muted font-normal">just now (demo)</span></p>
+                                        <p className="font-bold text-foreground flex items-center justify-between"><span>{currentEvent.attack_type}</span><span className="text-[9px] text-foreground-muted font-normal">just now (sample)</span></p>
                                         <p className="font-mono text-foreground-muted">{currentEvent.src_ip}:{currentEvent.src_port} → {currentEvent.dst_ip}:{currentEvent.dst_port}</p>
                                         <p className="text-foreground-muted">Protocol: <span className="font-mono text-foreground">{currentEvent.protocol}</span></p>
                                     </div>
                                 )}
-                                <p className="text-[9px] text-foreground-muted flex items-center gap-1"><Radio className="w-3 h-3" aria-hidden /> Cycling every 2s · simulated data, not a real feed</p>
+                                <p className="text-[9px] text-foreground-muted flex items-center gap-1"><Radio className="w-3 h-3" aria-hidden /> Cycling every 2s · sample data, not a real feed</p>
                             </>
                         )}
                     </div>

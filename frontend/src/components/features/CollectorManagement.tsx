@@ -105,7 +105,7 @@ export function CollectorManagement() {
         <div className="space-y-4">
             <div>
                 <h1 className="text-lg font-black text-foreground flex items-center gap-2"><Server className="w-5 h-5" /> Collector Management</h1>
-                <p className="text-xs text-foreground-muted">Client-site log collectors (syslog TCP/UDP/TLS) forwarding into NovrSOC. Raw logs, not scored alerts — see docs/collector-v1/WAZUH_COMPATIBILITY.md.</p>
+                <p className="text-xs text-foreground-muted">Client-site log collectors (syslog TCP/UDP/TLS) forwarding into NovrSOC. Raw logs, not scored alerts — compatible with the security monitoring engine's log format.</p>
             </div>
             <div className="flex gap-1 bg-card border border-border rounded-lg p-1">
                 {([['overview', 'Overview', Activity], ['collectors', 'Collectors', Server], ['enroll', 'New collector', Plus]] as const).map(([k, label, Icon]) => (

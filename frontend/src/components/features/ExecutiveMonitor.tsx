@@ -213,7 +213,7 @@ export function ExecutiveMonitor() {
                         { icon: '🔓', name: 'Email Breach Check', desc: 'XposedOrNot', available: capabilities.breach_check },
                         { icon: '📱', name: 'Social Media Check', desc: 'Handles you add per executive', available: true },
                         { icon: '🌑', name: 'Dark Web Mentions', desc: 'Requires Flare.io', available: capabilities.darkweb },
-                        { icon: '🚨', name: 'Auth Anomalies', desc: 'Requires Wazuh', available: capabilities.wazuh },
+                        { icon: '🚨', name: 'Auth Anomalies', desc: 'Requires the security monitoring engine', available: capabilities.wazuh },
                     ].map((c) => (
                         <div key={c.name} className={`rounded-lg border p-3 ${c.available ? 'border-border bg-card' : 'border-border bg-card-muted/40'}`}>
                             <div className="flex items-center gap-2 mb-1">
@@ -284,7 +284,7 @@ export function ExecutiveMonitor() {
                                             </button>
                                         </div>
                                         <p className="text-foreground-muted">Last scanned: {exec.last_scanned ? new Date(exec.last_scanned).toLocaleString() : 'Never'}</p>
-                                        <p className="text-foreground-muted">Auth Anomalies: {capabilities.wazuh ? 'Monitoring' : 'Wazuh offline'}</p>
+                                        <p className="text-foreground-muted">Auth Anomalies: {capabilities.wazuh ? 'Monitoring' : 'Monitoring engine offline'}</p>
                                         {exec.auth_anomalies.length > 0 && (
                                             <div className="space-y-1">
                                                 {exec.auth_anomalies.map((a, i) => (
@@ -340,7 +340,7 @@ export function ExecutiveMonitor() {
             {!capabilities.wazuh && (
                 <div>
                     <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider mb-2">Auth Anomalies</p>
-                    <EmptyState icon={ShieldQuestion} title="No login anomalies" description="Connect Wazuh to see login anomalies for monitored executives." actionLabel="Configure Sensors" actionHref="/admin/infra/assets" />
+                    <EmptyState icon={ShieldQuestion} title="No login anomalies" description="Connect the security monitoring engine to see login anomalies for monitored executives." actionLabel="Configure Sensors" actionHref="/admin/infra/assets" />
                 </div>
             )}
 
@@ -354,7 +354,7 @@ export function ExecutiveMonitor() {
                     </div>
                     <div className="flex items-center justify-between border-b border-border pb-2">
                         <span className="flex items-center gap-2 text-foreground">{capabilities.wazuh ? <CheckCircle size={14} className="text-blue" /> : <span className="text-red-500 font-bold">✗</span>} Auth Anomaly Detection</span>
-                        <span className="text-foreground-muted">{capabilities.wazuh ? 'Active' : 'Requires Wazuh · Setup Linode'}</span>
+                        <span className="text-foreground-muted">{capabilities.wazuh ? 'Active' : 'Requires the security monitoring engine'}</span>
                     </div>
                     <div className="flex items-center justify-between">
                         <span className="flex items-center gap-2 text-foreground">{capabilities.darkweb ? <CheckCircle size={14} className="text-blue" /> : <span className="text-red-500 font-bold">✗</span>} Dark Web Monitoring</span>

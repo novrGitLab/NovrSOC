@@ -142,8 +142,8 @@ export function VmsReport({ endpoint = '/api/vms/report', exports = true, findin
                 <>
                     <p className="text-xs text-foreground-muted">Period: {fmtWat(data.period.from)} to {fmtWat(data.period.to)} ({data.period.days} days). Counted from stored records when this page was opened.
                         {data.wazuh_freshness && (data.wazuh_freshness.last_complete_at
-                            ? ` Wazuh vulnerability data as of ${fmtWat(data.wazuh_freshness.last_complete_at)}.`
-                            : ' Wazuh vulnerability sync has not completed for this organisation.')}
+                            ? ` Monitoring engine vulnerability data as of ${fmtWat(data.wazuh_freshness.last_complete_at)}.`
+                            : ' Monitoring engine vulnerability sync has not completed for this organisation.')}
                     </p>
 
                     {mode === 'executive' ? (
@@ -195,11 +195,11 @@ export function VmsReport({ endpoint = '/api/vms/report', exports = true, findin
                                     <h2 className="text-sm font-black text-foreground">Verified closure</h2>
                                     {!data.closure.available ? <p className="text-foreground-muted">{data.closure.note}</p> : (
                                         <>
-                                            <p>Verified fixed by evidence: {data.closure.verified_by_rescan + data.closure.verified_by_wazuh} ({data.closure.verified_by_rescan} by a verification rescan that reached the target, {data.closure.verified_by_wazuh} by a complete Wazuh sync that no longer reports them).</p>
+                                            <p>Verified fixed by evidence: {data.closure.verified_by_rescan + data.closure.verified_by_wazuh} ({data.closure.verified_by_rescan} by a verification rescan that reached the target, {data.closure.verified_by_wazuh} by a complete monitoring sync that no longer reports them).</p>
                                             <p>Marked fixed by people: {data.closure.marked_fixed_by_people} — a claim until verified; {data.closure.awaiting_verification_now ?? 'unknown'} awaiting verification now; {data.closure.verification_inconclusive} verification attempt(s) proved nothing (scan failed or did not reach the target).</p>
                                             <p>Remediation tasks completed: {data.closure.tasks_completed.total} on {data.closure.tasks_completed.findings} finding(s), of which {data.closure.tasks_completed.findings_verified} verified and {data.closure.tasks_completed.findings_not_verified} not verified. A completed task is not a verified fix.</p>
                                             <p>Closed without a fix: {data.closure.closed_without_fix.risk_accepted} risk accepted, {data.closure.closed_without_fix.false_positive} false positive. Reopened after verification: {data.closure.reopened_after_verification}.</p>
-                                            {data.closure.verified_examples.slice(0, 10).map((e) => <p key={`${e.finding_id}-${e.at}`} className="text-foreground-muted">✓ <Link href={`${findingsPath}?id=${e.finding_id}`} className="text-blue">{e.title ?? e.finding_id}</Link>{e.asset ? ` · ${e.asset}` : ''} · {e.how === 'rescan' ? 'rescan' : e.how === 'wazuh' ? 'Wazuh' : e.how} · {fmtWat(e.at)}{e.evidence ? ` — ${e.evidence}` : ''}</p>)}
+                                            {data.closure.verified_examples.slice(0, 10).map((e) => <p key={`${e.finding_id}-${e.at}`} className="text-foreground-muted">✓ <Link href={`${findingsPath}?id=${e.finding_id}`} className="text-blue">{e.title ?? e.finding_id}</Link>{e.asset ? ` · ${e.asset}` : ''} · {e.how === 'rescan' ? 'rescan' : e.how === 'wazuh' ? 'monitoring engine' : e.how} · {fmtWat(e.at)}{e.evidence ? ` — ${e.evidence}` : ''}</p>)}
                                         </>
                                     )}
                                 </div>
@@ -207,7 +207,7 @@ export function VmsReport({ endpoint = '/api/vms/report', exports = true, findin
                             {data.coverage && (
                                 <div className={section}>
                                     <h2 className="text-sm font-black text-foreground">Assessment coverage</h2>
-                                    <p>Inventory now: {data.coverage.inventory.wazuh_endpoints} Wazuh endpoint(s), {data.coverage.inventory.external_assets} external asset(s).</p>
+                                    <p>Inventory now: {data.coverage.inventory.wazuh_endpoints} monitored endpoint(s), {data.coverage.inventory.external_assets} external asset(s).</p>
                                     <p>Assets whose latest check fell in the period: {data.coverage.latest_checks.total}, of which {data.coverage.latest_checks.reached} reached ({pairs(data.coverage.latest_checks.by_outcome)}). No route and unreachable are not assessments.</p>
                                     {data.coverage.full_assessments.available
                                         ? <p>Full Assessments: {data.coverage.full_assessments.total} ({pairs(data.coverage.full_assessments.by_status)}); checks: {pairs(data.coverage.full_assessments.checks_by_status)}; started by: {pairs(data.coverage.full_assessments.by_trigger)}.</p>

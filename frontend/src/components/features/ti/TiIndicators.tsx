@@ -22,7 +22,7 @@ import { VERDICT_LABEL, MATCH_STATUS_STYLE, entityHref, ago, FEED_NAME, type TiI
 type Row = TiIndicator & { labels_hidden?: boolean };
 interface Detail { indicator: Row; sources: TiSource[]; sources_hidden: number; matches: TiMatch[]; feedback: TiFeedback[]; location: TiLocation | null }
 const TYPES = [['', 'All types'], ['ip', 'IP address'], ['domain', 'Domain'], ['url', 'URL'], ['sha256', 'SHA-256'], ['sha1', 'SHA-1'], ['md5', 'MD5'], ['cve', 'CVE']] as const;
-const FEEDS = [['', 'All sources'], ['threatfox', 'ThreatFox'], ['urlhaus', 'URLhaus'], ['feodo', 'Feodo Tracker'], ['misp', 'MISP'], ['cisa_kev', 'CISA KEV']] as const;
+const FEEDS = [['', 'All sources'], ['threatfox', 'IOC Corroboration Feed'], ['urlhaus', 'Malicious URL Feed'], ['feodo', 'Botnet C2 Feed'], ['misp', 'Threat Intelligence Feed'], ['cisa_kev', 'CISA KEV']] as const;
 const TLPS = [['', 'Any marking'], ['clear', 'TLP:CLEAR'], ['green', 'TLP:GREEN'], ['amber', 'TLP:AMBER'], ['amber+strict', 'TLP:AMBER+STRICT'], ['red', 'TLP:RED']] as const;
 const SORTS = [['last_seen', 'Last seen'], ['created_at', 'Added to the platform'], ['first_seen', 'First seen'], ['source_count', 'Most sources'], ['max_confidence', 'Source confidence']] as const;
 
@@ -149,7 +149,7 @@ function IndicatorDrawer({ id, onClose, onOpen }: { id: string | null; onClose: 
                                     <li key={s.id} className="rounded-xl border border-border p-3">
                                         <div className="flex items-center justify-between gap-2 flex-wrap">
                                             <Citation feed={s.feed_id} sourceRef={s.source_ref} at={s.last_seen} now={now} />
-                                            <span className="flex items-center gap-1.5"><TlpBadge tlp={s.tlp} />{s.distribution !== null && s.distribution !== undefined && <Tag title="MISP distribution level">dist {s.distribution}</Tag>}</span>
+                                            <span className="flex items-center gap-1.5"><TlpBadge tlp={s.tlp} />{s.distribution !== null && s.distribution !== undefined && <Tag title="Threat intelligence distribution level">dist {s.distribution}</Tag>}</span>
                                         </div>
                                         <p className="text-[11px] text-foreground mt-1.5">
                                             {[text('threat_type'), text('malware') ? `malware ${text('malware')}` : null, text('event_info'), text('comment')].filter(Boolean).join(' · ') || 'No further detail from this source.'}

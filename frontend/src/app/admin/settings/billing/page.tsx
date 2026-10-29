@@ -115,7 +115,7 @@ export default function BillingPage() {
                     { label: 'Total Clients', value: clientCount, sub: 'organisations table', tone: 'text-purple' },
                     { label: 'Platform Users', value: userCount, sub: 'across all organisations', tone: 'text-foreground' },
                     { label: 'Open Cases', value: incidents?.active ?? null, sub: 'analyst queue, unresolved', tone: 'text-amber' },
-                    { label: 'Alerts (30d)', value: alertCount, sub: 'Wazuh indexer', tone: 'text-blue' },
+                    { label: 'Alerts (30d)', value: alertCount, sub: 'monitoring engine index', tone: 'text-blue' },
                 ].map((s) => (
                     <div key={s.label} className="bg-card border border-border rounded-xl p-4">
                         <p className="text-[10px] font-bold text-foreground-muted uppercase tracking-wider">{s.label}</p>

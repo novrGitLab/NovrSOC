@@ -93,7 +93,7 @@ function buildBaselines(org: DemoOrgId): Baseline[] {
     ];
 }
 
-const DemoBadge = () => <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-red/10 text-red tracking-wide">DEMO</span>;
+const DemoBadge = () => <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-red/10 text-red tracking-wide">PREVIEW</span>;
 
 export function AiThreatIntelligenceDemo() {
     const demoOrg = useSyncExternalStore(subscribeDemoMode, getDemoOrg, () => 'lapo' as DemoOrgId);
@@ -130,7 +130,7 @@ export function AiThreatIntelligenceDemo() {
         <div className="space-y-4">
             <div className="rounded-xl border border-amber/40 bg-amber/10 px-3 py-2 flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber shrink-0 mt-0.5" aria-hidden />
-                <p className="text-[11px] text-amber font-semibold">DEMO / SIMULATED — behavioral baselines, anomaly scores, the correlation sequence and every event below are synthetic, generated in your browser for demonstration. None of this is read from, or written into, real alerts, cases or incident records. The AI Q&amp;A and threat/Nigeria briefings above this section are the platform&apos;s real AI capability and are unaffected.</p>
+                <p className="text-[11px] text-amber font-semibold">CAPABILITY PREVIEW — behavioral baselines, anomaly scores, the correlation sequence and every event below are illustrative, generated in your browser to preview this capability. None of this is read from, or written into, real alerts, cases or incident records. The AI Q&amp;A and threat/Nigeria briefings above this section are the platform&apos;s real AI capability and are unaffected.</p>
             </div>
 
             {/* Behavioral analysis */}
@@ -225,7 +225,7 @@ export function AiThreatIntelligenceDemo() {
                             <p className="font-mono text-foreground-muted">{selected.src_ip}:{selected.src_port} → {selected.dst_ip}:{selected.dst_port} ({selected.protocol})</p>
                             <p className="text-foreground-muted">Asset: {selected.asset} · Confidence: {selected.confidence}</p>
                         </div>
-                        <p className="text-[9px] text-foreground-muted">Simulated event — not a real investigation artifact. Use the AI Q&amp;A above for a real, cited answer about actual stored intelligence.</p>
+                        <p className="text-[9px] text-foreground-muted">Illustrative event — not a real investigation artifact. Use the AI Q&amp;A above for a real, cited answer about actual stored intelligence.</p>
                     </div>
                 </div>
             )}

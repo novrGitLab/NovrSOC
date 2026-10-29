@@ -133,7 +133,7 @@ export function AttackSurfaceMap({ assetId, onOpenAsset }: { assetId: string; on
                 })}
             </svg>
             {graph.truncated && <p className="text-amber">The map shows the first 300 related items.</p>}
-            {graph.edges.length === 0 && <p className="text-foreground-muted">No stored relationships yet: run discovery or a port scan, or wait for the Wazuh sync.</p>}
+            {graph.edges.length === 0 && <p className="text-foreground-muted">No stored relationships yet: run discovery or a port scan, or wait for the monitoring sync.</p>}
             {selected && (
                 <div className="border border-border rounded-lg p-2 space-y-1">
                     <p className="font-bold text-foreground">{selected.label} <span className="text-foreground-muted font-normal">· {selected.kind}{selected.asset_type ? ` (${selected.asset_type})` : ''}</span></p>

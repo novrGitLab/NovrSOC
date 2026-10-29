@@ -12,7 +12,7 @@ export function demoCollectors(org: DemoOrgId) {
         id: demoCollectorId(org), name: `${DEMO_ORGS[org].name.toLowerCase()}-site-1-demo`, status: 'connected' as const, effective_status: 'connected' as const,
         token_prefix: 'demo1234', vector_version: '0.60.0', last_heartbeat_at: ago(1), last_ip: '198.18.1.1',
         last_events_received: r.int(400, 900), last_events_forwarded: r.int(390, 890), last_delivery_failures: r.int(0, 2), last_buffer_pct: r.int(2, 18),
-        config_version: 1, created_by: 'SOC Manager (Demo)', created_at: ago(60 * 24 * 7), enrollment_expires_at: null,
+        config_version: 1, created_by: 'SOC Manager (Sample)', created_at: ago(60 * 24 * 7), enrollment_expires_at: null,
     }]));
 }
 
@@ -38,7 +38,7 @@ export function demoCollectorEvents(org: DemoOrgId) {
         events: [
             {
                 id: `demo-${org}-event-0`, source_key: 'syslog_tcp', host: s.srcIp, received_at: ago(2), event_time: ago(2),
-                message: `[DEMO] <134>firewall: action=block proto=${s.protocol} src=${s.srcIp}:${s.srcPort} dst=${s.dstIp}:${s.dstPort}`, truncated: false,
+                message: `[SAMPLE] <134>firewall: action=block proto=${s.protocol} src=${s.srcIp}:${s.srcPort} dst=${s.dstIp}:${s.dstPort}`, truncated: false,
             },
             ...Array.from({ length: 8 }, (_, i) => {
                 const srcIp = `198.51.100.${r.int(10, 250)}`;
@@ -48,7 +48,7 @@ export function demoCollectorEvents(org: DemoOrgId) {
                 const proto = r.pick(['TCP', 'UDP']);
                 return {
                     id: `demo-${org}-event-${i + 1}`, source_key: r.pick(['syslog_tcp', 'syslog_udp']), host: srcIp, received_at: ago(5 + i * 7), event_time: ago(5 + i * 7),
-                    message: `[DEMO] <134>firewall: action=${r.pick(['pass', 'block', 'reject'])} proto=${proto} src=${srcIp}:${srcPort} dst=${dstIp}:${dstPort}`, truncated: false,
+                    message: `[SAMPLE] <134>firewall: action=${r.pick(['pass', 'block', 'reject'])} proto=${proto} src=${srcIp}:${srcPort} dst=${dstIp}:${dstPort}`, truncated: false,
                 };
             }),
         ],

@@ -837,7 +837,7 @@ export function CtiPlatform() {
                     </div>
 
                     <div className="flex items-center gap-4 text-xs text-foreground-muted">
-                        <span>Wazuh Auto-Detected: <span className="font-bold text-foreground">{orgSummary?.wazuh_sourced ?? 0}</span></span>
+                        <span>Monitoring Auto-Detected: <span className="font-bold text-foreground">{orgSummary?.wazuh_sourced ?? 0}</span></span>
                         <span>Analyst Added: <span className="font-bold text-foreground">{orgSummary?.analyst_added ?? 0}</span></span>
                     </div>
 
@@ -860,7 +860,7 @@ export function CtiPlatform() {
                         <select value={orgFilter.source} onChange={(e) => setOrgFilter((f) => ({ ...f, source: e.target.value }))}
                             className="bg-card border border-border rounded-lg px-3 py-2 text-xs text-foreground focus:outline-none focus:border-purple">
                             <option value="">All Sources</option>
-                            <option value="wazuh">Wazuh</option>
+                            <option value="wazuh">Monitoring engine</option>
                             <option value="analyst">Analyst</option>
                         </select>
                         <input value={orgSearch} onChange={(e) => setOrgSearch(e.target.value)} placeholder="Search value…"
@@ -908,7 +908,7 @@ export function CtiPlatform() {
                                             </tr>
                                         ))}
                                         {orgIocs.length === 0 && (
-                                            <tr><td colSpan={9} className="px-4 py-10 text-center text-foreground-muted">No IOCs yet — they&apos;ll appear here automatically as Wazuh alerts come in, or add one manually.</td></tr>
+                                            <tr><td colSpan={9} className="px-4 py-10 text-center text-foreground-muted">No IOCs yet — they&apos;ll appear here automatically as monitoring alerts come in, or add one manually.</td></tr>
                                         )}
                                     </tbody>
                                 </table>
@@ -975,14 +975,14 @@ export function CtiPlatform() {
             {activeTab === 'intel-feed' && (() => {
                 type FeedEntry = { value: string; type: OrgIOCType; verdict: OrgVerdict; time: string; source: string };
                 const combined: FeedEntry[] = [
-                    ...orgIocs.map((i): FeedEntry => ({ value: i.value, type: i.type, verdict: i.verdict, time: i.last_seen, source: i.source === 'wazuh' ? 'Wazuh alert' : 'Manual add' })),
+                    ...orgIocs.map((i): FeedEntry => ({ value: i.value, type: i.type, verdict: i.verdict, time: i.last_seen, source: i.source === 'wazuh' ? 'Monitoring alert' : 'Manual add' })),
                     ...sharedIocs.map((i): FeedEntry => ({ value: i.value, type: i.type, verdict: i.verdict, time: new Date().toISOString(), source: 'Shared from community' })),
                     ...feed.slice(0, 15).map((i): FeedEntry => ({ value: i.ioc_value, type: i.ioc_type, verdict: verdictFromScore(i.risk_score), time: i.last_seen, source: 'External feed lookup' })),
                 ].sort((a, b) => (b.time > a.time ? 1 : -1));
 
                 const today = new Date().toISOString().slice(0, 10);
                 const todayCount = combined.filter((c) => c.time.startsWith(today)).length;
-                const wazuhCount = combined.filter((c) => c.source === 'Wazuh alert').length;
+                const wazuhCount = combined.filter((c) => c.source === 'Monitoring alert').length;
                 const externalCount = combined.filter((c) => c.source === 'External feed lookup').length;
                 const communityCount = combined.filter((c) => c.source === 'Shared from community').length;
 
@@ -1003,7 +1003,7 @@ export function CtiPlatform() {
                         <div className="flex items-center justify-between flex-wrap gap-3">
                             <div className="flex items-center gap-4 text-xs">
                                 <span className="text-foreground-muted">Today: <span className="font-bold text-foreground">{todayCount}</span></span>
-                                <span className="text-foreground-muted">From Wazuh: <span className="font-bold text-foreground">{wazuhCount}</span></span>
+                                <span className="text-foreground-muted">From Monitoring: <span className="font-bold text-foreground">{wazuhCount}</span></span>
                                 <span className="text-foreground-muted">From Feeds: <span className="font-bold text-foreground">{externalCount}</span></span>
                                 <span className="text-foreground-muted">From Community: <span className="font-bold text-foreground">{communityCount}</span></span>
                             </div>
@@ -1015,7 +1015,7 @@ export function CtiPlatform() {
                         {combined.length === 0 ? (
                             <div className="bg-card border border-border rounded-xl p-10 text-center">
                                 <Rss size={36} className="text-border mx-auto mb-3" />
-                                <div className="text-sm text-foreground-muted">No IOCs yet — this aggregates Wazuh alerts, manual adds, shared community IOCs, and external feed lookups.</div>
+                                <div className="text-sm text-foreground-muted">No IOCs yet — this aggregates monitoring alerts, manual adds, shared community IOCs, and external feed lookups.</div>
                             </div>
                         ) : (
                             <div className="space-y-1.5">

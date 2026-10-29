@@ -112,7 +112,7 @@ export interface MispCheck { checked_at: string; configured: boolean; reachable:
 
 export const TLP_LABEL: Record<Tlp, string> = { clear: 'TLP:CLEAR', green: 'TLP:GREEN', amber: 'TLP:AMBER', 'amber+strict': 'TLP:AMBER+STRICT', red: 'TLP:RED' };
 export const FEED_NAME: Record<string, string> = {
-    threatfox: 'ThreatFox', urlhaus: 'URLhaus', feodo: 'Feodo Tracker', cisa_kev: 'CISA KEV', misp: 'MISP', misp_events: 'MISP events', opencti: 'OpenCTI (retired)',
+    threatfox: 'IOC Corroboration Feed', urlhaus: 'Malicious URL Feed', feodo: 'Botnet C2 Feed', cisa_kev: 'CISA KEV', misp: 'Threat Intelligence Feed', misp_events: 'Threat Intelligence Events', opencti: 'Legacy Threat Feed (retired)',
 };
 /** "3 h ago", "2 d ago" — for freshness, next to the exact time. */
 export function ago(iso: string | null | undefined, now: number): string {

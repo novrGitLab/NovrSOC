@@ -167,7 +167,7 @@ export function WebsiteScanning() {
                                             scanType === t ? 'bg-card text-blue shadow-sm border border-border' : 'text-foreground-muted hover:text-foreground'
                                         }`}
                                     >
-                                        {t === 'quick' ? 'Quick (SSL + DNS + RDAP)' : 'Full (+ Nuclei/Nmap)'}
+                                        {t === 'quick' ? 'Quick (SSL + DNS + RDAP)' : 'Full (+ vulnerability scanning)'}
                                     </button>
                                 ))}
                             </div>
@@ -191,7 +191,7 @@ export function WebsiteScanning() {
                         <Zap size={18} className="text-purple flex-shrink-0" />
                         <div className="flex-1 min-w-[200px]">
                             <div className="text-sm font-semibold text-foreground">Full DAST Vulnerability Scanning</div>
-                            <div className="text-xs text-foreground-muted">Nuclei (5000+ templates) + Nmap port scanning — requires EC2-4 Scanner instance. Coming when AWS is provisioned.</div>
+                            <div className="text-xs text-foreground-muted">Template-based vulnerability scanning (5000+ checks) + port scanning — requires a dedicated scanner instance. Coming when cloud infrastructure is provisioned.</div>
                         </div>
                         <span className="text-[10px] font-bold bg-purple/10 text-purple px-2 py-1 rounded-full whitespace-nowrap">COMING SOON</span>
                     </div>

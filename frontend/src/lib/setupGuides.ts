@@ -36,13 +36,13 @@ export const GUIDES: Record<GuideId, Guide> = {
     opnsense: {
         title: 'OPNsense Setup',
         subtitle: 'Network · Connect the perimeter firewall',
-        intro: 'OPNsense firewall events reach NovrSOC through the Wazuh manager in one of two ways. Syslog (remote logging over WireGuard to the manager on UDP 514) arrives as the manager itself: map the firewall sender address to its organisation in Settings → Wazuh Groups → Syslog sources, or its alerts stay quarantined. Or enrol it as an agent with the os-wazuh-agent plugin (steps below) and put the agent in a group mapped to the organisation. NovrSOC blocks IPs through the OPNsense API either way.',
+        intro: 'OPNsense firewall events reach NovrSOC through the security monitoring engine in one of two ways. Syslog (remote logging over WireGuard to the manager on UDP 514) arrives as the manager itself: map the firewall sender address to its organisation in Settings → Monitoring Groups → Syslog sources, or its alerts stay quarantined. Or enrol it as an agent with the os-wazuh-agent plugin (steps below) and put the agent in a group mapped to the organisation. NovrSOC blocks IPs through the OPNsense API either way.',
         matchAgents: (agents) => {
             const fw = findFirewallAgent(agents);
             return fw ? [fw] : [];
         },
         matchLabel: 'OPNsense firewall agent',
-        statusNote: 'Shows the firewall only when it is enrolled as an agent (named "opnsense…", or at 10.0.0.4). A firewall that sends syslog is not an agent: check its sender in Settings → Wazuh Groups instead.',
+        statusNote: 'Shows the firewall only when it is enrolled as an agent (named "opnsense…", or at 10.0.0.4). A firewall that sends syslog is not an agent: check its sender in Settings → Monitoring Groups instead.',
         steps: [
             {
                 title: 'Install the Wazuh agent plugin',
@@ -80,7 +80,7 @@ export const GUIDES: Record<GuideId, Guide> = {
     sysmon: {
         title: 'Windows (Sysmon)',
         subtitle: 'Network · Deep process and network telemetry from Windows endpoints',
-        intro: 'Sysmon records process creation, network connections, driver loads and file changes in the Windows event log. The Wazuh agent forwards that channel, and the manager\'s built-in Sysmon rules turn it into alerts with MITRE mapping. Run each block in an elevated PowerShell.',
+        intro: 'Sysmon records process creation, network connections, driver loads and file changes in the Windows event log. The monitoring agent forwards that channel, and the manager\'s built-in Sysmon rules turn it into alerts with MITRE mapping. Run each block in an elevated PowerShell.',
         matchAgents: (agents) => agents.filter((a) => osIs(a, /windows/i)),
         matchLabel: 'Windows agents',
         statusNote: 'Lists Windows agents registered with the manager. Whether Sysmon is forwarding is visible as Sysmon alerts on each asset\'s page — agent status alone can\'t confirm it.',
@@ -115,7 +115,7 @@ export const GUIDES: Record<GuideId, Guide> = {
     osquery: {
         title: 'Mac (osquery)',
         subtitle: 'Network · Scheduled system inventory from macOS endpoints',
-        intro: 'osquery exposes the Mac as SQL tables — processes, listening ports, launch agents — and runs queries on a schedule. The Wazuh agent\'s osquery module collects the results. Run the commands in Terminal.',
+        intro: 'osquery exposes the Mac as SQL tables — processes, listening ports, launch agents — and runs queries on a schedule. The monitoring agent\'s osquery module collects the results. Run the commands in Terminal.',
         matchAgents: (agents) => agents.filter((a) => osIs(a, /mac ?os|darwin|os x/i)),
         matchLabel: 'macOS agents',
         statusNote: 'Lists macOS agents registered with the manager. Whether osquery results are arriving shows as osquery events on each asset\'s page — agent status alone can\'t confirm it.',

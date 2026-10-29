@@ -69,7 +69,7 @@ export function TiActors() {
                     <Card>
                         <SectionTitle title="Named by sources, no library profile" hint="Threat-actor tags on partner reports in the last year — the source's attribution" />
                         <DataTable caption="Actors named by sources" rows={data?.source_named ?? null} columns={named} rowKey={(r) => r.name} initialSort={{ key: 'count', dir: 'desc' }}
-                            empty={<EmptyState compact title="None" body="No partner report named an actor outside the library (or MISP event reports have not been collected yet)." />} />
+                            empty={<EmptyState compact title="None" body="No partner report named an actor outside the library (or threat intelligence event reports have not been collected yet)." />} />
                     </Card>
                 </>
             )}

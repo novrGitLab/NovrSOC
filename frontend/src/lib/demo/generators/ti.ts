@@ -24,7 +24,7 @@ export function demoTiMap(org: DemoOrgId) {
     return seeded(`ti-map:${org}`, (r) => ({
         states: NIGERIA_STATES_WITH_ACTIVITY.map((state, i) => ({ state, hosted: i === 0 ? r.int(8, 14) : r.int(0, 6), exposure: i === 0 ? r.int(3, 6) : r.int(0, 3) })),
         country_level: { targeting: r.int(2, 6), hosted_state_unknown: r.int(1, 5), exposure_state_unknown: r.int(0, 2) },
-        targeting: [{ id: `demo-${org}-report-1`, title: `[DEMO] Source report: campaign targeting Nigerian ${s.title.includes('Firewall') ? 'telecommunications' : 'organisations'}`, kind: 'source_report' as const, source: 'Demo Threat Report', tlp: 'amber', actors: ['Demo Threat Actor Group'], published_at: ago(2) }],
+        targeting: [{ id: `demo-${org}-report-1`, title: `[SAMPLE] Source report: campaign targeting Nigerian ${s.title.includes('Firewall') ? 'telecommunications' : 'organisations'}`, kind: 'source_report' as const, source: 'Demo Threat Report', tlp: 'amber', actors: ['Demo Threat Actor Group'], published_at: ago(2) }],
         hosted: [], exposure: [], sectors: ['finance', 'ict', 'power'],
     }));
 }
@@ -48,8 +48,8 @@ export function demoTiVulnerabilities(org: DemoOrgId) {
     return seeded(`ti-vulns:${org}`, (r) => ({
         total: 4,
         vulnerabilities: [
-            { cve: s.cveId, kev: { vendor: 'Demo Vendor', product: 'Demo Gateway', name: '[DEMO] Remote code execution' }, added: ago(3), your_open_findings: 1 },
-            ...Array.from({ length: 3 }, () => ({ cve: `CVE-202${r.int(2, 5)}-${r.int(1000, 9999)}`, kev: { vendor: 'Demo Vendor', product: r.pick(['Demo Router OS', 'Demo VPN Gateway', 'Demo Mail Server']), name: '[DEMO] known exploited vulnerability' }, added: ago(r.int(4, 30)), your_open_findings: 0 })),
+            { cve: s.cveId, kev: { vendor: 'Demo Vendor', product: 'Demo Gateway', name: '[SAMPLE] Remote code execution' }, added: ago(3), your_open_findings: 1 },
+            ...Array.from({ length: 3 }, () => ({ cve: `CVE-202${r.int(2, 5)}-${r.int(1000, 9999)}`, kev: { vendor: 'Demo Vendor', product: r.pick(['Demo Router OS', 'Demo VPN Gateway', 'Demo Mail Server']), name: '[SAMPLE] known exploited vulnerability' }, added: ago(r.int(4, 30)), your_open_findings: 0 })),
         ],
     }));
 }
@@ -58,8 +58,8 @@ export function demoTiRelevant(org: DemoOrgId) {
     const s = DEMO_SCENARIOS[org];
     return seeded(`ti-relevant:${org}`, (r) => {
         const items = [
-            { match_id: `demo-${org}-match-1`, indicator_id: `demo-${org}-indicator-1`, indicator_type: 'ip', indicator_value: s.indicatorValue, tier: 'critical' as const, reasons: ['[DEMO] Matched against a recent authentication event on a customer-facing asset'], last_matched_at: ago(1) },
-            ...Array.from({ length: 4 }, (_, i) => ({ match_id: `demo-${org}-match-${i + 2}`, indicator_id: `demo-${org}-indicator-${i + 2}`, indicator_type: r.pick(['ip', 'domain']), indicator_value: `198.51.100.${r.int(10, 250)}`, tier: r.pick(['high', 'medium', 'low'] as const), reasons: ['[DEMO] Seen in organisation records, no further corroboration'], last_matched_at: ago(r.int(2, 15)) })),
+            { match_id: `demo-${org}-match-1`, indicator_id: `demo-${org}-indicator-1`, indicator_type: 'ip', indicator_value: s.indicatorValue, tier: 'critical' as const, reasons: ['[SAMPLE] Matched against a recent authentication event on a customer-facing asset'], last_matched_at: ago(1) },
+            ...Array.from({ length: 4 }, (_, i) => ({ match_id: `demo-${org}-match-${i + 2}`, indicator_id: `demo-${org}-indicator-${i + 2}`, indicator_type: r.pick(['ip', 'domain']), indicator_value: `198.51.100.${r.int(10, 250)}`, tier: r.pick(['high', 'medium', 'low'] as const), reasons: ['[SAMPLE] Seen in organisation records, no further corroboration'], last_matched_at: ago(r.int(2, 15)) })),
         ];
         const by_tier = { critical: items.filter((i) => i.tier === 'critical').length, high: items.filter((i) => i.tier === 'high').length, medium: items.filter((i) => i.tier === 'medium').length, low: items.filter((i) => i.tier === 'low').length };
         return { generated_at: new Date().toISOString(), items, by_tier };

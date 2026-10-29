@@ -47,7 +47,7 @@ function execSummary(org: DemoOrgId): DemoDocument {
         filename: `sample-${org}-executive-summary`,
         sections: [
             { heading: 'Organisation', rows: [
-                { label: 'Organisation', value: `${o.name} [DEMO]` },
+                { label: 'Organisation', value: `${o.name} [SAMPLE]` },
                 { label: 'Sector', value: o.sector },
                 { label: 'Location', value: o.location },
                 { label: 'Reporting Period', value: PERIOD() },
@@ -81,7 +81,7 @@ function vulnAssessment(org: DemoOrgId): DemoDocument {
         filename: `sample-${org}-vulnerability-assessment`,
         sections: [
             { heading: 'Organisation', rows: [
-                { label: 'Organisation', value: `${o.name} [DEMO]` }, { label: 'Assets in Scope', value: String(o.assetCount) }, { label: 'Reporting Period', value: PERIOD() },
+                { label: 'Organisation', value: `${o.name} [SAMPLE]` }, { label: 'Assets in Scope', value: String(o.assetCount) }, { label: 'Reporting Period', value: PERIOD() },
             ] },
             { heading: 'Executive Summary', rows: [
                 { label: 'Open Findings', value: String(sum.open) },
@@ -112,7 +112,7 @@ function tiBriefing(org: DemoOrgId): DemoDocument {
         title: `[SAMPLE] ${o.name} — Threat Intelligence Briefing`,
         filename: `sample-${org}-ti-briefing`,
         sections: [
-            { heading: 'Organisation', rows: [{ label: 'Organisation', value: `${o.name} [DEMO]` }, { label: 'Reporting Period', value: PERIOD() }] },
+            { heading: 'Organisation', rows: [{ label: 'Organisation', value: `${o.name} [SAMPLE]` }, { label: 'Reporting Period', value: PERIOD() }] },
             { heading: 'Executive Summary', rows: [
                 { label: 'Active Indicators', value: String(overview.indicators.active) },
                 { label: 'New (24h)', value: String(overview.indicators.new_last_24h) },
@@ -143,12 +143,12 @@ function incidentReport(org: DemoOrgId): DemoDocument {
         title: `[SAMPLE] ${o.name} — Incident Investigation Report`,
         filename: `sample-${org}-incident-report`,
         sections: [
-            { heading: 'Organisation', rows: [{ label: 'Organisation', value: `${o.name} [DEMO]` }, { label: 'Case Number', value: s.caseNumber }, { label: 'Reporting Period', value: PERIOD() }] },
+            { heading: 'Organisation', rows: [{ label: 'Organisation', value: `${o.name} [SAMPLE]` }, { label: 'Case Number', value: s.caseNumber }, { label: 'Reporting Period', value: PERIOD() }] },
             { heading: 'Executive Summary', rows: [
                 { label: 'Title', value: s.caseTitle },
                 { label: 'Severity', value: detail?.case.severity ?? 'critical' },
                 { label: 'Status', value: detail?.case.status ?? 'investigating' },
-                { label: 'Assigned To', value: detail?.case.assigned_to ?? 'SOC Analyst (Demo)' },
+                { label: 'Assigned To', value: detail?.case.assigned_to ?? 'SOC Analyst (Sample)' },
             ] },
             { heading: 'Findings', rows: [{ label: 'Narrative', value: s.narrative }] },
             { heading: 'Evidence', rows: [
@@ -175,7 +175,7 @@ function cniiReport(org: DemoOrgId): DemoDocument {
         filename: `sample-${org}-cnii-compliance`,
         sections: [
             { heading: 'Organisation', rows: [
-                { label: 'Organisation', value: `${o.name} [DEMO]` }, { label: 'CNII Sector', value: o.sector }, { label: 'Designation', value: 'Designated critical infrastructure (demo)' }, { label: 'Reporting Period', value: PERIOD() },
+                { label: 'Organisation', value: `${o.name} [SAMPLE]` }, { label: 'CNII Sector', value: o.sector }, { label: 'Designation', value: 'Designated critical infrastructure (demo)' }, { label: 'Reporting Period', value: PERIOD() },
             ] },
             { heading: 'Executive Summary', rows: [
                 { label: 'Assets in Sector Scope', value: String(sectors?.assets ?? o.assetCount) },

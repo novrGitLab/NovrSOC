@@ -30,17 +30,17 @@ export function DemoModeSwitcher() {
                     enabled ? 'bg-amber-500/15 border-amber-500/40 text-amber-700' : 'bg-card border-border text-foreground-muted hover:text-foreground'
                 }`}
                 aria-pressed={enabled}
-                title={enabled ? 'Turn off Demo Mode and return to live data' : 'Turn on Demo Mode — synthetic data only, no real action is ever taken'}
+                title={enabled ? 'Exit Presentation Mode and return to live data' : 'Turn on Presentation Mode — sample data only, no real action is ever taken'}
             >
                 <PlayCircle className="w-3.5 h-3.5 shrink-0" aria-hidden />
-                {enabled ? 'Demo: On' : 'Demo Mode'}
+                {enabled ? 'Presentation: On' : 'Presentation Mode'}
             </button>
             {enabled && (
                 <select
                     value={org}
                     onChange={(e) => setDemoOrg(e.target.value as DemoOrgId)}
                     className="bg-card border border-amber-500/40 rounded-lg px-2 py-1 text-[11px] text-foreground outline-none focus:ring-2 focus:ring-amber-500/40 max-w-[9rem]"
-                    aria-label="Demo organisation"
+                    aria-label="Sample organisation"
                 >
                     {DEMO_ORG_IDS.map((id) => <option key={id} value={id}>{DEMO_ORGS[id].name}</option>)}
                 </select>

@@ -61,7 +61,7 @@ export function authState(s: Pick<IntakeSubmission, 'status' | 'basis' | 'author
     return { key: 'awaiting', label: 'Awaiting scan authorisation', style: 'bg-amber/10 text-amber' };
 }
 export const scanTypes = (a: Pick<IntakeAuthorisation, 'activities'>): string =>
-    ['Discovery', a.activities.ports && 'Port scan', a.activities.vuln && 'Vulnerability checks (Nuclei)'].filter(Boolean).join(' · ');
+    ['Discovery', a.activities.ports && 'Port scan', a.activities.vuln && 'Vulnerability checks'].filter(Boolean).join(' · ');
 
 /** Sector, or the suggestion labelled as one, or Unknown. Never presents a suggestion as confirmed. */
 export function sectorContext(s: Pick<IntakeSubmission, 'status' | 'sector_id' | 'subfield' | 'basis' | 'suggestion'>): { text: string; kind: 'confirmed' | 'claimed' | 'suggested' | 'unknown' } {

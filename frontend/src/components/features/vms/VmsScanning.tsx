@@ -356,7 +356,7 @@ export function VmsScanHistory() {
             </section>
             <div className="flex flex-wrap items-center gap-2">
                 <Segmented label="Result" value={result} onChange={setResult} options={[['', 'All'], ['assessed', 'Assessed'], ['inconclusive', 'Inconclusive'], ['failed', 'Failed'], ['cancelled', 'Cancelled'], ['active', 'Active']]} />
-                <Select label="Scan" value={kind} onChange={setKind} options={[['', 'Any scan'], ['discovery', 'Discovery'], ['ports', 'Ports'], ['vuln_nuclei', 'Nuclei'], ['vuln_openvas', 'OpenVAS'], ['passive_osint', 'Passive OSINT']]} />
+                <Select label="Scan" value={kind} onChange={setKind} options={[['', 'Any scan'], ['discovery', 'Discovery'], ['ports', 'Ports'], ['vuln_nuclei', 'Vulnerability scan'], ['vuln_openvas', 'Extended vulnerability scan'], ['passive_osint', 'Passive OSINT']]} />
                 <Select label="Purpose" value={purpose} onChange={setPurpose} options={[['', 'Any purpose'], ['verification', 'Verification'], ['other', 'Discovery & assessment']]} />
             </div>
             {load.state === 'error' ? <ErrorState error={load.error} status={load.status} onRetry={reload} />

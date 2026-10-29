@@ -72,7 +72,7 @@ export function VmsEndpoints() {
             <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div>
                     <h2 className="text-sm font-bold text-foreground flex items-center gap-2"><MonitorSmartphone className="w-4 h-4" /> Managed Endpoints</h2>
-                    <p className="text-xs text-foreground-muted max-w-3xl">Endpoints enrolled in Wazuh. Each is assessed automatically by an enabled assessment policy when its address is inside the organisation&apos;s agreed coverage (<Link href="/admin/vms/discovery" className="text-purple font-bold">Authorised Scope</Link>) and a scanner can reach it. An address seen in telemetry alone never authorises a scan.</p>
+                    <p className="text-xs text-foreground-muted max-w-3xl">Endpoints enrolled in the security monitoring engine. Each is assessed automatically by an enabled assessment policy when its address is inside the organisation&apos;s agreed coverage (<Link href="/admin/vms/discovery" className="text-purple font-bold">Authorised Scope</Link>) and a scanner can reach it. An address seen in telemetry alone never authorises a scan.</p>
                 </div>
                 {canRun && <button onClick={() => void reevaluate()} className="flex items-center gap-1 text-[11px] font-bold border border-border rounded-lg px-3 py-1.5"><RefreshCw className="w-3.5 h-3.5" /> Re-evaluate</button>}
             </div>
@@ -109,7 +109,7 @@ export function VmsEndpoints() {
             </div>
             <div className={`${card} p-0 overflow-x-auto`}>
                 {data && rows.length === 0 ? (
-                    <p className="text-xs text-foreground-muted p-6 text-center">{data.endpoints.length === 0 ? 'No Wazuh endpoints yet: they appear after the hourly Wazuh sync for an organisation whose Wazuh group is mapped.' : 'No endpoint matches the filters.'}</p>
+                    <p className="text-xs text-foreground-muted p-6 text-center">{data.endpoints.length === 0 ? 'No monitored endpoints yet: they appear after the hourly monitoring sync for an organisation whose monitoring group is mapped.' : 'No endpoint matches the filters.'}</p>
                 ) : (
                     <table className="w-full text-xs">
                         <thead><tr className="text-left text-foreground-muted border-b border-border">
@@ -158,7 +158,7 @@ export function VmsEndpoints() {
                     </table>
                 )}
             </div>
-            <p className="text-[11px] text-foreground-muted">Automatic assessments are run by assessment policies (VMS Admin) on Wazuh endpoints; each run respects the cooldown, re-assesses an endpoint early when its address changes, and records the next due time here.</p>
+            <p className="text-[11px] text-foreground-muted">Automatic assessments are run by assessment policies (VMS Admin) on monitored endpoints; each run respects the cooldown, re-assesses an endpoint early when its address changes, and records the next due time here.</p>
         </div>
     );
 }

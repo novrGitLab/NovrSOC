@@ -19,7 +19,7 @@ export function DemoBanner() {
     return (
         <div className="w-full bg-amber-500 text-amber-950 text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 py-1.5 px-3 z-40">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden />
-            DEMO MODE — SIMULATED DATA — Viewing: {DEMO_ORGS[org].name} ({DEMO_ORGS[org].sector}) — no real action is being taken
+            PRESENTATION MODE — SAMPLE DATA — Viewing: {DEMO_ORGS[org].name} ({DEMO_ORGS[org].sector}) — no real action is being taken
         </div>
     );
 }

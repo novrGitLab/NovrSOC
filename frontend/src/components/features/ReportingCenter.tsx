@@ -169,14 +169,14 @@ function SamplesPanel() {
         <div className="space-y-3">
             <div className="rounded-lg border border-amber/40 bg-amber/10 px-3 py-2 flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber shrink-0 mt-0.5" aria-hidden />
-                <p className="text-[11px] text-amber font-semibold">SAMPLE / SIMULATED — these five documents are generated entirely in your browser from the same seeded demo dataset ({DEMO_ORGS[org].name} [DEMO]) shown across every other screen in Demo Mode. No production report-generation API is called and nothing is sent anywhere.</p>
+                <p className="text-[11px] text-amber font-semibold">SAMPLE DOCUMENTS — these five documents are generated entirely in your browser from the same sample dataset ({DEMO_ORGS[org].name} [SAMPLE]) shown across every other screen in Presentation Mode. No production report-generation API is called and nothing is sent anywhere.</p>
             </div>
             <div className="bg-card border border-border rounded-xl divide-y divide-border">
                 {DEMO_DOCUMENT_TYPES.map(({ type, label }) => (
                     <div key={type} className="p-3 flex items-center justify-between gap-2 flex-wrap text-xs">
                         <div>
                             <p className="font-bold text-foreground">{label}</p>
-                            <p className="text-foreground-muted">{DEMO_ORGS[org].name} [DEMO] · SAMPLE document</p>
+                            <p className="text-foreground-muted">{DEMO_ORGS[org].name} [SAMPLE] · SAMPLE document</p>
                         </div>
                         <button
                             onClick={() => { const doc = demoDocument(org, type); exportDataAsPDF(doc.title, doc.filename, doc.sections); }}
@@ -388,7 +388,7 @@ function HistoryPanel({ jobs, canManage, busy, demoMode, onRetry }: { jobs: Job[
                             {j.last_error && <p className="text-amber">{j.last_error}</p>}
                         </div>
                         {demoMode ? (
-                            <p className="text-[10px] text-foreground-muted italic">Demo job — see the Sample Documents tab for a downloadable PDF.</p>
+                            <p className="text-[10px] text-foreground-muted italic">Sample job — see the Sample Documents tab for a downloadable PDF.</p>
                         ) : (
                             <div className="flex gap-2">
                                 <button onClick={() => downloadArtifact(j.id, 'pdf')} className="font-bold px-2 py-1 rounded-md bg-card-muted text-foreground flex items-center gap-1"><Download className="w-3.5 h-3.5" /> PDF</button>

@@ -112,7 +112,7 @@ export function ThreatBoard() {
             <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div>
                     <h1 className="text-lg font-black text-foreground">Threat Management</h1>
-                    <p className="text-xs text-foreground-muted">Distinct threats from live Wazuh alerts (level 7+), one per rule and source. {current && !current.error ? `Checked ${wat(current.checkedAt)}.` : ''}</p>
+                    <p className="text-xs text-foreground-muted">Distinct threats from live security monitoring alerts (level 7+), one per rule and source. {current && !current.error ? `Checked ${wat(current.checkedAt)}.` : ''}</p>
                 </div>
                 <button onClick={() => setNonce((n) => n + 1)} className="flex items-center gap-1.5 text-[11px] font-bold text-foreground-muted hover:text-foreground border border-border rounded-lg px-3 py-1.5">
                     <RefreshCw className={`w-3.5 h-3.5 ${current === null ? 'animate-spin' : ''}`} /> Refresh

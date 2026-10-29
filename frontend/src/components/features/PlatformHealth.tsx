@@ -41,6 +41,25 @@ interface PlatformHealthResponse {
     checked_at: string;
 }
 
+// Presentation-layer only: the backend's /api/platform/health response names its checks and
+// integrations after the underlying engine (Wazuh, MISP, NVIDIA, etc.) — useful in the API and
+// in backend logs, but this is the product's own UI, so it reads in NovrSOC's own terms. The
+// API contract, env var names and every other backend detail are untouched; this is a display
+// translation only, applied right before render.
+const SERVICE_DISPLAY_NAME: Record<string, string> = {
+    'Wazuh Manager': 'Security Monitoring Engine',
+    'MISP': 'Threat Intelligence Feed',
+    'NVIDIA AI': 'AI Analyst Engine',
+};
+const displayServiceName = (name: string) => SERVICE_DISPLAY_NAME[name] ?? name;
+
+const INTEGRATION_DISPLAY_NAME: Record<string, string> = {
+    otx: 'Legacy Pulse Feed', censys: 'Legacy Host Exposure Lookup', circl: 'OSINT Threat Feed',
+    threatfox: 'IOC Corroboration Feed', leakix: 'Host Exposure Lookup', fofa: 'Asset Search',
+    misp: 'Threat Intelligence Feed', nvidia: 'AI Analyst Engine',
+};
+const displayIntegrationName = (key: string) => INTEGRATION_DISPLAY_NAME[key] ?? key;
+
 const STATUS_DOT: Record<HealthCheck['status'], string> = {
     up: 'bg-green',
     degraded: 'bg-amber',
@@ -209,7 +228,7 @@ export function PlatformHealth() {
                         {services.map((s) => (
                             <div key={s.name} className="bg-card border border-border rounded-xl p-4">
                                 <div className="flex items-center justify-between mb-2 gap-2">
-                                    <p className="text-sm font-bold text-foreground">{s.name}</p>
+                                    <p className="text-sm font-bold text-foreground">{displayServiceName(s.name)}</p>
                                     <span className={`w-2 h-2 rounded-full flex-shrink-0 ${STATUS_DOT[s.status]}`} />
                                 </div>
                                 <div className="flex items-center justify-between text-xs">
@@ -255,7 +274,7 @@ export function PlatformHealth() {
                         {integrations.map(([key, cfg]) => (
                             <div key={key} className="flex items-start justify-between gap-4 px-6 py-3">
                                 <div className="min-w-0">
-                                    <p className="text-xs font-bold text-foreground uppercase">{key}</p>
+                                    <p className="text-xs font-bold text-foreground uppercase">{displayIntegrationName(key)}</p>
                                     {cfg.detail && <p className="text-[10px] text-foreground-muted leading-snug mt-0.5">{cfg.detail}</p>}
                                 </div>
                                 <span className={`text-[10px] font-bold uppercase flex-shrink-0 ${cfg.removed ? 'text-foreground-muted' : cfg.configured ? 'text-green' : 'text-amber'}`}>

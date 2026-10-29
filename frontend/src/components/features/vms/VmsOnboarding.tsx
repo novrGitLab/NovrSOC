@@ -192,9 +192,9 @@ export function VmsImportPage() {
     return (
         <div className="space-y-5">
             <PageHeader icon={Upload} title="Asset Import"
-                description="Bring assets into the inventory from Wazuh agent groups, a typed list or a CSV file. Importing never authorises scanning: each asset shows whether it is inside approved scope, and scope is requested and approved separately." />
+                description="Bring assets into the inventory from monitoring agent groups, a typed list or a CSV file. Importing never authorises scanning: each asset shows whether it is inside approved scope, and scope is requested and approved separately." />
             {!can.manage && <p role="status" className="text-xs text-foreground-muted">Importing is for SOC staff; you can see the inventory on the Asset Inventory page.</p>}
-            <Segmented label="Import source" value={tab} onChange={setTab} options={[['wazuh', 'Wazuh agent group'], ['manual', 'IPs and domains'], ['csv', 'CSV file']]} />
+            <Segmented label="Import source" value={tab} onChange={setTab} options={[['wazuh', 'Monitoring agent group'], ['manual', 'IPs and domains'], ['csv', 'CSV file']]} />
             {tab === 'wazuh' ? <WazuhImport /> : <ListImport mode={tab} />}
         </div>
     );
@@ -228,15 +228,15 @@ function WazuhImport() {
         void load();
     }
     if (groups.load.state === 'error') return <ErrorState error={groups.load.error} status={groups.load.status} onRetry={groups.reload} />;
-    if (groups.data && !groups.data.groups.length) return <EmptyState icon={Server} title="No Wazuh groups mapped to this organisation" body="A super administrator maps Wazuh agent groups to organisations (Wazuh group mapping). Only mapped groups can be imported." />;
+    if (groups.data && !groups.data.groups.length) return <EmptyState icon={Server} title="No monitoring groups mapped to this organisation" body="A super administrator maps monitoring agent groups to organisations (Monitoring group mapping). Only mapped groups can be imported." />;
     const agents = preview?.key === key ? preview.agents : null;
     return (
         <Card>
-            <SectionTitle title="Import endpoints from a Wazuh group" hint="Only groups mapped to this organisation are listed. Agents that also belong to another organisation's group, and the Wazuh manager itself, are never imported." />
+            <SectionTitle title="Import endpoints from a monitoring group" hint="Only groups mapped to this organisation are listed. Agents that also belong to another organisation's group, and the monitoring manager itself, are never imported." />
             <div className="flex flex-wrap items-center gap-2 mb-4">
                 <Select label="Group" value={group} onChange={setGroup} options={(groups.data?.groups ?? []).map((g) => [g, g] as const)} />
                 <Toggle on={discover} onChange={setDiscover}>Discover interface addresses</Toggle>
-                <button disabled={!group || busy} onClick={() => void load()} className={btn('secondary', 'md')}>{busy && !agents ? 'Reading Wazuh…' : 'Preview agents'}</button>
+                <button disabled={!group || busy} onClick={() => void load()} className={btn('secondary', 'md')}>{busy && !agents ? 'Reading…' : 'Preview agents'}</button>
                 {agents && <button disabled={!selected.size || busy} onClick={() => void run()} className={btn('primary', 'md')}>Import {selected.size} selected</button>}
             </div>
             <Notice msg={msg} />

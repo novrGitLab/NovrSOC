@@ -120,11 +120,11 @@ export function VmsDashboard() {
                 <ChartCard className="xl:col-span-2" title="New vulnerabilities" hint={`First seen per day, by severity, last ${days} days.`} loading={loading} empty={k && !k.new_findings ? { title: 'No new vulnerabilities in this period' } : null}>
                     {d && <><TimeChart kind="area" label="New vulnerabilities per day" data={d.charts.new_findings} series={SEV_SERIES} /><Legend series={SEV_SERIES} /></>}
                 </ChartCard>
-                <ChartCard title="Remediation progress" hint="Remediation tasks by state. A finding closes only when a rescan or Wazuh verifies it." loading={loading}
+                <ChartCard title="Remediation progress" hint="Remediation tasks by state. A finding closes only when a rescan or the monitoring engine verifies it." loading={loading}
                     empty={d && !Object.values(d.charts.tasks).some(Boolean) ? { title: 'No remediation tasks yet', body: 'Tasks are added from a finding or from an AI plan a person accepted.' } : null}>
                     {d && <BarList label="Remediation tasks by state" items={[['todo', 'To do', '--vz-prog-1'], ['doing', 'In progress', '--vz-prog-3'], ['done', 'Done', '--vz-good'], ['cancelled', 'Cancelled', '--vz-neutral']].map(([key, label, token]) => ({ key, label, value: d.charts.tasks[key] ?? 0, token: token as Series['token'], href: '/admin/vms/remediation?view=table' }))} />}
                 </ChartCard>
-                <ChartCard title="Assets by business criticality" hint="Active assets; criticality is set by people on each asset." loading={loading} empty={k && !k.total_assets ? { title: 'No assets yet', body: 'Add an authorised scope and run discovery, or map Wazuh groups.' } : null}>
+                <ChartCard title="Assets by business criticality" hint="Active assets; criticality is set by people on each asset." loading={loading} empty={k && !k.total_assets ? { title: 'No assets yet', body: 'Add an authorised scope and run discovery, or map monitoring groups.' } : null}>
                     {d && <BarList label="Assets by criticality" items={CRIT.map((c, i) => ({ key: c, label: c[0].toUpperCase() + c.slice(1), value: d.charts.assets_by_criticality[c] ?? 0, token: (['--vz-prog-4', '--vz-prog-3', '--vz-prog-2', '--vz-prog-1'] as const)[i], href: `/admin/vms/assets?criticality=${c}` }))} />}
                 </ChartCard>
                 <ChartCard title="Finding status" hint="Every finding on record, by lifecycle state." loading={loading} empty={d && !Object.values(d.charts.status).some(Boolean) ? { title: 'No findings on record' } : null}>

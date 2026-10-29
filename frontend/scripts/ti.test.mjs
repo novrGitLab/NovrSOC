@@ -41,5 +41,5 @@ test('freshness wording and markings', () => {
     assert.equal(ti.ago('2026-10-30T06:00:00Z', now), '6 h ago');
     assert.equal(ti.ago('2026-10-27T12:00:00Z', now), '3 d ago');
     assert.deepEqual(Object.keys(ti.TLP_LABEL), ['clear', 'green', 'amber', 'amber+strict', 'red']);
-    assert.equal(ti.FEED_NAME.opencti, 'OpenCTI (retired)');
+    assert.equal(ti.FEED_NAME.opencti, 'Legacy Threat Feed (retired)');
 });

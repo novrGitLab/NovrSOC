@@ -19,7 +19,7 @@ const TITLES = [
     'Outdated SSH daemon with known vulnerabilities', 'Unrestricted file upload on customer-facing form',
     'Expired TLS certificate on internal service', 'Verbose error messages disclose internal paths',
 ];
-const OWNERS = ['SOC Analyst (Demo)', 'IT Operations (Demo)', 'Platform Team (Demo)'];
+const OWNERS = ['SOC Analyst (Sample)', 'IT Operations (Sample)', 'Platform Team (Sample)'];
 const ago = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 const ahead = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
 
@@ -32,7 +32,7 @@ export function demoFindings(org: DemoOrgId): DemoFinding[] {
             finding_type: 'vulnerability', cve_ids: [s.cveId], scanner_severity: 'critical', scanner_cvss: 9.1, risk_score: 92,
             priority: 'P1', status: org === 'ikea' ? 'fixed_pending_verification' : 'open', owner: OWNERS[0],
             due_at: ago(1), first_seen: ago(9), last_seen: ago(0), verified_at: org === 'ikea' ? null : null, case_id: s.caseId,
-            description: `[DEMO] ${s.narrative}`, remediation: 'Apply the vendor patch and restrict management access to the internal network only.', overdue: true,
+            description: `[SAMPLE] ${s.narrative}`, remediation: 'Apply the vendor patch and restrict management access to the internal network only.', overdue: true,
         }];
         for (let i = 0; i < 9; i++) {
             const priority = r.pick(['P1', 'P2', 'P2', 'P3', 'P3', 'P4'] as const);
@@ -80,13 +80,13 @@ export function demoAiPlans(org: DemoOrgId) {
     return {
         plans: [{
             id: `demo-${org}-plan-1`, purpose: 'remediation_plan' as const, subject_id: s.findingId, model: 'demo-simulated',
-            created_by: 'AI Remediation Assistant (Demo)', created_at: ago(2), status: 'accepted' as const, feedback: 'Reviewed by SOC manager — useful', feedback_by: 'SOC Manager (Demo)',
+            created_by: 'AI Remediation Assistant (Sample)', created_at: ago(2), status: 'accepted' as const, feedback: 'Reviewed by SOC manager — useful', feedback_by: 'SOC Manager (Sample)',
             content: {
-                summary: `[DEMO] Proposed remediation for ${s.findingTitle}.`,
+                summary: `[SAMPLE] Proposed remediation for ${s.findingTitle}.`,
                 steps: [
-                    { order: 1, action: 'Apply vendor security patch', details: `Patches ${s.cveId} on ${s.assetName}.`, owner_suggestion: 'Platform Team (Demo)', proposed_deadline_days: 3 },
-                    { order: 2, action: 'Restrict management interface to internal network', details: 'Remove internet-facing access; require VPN.', owner_suggestion: 'Network Team (Demo)', proposed_deadline_days: 5 },
-                    { order: 3, action: 'Run verification scan', details: 'Confirm the fix with an authorised rescan.', owner_suggestion: 'SOC Analyst (Demo)', proposed_deadline_days: 7 },
+                    { order: 1, action: 'Apply vendor security patch', details: `Patches ${s.cveId} on ${s.assetName}.`, owner_suggestion: 'Platform Team (Sample)', proposed_deadline_days: 3 },
+                    { order: 2, action: 'Restrict management interface to internal network', details: 'Remove internet-facing access; require VPN.', owner_suggestion: 'Network Team (Sample)', proposed_deadline_days: 5 },
+                    { order: 3, action: 'Run verification scan', details: 'Confirm the fix with an authorised rescan.', owner_suggestion: 'SOC Analyst (Sample)', proposed_deadline_days: 7 },
                 ],
             },
             finding: { title: s.findingTitle, asset_value: s.assetValue, priority: 'P1' as const },
@@ -101,7 +101,7 @@ export function demoScans(org: DemoOrgId) {
             id: `demo-${org}-scan-${i}`, scope_id: `demo-${org}-scope-1`, kind: r.pick(['vuln_nuclei', 'discovery', 'ports'] as const),
             targets: [i === 0 ? s.assetValue : `host-${i % 5}.${org}-demo.test`], options: {},
             status: i === 0 ? 'succeeded' as const : r.pick(['succeeded', 'succeeded', 'failed'] as const),
-            requested_by: 'SOC Analyst (Demo)', requested_at: ago(i), started_at: ago(i), finished_at: ago(i - 0.01),
+            requested_by: 'SOC Analyst (Sample)', requested_at: ago(i), started_at: ago(i), finished_at: ago(i - 0.01),
             progress: {}, error: null, summary: { outcome: 'reachable_and_assessed' }, worker_id: 'demo-worker', heartbeat_at: null, cancel_requested: false, purpose: i === 0 && org === 'ikea' ? 'verification' : 'scheduled',
         })),
     }));

@@ -255,7 +255,7 @@ export function NovrAI() {
                     <ul className="space-y-1.5 text-[11px] text-foreground-muted">
                         <li className="flex items-center gap-1.5">
                             <ChevronRight className="w-3 h-3 text-blue flex-shrink-0" />
-                            Wazuh log correlation & SIEM triage
+                            Security monitoring log correlation & SIEM triage
                         </li>
                         <li className="flex items-center gap-1.5">
                             <ChevronRight className="w-3 h-3 text-blue flex-shrink-0" />
@@ -308,8 +308,8 @@ export function NovrAI() {
                                                 : aiStatus.provider === 'gemini' ? 'bg-blue'
                                                 : 'bg-foreground-muted'
                                         }`} />
-                                        {aiStatus.provider === 'nvidia' ? 'NVIDIA AI'
-                                            : aiStatus.provider === 'gemini' ? 'Gemini AI'
+                                        {aiStatus.provider === 'nvidia' ? 'AI Analyst Engine'
+                                            : aiStatus.provider === 'gemini' ? 'AI Analyst Engine (backup)'
                                             : 'AI Offline'}
                                     </span>
                                 )}

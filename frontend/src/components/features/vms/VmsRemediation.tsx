@@ -26,8 +26,8 @@ const STAGES = [
     { id: 'detected', label: 'Detected', statuses: ['open', 'reopened'], target: 'open', hint: 'New or reopened by a scan' },
     { id: 'triaged', label: 'Triaged', statuses: ['acknowledged'], target: 'acknowledged', hint: 'Reviewed and accepted as real' },
     { id: 'progress', label: 'In progress', statuses: ['in_progress'], target: 'in_progress', hint: 'Fix under way' },
-    { id: 'awaiting', label: 'Awaiting verification', statuses: ['fixed_pending_verification'], target: 'fixed_pending_verification', hint: 'Fixed; waiting for a rescan or Wazuh' },
-    { id: 'resolved', label: 'Resolved', statuses: ['verified'], target: null, hint: 'Verified fixed by a scan or Wazuh' },
+    { id: 'awaiting', label: 'Awaiting verification', statuses: ['fixed_pending_verification'], target: 'fixed_pending_verification', hint: 'Fixed; waiting for a rescan or the monitoring engine' },
+    { id: 'resolved', label: 'Resolved', statuses: ['verified'], target: null, hint: 'Verified fixed by a scan or the monitoring engine' },
 ] as const;
 const TASK_LABEL: Record<string, string> = { todo: 'To do', doing: 'In progress', done: 'Done', cancelled: 'Cancelled' };
 
@@ -46,7 +46,7 @@ export function VmsRemediation() {
     return (
         <div className="space-y-5">
             <PageHeader icon={Wrench} title="Remediation Tasks"
-                description={<>Remediation work by lifecycle stage, with owners, deadlines and tasks. Deadlines follow priority: {Object.entries(PRIORITY_META).map(([k, v]) => `${k} ${v.hint.replace('Fix within ', '')}`).join(' · ')}. A finding is resolved only when a rescan or Wazuh verifies the fix.</>}
+                description={<>Remediation work by lifecycle stage, with owners, deadlines and tasks. Deadlines follow priority: {Object.entries(PRIORITY_META).map(([k, v]) => `${k} ${v.hint.replace('Fix within ', '')}`).join(' · ')}. A finding is resolved only when a rescan or the monitoring engine verifies the fix.</>}
                 actions={<Segmented label="View" value={view} onChange={(v) => { setView(v); const p = new URLSearchParams(params.toString()); p.set('view', v); router.replace(`/admin/vms/remediation?${p.toString()}`, { scroll: false }); }} options={[['board', 'Board'], ['table', 'Tasks']]} />}
             />
             {view === 'board' ? <Board key={`b${tick}`} onOpen={setOpen} /> : <TaskTable key={`t${tick}`} onOpen={setOpen} initialOverdue={params.get('overdue') === '1'} />}
@@ -88,7 +88,7 @@ function Board({ onOpen }: { onOpen: (id: string) => void }) {
         e.preventDefault();
         setOver(null);
         if (!drag) return;
-        if (!stage.target) { setMsg({ ok: false, text: 'Only a rescan or the Wazuh sync can resolve a finding. Move it to Awaiting verification and verify it.' }); return; }
+        if (!stage.target) { setMsg({ ok: false, text: 'Only a rescan or the monitoring sync can resolve a finding. Move it to Awaiting verification and verify it.' }); return; }
         void move(drag.id, drag.status, stage.target);
         setDrag(null);
     };
@@ -201,7 +201,7 @@ function TaskTable({ onOpen, initialOverdue }: { onOpen: (id: string) => void; i
                 <div className="ml-auto"><ExportCsvButton filename="vms-remediation-tasks.csv" rows={rows?.map((t) => ({ ...t, finding_title: t.finding?.title, asset: t.finding?.asset_value, priority: t.finding?.priority }))} columns={[{ key: 'title', header: 'Task' }, { key: 'status', header: 'Status' }, { key: 'owner', header: 'Owner' }, { key: 'due_at', header: 'Due' }, { key: 'overdue', header: 'Overdue' }, { key: 'priority', header: 'Priority' }, { key: 'finding_title', header: 'Finding' }, { key: 'asset', header: 'Asset' }, { key: 'created_at', header: 'Created' }, { key: 'completed_at', header: 'Completed' }]} /></div>
             </div>
             <Notice msg={msg} />
-            <p className="text-[11px] text-foreground-muted">Finishing every task does not close the finding: only a rescan or Wazuh verifies the fix.</p>
+            <p className="text-[11px] text-foreground-muted">Finishing every task does not close the finding: only a rescan or the monitoring engine verifies the fix.</p>
             <DataTable caption="Remediation tasks" rows={rows} columns={columns} rowKey={(t) => t.id} onRowClick={(t) => t.finding && onOpen(t.finding.id)} initialSort={{ key: 'due', dir: 'asc' }}
                 empty={<EmptyState title={data?.tasks.length ? 'No tasks match these filters' : 'No remediation tasks yet'} body={data?.tasks.length ? undefined : 'Add tasks from a finding, or create them from an AI remediation plan a person accepted.'} />} />
         </div>

@@ -118,7 +118,7 @@ function OverviewTab({ org }: { org: Org }) {
     const rows: [string, string][] = [
         ['Plan', org.plan], ['Status', org.status ?? (org.is_active ? 'active' : 'suspended')],
         ['Country', org.country ?? '—'], ['Address', org.address ?? '—'],
-        ['Wazuh Group', org.wazuh_group ?? '—'], ['Setup Complete', org.setup_complete ? 'Yes' : 'No'],
+        ['Monitoring Group', org.wazuh_group ?? '—'], ['Setup Complete', org.setup_complete ? 'Yes' : 'No'],
         ['Primary Contact', org.contact_name ? `${org.contact_name} (${org.contact_email ?? '—'})` : '—'],
         ['Contact Phone', org.contact_phone ?? '—'],
         ['CISO', org.ciso_name ? `${org.ciso_name} (${org.ciso_email ?? '—'})` : '—'],
@@ -205,7 +205,7 @@ function AgentsTab({ org }: { org: Org }) {
                 <p className="text-xs text-foreground-muted py-6 text-center">
                     {data.groups?.length
                         ? `No agents enrolled yet in ${data.groups.join(', ')}.`
-                        : 'No Wazuh group is mapped to this organisation yet — map one in Settings → Wazuh Groups.'}
+                        : 'No monitoring group is mapped to this organisation yet — map one in Settings → Monitoring Groups.'}
                 </p>
             ) : (
                 <div className="bg-card border border-border rounded-xl divide-y divide-border">
@@ -386,7 +386,7 @@ function SettingsTab({ org, onSaved }: { org: Org; onSaved: (o: Org) => void }) 
 
     return (
         <div className="bg-card border border-border rounded-xl p-5 space-y-4 max-w-lg">
-            {([['name', 'Name'], ['domain', 'Domain'], ['industry', 'Industry'], ['wazuh_group', 'Wazuh Group']] as const).map(([k, label]) => (
+            {([['name', 'Name'], ['domain', 'Domain'], ['industry', 'Industry'], ['wazuh_group', 'Monitoring Group']] as const).map(([k, label]) => (
                 <div key={k}>
                     <label className="text-xs font-medium text-foreground-muted uppercase tracking-wide">{label}</label>
                     <input {...field(k)} className="w-full mt-1 border border-border bg-card-muted rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-purple" />

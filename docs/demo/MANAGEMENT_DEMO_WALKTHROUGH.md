@@ -1,17 +1,17 @@
 # NovrSOC Management Demo — Presenter Walkthrough
 
-10–15 minute guided tour of the platform for management, using **Demo Mode** (synthetic data,
+10–15 minute guided tour of the platform for management, using **Presentation Mode** (synthetic data,
 real UI). Nothing shown here is live telemetry — every screen carries a persistent
-**DEMO MODE — SIMULATED DATA** banner while this is on.
+**PRESENTATION MODE — SIMULATED DATA** banner while this is on.
 
 ## Before you start
 
 1. Sign in as a staff account (`super_admin`, `soc_manager`, or `analyst`).
-2. In the header, click **Demo Mode** to turn it on, then pick an organisation from the dropdown
+2. In the header, click **Presentation Mode** to turn it on, then pick an organisation from the dropdown
    next to it (**LAPO**, **Tazemi**, or **IKEA**).
-3. The amber banner at the top of the screen confirms Demo Mode is active and shows which
+3. The amber banner at the top of the screen confirms Presentation Mode is active and shows which
    organisation is selected. Every screen below reads from that same organisation until you
-   change it or turn Demo Mode off.
+   change it or turn Presentation Mode off.
 
 ## The three demo organisations
 
@@ -27,7 +27,7 @@ numbers, CVEs and addresses appear everywhere that organisation's data shows up,
 ## Suggested running order (~12 minutes)
 
 1. **Opening overview — Dashboard** (`/admin/dashboard`, ~1 min)
-   Start with Demo Mode off to show the real platform shell, then turn it on with **LAPO**
+   Start with Presentation Mode off to show the real platform shell, then turn it on with **LAPO**
    selected. Point out the banner, the KPI tiles, and the "Onboarded Clients" widget now showing
    the three demo organisations.
 
@@ -48,7 +48,7 @@ numbers, CVEs and addresses appear everywhere that organisation's data shows up,
 
 5. **AI Behavioral Analysis** (`/admin/ti/analyst`, ~1.5 min)
    Scroll to the AI Threat Intelligence & Behavioral Analysis section: baseline-vs-observed
-   anomaly scores and the correlated attack-sequence panel. Note the DEMO badges — this is clearly
+   anomaly scores and the correlated attack-sequence panel. Note the PREVIEW badges — this is clearly
    framed as a capability preview, not a claim of a live ML engine.
 
 6. **Vulnerability & Remediation workflow** (`/admin/vms/findings` → `/admin/vms/remediation`,
@@ -69,14 +69,14 @@ numbers, CVEs and addresses appear everywhere that organisation's data shows up,
    (not claiming a live appliance is attached in this session).
 
 9. **Reporting Center — Sample Documents** (`/admin/reports` → **Sample Documents** tab, ~1.5 min)
-   Only visible in Demo Mode. Download one or two of the five sample PDFs (Executive Security
+   Only visible in Presentation Mode. Download one or two of the five sample PDFs (Executive Security
    Summary, Vulnerability Assessment, TI Briefing, Incident Investigation Report, CNII
    Compliance Report) to show management what a delivered report looks like, generated instantly
    and client-side.
 
 10. **Close** (~0.5 min)
-    Turn Demo Mode off to show the banner disappears and the platform returns to its live,
-    normal state — reinforcing that Demo Mode is a presentation layer, not a separate product.
+    Turn Presentation Mode off to show the banner disappears and the platform returns to its live,
+    normal state — reinforcing that Presentation Mode is a presentation layer, not a separate product.
 
 ## What's operational today vs. what's a future capability
 
@@ -90,28 +90,28 @@ honest demo and an overpromise.
 
 **Demonstrated as a capability preview, not yet a live engine:**
 - The AI Behavioral Analysis baseline/anomaly scoring and the automated correlation "attack
-  sequence" panel on the TI Analyst page — synthetic, clearly DEMO-badged, illustrating the
+  sequence" panel on the TI Analyst page — synthetic, clearly PREVIEW-badged, illustrating the
   intended UX ahead of a production behavioral-analytics engine.
 - The Nigeria Threat Heatmap's per-state "latest event" detail panel — the choropleth counts
   themselves can be real (TI indicator data); the simulated per-event drill-down illustrates
   where real network event detail would surface once available.
 
-## What's real-feeling vs. honestly static in Demo Mode
+## What's real-feeling vs. honestly static in Presentation Mode
 
 A handful of actions a presenter is likely to click actually change what's on screen for the
 rest of the session (no real backend is ever touched — this is a session-local simulation, see
 `lib/demo/mutations.ts`): marking a VMS finding verified, changing a case's status/assignment,
 adding a case note, closing a case with resolution notes, escalating a case, and approving/
 rejecting a response action. Everything else (scheduling a report, adding a recipient, running
-the AI Q&A assistant, generating a report through the Generate tab) gives an explicit "Demo Mode:
+the AI Q&A assistant, generating a report through the Generate tab) gives an explicit "Presentation Mode:
 simulated — nothing was sent" message rather than a blank or misleading success, so a presenter
 who clicks something outside the scripted path still gets an honest answer instead of silence.
 
 ## Isolation guarantees worth stating out loud
 
-- Demo Mode never writes to, or reads from, production security, client, or reporting tables.
-- Turning Demo Mode on or switching the demo organisation never changes which real organisation a
+- Presentation Mode never writes to, or reads from, production security, client, or reporting tables.
+- Turning Presentation Mode on or switching the demo organisation never changes which real organisation a
   staff account is authorised to view — it is a separate, independently-gated layer
   (`lib/demo/state.ts`), not a substitute for `lib/orgContext.ts`.
-- Every action button (block IP, generate & deliver, acknowledge, approve, etc.) in Demo Mode
+- Every action button (block IP, generate & deliver, acknowledge, approve, etc.) in Presentation Mode
   returns a synthetic success without ever reaching the real backend, Wazuh, or Supabase.

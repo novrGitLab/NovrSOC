@@ -32,7 +32,7 @@ interface Agent {
 type ProviderId = 'aws' | 'azure' | 'gcp' | 'selfhosted';
 
 const PROVIDERS: Array<{ id: ProviderId; name: string; icon: string; services: string[]; connected: boolean }> = [
-    { id: 'selfhosted', name: 'Self-Hosted', icon: '🖥️', services: ['Wazuh agents', 'VPN endpoints'], connected: true },
+    { id: 'selfhosted', name: 'Self-Hosted', icon: '🖥️', services: ['Monitoring agents', 'VPN endpoints'], connected: true },
     { id: 'aws', name: 'Amazon Web Services', icon: '☁️', services: ['EC2', 'S3', 'RDS', 'Lambda', 'CloudTrail', 'GuardDuty'], connected: false },
     { id: 'azure', name: 'Microsoft Azure', icon: '🔷', services: ['Virtual Machines', 'Blob Storage', 'Entra ID', 'Defender'], connected: false },
     { id: 'gcp', name: 'Google Cloud Platform', icon: '🌐', services: ['Compute Engine', 'Cloud Storage', 'Cloud Logging', 'Security Command Center'], connected: false },
@@ -106,7 +106,7 @@ export function CloudAssets() {
                     <div className="px-5 py-4 border-b border-border flex items-center gap-2 flex-wrap">
                         <div className="w-2 h-2 rounded-full bg-green" />
                         <h3 className="text-sm font-black text-foreground">Self-hosted infrastructure</h3>
-                        <span className="text-[10px] text-foreground-muted">Live from the Wazuh manager</span>
+                        <span className="text-[10px] text-foreground-muted">Live from the monitoring manager</span>
                         <Link href="/admin/infra/assets" className="ml-auto text-[11px] font-bold text-purple hover:underline">
                             Full asset inventory →
                         </Link>
@@ -117,7 +117,7 @@ export function CloudAssets() {
                     ) : agents.length === 0 ? (
                         <p className="px-5 py-8 text-center text-xs text-foreground-muted">
                             {agentError
-                                ? 'Could not reach the Wazuh manager. This is a connectivity problem, not an empty inventory.'
+                                ? 'Could not reach the monitoring manager. This is a connectivity problem, not an empty inventory.'
                                 : 'No agents are enrolled yet.'}
                         </p>
                     ) : (

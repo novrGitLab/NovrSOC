@@ -95,8 +95,8 @@ export function WazuhGroups() {
         <div className="space-y-5">
             <div className="flex items-center justify-between">
                 <div>
-                    <h1 className="text-lg font-black text-foreground">Wazuh Groups</h1>
-                    <p className="text-xs text-foreground-muted">Which organisation owns each Wazuh agent group and syslog sender. Alerts nothing maps are held in quarantine for 14 days.</p>
+                    <h1 className="text-lg font-black text-foreground">Monitoring Groups</h1>
+                    <p className="text-xs text-foreground-muted">Which organisation owns each monitoring agent group and syslog sender. Alerts nothing maps are held in quarantine for 14 days.</p>
                 </div>
                 <button onClick={reload} className="flex items-center gap-1.5 text-[11px] font-bold text-foreground-muted hover:text-foreground border border-border rounded-lg px-3 py-1.5">
                     <RefreshCw className="w-3.5 h-3.5" /> Refresh

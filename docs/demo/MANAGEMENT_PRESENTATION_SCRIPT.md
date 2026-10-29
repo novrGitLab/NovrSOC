@@ -2,12 +2,12 @@
 
 Companion to `MANAGEMENT_DEMO_WALKTHROUGH.md` (the screen-by-screen route). This is the
 word-for-word talking track for a presenter. Timings are cumulative. Everything described as
-"click" below has a real, observable effect in Demo Mode for the rest of that browser session —
+"click" below has a real, observable effect in Presentation Mode for the rest of that browser session —
 these are not just visuals; see the callouts marked **[LIVE CLICK]**.
 
 Each section now has a **Navigation** line giving the exact URL path and, where confirmed against
 the component source, the exact button/tab label to click. Labels for the three demo-specific
-controls (the Demo Mode toggle, "Verify", "Sample Documents") are drawn directly from the
+controls (the Presentation Mode toggle, "Verify", "Sample Documents") are drawn directly from the
 component source and are exact. Labels for pre-existing screens (case actions, TI pages) match
 the source as last read, but were not re-confirmed against a live rendered page — no browser
 automation tool was available this session, so the presenter should do one dry run before
@@ -16,10 +16,10 @@ presenting live, using this as a close guide rather than a guarantee of pixel-ex
 ## Presenter prep (do this once, before the room fills up)
 
 The "Verify" click and the case-workbench actions below leave a **real, session-local change**
-that persists until Demo Mode is turned off (or the browser tab closes) — switching between
+that persists until Presentation Mode is turned off (or the browser tab closes) — switching between
 LAPO/Tazemi/IKEA does **not** reset it. If you rehearse this script and then present later in the
 same browser session, the IKEA finding will already show "Verified" and the LAPO case will
-already show your rehearsal note. Toggle Demo Mode off and back on once, right before you present,
+already show your rehearsal note. Toggle Presentation Mode off and back on once, right before you present,
 to start from the clean seeded state described below.
 
 ---
@@ -27,14 +27,14 @@ to start from the clean seeded state described below.
 **0:00 — Open (30s)**
 
 > "What you're about to see is the real NovrSOC platform — the same screens our analysts use
-> every day. We're going to run it in Demo Mode, which replaces live client data with three
+> every day. We're going to run it in Presentation Mode, which replaces live client data with three
 > fictional organisations, so we can walk through a full security operation without touching any
 > real customer's information. Every screen you see carries a yellow banner reminding you it's
 > simulated. Nothing we click here sends an email, blocks an IP, or changes anything outside this
 > browser tab."
 
 **Navigation:** Sign in → you land on `/admin/dashboard`. In the header, click the amber
-**Demo Mode** button (it reads **Demo: On** once active, and an organisation `<select>` appears
+**Presentation Mode** button (it reads **Presentation: On** once active, and an organisation `<select>` appears
 immediately to its right). Pick **LAPO** from that dropdown. Point at the new amber banner now
 running the full width of the page below the header.
 
@@ -93,9 +93,9 @@ any highlighted state.
 
 **Navigation:** Go to `/admin/ti/analyst`. Scroll past the Q&A box and the threat/Nigeria
 briefings to the **AI Threat Intelligence & Behavioral Analysis** section (every card in it
-carries a small **DEMO** badge).
+carries a small **PREVIEW** badge).
 
-> "This panel is clearly marked DEMO because it's showing you where we're headed, not a system
+> "This panel is clearly marked PREVIEW because it's showing you where we're headed, not a system
 > that's live today: automated baseline-vs-observed anomaly scoring, and a correlated attack
 > sequence across a kill chain. The Q&A assistant above it, on the other hand, is real — it
 > answers from the platform's actual stored intelligence record, with citations."
@@ -148,7 +148,7 @@ the top of the page both update immediately.
 
 **11:00 — Reporting Center — Sample Documents (1 min)**
 
-**Navigation:** Go to `/admin/reports`. A new tab appears in the tab bar only while Demo Mode is
+**Navigation:** Go to `/admin/reports`. A new tab appears in the tab bar only while Presentation Mode is
 on, all the way on the right: **Sample Documents**. Click it.
 
 > "Every client we onboard gets scheduled reports delivered automatically. Here are the five
@@ -165,7 +165,7 @@ downloaded file opening.
 
 **12:00 — Close (30s)**
 
-**Navigation:** In the header, click **Demo: On** to turn it off.
+**Navigation:** In the header, click **Presentation: On** to turn it off.
 
 > "And that's the platform — the banner's gone, we're back to the live system. Everything you saw
 > was the real product, run against safe, synthetic data. Happy to go deeper into any one of

@@ -71,7 +71,7 @@ export function SetupGuide({ guide: id }: { guide: GuideId }) {
             <div className={`rounded-xl border p-4 ${active.length > 0 ? 'bg-green/5 border-green/30' : 'bg-card border-border'}`}>
                 <div className="flex items-center gap-2">
                     {agents === null ? (
-                        <span className="text-xs text-foreground-muted">Checking the Wazuh manager…</span>
+                        <span className="text-xs text-foreground-muted">Checking the monitoring manager…</span>
                     ) : 'error' in agents ? (
                         <>
                             <AlertTriangle size={15} className="text-amber-500" />

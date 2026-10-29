@@ -55,8 +55,8 @@ export function CniiLookup({ ip }: { ip: string }) {
                         </div>
                     </div>
                     <div className="bg-card border border-border rounded-xl p-4">
-                        <h2 className="text-sm font-bold text-foreground mb-1">OpenCTI</h2>
-                        {r.opencti === null ? <p className="text-foreground-muted">{r.sources.opencti}</p> : r.opencti.length === 0 ? <p>OpenCTI has nothing on this address.</p> : <ul className="list-disc ml-5">{r.opencti.map((o, i) => <li key={i}>{o.description} <span className="text-foreground-muted">({o.severity}, as OpenCTI states)</span></li>)}</ul>}
+                        <h2 className="text-sm font-bold text-foreground mb-1">Threat Intelligence Platform</h2>
+                        {r.opencti === null ? <p className="text-foreground-muted">{r.sources.opencti}</p> : r.opencti.length === 0 ? <p>The threat intelligence platform has nothing on this address.</p> : <ul className="list-disc ml-5">{r.opencti.map((o, i) => <li key={i}>{o.description} <span className="text-foreground-muted">({o.severity}, as reported)</span></li>)}</ul>}
                     </div>
                     <p className="text-foreground-muted">Sources: {Object.entries(r.sources).map(([k, v]) => `${k}: ${v}`).join(' · ')}</p>
                 </>

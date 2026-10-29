@@ -235,7 +235,7 @@ function AuthorisationDetail({ id, onClose, onChanged }: { id: string; onClose: 
                             <fieldset className="flex flex-wrap gap-3"><legend className="text-foreground-muted">Permitted scan types</legend>
                                 <label className="flex items-center gap-1"><input type="checkbox" checked disabled /> Discovery (always included)</label>
                                 <label className="flex items-center gap-1"><input type="checkbox" checked={form.ports} onChange={(e) => setForm({ ...form, ports: e.target.checked })} /> Port scan</label>
-                                <label className="flex items-center gap-1"><input type="checkbox" checked={form.vuln} onChange={(e) => setForm({ ...form, vuln: e.target.checked })} /> Vulnerability checks (Nuclei; OpenVAS is paused)</label>
+                                <label className="flex items-center gap-1"><input type="checkbox" checked={form.vuln} onChange={(e) => setForm({ ...form, vuln: e.target.checked })} /> Vulnerability checks (extended vulnerability scanning not enabled)</label>
                             </fieldset>
                             {s.kind === 'domain' && current.length > 0 && (
                                 <fieldset className="flex flex-wrap gap-3"><legend className="text-foreground-muted">Addresses to authorise as single-IP targets</legend>

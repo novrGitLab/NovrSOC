@@ -46,7 +46,7 @@ export interface VmsAsset {
     cnii?: { sector_id: string; designation: 'designated' | 'candidate' } | null;
 }
 export type InventoryCategory = 'wazuh' | 'vulnerability' | 'cloud' | 'other';
-export const CATEGORY_LABEL: Record<InventoryCategory, string> = { wazuh: 'Wazuh Assets', vulnerability: 'Vulnerability Assets', cloud: 'Cloud Assets', other: 'Other Assets' };
+export const CATEGORY_LABEL: Record<InventoryCategory, string> = { wazuh: 'Monitored Assets', vulnerability: 'Vulnerability Assets', cloud: 'Cloud Assets', other: 'Other Assets' };
 export type AssessmentOutcome = 'reachable_open' | 'reachable_no_open' | 'unreachable' | 'no_route' | 'insufficient_evidence';
 /** What one scan learned about reaching a host (P12). Not the Full Assessment (VmsAssessment, P13). */
 export interface VmsReachAssessment {
@@ -66,8 +66,12 @@ export const SCAN_STATUS_STYLE: Record<VmsScan['status'], string> = {
     failed: 'bg-red/10 text-red', cancelled: 'bg-card-muted text-foreground-muted',
 };
 export const SCAN_KIND_LABEL: Record<VmsScan['kind'], string> = {
-    passive_osint: 'Passive lookup (no traffic to target)', discovery: 'Discovery (subdomains, DNS, HTTP)', ports: 'Ports & services (Nmap)', vuln_nuclei: 'Vulnerabilities (Nuclei)', vuln_openvas: 'Vulnerabilities (OpenVAS)',
+    passive_osint: 'Passive lookup (no traffic to target)', discovery: 'Discovery (subdomains, DNS, HTTP)', ports: 'Ports & services scan', vuln_nuclei: 'Vulnerability scan', vuln_openvas: 'Extended vulnerability scan',
 };
+/** A finding's `detected_by` array holds the internal detector ids (e.g. 'nuclei', 'openvas',
+ * 'wazuh-vuln') that found it — displayed under NovrSOC's own names rather than the detector's. */
+const DETECTOR_LABEL: Record<string, string> = { nuclei: 'Vulnerability Scanning Engine', openvas: 'Extended Vulnerability Scanning', 'wazuh-vuln': 'Security Monitoring Engine', nmap: 'Vulnerability Scanning Engine', httpx: 'Asset Discovery', wazuh: 'Security Monitoring Engine' };
+export const detectorLabel = (id: string): string => DETECTOR_LABEL[id] ?? id;
 export const EVENT_LABEL: Record<string, string> = {
     asset_new: 'New asset', asset_changed: 'Asset changed', asset_gone: 'Asset gone', service_new: 'New service',
     service_changed: 'Service changed', service_gone: 'Service gone', technology_new: 'New technology',

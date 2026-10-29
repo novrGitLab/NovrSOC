@@ -115,7 +115,7 @@ export function EmailAlertDetail({ id }: { id: string }) {
                             <Panel title="Indicators & related SOC alerts">
                                 <div className="flex flex-wrap gap-1.5">{a.indicators.map((i) => <span key={`${i.type}|${i.value}`} className="text-[10px] font-mono border border-border rounded px-1.5 py-0.5 break-all"><span className="text-foreground-muted">{i.type}:</span> {i.value}</span>)}</div>
                                 <div className="mt-3 pt-3 border-t border-border">
-                                    <p className="text-[11px] font-bold text-foreground mb-1">Wazuh alerts sharing these indicators (30 days)</p>
+                                    <p className="text-[11px] font-bold text-foreground mb-1">Monitoring alerts sharing these indicators (30 days)</p>
                                     {!state.data.soc_alerts.available ? <p className="text-[11px] text-foreground-muted">Not available: {state.data.soc_alerts.error}</p>
                                         : state.data.soc_alerts.alerts.length === 0 ? <p className="text-[11px] text-foreground-muted">None.</p>
                                         : <ul className="text-[11px] space-y-1">{state.data.soc_alerts.alerts.map((s) => <li key={s.id}>{wat(s.timestamp)} · level {s.level} · {s.rule}{s.agent ? ` · ${s.agent}` : ''}</li>)}</ul>}

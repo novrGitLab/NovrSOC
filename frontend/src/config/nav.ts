@@ -117,7 +117,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             { id: 'alert-comms', label: 'Alert Communication', href: '/admin/secops/alert-comms', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: MessageSquare },
             { id: 'threats', label: 'Threats', href: '/admin/secops/threats', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: ShieldAlert },
             { id: 'hunting', label: 'Threat Hunting', href: '/admin/secops/hunting', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: Crosshair },
-            { id: 'wazuh-vulnerabilities', label: 'Wazuh Vulnerabilities', href: '/admin/secops/vulnerabilities', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: AlertTriangle },
+            { id: 'wazuh-vulnerabilities', label: 'Endpoint Vulnerabilities', href: '/admin/secops/vulnerabilities', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: AlertTriangle },
             { id: 'mitre', label: 'MITRE Intelligence', href: '/admin/secops/mitre', domain: 'secops', status: 'PARTIAL', roles: NOT_EXEC, icon: Shield },
             { id: 'playbooks', label: 'Playbooks', href: '/admin/secops/playbooks', domain: 'secops', status: 'PARTIAL', roles: NOT_EXEC, icon: BookOpen },
             { id: 'soar', label: 'SOAR Automation', href: '/admin/secops/soar', domain: 'secops', status: 'WORKING', roles: NOT_EXEC, icon: Zap },
@@ -190,7 +190,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
         items: [
             // Unified inventory (P14): Wazuh-managed and external assets, one record set (VMS Attack Surface).
             { id: 'infra-inventory', label: 'Asset Inventory', href: '/admin/vms/assets', domain: 'infra', status: 'WORKING', roles: VMS_READ, icon: Server },
-            { id: 'digital-assets', label: 'Wazuh Endpoints', href: '/admin/vms/assets?category=wazuh', domain: 'infra', status: 'WORKING', roles: NOT_EXEC, icon: Monitor },
+            { id: 'digital-assets', label: 'Monitored Endpoints', href: '/admin/vms/assets?category=wazuh', domain: 'infra', status: 'WORKING', roles: NOT_EXEC, icon: Monitor },
             { id: 'cloud-assets', label: 'Cloud Assets', href: '/admin/infra/cloud', domain: 'infra', status: 'PARTIAL', roles: NOT_EXEC, icon: Cloud },
         ],
     },
@@ -246,7 +246,7 @@ export const ADMIN_NAV: NavSectionConfig[] = [
             // Also carries the Stellar push ("Vendor Export Status") panel — ExportClients.tsx
             // already embeds <PushStatus /> (pre-existing, commit 284f06b); no separate nav entry.
             { id: 'export-clients', label: 'Export Clients', href: '/admin/settings/export-clients', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: KeyRound },
-            { id: 'wazuh-groups', label: 'Wazuh Groups', href: '/admin/settings/wazuh-groups', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: Network },
+            { id: 'wazuh-groups', label: 'Monitoring Groups', href: '/admin/settings/wazuh-groups', domain: 'settings', status: 'WORKING', roles: SUPER_ADMIN, icon: Network },
             { id: 'platform-health', label: 'Platform Health', href: '/admin/settings/health', domain: 'settings', status: 'WORKING', roles: MANAGER_ONLY, icon: Activity },
         ],
     },

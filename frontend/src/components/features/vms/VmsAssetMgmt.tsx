@@ -34,7 +34,7 @@ interface AssetDetail {
 interface Overview { assets: { active: number; internet_facing: number; gone: number; open_services: number }; last_7_days: { new_assets: number; changed_assets: number; gone_assets: number; new_services: number }; active_scopes: number }
 
 const SEV4 = ['critical', 'high', 'medium', 'low'] as const;
-const TYPE_LABEL: Record<string, string> = { domain: 'Domain', host: 'Host', ip: 'IP address', endpoint: 'Wazuh endpoint', asn: 'ASN', cidr: 'Network' };
+const TYPE_LABEL: Record<string, string> = { domain: 'Domain', host: 'Host', ip: 'IP address', endpoint: 'Monitored endpoint', asn: 'ASN', cidr: 'Network' };
 const EXPOSURE_LABEL: Record<string, string> = { internet: 'Internet-facing', internal: 'Internal', unknown: 'Unknown' };
 
 function SevBar({ by }: { by: Record<string, number> }) {
@@ -89,16 +89,16 @@ export function VmsAssetInventory() {
     ];
     return (
         <div className="space-y-5">
-            <PageHeader icon={Boxes} title="Asset Inventory" description="Every host, domain and IP found inside authorised scope, and every Wazuh-managed endpoint — one inventory, with each asset's open findings and highest risk."
+            <PageHeader icon={Boxes} title="Asset Inventory" description="Every host, domain and IP found inside authorised scope, and every monitored endpoint — one inventory, with each asset's open findings and highest risk."
                 actions={<>
-                    <Segmented label="View" value={view} onChange={setView} options={[['all', 'All assets'], ['endpoints', 'Managed endpoints (Wazuh)']]} />
+                    <Segmented label="View" value={view} onChange={setView} options={[['all', 'All assets'], ['endpoints', 'Managed endpoints']]} />
                     <Link href="/admin/vms/import" className={btn('secondary')}><Plus className="w-3.5 h-3.5" aria-hidden /> Import assets</Link>
                 </>} />
             {view === 'endpoints' ? <VmsEndpoints /> : (
                 <>
                     <Segmented label="Category" value={category} onChange={setCategory} options={[['', 'All categories'], ['wazuh', CATEGORY_LABEL.wazuh], ['vulnerability', CATEGORY_LABEL.vulnerability], ['cloud', CATEGORY_LABEL.cloud], ['other', CATEGORY_LABEL.other]]} />
                     <div className="flex flex-wrap items-center gap-2">
-                        <Select label="Type" value={type} onChange={setType} options={[['', 'Any type'], ['external', 'Found by scans'], ['endpoint', 'Wazuh endpoints'], ['domain', 'Domains'], ['host', 'Hosts'], ['ip', 'IP addresses']]} />
+                        <Select label="Type" value={type} onChange={setType} options={[['', 'Any type'], ['external', 'Found by scans'], ['endpoint', 'Monitored endpoints'], ['domain', 'Domains'], ['host', 'Hosts'], ['ip', 'IP addresses']]} />
                         <Select label="Exposure" value={exposure} onChange={setExposure} options={[['', 'Any exposure'], ['internet', 'Internet-facing'], ['internal', 'Internal'], ['unknown', 'Unknown']]} />
                         <Select label="Scanning" value={auth} onChange={setAuth} options={[['', 'Any'], ...Object.entries(AUTH_META).map(([k, v]) => [k, v.label] as [string, string])]} />
                         <Select label="Criticality" value={criticality} onChange={setCriticality} options={[['', 'Any criticality'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']]} />
@@ -108,7 +108,7 @@ export function VmsAssetInventory() {
                     </div>
                     {load.state === 'error' ? <ErrorState error={load.error} status={load.status} onRetry={reload} />
                         : <DataTable caption="Asset inventory" rows={rows} columns={columns} rowKey={(a) => a.id} onRowClick={(a) => router.push(`/admin/vms/assets/${a.id}`)} initialSort={{ key: 'findings', dir: 'desc' }}
-                            empty={<EmptyState icon={Boxes} title={data?.assets.length ? 'No assets match these filters' : 'No assets yet'} body={data?.assets.length ? undefined : 'Add an authorised scope and run discovery, or map Wazuh agent groups to this organisation.'} action={data?.assets.length ? undefined : <Link href="/admin/vms/discovery" className={btn('primary', 'md')}>Go to Asset Discovery</Link>} />} />}
+                            empty={<EmptyState icon={Boxes} title={data?.assets.length ? 'No assets match these filters' : 'No assets yet'} body={data?.assets.length ? undefined : 'Add an authorised scope and run discovery, or map monitoring agent groups to this organisation.'} action={data?.assets.length ? undefined : <Link href="/admin/vms/discovery" className={btn('primary', 'md')}>Go to Asset Discovery</Link>} />} />}
                     {data && data.assets.length >= 1000 && <p className="text-[11px] text-foreground-muted">Showing the 1000 most recently seen assets. Use the filters or search to find others.</p>}
                 </>
             )}
@@ -174,7 +174,7 @@ export function VmsAssetPage({ id }: { id: string }) {
                             <D k="Hostnames" v={<span className="font-mono">{a.hostnames.join(', ') || '—'}</span>} />
                             <D k="CNAME" v={<span className="font-mono">{a.dns?.cname?.join(', ') || '—'}</span>} />
                             <D k="Web" v={a.http ? `${a.http.status ?? '—'} · ${a.http.title ?? 'no title'} · ${a.http.webserver ?? 'server unknown'}${a.http.cdn ? ` · CDN ${a.http.cdn}` : ''}` : 'No web service seen'} />
-                            {a.asset_type === 'endpoint' && <D k="Wazuh agent" v={`${a.wazuh_agent_id ?? '—'} · ${a.os ?? 'OS not reported'} · ${a.agent_status ?? 'status unknown'}`} />}
+                            {a.asset_type === 'endpoint' && <D k="Monitoring agent" v={`${a.wazuh_agent_id ?? '—'} · ${a.os ?? 'OS not reported'} · ${a.agent_status ?? 'status unknown'}`} />}
                             {a.asset_type === 'endpoint' && <D k="Scan eligibility" v={a.scan_eligibility ? `${ELIGIBILITY_LABEL[a.scan_eligibility.status]} — ${a.scan_eligibility.reason}` : 'Not evaluated yet'} />}
                             {a.next_scan_at !== undefined && <D k="Next automatic assessment" v={a.next_scan_at ? fmtWat(a.next_scan_at) : 'Not planned by an enabled policy'} />}
                         </dl>
@@ -201,7 +201,7 @@ export function VmsAssetPage({ id }: { id: string }) {
                                     {data.linked!.map((l) => (
                                         <div key={l.id} className="flex flex-wrap items-center gap-2 text-xs">
                                             <Link href={`/admin/vms/assets/${l.id}`} className="font-mono font-semibold text-purple dark:text-[var(--vz-prog-4)]">{l.value}</Link>
-                                            <span className="text-foreground-muted">({l.asset_type === 'endpoint' ? 'Wazuh endpoint' : 'scanned address'} · {l.relation})</span>
+                                            <span className="text-foreground-muted">({l.asset_type === 'endpoint' ? 'Monitored endpoint' : 'scanned address'} · {l.relation})</span>
                                             {l.same_machine ? (
                                                 <StatusPill tone={l.same_machine.basis === 'confirmed' ? 'good' : 'neutral'} label={l.same_machine.basis === 'confirmed' ? 'Confirmed same machine' : 'Not the same machine'} />
                                             ) : can.manage ? (
@@ -246,7 +246,7 @@ export function VmsAssetPage({ id }: { id: string }) {
                 { key: 'status', header: 'Status', render: (x) => <span className="font-semibold">{ASSESSMENT_STATUS_LABEL[x.status]} · {x.progress.finished}/{x.progress.total}</span> },
                 { key: 'by', header: 'By', hideBelow: 'md', render: (x) => <span className="text-[11px] text-foreground-muted">{x.requested_by}</span> },
             ]} />}
-            {tab === 'history' && <Card><SectionTitle title="Change history" hint="What scans and Wazuh observed changing on this asset." /><Timeline empty="No changes recorded." items={data.events.slice(0, 60).map((e) => ({ id: e.id, at: e.at, title: EVENT_LABEL[e.event] ?? e.event, meta: fmtWat(e.at), body: describeEvent(e) || null, tone: e.event.endsWith('_gone') ? 'neutral' : e.event.endsWith('_new') ? 'warning' : undefined }))} /></Card>}
+            {tab === 'history' && <Card><SectionTitle title="Change history" hint="What scans and the monitoring engine observed changing on this asset." /><Timeline empty="No changes recorded." items={data.events.slice(0, 60).map((e) => ({ id: e.id, at: e.at, title: EVENT_LABEL[e.event] ?? e.event, meta: fmtWat(e.at), body: describeEvent(e) || null, tone: e.event.endsWith('_gone') ? 'neutral' : e.event.endsWith('_new') ? 'warning' : undefined }))} /></Card>}
 
             <ConfirmDialog open={assess} title="Run an assessment of this asset?" body={<>Plans the <b>Full Assessment</b> checks for <span className="font-mono">{a.value}</span> that its authorised scope allows and a connected worker can run. Checks that cannot run are recorded as not attempted, with the reason.</>}
                 confirmLabel="Start assessment" onCancel={() => setAssess(false)}
@@ -269,7 +269,7 @@ export function VmsDiscovery() {
     const found = useMemo(() => events.data?.events.filter((e) => e.event === 'asset_new') ?? null, [events.data]);
     return (
         <div className="space-y-5">
-            <PageHeader icon={Radar} title="Asset Discovery" description="Assets enter the inventory in two ways: discovery scans inside an authorised scope (subdomains, DNS, HTTP), and Wazuh agents of the organisation's mapped groups. Nothing outside authorised scope is ever scanned."
+            <PageHeader icon={Radar} title="Asset Discovery" description="Assets enter the inventory in two ways: discovery scans inside an authorised scope (subdomains, DNS, HTTP), and monitoring agents of the organisation's mapped groups. Nothing outside authorised scope is ever scanned."
                 actions={<Link href="/admin/vms/scans" className={btn('primary', 'md')}><Radar className="w-4 h-4" aria-hidden /> Run discovery</Link>} />
             <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <Step n={1} title="Authorise the scope" body="A manager requests the domains, IPs or networks to test, with the agreement reference, exclusions, scan windows and what may run. The organisation's administrator approves it once on the Scan Authorisation page." />

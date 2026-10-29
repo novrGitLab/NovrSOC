@@ -10,7 +10,7 @@ import { useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Bug } from 'lucide-react';
-import { fmtWat } from '@/lib/vms';
+import { fmtWat, detectorLabel } from '@/lib/vms';
 import { PageHeader, KpiCard, SeverityBadge, PriorityBadge, RiskScore, Segmented, Select, Toggle, SearchBox, Drawer, ConfirmDialog, ErrorState, Notice, ExportCsvButton, Tag, btn, type Msg, SEVERITY_META } from './kit';
 import { DataTable, type Column } from './table';
 import { FindingDetail, STATUS_LABEL, isOverdue, type Finding } from './FindingDetail';
@@ -94,7 +94,7 @@ export function VmsFindings() {
         { key: 'severity', header: 'Severity', render: (f) => <SeverityBadge severity={f.scanner_severity} />, sort: (f) => -(SEVERITY_META[f.scanner_severity]?.rank ?? 9) },
         { key: 'risk', header: 'Risk', render: (f) => <RiskScore score={f.risk_score} />, sort: (f) => f.risk_score },
         { key: 'asset', header: 'Asset', hideBelow: 'md', render: (f) => <span title={f.asset_value} className="block max-w-[200px] truncate font-mono text-[11px] text-foreground">{f.asset_value}{f.port ? `:${f.port}` : ''}</span>, sort: (f) => f.asset_value },
-        { key: 'source', header: 'Source', hideBelow: 'lg', render: (f) => <span className="text-[11px] text-foreground-muted">{f.source_class === 'wazuh' ? 'Wazuh' : f.detected_by.join(', ')}</span> },
+        { key: 'source', header: 'Source', hideBelow: 'lg', render: (f) => <span className="text-[11px] text-foreground-muted">{f.source_class === 'wazuh' ? 'Monitoring engine' : f.detected_by.map(detectorLabel).join(', ')}</span> },
         { key: 'status', header: 'Status', render: (f) => <span className="text-[11px] font-semibold text-foreground whitespace-nowrap">{STATUS_LABEL[f.status] ?? f.status}</span>, sort: (f) => f.status },
         { key: 'owner', header: 'Owner', hideBelow: 'lg', render: (f) => <span className="text-[11px] text-foreground-muted">{f.owner ?? 'Unassigned'}</span>, sort: (f) => f.owner ?? '~' },
         { key: 'due', header: 'Due', hideBelow: 'md', render: (f) => <span className={`text-[11px] whitespace-nowrap ${isOverdue(f, now) ? 'font-bold text-foreground' : 'text-foreground-muted'}`}>{f.due_at ? fmtWat(f.due_at).replace(/,? \d\d:\d\d WAT$/, '') : '—'}{isOverdue(f, now) && <> <Tag>Overdue</Tag></>}</span>, sort: (f) => f.due_at ?? '9999' },
@@ -105,7 +105,7 @@ export function VmsFindings() {
     return (
         <div className="space-y-5">
             <PageHeader icon={Bug} title="Vulnerability Findings"
-                description="Findings from active scans (Nuclei, OpenVAS) and Wazuh agents, ranked by the risk engine. A finding is resolved only when a rescan or Wazuh shows it is gone."
+                description="Findings from active scans and monitoring agents, ranked by the risk engine. A finding is resolved only when a rescan or the monitoring engine shows it is gone."
                 actions={<ExportCsvButton filename={`vms-findings-${new Date().toISOString().slice(0, 10)}.csv`} rows={rows as unknown as Record<string, unknown>[]} columns={[
                     { key: 'priority', header: 'Priority' }, { key: 'risk_score', header: 'Risk score' }, { key: 'scanner_severity', header: 'Severity' }, { key: 'title', header: 'Title' }, { key: 'cve_ids', header: 'CVEs' },
                     { key: 'asset_value', header: 'Asset' }, { key: 'port', header: 'Port' }, { key: 'source_class', header: 'Source' }, { key: 'status', header: 'Status' }, { key: 'owner', header: 'Owner' }, { key: 'due_at', header: 'Due' }, { key: 'first_seen', header: 'First seen' }, { key: 'last_seen', header: 'Last seen' },
@@ -117,14 +117,14 @@ export function VmsFindings() {
                 <KpiCard label="Overdue" value={s?.overdue} tone={s?.overdue ? 'warning' : undefined} reason="Loading" />
                 <KpiCard label="P1" value={s ? s.by_priority.P1 ?? 0 : undefined} reason="Loading" sub="Fix within 2 days" />
                 <KpiCard label="P2" value={s ? s.by_priority.P2 ?? 0 : undefined} reason="Loading" sub="Fix within 7 days" />
-                <KpiCard label="Reported by Wazuh" value={s ? s.by_source.wazuh ?? 0 : undefined} reason="Loading" sub="Open, from endpoint agents" />
+                <KpiCard label="Reported by monitoring" value={s ? s.by_source.wazuh ?? 0 : undefined} reason="Loading" sub="Open, from endpoint agents" />
             </section>
 
             <div className="flex flex-wrap items-center gap-2">
                 <Segmented label="Status" value={status} onChange={(v) => { setStatus(v); setSelected(new Set()); }} options={STATUS_VIEWS} />
                 <Select label="Priority" value={priority} onChange={setPriority} options={[['', 'Any priority'], ['P1', 'P1'], ['P2', 'P2'], ['P3', 'P3'], ['P4', 'P4']]} />
                 <Select label="Severity" value={severity} onChange={setSeverity} options={[['', 'Any severity'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low'], ['info', 'Info']]} />
-                <Select label="Source" value={source} onChange={setSource} options={[['', 'All sources'], ['active_scan', 'Active scans'], ['wazuh', 'Wazuh']]} />
+                <Select label="Source" value={source} onChange={setSource} options={[['', 'All sources'], ['active_scan', 'Active scans'], ['wazuh', 'Monitoring']]} />
                 <Toggle on={kev} onChange={setKev}>Known exploited</Toggle>
                 <Toggle on={overdue} onChange={setOverdue}>Overdue</Toggle>
                 <SearchBox value={q} onSubmit={setQ} placeholder="CVE, title or asset" label="Search findings" />

@@ -34,7 +34,7 @@ export function AlertFeedStatus({ notConnected, error, lastReceivedAt, loaded, s
                 <div className="w-2 h-2 rounded-full bg-foreground-muted flex-shrink-0 mt-1.5" />
                 <div>
                     <p className="text-sm font-semibold text-foreground">No data</p>
-                    <p className="text-xs text-foreground-muted mt-0.5">No alerts have been received for this organisation yet. Check that the SOAR forwarder is running and that its Wazuh groups (or syslog senders) are mapped to this organisation.</p>
+                    <p className="text-xs text-foreground-muted mt-0.5">No alerts have been received for this organisation yet. Check that the SOAR forwarder is running and that its monitoring groups (or syslog senders) are mapped to this organisation.</p>
                 </div>
             </div>
         );
@@ -47,7 +47,7 @@ export function AlertFeedStatus({ notConnected, error, lastReceivedAt, loaded, s
                 <div>
                     <p className="text-sm font-semibold text-amber">No new alerts for over {staleAfterMinutes} minutes</p>
                     <p className="text-xs text-foreground-muted mt-0.5">
-                        Last alert received {watTime(lastReceivedAt)}. This organisation may simply be quiet, or the forwarder or the Wazuh manager may be down — Platform Health shows whether alerts are reaching NovrSOC at all.
+                        Last alert received {watTime(lastReceivedAt)}. This organisation may simply be quiet, or the forwarder or the security monitoring engine may be down — Platform Health shows whether alerts are reaching NovrSOC at all.
                     </p>
                 </div>
             </div>

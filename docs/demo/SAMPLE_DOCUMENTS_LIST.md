@@ -1,6 +1,6 @@
 # Sample Documents Available for Download
 
-Generated client-side in Demo Mode, Reporting Center → **Sample Documents** tab
+Generated client-side in Presentation Mode, Reporting Center → **Sample Documents** tab
 (`frontend/src/components/features/ReportingCenter.tsx`, data from `frontend/src/lib/demo/documents.ts`).
 Every file is a real PDF, built in the browser from the same seeded demo dataset shown on screen —
 no backend call is made. Every title and every page is marked **[SAMPLE]** / SIMULATED.
@@ -20,10 +20,10 @@ an executive summary section, findings specific to that organisation's connected
 supporting evidence (IOCs, CVEs, case references), recommendations, and a methodology/limitations
 section that states plainly the document is a sample built from simulated data.
 
-**How to get one:** Admin → Reporting Center → turn on Demo Mode (header) → select an
+**How to get one:** Admin → Reporting Center → turn on Presentation Mode (header) → select an
 organisation → **Sample Documents** tab → **PDF** button next to the report type.
 
 **Not included:** these are not generated through the production report-generation pipeline
-(`POST /api/reports/generate`) — that endpoint is intentionally disabled in Demo Mode and says so
+(`POST /api/reports/generate`) — that endpoint is intentionally disabled in Presentation Mode and says so
 if clicked. These 15 PDFs are the complete, intended way to show a deliverable report during the
 walkthrough.

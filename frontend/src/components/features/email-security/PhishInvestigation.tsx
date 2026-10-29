@@ -90,7 +90,7 @@ export function PhishInvestigation({ id }: { id: string }) {
                 subtitle={d && <>Resembles {d.brand_domain ?? 'your brand'} · first observed {wat(d.first_observed)} · last assessed {wat(d.last_enriched)}</>}
                 actions={d && <>
                     {isAnalyst(role) && <Button onClick={() => run('refresh', 'POST', `/phishid/domains/${id}/refresh`, undefined, 'Re-assessed with fresh intelligence and a new website inspection.')} busy={busy === 'refresh'}><RefreshCw size={12} /> Re-assess</Button>}
-                    {isManager(role) && d.status === 'confirmed_phishing' && !d.opencti_id && <Button onClick={() => run('octi', 'POST', `/phishid/domains/${id}/opencti`, undefined, 'Shared to OpenCTI.')} busy={busy === 'octi'}><Share2 size={12} /> Share to OpenCTI</Button>}
+                    {isManager(role) && d.status === 'confirmed_phishing' && !d.opencti_id && <Button onClick={() => run('octi', 'POST', `/phishid/domains/${id}/opencti`, undefined, 'Shared to the threat intelligence platform.')} busy={busy === 'octi'}><Share2 size={12} /> Share to Threat Intelligence Platform</Button>}
                 </>}
             />
             <Feedback result={fb} />
@@ -108,7 +108,7 @@ export function PhishInvestigation({ id }: { id: string }) {
                                     ['Resolves', d.resolves === null ? 'Unknown' : d.resolves ? 'Yes' : 'No'],
                                     ['Assigned to', d.assigned_to ?? 'Unassigned'],
                                     ['Alert', state.data.alert ? <Link key="a" href={`/admin/email/alerts/${state.data.alert.id}`} className="text-purple hover:underline">{label(state.data.alert.status)}{state.data.alert.case_number ? ` · ${state.data.alert.case_number}` : ''}</Link> : 'None'],
-                                    ['OpenCTI', d.opencti_id ? `Shared (${d.opencti_id})` : 'Not shared'],
+                                    ['Threat Intel Platform', d.opencti_id ? `Shared (${d.opencti_id})` : 'Not shared'],
                                 ]} />
                                 {isAnalyst(role) && (
                                     <div className="mt-4 pt-3 border-t border-border space-y-2">
@@ -213,7 +213,7 @@ export function PhishInvestigation({ id }: { id: string }) {
                                     </ul>
                                 )}
                                 <div className="mt-3 pt-3 border-t border-border">
-                                    <p className="text-[11px] font-bold text-foreground mb-1">Wazuh alerts mentioning this domain or its IPs (30 days)</p>
+                                    <p className="text-[11px] font-bold text-foreground mb-1">Monitoring alerts mentioning this domain or its IPs (30 days)</p>
                                     {!state.data.soc_alerts.available ? <p className="text-[11px] text-foreground-muted">Not available: {state.data.soc_alerts.error}</p>
                                         : state.data.soc_alerts.alerts.length === 0 ? <p className="text-[11px] text-foreground-muted">None.</p>
                                         : <ul className="text-[11px] space-y-1">{state.data.soc_alerts.alerts.map((a) => <li key={a.id}>{wat(a.timestamp)} · level {a.level} · {a.rule}{a.agent ? ` · ${a.agent}` : ''} <span className="text-foreground-muted">({a.match})</span></li>)}</ul>}

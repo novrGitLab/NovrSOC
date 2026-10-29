@@ -13,7 +13,7 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Activity, Bell, CalendarClock, Cog, Cpu, Play, Plug, ShieldCheck, SlidersHorizontal, RotateCcw } from 'lucide-react';
-import { fmtWat, fmtDuration, PROFILE_LABEL, ELIGIBILITY_LABEL, EVENT_LABEL, describeEvent, ENGINE_STATE_LABEL, SCAN_KIND_LABEL, type EligibilityStatus, type VmsEvent, type VmsScan, type VmsOperations, type VmsProfile, type EngineState } from '@/lib/vms';
+import { fmtWat, fmtDuration, PROFILE_LABEL, ELIGIBILITY_LABEL, EVENT_LABEL, describeEvent, ENGINE_STATE_LABEL, SCAN_KIND_LABEL, detectorLabel, type EligibilityStatus, type VmsEvent, type VmsScan, type VmsOperations, type VmsProfile, type EngineState } from '@/lib/vms';
 import { Card, SectionTitle, StatusPill, ToneIcon, type Tone } from './ui';
 import { PageHeader, KpiCard, PriorityBadge, Segmented, Select, ConfirmDialog, ErrorState, Notice, EmptyState, ExportCsvButton, Tag, btn, relTime, type Msg } from './kit';
 import { DataTable, type Column } from './table';
@@ -38,7 +38,7 @@ interface AdminStatus {
 }
 type Part = { ok: boolean; error?: string } & Record<string, unknown>;
 interface WazuhCheck { checked_at: string; verdict: 'working' | 'reachable_not_synced' | 'not_working' | 'not_configured'; manager: Part & { api_version?: string | null }; agents: Part & { count?: number; active?: number; groups?: string[] }; vulnerabilities: Part & { records_for_org?: number } }
-const SOURCE_LABEL = { wazuh: 'Wazuh endpoints', external: 'External hosts and IPs', any: 'All assets' } as const;
+const SOURCE_LABEL = { wazuh: 'Monitored endpoints', external: 'External hosts and IPs', any: 'All assets' } as const;
 const VERDICT: Record<WazuhCheck['verdict'], { label: string; tone: Tone }> = { working: { label: 'Working', tone: 'good' }, reachable_not_synced: { label: 'Reachable, not yet synced completely', tone: 'warning' }, not_working: { label: 'Not working', tone: 'critical' }, not_configured: { label: 'Not configured', tone: 'neutral' } };
 const ENGINE_TONE: Record<EngineState, Tone> = { available: 'good', offline: 'warning', not_enabled: 'neutral', not_installed: 'critical', no_worker: 'critical' };
 const freshTone = (iso: string | null | undefined, hours: number, now: number): Tone => (!iso ? 'critical' : now - Date.parse(iso) > hours * 3_600_000 ? 'warning' : 'good');
@@ -73,7 +73,7 @@ export function VmsMonitoringRules() {
                             <SectionTitle title="New policy" hint="Created disabled. Review it, then turn it on." />
                             <form onSubmit={async (e) => { e.preventDefault(); const r = await vmsSend('POST', '/api/vms/admin/policies', form); setMsg(r.ok ? { ok: true, text: 'Policy created — disabled until you turn it on.' } : { ok: false, text: r.error }); if (r.ok) { setForm({ ...form, name: '' }); reload(); } }} className="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
                                 <label className="col-span-2 text-[11px] font-semibold text-foreground-muted">Name<input className={`${input} w-full`} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="External hosts weekly" maxLength={120} /></label>
-                                <label className="text-[11px] font-semibold text-foreground-muted">Assets<select className={`${input} w-full`} value={form.asset_source} onChange={(e) => setForm({ ...form, asset_source: e.target.value as Policy['asset_source'] })}><option value="external">External hosts and IPs</option><option value="wazuh">Wazuh endpoints</option><option value="any">All assets</option></select></label>
+                                <label className="text-[11px] font-semibold text-foreground-muted">Assets<select className={`${input} w-full`} value={form.asset_source} onChange={(e) => setForm({ ...form, asset_source: e.target.value as Policy['asset_source'] })}><option value="external">External hosts and IPs</option><option value="wazuh">Monitored endpoints</option><option value="any">All assets</option></select></label>
                                 <label className="text-[11px] font-semibold text-foreground-muted">Profile<select className={`${input} w-full`} value={form.profile} onChange={(e) => setForm({ ...form, profile: e.target.value as typeof form.profile })}>{(['discovery', 'standard', 'full'] as const).map((x) => <option key={x} value={x}>{PROFILE_LABEL[x]}</option>)}</select></label>
                                 <label className="text-[11px] font-semibold text-foreground-muted">At most every (hours)<input type="number" min={24} max={2160} className={`${input} w-full`} value={form.cooldown_hours} onChange={(e) => setForm({ ...form, cooldown_hours: Number(e.target.value) })} /></label>
                                 <label className="text-[11px] font-semibold text-foreground-muted">Assets per run<input type="number" min={1} max={50} className={`${input} w-full`} value={form.max_per_run} onChange={(e) => setForm({ ...form, max_per_run: Number(e.target.value) })} /></label>
@@ -129,7 +129,7 @@ type Observed = 'active' | 'passive' | 'wazuh' | 'unknown';
 const OBSERVED: Record<Observed, { label: string; hint: string }> = {
     active: { label: 'Active scan', hint: 'Our scanner sent traffic to the target inside authorised scope' },
     passive: { label: 'Passive source', hint: 'Third-party data; no traffic was sent to the target' },
-    wazuh: { label: 'Wazuh agent', hint: 'Reported by the endpoint agent' },
+    wazuh: { label: 'Monitoring agent', hint: 'Reported by the endpoint agent' },
     unknown: { label: 'Not recorded', hint: 'The change has no source job recorded' },
 };
 export function VmsChanges() {
@@ -169,19 +169,19 @@ export function VmsChanges() {
     ];
     return (
         <div className="space-y-5">
-            <PageHeader icon={Activity} title="Changes & Alerts" description="What changed on the attack surface and what needs attention. Each change says how it was observed — an active scan of ours, a passive third-party source that sent no traffic to the target, or the Wazuh agent."
+            <PageHeader icon={Activity} title="Changes & Alerts" description="What changed on the attack surface and what needs attention. Each change says how it was observed — an active scan of ours, a passive third-party source that sent no traffic to the target, or the monitoring agent."
                 actions={<Segmented label="Period" value={days} onChange={setDays} options={[['7', '7 days'], ['30', '30 days'], ['90', '90 days']]} />} />
             <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <KpiCard label="Changes" value={events.data?.events.length} reason="Loading" sub={`Last ${days} days (up to 500)`} />
                 <KpiCard label="From active scans" value={events.data && scans.data ? events.data.events.filter((e) => observedOf(e) === 'active').length : undefined} reason="Loading" />
-                <KpiCard label="From passive sources / Wazuh" value={events.data && scans.data ? events.data.events.filter((e) => observedOf(e) === 'passive' || observedOf(e) === 'wazuh').length : undefined} reason="Loading" />
+                <KpiCard label="From passive sources / monitoring" value={events.data && scans.data ? events.data.events.filter((e) => observedOf(e) === 'passive' || observedOf(e) === 'wazuh').length : undefined} reason="Loading" />
                 <KpiCard label="Alerts" value={high.data && reopened.data && events.data ? alerts.length : undefined} reason="Loading" tone={alerts.length ? 'warning' : undefined} sub={notif.data ? (notif.data.enabled ? `Email alerts on · last sent check ${notif.data.state?.last_run_at ? relTime(notif.data.state.last_run_at, now) : 'never'}` : 'Email alerts are not configured') : undefined} icon={Bell} />
             </section>
             <Segmented label="List" value={tab} onChange={setTab} options={[['changes', 'Changes'], ['alerts', `Alerts${high.data && reopened.data ? ` (${alerts.length})` : ''}`]]} />
             {tab === 'changes' ? (
                 <>
                     <div className="flex flex-wrap items-center gap-2">
-                        <Select label="Observed by" value={observed} onChange={setObserved} options={[['', 'Any source'], ['active', 'Active scans'], ['passive', 'Passive sources'], ['wazuh', 'Wazuh agent'], ['unknown', 'Not recorded']]} />
+                        <Select label="Observed by" value={observed} onChange={setObserved} options={[['', 'Any source'], ['active', 'Active scans'], ['passive', 'Passive sources'], ['wazuh', 'Monitoring agent'], ['unknown', 'Not recorded']]} />
                         <Select label="Change" value={kind} onChange={setKind} options={[['', 'Any change'], ...Object.entries(EVENT_LABEL)] as [string, string][]} />
                         <div className="ml-auto"><ExportCsvButton filename="vms-changes.csv" rows={rows?.map((e) => ({ at: e.at, change: EVENT_LABEL[e.event] ?? e.event, asset: e.vms_assets?.value, detail: describeEvent(e), observed_by: OBSERVED[observedOf(e)].label }))} columns={[{ key: 'at', header: 'When' }, { key: 'change', header: 'Change' }, { key: 'asset', header: 'Asset' }, { key: 'detail', header: 'Detail' }, { key: 'observed_by', header: 'Observed by' }]} /></div>
                     </div>
@@ -218,7 +218,7 @@ export function VmsScannerIntegrations() {
     const now = at ?? 0;
     if (load.state === 'error') return <div className="space-y-5"><PageHeader icon={Plug} title="Scanner Integrations" /><ErrorState error={load.error} status={load.status} onRetry={reload} /></div>;
     const rows: { name: string; state: Tone; label: string; detail: string }[] = s ? [
-        { name: 'Wazuh (agents and vulnerabilities)', state: !s.wazuh.available ? 'neutral' : s.wazuh.freshness?.complete === false ? 'warning' : freshTone(s.wazuh.freshness?.last_complete_at, 3, now), label: !s.wazuh.available ? 'Not set up' : s.wazuh.freshness?.last_complete_at ? `Synced ${relTime(s.wazuh.freshness.last_complete_at, now)}` : 'Never synced', detail: s.wazuh.freshness?.problem ?? s.wazuh.note ?? 'Hourly sync of agents and their vulnerabilities for this organisation' },
+        { name: 'Security Monitoring Engine (agents and vulnerabilities)', state: !s.wazuh.available ? 'neutral' : s.wazuh.freshness?.complete === false ? 'warning' : freshTone(s.wazuh.freshness?.last_complete_at, 3, now), label: !s.wazuh.available ? 'Not set up' : s.wazuh.freshness?.last_complete_at ? `Synced ${relTime(s.wazuh.freshness.last_complete_at, now)}` : 'Never synced', detail: s.wazuh.freshness?.problem ?? s.wazuh.note ?? 'Hourly sync of agents and their vulnerabilities for this organisation' },
         { name: 'CISA KEV catalogue', state: freshTone(s.cve_intel.kev_checked_at, 48, now), label: s.cve_intel.kev_checked_at ? `Checked ${relTime(s.cve_intel.kev_checked_at, now)}` : 'Never checked', detail: `${s.cve_intel.tracked} CVEs tracked` },
         { name: 'FIRST EPSS', state: freshTone(s.cve_intel.epss_fetched_at, 48, now), label: s.cve_intel.epss_fetched_at ? `Fetched ${relTime(s.cve_intel.epss_fetched_at, now)}` : 'Never fetched', detail: 'Exploitation probability for each CVE' },
         { name: 'NVD', state: freshTone(s.cve_intel.nvd_fetched_at, 72, now), label: s.cve_intel.nvd_fetched_at ? `Fetched ${relTime(s.cve_intel.nvd_fetched_at, now)}` : 'Never fetched', detail: 'CVSS and descriptions' },
@@ -230,12 +230,12 @@ export function VmsScannerIntegrations() {
     return (
         <div className="space-y-5">
             <PageHeader icon={Plug} title="Scanner Integrations" description="Every integration the VMS depends on and whether it is working, from what each last did. Only configured / not configured and timestamps are shown — no credential, token or password reaches the browser."
-                actions={<button disabled={checking} onClick={async () => { setChecking(true); const r = await vmsSend<WazuhCheck>('POST', '/api/vms/admin/wazuh/check'); setChecking(false); if (r.ok) setCheck(r.data); else setMsg({ ok: false, text: r.error }); }} className={btn('secondary', 'md')}>{checking ? 'Checking Wazuh…' : 'Check Wazuh connection'}</button>} />
+                actions={<button disabled={checking} onClick={async () => { setChecking(true); const r = await vmsSend<WazuhCheck>('POST', '/api/vms/admin/wazuh/check'); setChecking(false); if (r.ok) setCheck(r.data); else setMsg({ ok: false, text: r.error }); }} className={btn('secondary', 'md')}>{checking ? 'Checking monitoring engine…' : 'Check monitoring engine connection'}</button>} />
             <Notice msg={msg} />
             {check && (
                 <Card className="space-y-1 text-xs">
-                    <div className="flex items-center gap-2"><StatusPill tone={VERDICT[check.verdict].tone} label={`Wazuh: ${VERDICT[check.verdict].label}`} /><span className="text-foreground-muted">checked {fmtWat(check.checked_at)}</span></div>
-                    <p>Manager API: {check.manager.ok ? `Wazuh ${check.manager.api_version ?? 'version not reported'}` : check.manager.error}</p>
+                    <div className="flex items-center gap-2"><StatusPill tone={VERDICT[check.verdict].tone} label={`Security Monitoring Engine: ${VERDICT[check.verdict].label}`} /><span className="text-foreground-muted">checked {fmtWat(check.checked_at)}</span></div>
+                    <p>Manager API: {check.manager.ok ? `Version ${check.manager.api_version ?? 'not reported'}` : check.manager.error}</p>
                     <p>Agents: {check.agents.ok ? `${check.agents.count} in ${(check.agents.groups ?? []).join(', ') || 'no mapped group'} (${check.agents.active} active)` : check.agents.error}</p>
                     <p>Vulnerability index: {check.vulnerabilities.ok ? `${check.vulnerabilities.records_for_org} record(s) for this organisation` : check.vulnerabilities.error}</p>
                 </Card>
@@ -352,7 +352,7 @@ export function VmsScanConfig() {
                                 <div className="flex items-center justify-between gap-2"><p className="text-sm font-bold text-foreground">{p.label}</p><StatusPill tone={!p.runnable ? 'neutral' : p.available === false ? 'warning' : 'good'} label={!p.runnable ? 'Not startable manually' : p.available === false ? 'Engines unavailable' : 'Available'} /></div>
                                 <p className="text-[11px] text-foreground-muted">{p.description}</p>
                                 <p className="text-[11px] text-foreground"><b>Steps:</b> {p.steps.join(' → ') || '—'}</p>
-                                <p className="text-[11px] text-foreground"><b>Ports:</b> {p.ports} · <b>Engines:</b> {p.engines.join(', ') || '—'}</p>
+                                <p className="text-[11px] text-foreground"><b>Ports:</b> {p.ports} · <b>Engines:</b> {[...new Set(p.engines.map(detectorLabel))].join(', ') || '—'}</p>
                                 {p.availability_note && <p className="text-[11px] text-foreground-muted">{p.availability_note}</p>}
                                 {p.not_covered.length > 0 && <p className="text-[11px] text-foreground-muted">Not covered: {p.not_covered.join('; ')}</p>}
                             </div>

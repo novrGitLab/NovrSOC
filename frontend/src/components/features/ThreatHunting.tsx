@@ -111,7 +111,7 @@ export function ThreatHunting() {
             }));
             setResults(mapped);
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Hunt query failed — check the Wazuh indexer connection');
+            setError(err instanceof Error ? err.message : 'Hunt query failed — check the monitoring engine connection');
             setResults([]);
         } finally {
             setRunning(false);
@@ -154,7 +154,7 @@ export function ThreatHunting() {
             <div className="flex items-start justify-between gap-4 flex-wrap">
                 <div>
                     <h1 className="text-lg font-black text-foreground">Threat Hunting</h1>
-                    <p className="text-xs text-foreground-muted">SecOps & Response · Search and query Wazuh events with custom filters.</p>
+                    <p className="text-xs text-foreground-muted">SecOps & Response · Search and query security monitoring events with custom filters.</p>
                 </div>
                 <div className="flex gap-2 flex-shrink-0">
                     <button className="flex items-center gap-2 border border-border text-foreground-muted text-xs font-bold px-4 py-2.5 rounded-lg hover:bg-card-muted transition-colors"><Save size={14} /> Save Hunt</button>

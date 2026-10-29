@@ -443,7 +443,7 @@ export function OnboardingWizard({ orgId }: { orgId?: string }) {
                     <div className="space-y-4">
                         <h2 className="font-bold text-sm text-foreground">Assets and Integrations</h2>
                         <div>
-                            <label className={labelCls}>Wazuh Agent Group Name</label>
+                            <label className={labelCls}>Monitoring Agent Group Name</label>
                             <input value={wazuhGroup} onChange={(e) => setWazuhGroup(e.target.value)} placeholder="e.g. zenith-bank" className={`${inputCls} font-mono`} />
                             <p className="text-[10px] text-foreground-muted mt-1.5">Agents enrolled with this group will be attributed to this organisation.</p>
                         </div>
@@ -496,7 +496,7 @@ export function OnboardingWizard({ orgId }: { orgId?: string }) {
                             <div className="border border-border rounded-xl p-3"><p className="text-foreground-muted">Organisation</p><p className="font-bold text-foreground">{name} · {industry} · {plan}</p></div>
                             <div className="border border-border rounded-xl p-3"><p className="text-foreground-muted">Services</p><p className="font-bold text-foreground">{(grants ?? []).filter((g) => g.status === 'enabled' || g.status === 'configured').length} of {SERVICES.length} enabled</p></div>
                             <div className="border border-border rounded-xl p-3"><p className="text-foreground-muted">Invitations</p><p className="font-bold text-foreground">{members?.length ?? 0} invited</p></div>
-                            <div className="border border-border rounded-xl p-3"><p className="text-foreground-muted">Wazuh group</p><p className="font-bold text-foreground font-mono">{wazuhGroup || '— not set'}</p></div>
+                            <div className="border border-border rounded-xl p-3"><p className="text-foreground-muted">Monitoring group</p><p className="font-bold text-foreground font-mono">{wazuhGroup || '— not set'}</p></div>
                         </div>
                         <div className="bg-card-muted border border-border rounded-xl p-3">
                             <p className="text-xs font-bold text-foreground mb-1">Tenant isolation</p>
@@ -505,7 +505,7 @@ export function OnboardingWizard({ orgId }: { orgId?: string }) {
                         <div className={`border rounded-xl p-3 ${problems.length ? 'border-amber-500/30 bg-amber-500/5' : 'border-green/30 bg-green/5'}`}>
                             <p className="text-xs font-bold text-foreground mb-1">{problems.length ? 'Before activating' : 'Ready to activate'}</p>
                             {problems.length ? <ul className="text-[11px] text-amber-700 list-disc pl-4 space-y-0.5">{problems.map((p) => <li key={p}>{p}</li>)}</ul>
-                                : <p className="text-[11px] text-green-700">Mandatory requirements are met. Optional items (service grants left pending, Wazuh group) can stay pending and be finished after activation.</p>}
+                                : <p className="text-[11px] text-green-700">Mandatory requirements are met. Optional items (service grants left pending, monitoring group) can stay pending and be finished after activation.</p>}
                         </div>
                         <button onClick={() => void activate()} disabled={saving || problems.length > 0} className="w-full flex items-center justify-center gap-1.5 text-xs font-bold text-white bg-orange hover:bg-orange-hover rounded-lg px-4 py-3 disabled:opacity-50 transition-colors">
                             {saving ? 'Activating…' : 'Activate Organisation'} <Check size={14} />

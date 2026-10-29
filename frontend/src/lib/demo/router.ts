@@ -9,7 +9,7 @@ import * as misc from './generators/misc';
 import { setDemoOverlay, prependDemoListField } from './mutations';
 import { DEMO_SCENARIOS } from './scenario';
 
-const SIMULATED_MESSAGE = 'Demo Mode: simulated — no real action was taken and nothing was sent anywhere.';
+const SIMULATED_MESSAGE = 'Presentation Mode: simulated — no real action was taken and nothing was sent anywhere.';
 
 /** Tags a demo response with a non-200 HTTP status — lib/api.ts's demoFetch() reads and strips
  * this marker. Used for the handful of endpoints (the real AI-generation route) whose consuming
@@ -140,16 +140,16 @@ function demoMutationFor(p: string, method: string, org: DemoOrgId, body: unknow
         if (b.status === 'verified') { patch.verified_at = now; patch.overdue = false; }
         if (b.status && b.status !== 'open') patch.overdue = false;
         setDemoOverlay(org, 'vms-findings', findingMatch[1], patch);
-        return { ok: true, demo: true, simulated: true, message: 'Demo Mode: finding updated for this session.', finding: { id: findingMatch[1], ...patch } };
+        return { ok: true, demo: true, simulated: true, message: 'Presentation Mode: finding updated for this session.', finding: { id: findingMatch[1], ...patch } };
     }
 
     // POST /api/ai/generate — the shared AiPanel component used across VMS, TI, SecOps and CNII
     // screens for case summaries, finding explanations, threat briefings, etc. This calls the
-    // same production text-generation route, so Demo Mode never calls it — instead it returns
+    // same production text-generation route, so Presentation Mode never calls it — instead it returns
     // the non-200 response AiPanel.tsx was already built to show as "AI unavailable" rather than
     // silently rendering an empty or malformed result.
     if (method === 'POST' && p === '/api/ai/generate') {
-        return withStatus(503, { error: 'Demo Mode: AI analysis is not generated here — this would call the same production text-generation service Demo Mode intentionally never contacts.' });
+        return withStatus(503, { error: 'Presentation Mode: AI analysis is not generated here — this would call the same production text-generation service Presentation Mode intentionally never contacts.' });
     }
 
     // POST /api/ti/analyst/ask — the AI Q&A assistant on the TI Analyst page. Rather than
@@ -159,8 +159,8 @@ function demoMutationFor(p: string, method: string, org: DemoOrgId, body: unknow
     if (method === 'POST' && p === '/api/ti/analyst/ask') {
         const s = DEMO_SCENARIOS[org];
         return {
-            answer: `[DEMO] This is a scripted demonstration answer, not a real cited response. For ${org.toUpperCase()}, the relevant record is the ${s.caseNumber} case: ${s.narrative}`,
-            statements: [{ statement: `[DEMO] ${s.findingTitle}`, basis: 'direct' as const, evidence_refs: [s.findingId] }],
+            answer: `[SAMPLE] This is a scripted demonstration answer, not a real cited response. For ${org.toUpperCase()}, the relevant record is the ${s.caseNumber} case: ${s.narrative}`,
+            statements: [{ statement: `[SAMPLE] ${s.findingTitle}`, basis: 'direct' as const, evidence_refs: [s.findingId] }],
             insufficient_evidence: false, suggested_follow_ups: [`What is the status of ${s.caseNumber}?`, `What indicators are linked to ${s.assetName}?`],
             confidence: 'high' as const, demo: true, simulated: true,
         };
@@ -168,12 +168,12 @@ function demoMutationFor(p: string, method: string, org: DemoOrgId, body: unknow
 
     // POST /api/vms/findings/:id/verify — VmsRemediationPlus.tsx's "Verify" button, the
     // headline IKEA scenario action (remediation → verification → risk improvement). The real
-    // backend queues an async rescan; Demo Mode has no scan worker to poll, so it verifies
+    // backend queues an async rescan; Presentation Mode has no scan worker to poll, so it verifies
     // immediately and says so, rather than claiming a scan was queued that will never complete.
     const verifyMatch = method === 'POST' && p.match(/^\/api\/vms\/findings\/([^/]+)\/verify$/);
     if (verifyMatch) {
         setDemoOverlay(org, 'vms-findings', verifyMatch[1], { status: 'verified', verified_at: now, overdue: false });
-        return { queued: false, demo: true, simulated: true, message: 'Demo Mode: verification completed immediately — finding marked verified fixed for this session (no real scan was queued).' };
+        return { queued: false, demo: true, simulated: true, message: 'Presentation Mode: verification completed immediately — finding marked verified fixed for this session (no real scan was queued).' };
     }
 
     // PATCH /api/cases/:id — status / due_at (CaseWorkbench.tsx updateStatus / setDeadline).
@@ -182,45 +182,45 @@ function demoMutationFor(p: string, method: string, org: DemoOrgId, body: unknow
         const patch: Record<string, unknown> = { ...b };
         if (b.status === 'resolved') patch.resolved_at = now;
         setDemoOverlay(org, 'cases', caseMatch[1], patch);
-        return { ok: true, demo: true, simulated: true, message: 'Demo Mode: case updated for this session.', case: { id: caseMatch[1], ...patch } };
+        return { ok: true, demo: true, simulated: true, message: 'Presentation Mode: case updated for this session.', case: { id: caseMatch[1], ...patch } };
     }
 
     // POST /api/cases/:id/assign
     const assignMatch = method === 'POST' && p.match(/^\/api\/cases\/([^/]+)\/assign$/);
     if (assignMatch) {
-        setDemoOverlay(org, 'cases', assignMatch[1], { assigned_to: b.analyst_id ?? 'SOC Analyst (Demo)' });
-        return { ok: true, demo: true, simulated: true, message: 'Demo Mode: assignment updated for this session.' };
+        setDemoOverlay(org, 'cases', assignMatch[1], { assigned_to: b.analyst_id ?? 'SOC Analyst (Sample)' });
+        return { ok: true, demo: true, simulated: true, message: 'Presentation Mode: assignment updated for this session.' };
     }
 
     // POST /api/cases/:id/escalate
     const escalateMatch = method === 'POST' && p.match(/^\/api\/cases\/([^/]+)\/escalate$/);
     if (escalateMatch) {
         setDemoOverlay(org, 'cases', escalateMatch[1], { escalated: true });
-        prependDemoListField(org, 'cases', escalateMatch[1], 'timeline', { id: `demo-tl-${Date.now()}`, actor: 'SOC Analyst (Demo)', action: 'Case escalated', details: '[DEMO] Escalated for management visibility.', automated: false, created_at: now });
-        return { ok: true, demo: true, simulated: true, message: 'Demo Mode: case escalated for this session.' };
+        prependDemoListField(org, 'cases', escalateMatch[1], 'timeline', { id: `demo-tl-${Date.now()}`, actor: 'SOC Analyst (Sample)', action: 'Case escalated', details: '[SAMPLE] Escalated for management visibility.', automated: false, created_at: now });
+        return { ok: true, demo: true, simulated: true, message: 'Presentation Mode: case escalated for this session.' };
     }
 
     // POST /api/cases/:id/close — resolution notes
     const closeMatch = method === 'POST' && p.match(/^\/api\/cases\/([^/]+)\/close$/);
     if (closeMatch) {
         setDemoOverlay(org, 'cases', closeMatch[1], { status: 'resolved', resolved_at: now });
-        prependDemoListField(org, 'cases', closeMatch[1], 'notes', { id: `demo-note-${Date.now()}`, author: 'SOC Analyst (Demo)', type: 'Resolution', content: `[DEMO] ${String(b.resolution_notes ?? 'Closed during walkthrough.')}`, created_at: now });
-        prependDemoListField(org, 'cases', closeMatch[1], 'timeline', { id: `demo-tl-${Date.now()}`, actor: 'SOC Analyst (Demo)', action: 'Case closed', details: '[DEMO] Closed with resolution notes.', automated: false, created_at: now });
-        return { ok: true, demo: true, simulated: true, message: 'Demo Mode: case closed for this session.' };
+        prependDemoListField(org, 'cases', closeMatch[1], 'notes', { id: `demo-note-${Date.now()}`, author: 'SOC Analyst (Sample)', type: 'Resolution', content: `[SAMPLE] ${String(b.resolution_notes ?? 'Closed during walkthrough.')}`, created_at: now });
+        prependDemoListField(org, 'cases', closeMatch[1], 'timeline', { id: `demo-tl-${Date.now()}`, actor: 'SOC Analyst (Sample)', action: 'Case closed', details: '[SAMPLE] Closed with resolution notes.', automated: false, created_at: now });
+        return { ok: true, demo: true, simulated: true, message: 'Presentation Mode: case closed for this session.' };
     }
 
     // POST /api/cases/:id/notes
     const noteMatch = method === 'POST' && p.match(/^\/api\/cases\/([^/]+)\/notes$/);
     if (noteMatch) {
-        prependDemoListField(org, 'cases', noteMatch[1], 'notes', { id: `demo-note-${Date.now()}`, author: 'SOC Analyst (Demo)', type: String(b.type ?? 'Update'), content: `[DEMO] ${String(b.content ?? '')}`, created_at: now });
-        return { ok: true, demo: true, simulated: true, message: 'Demo Mode: note added for this session.' };
+        prependDemoListField(org, 'cases', noteMatch[1], 'notes', { id: `demo-note-${Date.now()}`, author: 'SOC Analyst (Sample)', type: String(b.type ?? 'Update'), content: `[SAMPLE] ${String(b.content ?? '')}`, created_at: now });
+        return { ok: true, demo: true, simulated: true, message: 'Presentation Mode: note added for this session.' };
     }
 
     // POST /api/reports/generate — ReportingCenter.tsx's "Generate" tab. The real Sample
-    // Documents tab is the intended way to get a PDF in Demo Mode; this just answers honestly if
+    // Documents tab is the intended way to get a PDF in Presentation Mode; this just answers honestly if
     // a presenter clicks Generate anyway, instead of claiming a report job was actually queued.
     if (method === 'POST' && p === '/api/reports/generate') {
-        return { status: 'skipped', warnings: ['Demo Mode: no report job was generated or delivered — use the Sample Documents tab for a real downloadable PDF.'], demo: true, simulated: true };
+        return { status: 'skipped', warnings: ['Presentation Mode: no report job was generated or delivered — use the Sample Documents tab for a real downloadable PDF.'], demo: true, simulated: true };
     }
 
     // POST /api/response-approvals/:id/(approve|reject|cancel)
@@ -229,8 +229,8 @@ function demoMutationFor(p: string, method: string, org: DemoOrgId, body: unknow
         const [, id, kind] = approvalMatch;
         const status = kind === 'approve' ? 'approved' : kind === 'reject' ? 'rejected' : 'cancelled';
         const result = kind === 'approve' ? 'executed (demo — no real firewall/Wazuh call was made)' : null;
-        setDemoOverlay(org, 'response-approvals', id, { status, decided_by: 'SOC Manager (Demo)', decided_at: now, decision_note: b.note ?? null, result });
-        return { ok: true, demo: true, simulated: true, message: `Demo Mode: approval ${status} for this session.`, approval: { id, status, result } };
+        setDemoOverlay(org, 'response-approvals', id, { status, decided_by: 'SOC Manager (Sample)', decided_at: now, decision_note: b.note ?? null, result });
+        return { ok: true, demo: true, simulated: true, message: `Presentation Mode: approval ${status} for this session.`, approval: { id, status, result } };
     }
 
     return undefined;

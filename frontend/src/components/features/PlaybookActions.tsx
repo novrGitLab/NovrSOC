@@ -188,7 +188,7 @@ export function PlaybookActions({ playbookId, playbookName, stepIds }: { playboo
             <div>
                 <h2 className="text-sm font-bold text-foreground">Automated actions</h2>
                 <p className="text-[11px] text-foreground-muted">
-                    Execute runs the action for real. A green check means the firewall, Wazuh or mail provider accepted it; grey means it isn&apos;t connected yet.
+                    Execute runs the action for real. A green check means the firewall, security monitoring engine or mail provider accepted it; grey means it isn&apos;t connected yet.
                 </p>
             </div>
             {stepIds.map((id) => (

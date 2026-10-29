@@ -89,7 +89,7 @@ export function ExecutiveReport() {
 
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                 {[
-                    { label: 'Endpoints Monitored', value: agents?.total ?? '—', sub: agents ? `${agents.active} online · ${agents.disconnected} offline` : 'Wazuh unreachable' },
+                    { label: 'Endpoints Monitored', value: agents?.total ?? '—', sub: agents ? `${agents.active} online · ${agents.disconnected} offline` : 'Monitoring engine unreachable' },
                     { label: 'Open Cases', value: caseKpis?.active ?? '—' },
                     { label: 'Critical Cases (open)', value: caseKpis?.critical ?? '—' },
                     { label: 'Critical Alerts (24h)', value: criticalAlerts ?? '—' },

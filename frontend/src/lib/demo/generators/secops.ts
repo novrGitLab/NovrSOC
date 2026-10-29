@@ -12,21 +12,21 @@ export function demoCases(org: DemoOrgId, statusFilter?: string) {
     const s = DEMO_SCENARIOS[org];
     const seededAll = seeded(`cases:${org}`, (r) => {
         const featured = {
-            id: s.caseId, case_number: s.caseNumber, title: `[DEMO] ${s.caseTitle}`, description: `[DEMO] ${s.narrative}`,
+            id: s.caseId, case_number: s.caseNumber, title: `[SAMPLE] ${s.caseTitle}`, description: `[SAMPLE] ${s.narrative}`,
             severity: 'critical' as const, status: 'investigating' as const, source: 'manual', agent_id: null, agent_name: null,
             source_ip: s.srcIp, rule_id: 'demo-5710', rule_level: 12, mitre_technique: 'T1110', mitre_tactic: 'Credential Access',
-            assigned_to: 'SOC Analyst (Demo)', created_at: ago(1), updated_at: agoH(2), resolved_at: null, due_at: ago(-1),
+            assigned_to: 'SOC Analyst (Sample)', created_at: ago(1), updated_at: agoH(2), resolved_at: null, due_at: ago(-1),
             tier: 2, auto_closed: false, containment_done: false, escalated: true, tags: ['demo'],
         };
         const rest = Array.from({ length: 11 }, (_, i) => {
             const status = r.pick(STATUSES);
             return {
                 id: `demo-${org}-case-${i + 2}`, case_number: `CASE-${org.toUpperCase()}-${String(1 + i).padStart(4, '0')}`,
-                title: `[DEMO] ${r.pick(['Suspicious login from unrecognised location', 'Malware signature detected on endpoint', 'Unusual outbound data transfer', 'Multiple failed VPN authentication attempts', 'Port scan detected against perimeter firewall'])}`,
-                description: '[DEMO] Synthetic case for demonstration.', severity: r.pick(SEVS), status, source: r.pick(['manual', 'wazuh']),
+                title: `[SAMPLE] ${r.pick(['Suspicious login from unrecognised location', 'Malware signature detected on endpoint', 'Unusual outbound data transfer', 'Multiple failed VPN authentication attempts', 'Port scan detected against perimeter firewall'])}`,
+                description: '[SAMPLE] Synthetic case for demonstration.', severity: r.pick(SEVS), status, source: r.pick(['manual', 'wazuh']),
                 agent_id: r.bool(0.5) ? `00${i}` : null, agent_name: r.bool(0.5) ? `host-${i}.${org}-demo.test` : null, source_ip: `198.51.100.${r.int(10, 250)}`,
                 rule_id: `demo-${5000 + i}`, rule_level: r.int(6, 14), mitre_technique: null, mitre_tactic: null,
-                assigned_to: r.bool(0.6) ? 'SOC Analyst (Demo)' : null, created_at: ago(r.int(1, 30)), updated_at: ago(r.int(0, 5)),
+                assigned_to: r.bool(0.6) ? 'SOC Analyst (Sample)' : null, created_at: ago(r.int(1, 30)), updated_at: ago(r.int(0, 5)),
                 resolved_at: status === 'resolved' ? ago(r.int(0, 3)) : null, due_at: null, tier: r.int(1, 3), auto_closed: false,
                 containment_done: status === 'contained', escalated: r.bool(0.2), tags: [],
             };
@@ -59,11 +59,11 @@ export function demoCaseDetail(org: DemoOrgId, caseId: string) {
     interface Task { id: string; step_id: string; title: string; description: string; status: string }
     interface TimelineEntry { id: string; actor: string; action: string; details: string; automated: boolean; created_at: string }
     const overlay = applyDemoOverlay(org, 'cases', { id: caseId } as { id: string; notes?: Note[]; timeline?: TimelineEntry[]; tasks?: Task[] });
-    const baseNotes: Note[] = isFeatured ? [{ id: 'n1', author: 'SOC Analyst (Demo)', type: 'Update', content: `[DEMO] Confirmed ${s.indicatorValue} matches a known indicator; escalating.`, created_at: agoH(3) }] : [];
+    const baseNotes: Note[] = isFeatured ? [{ id: 'n1', author: 'SOC Analyst (Sample)', type: 'Update', content: `[SAMPLE] Confirmed ${s.indicatorValue} matches a known indicator; escalating.`, created_at: agoH(3) }] : [];
     const baseTasks: Task[] = isFeatured ? [{ id: 't1', step_id: 'isolate_agent', title: 'Block source address at the perimeter', description: 'Demo containment step', status: 'pending' }] : [];
     const baseTimeline: TimelineEntry[] = [
-        { id: 'tl1', actor: 'system', action: 'Case created', details: '[DEMO] Opened from correlated detection', automated: true, created_at: ago(1) },
-        ...(isFeatured ? [{ id: 'tl2', actor: 'SOC Analyst (Demo)', action: 'Investigation started', details: '[DEMO] Reviewing authentication logs and TI match', automated: false, created_at: agoH(4) }] : []),
+        { id: 'tl1', actor: 'system', action: 'Case created', details: '[SAMPLE] Opened from correlated detection', automated: true, created_at: ago(1) },
+        ...(isFeatured ? [{ id: 'tl2', actor: 'SOC Analyst (Sample)', action: 'Investigation started', details: '[SAMPLE] Reviewing authentication logs and TI match', automated: false, created_at: agoH(4) }] : []),
     ];
     return {
         case: match,
@@ -80,7 +80,7 @@ export function demoCaseDetail(org: DemoOrgId, caseId: string) {
 }
 
 export function demoResponseApprovals(org: DemoOrgId, statusFilter?: string) {
-    const seededAll = seeded(`approvals:${org}`, (r) => Array.from({ length: Math.max(2, r.int(1, 3)) }, (_, i) => ({ id: `demo-${org}-approval-${i}`, action: 'block_ip' as const, target: `198.51.100.${r.int(10, 200)}`, target_label: null, reason: '[DEMO] Suspicious activity', case_id: null, threat_id: null, source: 'demo', status: 'pending', requested_by: 'SOC Analyst (Demo)', requested_at: ago(1), decided_by: null, decided_at: null, decision_note: null, result: null })));
+    const seededAll = seeded(`approvals:${org}`, (r) => Array.from({ length: Math.max(2, r.int(1, 3)) }, (_, i) => ({ id: `demo-${org}-approval-${i}`, action: 'block_ip' as const, target: `198.51.100.${r.int(10, 200)}`, target_label: null, reason: '[SAMPLE] Suspicious activity', case_id: null, threat_id: null, source: 'demo', status: 'pending', requested_by: 'SOC Analyst (Sample)', requested_at: ago(1), decided_by: null, decided_at: null, decision_note: null, result: null })));
     // Reflects any simulated approve/reject/cancel click made earlier in this session
     // (lib/demo/mutations.ts) — approving one here actually removes it from "pending".
     const all = seededAll.map((a) => applyDemoOverlay(org, 'response-approvals', a));
@@ -96,9 +96,9 @@ export function demoAlertsFeed(org: DemoOrgId, limit = 10) {
     const s = DEMO_SCENARIOS[org];
     return seeded(`alerts-feed:${org}`, (r) => ({
         alerts: Array.from({ length: limit }, (_, i) => i === 0 ? {
-            id: `demo-${org}-alert-0`, severity: 'critical', rule_description: `[DEMO] ${s.findingTitle}`, agent_name: s.assetName, agent_ip: s.dstIp, event_time: agoH(1),
+            id: `demo-${org}-alert-0`, severity: 'critical', rule_description: `[SAMPLE] ${s.findingTitle}`, agent_name: s.assetName, agent_ip: s.dstIp, event_time: agoH(1),
         } : {
-            id: `demo-${org}-alert-${i}`, severity: r.pick(SEVS), rule_description: `[DEMO] ${r.pick(['Failed login attempt', 'Firewall block', 'Port scan detected', 'File integrity change', 'Unusual process execution'])}`,
+            id: `demo-${org}-alert-${i}`, severity: r.pick(SEVS), rule_description: `[SAMPLE] ${r.pick(['Failed login attempt', 'Firewall block', 'Port scan detected', 'File integrity change', 'Unusual process execution'])}`,
             agent_name: `host-${i}.${org}-demo.test`, agent_ip: `198.51.100.${r.int(10, 250)}`, event_time: agoH(r.int(1, 48)),
         }),
     }));
@@ -114,9 +114,9 @@ export function demoAlertStats(org: DemoOrgId) {
 }
 
 export function demoPlaybooks() {
-    return [{ id: 'demo-playbook-1', name: '[DEMO] Credential Stuffing Response', description: 'Simulated playbook', tier: 2, steps: 3 }];
+    return [{ id: 'demo-playbook-1', name: '[SAMPLE] Credential Stuffing Response', description: 'Simulated playbook', tier: 2, steps: 3 }];
 }
 
 export function demoCommunicationsRecipients(org: DemoOrgId) {
-    return { recipients: [{ name: 'SOC Shift Lead (Demo)', email: `shift-lead@${org}-demo.test` }, { name: 'CISO (Demo)', email: `ciso@${org}-demo.test` }] };
+    return { recipients: [{ name: 'SOC Shift Lead (Sample)', email: `shift-lead@${org}-demo.test` }, { name: 'CISO (Sample)', email: `ciso@${org}-demo.test` }] };
 }

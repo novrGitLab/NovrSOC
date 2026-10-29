@@ -20,7 +20,7 @@ export function demoCniiOrganisations() {
     return {
         organisations: DEMO_ORG_IDS.map((id) => {
             const org = DEMO_ORGS[id];
-            return { slug: `demo-${id}`, name: `${org.name} [DEMO]`, industry: org.sector, profile: { sector_id: org.sectorId, designation: 'designated', org_id: `demo-${id}` } };
+            return { slug: `demo-${id}`, name: `${org.name} [SAMPLE]`, industry: org.sector, profile: { sector_id: org.sectorId, designation: 'designated', org_id: `demo-${id}` } };
         }),
     };
 }

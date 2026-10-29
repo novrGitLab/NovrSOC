@@ -94,7 +94,7 @@ export function DigitalAssets() {
             <div className="space-y-4">
                 <div>
                     <h1 className="text-lg font-black text-foreground">Asset Inventory</h1>
-                    <p className="text-xs text-foreground-muted">Assets & Risk · Endpoints registered via the Wazuh agent</p>
+                    <p className="text-xs text-foreground-muted">Assets & Risk · Endpoints registered via the monitoring agent</p>
                 </div>
 
                 {/* KPIs */}
@@ -128,14 +128,14 @@ export function DigitalAssets() {
                                     : <Monitor size={20} className="text-purple" />}
                             </div>
                             <h3 className="font-semibold text-sm text-foreground mb-1">
-                                {fetchFailed ? 'Wazuh unreachable' : (search ? 'No matching assets' : 'No agents found')}
+                                {fetchFailed ? 'Monitoring engine unreachable' : (search ? 'No matching assets' : 'No agents found')}
                             </h3>
                             <p className="text-xs text-foreground-muted max-w-xs mx-auto">
                                 {fetchFailed
                                     ? `The agent inventory could not be read (${fetchFailed}). This is not an empty inventory — try again shortly.`
                                     : search
                                         ? 'No assets match your search.'
-                                        : 'No agents are currently enrolled. Install the Wazuh agent on a device and point it at your organisation\'s configured Wazuh manager to see it appear here automatically.'}
+                                        : 'No agents are currently enrolled. Install the monitoring agent on a device and point it at your organisation\'s configured monitoring manager to see it appear here automatically.'}
                             </p>
                         </div>
                     ) : (

@@ -168,7 +168,7 @@ export function VmsVerification() {
     const findingCols = (action: boolean): Column<Finding>[] => [
         { key: 'priority', header: 'Priority', render: (f) => <PriorityBadge priority={f.priority} />, sort: (f) => f.priority ?? 'P9' },
         { key: 'title', header: 'Finding', className: 'min-w-[220px]', render: (f) => <div><p className="font-semibold text-foreground">{f.title}</p><p className="text-[11px] font-mono text-foreground-muted">{f.asset_value}{f.port ? `:${f.port}` : ''}</p></div> },
-        { key: 'source', header: 'Verified by', hideBelow: 'md', render: (f) => <span className="text-[11px] text-foreground-muted">{f.source_class === 'wazuh' ? 'Next Wazuh sync (hourly)' : `Rescan (${f.detected_by.includes('nuclei') ? 'Nuclei' : 'OpenVAS'})`}</span> },
+        { key: 'source', header: 'Verified by', hideBelow: 'md', render: (f) => <span className="text-[11px] text-foreground-muted">{f.source_class === 'wazuh' ? 'Next monitoring sync (hourly)' : `Rescan (${f.detected_by.includes('nuclei') ? 'primary scanner' : 'extended scanner'})`}</span> },
         { key: 'when', header: action ? 'Last seen' : 'Verified', sort: (f) => (action ? f.last_seen : f.verified_at) ?? '', render: (f) => <span className="text-[11px] text-foreground-muted whitespace-nowrap">{relTime(action ? f.last_seen : f.verified_at, now)}</span> },
         ...(action && can.scan ? [{ key: 'act', header: '', render: (f: Finding) => f.source_class === 'wazuh' ? <Tag>Automatic</Tag> : <button onClick={(e) => { e.stopPropagation(); setConfirm(f); }} className={btn('primary')}><ScanSearch className="w-3.5 h-3.5" aria-hidden /> Verify</button> }] : []),
     ];
@@ -181,7 +181,7 @@ export function VmsVerification() {
     ];
     return (
         <div className="space-y-5">
-            <PageHeader icon={ScanSearch} title="Verification & Rescans" description="Fixes are confirmed by evidence, not by a status change: a rescan of the same check on the same target (or the next Wazuh sync for agent findings) marks the finding verified, or reopens it if it is still there." />
+            <PageHeader icon={ScanSearch} title="Verification & Rescans" description="Fixes are confirmed by evidence, not by a status change: a rescan of the same check on the same target (or the next monitoring sync for agent findings) marks the finding verified, or reopens it if it is still there." />
             <section className="grid grid-cols-2 md:grid-cols-4 gap-3" aria-label="Key figures">
                 <KpiCard label="Awaiting verification" value={awaiting.data?.findings.length} reason="Loading" tone={awaiting.data?.findings.length ? 'warning' : undefined} />
                 <KpiCard label="Verification scans queued or running" value={vScans ? vScans.filter((s) => s.status === 'queued' || s.status === 'running').length : undefined} reason="Loading" />

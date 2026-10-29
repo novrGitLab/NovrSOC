@@ -23,7 +23,7 @@ export function demoReportSchedules(org: DemoOrgId) {
 
 export function demoReportRecipients(org: DemoOrgId) {
     return { recipients: [
-        { id: `demo-${org}-recipient-1`, kind: 'portal_user', email: `ciso@${org}-demo.test`, display_name: 'CISO (Demo)', report_types: [], enabled: true, external_authorised_by: null, added_by: 'SOC Manager (Demo)', added_at: ago(30) },
+        { id: `demo-${org}-recipient-1`, kind: 'portal_user', email: `ciso@${org}-demo.test`, display_name: 'CISO (Sample)', report_types: [], enabled: true, external_authorised_by: null, added_by: 'SOC Manager (Sample)', added_at: ago(30) },
     ] };
 }
 

@@ -8,7 +8,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { ShieldAlert, ScanSearch, Briefcase, Plus, MessageSquare } from 'lucide-react';
-import { fmtWat } from '@/lib/vms';
+import { fmtWat, detectorLabel } from '@/lib/vms';
 import { AiPanel } from '@/components/shared/AiPanel';
 import { Skeleton } from './ui';
 import { SeverityBadge, PriorityBadge, RiskScore, Tag, ErrorState, Notice, ConfirmDialog, EvidenceViewer, Timeline, btn, type Msg } from './kit';
@@ -89,7 +89,7 @@ export function FindingDetail({ id, onChanged }: { id: string; onChanged?: () =>
                 </div>
                 <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 bg-card border border-border rounded-xl p-3">
                     <Fact k="Asset" v={f.asset_id ? <Link className="font-mono font-semibold text-purple dark:text-[var(--vz-prog-4)] hover:underline break-all" href={`/admin/vms/assets/${f.asset_id}`}>{f.asset_value}{f.port ? `:${f.port}` : ''}</Link> : <span className="font-mono break-all">{f.asset_value}</span>} />
-                    <Fact k="Source" v={f.source_class === 'wazuh' ? 'Wazuh agent' : (f.detected_by.join(', ') || 'Active scan')} />
+                    <Fact k="Source" v={f.source_class === 'wazuh' ? 'Monitoring agent' : (f.detected_by.map(detectorLabel).join(', ') || 'Active scan')} />
                     <Fact k="Evidence" v={f.evidence_class ? f.evidence_class.replace(/_/g, ' ') : '—'} />
                     <Fact k="Scanner CVSS (severity)" v={data.scanner_cvss?.score !== null && data.scanner_cvss?.score !== undefined
                         ? <span title={data.scanner_cvss.vector ?? undefined}>{data.scanner_cvss.score}{data.scanner_cvss.version ? ` · CVSS v${data.scanner_cvss.version}` : ' · version not reported'}{data.scanner_cvss.source ? ` · ${data.scanner_cvss.source}` : ''}{data.scanner_cvss.vector && <span className="block font-mono text-[10px] text-foreground-muted break-all">{data.scanner_cvss.vector}</span>}</span>
@@ -236,7 +236,7 @@ export function FindingDetail({ id, onChanged }: { id: string; onChanged?: () =>
                 title={pending?.kind === 'status' ? `Mark as ${STATUS_LABEL[pending.to].toLowerCase()}?` : ''}
                 body={pending?.kind === 'status' && (pending.to === 'risk_accepted' || pending.to === 'false_positive')
                     ? 'The finding leaves the open queue. Give the reason; it is recorded in the finding history and the audit trail.'
-                    : pending?.kind === 'status' && pending.to === 'fixed_pending_verification' ? 'The finding stays open until a rescan (or Wazuh) shows it is gone.' : 'The change is recorded in the finding history.'}
+                    : pending?.kind === 'status' && pending.to === 'fixed_pending_verification' ? 'The finding stays open until a rescan (or the monitoring engine) shows it is gone.' : 'The change is recorded in the finding history.'}
                 confirmLabel="Confirm"
                 reason={pending?.kind === 'status' ? { label: 'Reason', required: pending.to === 'risk_accepted' || pending.to === 'false_positive' } : undefined}
                 onCancel={() => setPending(null)}
@@ -245,7 +245,7 @@ export function FindingDetail({ id, onChanged }: { id: string; onChanged?: () =>
             <ConfirmDialog
                 open={pending?.kind === 'verify'}
                 title="Queue a verification scan?"
-                body={<>{f.source_class === 'wazuh' ? 'Wazuh findings are verified by the next Wazuh sync; nothing is scanned.' : <>A scan of <span className="font-mono">{f.asset_value}</span> is queued, only if the asset is still inside active vulnerability-scan scope. It runs on an engine that a connected worker has enabled.</>}</>}
+                body={<>{f.source_class === 'wazuh' ? 'Monitoring findings are verified by the next monitoring sync; nothing is scanned.' : <>A scan of <span className="font-mono">{f.asset_value}</span> is queued, only if the asset is still inside active vulnerability-scan scope. It runs on an engine that a connected worker has enabled.</>}</>}
                 confirmLabel="Queue verification"
                 onCancel={() => setPending(null)}
                 onConfirm={async () => { await run('POST', `/api/vms/findings/${f.id}/verify`, {}, 'Verification scan queued'); setPending(null); }}

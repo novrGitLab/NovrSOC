@@ -164,7 +164,7 @@ export const PortalDashboard = () => {
                 <div className="bg-card border border-blue/30 rounded-xl p-6">
                     <h3 className="text-sm font-black text-foreground mb-1">No endpoints are reporting yet</h3>
                     <p className="text-xs text-foreground-muted">
-                        No Wazuh agents are enrolled for your organisation. Your SOC team provides the agent installer and enrolment details for your environment.
+                        No monitoring agents are enrolled for your organisation. Your SOC team provides the agent installer and enrolment details for your environment.
                     </p>
                 </div>
             )}

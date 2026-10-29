@@ -80,7 +80,7 @@ interface AssetData {
 const SEV_TOKENS = { critical: '--vz-sev-critical', high: '--vz-sev-high', medium: '--vz-sev-medium', low: '--vz-sev-low', info: '--vz-sev-info' } as const;
 const PRIO_SERIES: Series[] = [{ key: 'P1', label: 'P1', token: '--vz-sev-critical' }, { key: 'P2', label: 'P2', token: '--vz-sev-high' }, { key: 'P3', label: 'P3', token: '--vz-sev-medium' }, { key: 'P4', label: 'P4', token: '--vz-sev-low' }];
 const STATUS_TEXT: Record<string, string> = { open: 'Open', reopened: 'Reopened', acknowledged: 'Triaged', in_progress: 'In progress', fixed_pending_verification: 'Awaiting verification', verified: 'Verified fixed', risk_accepted: 'Risk accepted', false_positive: 'False positive' };
-const SOURCE_LABEL: Record<string, string> = { nuclei: 'Nuclei', openvas: 'OpenVAS / Greenbone', wazuh: 'Wazuh agent', unknown: 'Not recorded' };
+const SOURCE_LABEL: Record<string, string> = { nuclei: 'Vulnerability Scanning Engine', openvas: 'Extended Vulnerability Scanning', wazuh: 'Monitoring agent', unknown: 'Not recorded' };
 const sectorLabel = (id: string) => SECTOR_BY_ID[id]?.label ?? id;
 const designationTag = (d: string) => d === 'designated' ? <StatusPill tone="good" label="Designated CNII" /> : <StatusPill tone="warning" label="Candidate — not yet designated" />;
 

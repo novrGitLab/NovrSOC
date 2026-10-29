@@ -91,7 +91,7 @@ export function TiSources() {
         { key: 'counts', header: 'Last counts', render: (f) => f.last_counts ? <span className="text-[11px] text-foreground-muted tabular-nums">{f.last_counts.fetched} fetched · {f.last_counts.new} new · {f.last_counts.updated} updated · {f.last_counts.duplicates} dup · {f.last_counts.invalid} invalid{mispMeta(f)}</span> : <span className="text-[11px] text-foreground-muted">—</span>, hideBelow: 'lg' },
         { key: 'error', header: 'Last error', render: (f) => f.last_error ? <span className="text-[11px] text-red break-words">{f.last_error.slice(0, 160)}</span> : <span className="text-[11px] text-foreground-muted">none</span>, hideBelow: 'md' },
         { key: 'run', header: '', render: (f) => manager && !f.retired && f.configured !== false ? <button type="button" className={btn('ghost')} disabled={!!busy} onClick={(e) => { e.stopPropagation(); void runFeed(f); }}><Play className="w-3.5 h-3.5" /> Run now</button> : null },
-        { key: 'backfill', header: '', render: (f) => manager && (f.id === 'misp' || f.id === 'misp_events') && f.configured !== false ? <button type="button" className={btn('ghost')} disabled={!!busy} title="One run that reads the last 30 days from MISP (read-only)" onClick={(e) => { e.stopPropagation(); void runFeed(f, 30); }}>Backfill 30 d</button> : null, hideBelow: 'md' },
+        { key: 'backfill', header: '', render: (f) => manager && (f.id === 'misp' || f.id === 'misp_events') && f.configured !== false ? <button type="button" className={btn('ghost')} disabled={!!busy} title="One run that reads the last 30 days from the threat intelligence feed (read-only)" onClick={(e) => { e.stopPropagation(); void runFeed(f, 30); }}>Backfill 30 d</button> : null, hideBelow: 'md' },
     ];
     const runCols: Column<TiRun>[] = [
         { key: 'feed', header: 'Source', render: (r) => <span className="text-xs">{FEED_NAME[r.feed_id] ?? r.feed_id}</span> },
@@ -143,7 +143,7 @@ export function TiSources() {
                             </dl>
                         </Card>
                         <Card>
-                            <SectionTitle title="MISP" action={manager ? <button type="button" className={btn('secondary')} disabled={busy === 'misp' || !d.misp.configured} onClick={() => void checkMisp()}>Check capabilities</button> : undefined} />
+                            <SectionTitle title="Threat Intelligence Feed" action={manager ? <button type="button" className={btn('secondary')} disabled={busy === 'misp' || !d.misp.configured} onClick={() => void checkMisp()}>Check capabilities</button> : undefined} />
                             <dl className="grid grid-cols-2 gap-3">
                                 <Field label="Connection">{d.misp.configured ? 'configured' : 'not configured (MISP_URL, MISP_API_KEY)'}</Field>
                                 <Field label="Writes from NovrSOC">{d.misp.writes_enabled ? <span className="text-orange font-semibold">enabled</span> : 'off (read-only)'}</Field>
@@ -160,7 +160,7 @@ export function TiSources() {
                         <Card>
                             <SectionTitle title="AI analyst" />
                             <dl className="grid grid-cols-2 gap-3">
-                                <Field label="Provider">{d.ai.provider === 'ollama' ? 'Ollama (self-hosted)' : 'NVIDIA (external)'}</Field>
+                                <Field label="Provider">{d.ai.provider === 'ollama' ? 'Self-hosted AI Engine' : 'AI Analyst Engine (external)'}</Field>
                                 <Field label="Model">{d.ai.model}</Field>
                                 <Field label="State">{d.ai.configured ? (d.ai.reachable ? <StatusPill tone="good" label="Reachable" /> : <StatusPill tone="critical" label="Unreachable" />) : <StatusPill tone="neutral" label="Not configured" />}</Field>
                                 <Field label="Detail">{d.ai.detail}</Field>

@@ -36,6 +36,6 @@ export function demoWazuhTrend(org: DemoOrgId, range: string) {
 export function demoCustomers() {
     return { customers: DEMO_ORG_IDS.map((id) => {
         const org = DEMO_ORGS[id];
-        return { id: `demo-${id}`, slug: `demo-${id}`, name: `${org.name} [DEMO]`, industry: org.sector, status: 'active', agentsTotal: org.assetCount, activeIncidents: 1, wazuhGroup: `demo-${id}`, setupComplete: true };
+        return { id: `demo-${id}`, slug: `demo-${id}`, name: `${org.name} [SAMPLE]`, industry: org.sector, status: 'active', agentsTotal: org.assetCount, activeIncidents: 1, wazuhGroup: `demo-${id}`, setupComplete: true };
     }) };
 }

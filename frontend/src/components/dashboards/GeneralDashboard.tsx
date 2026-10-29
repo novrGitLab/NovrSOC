@@ -195,7 +195,7 @@ function MITREWidget({ tactics, source }: { tactics: Record<string, number> | nu
     return (
         <WidgetCard title="MITRE ATT&CK" linkHref="/admin/secops/mitre" linkLabel="View MITRE Intelligence →">
             <div className="flex items-center justify-end mb-2 -mt-2">
-                <span className="text-[9px] bg-purple/10 text-purple px-2 py-0.5 rounded-full font-bold uppercase">{source === 'wazuh' ? 'Last 24h' : source === 'demo' ? 'Demo' : 'No data'}</span>
+                <span className="text-[9px] bg-purple/10 text-purple px-2 py-0.5 rounded-full font-bold uppercase">{source === 'wazuh' ? 'Last 24h' : source === 'demo' ? 'Sample' : 'No data'}</span>
             </div>
             <div className="space-y-2">
                 {MITRE_TACTICS.map((tactic) => {
@@ -390,7 +390,7 @@ function SOARWidget({ pendingApprovals }: { pendingApprovals: number | null }) {
                     {failed
                         ? 'Automation status unavailable — could not reach the backend.'
                         : status?.engine_active
-                            ? 'SOAR engine active — a Wazuh alert was cased in the last 24 hours.'
+                            ? 'SOAR engine active — a monitoring alert was cased in the last 24 hours.'
                             : 'No case from the SOAR engine in 24 hours — see SOAR Automation.'}
                 </span>
             </div>

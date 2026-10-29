@@ -250,8 +250,8 @@ export function AssetDetail({ agentId }: { agentId: string }) {
                                     <p className="text-sm font-bold text-amber-500 mb-1">No vulnerability data for this agent</p>
                                     <p className="text-xs text-foreground-muted leading-relaxed max-w-2xl">
                                         This does <span className="font-bold">not</span> mean the host is free of vulnerabilities — it means nothing
-                                        has been scanned. Vulnerability scanning requires the Wazuh
-                                        vulnerability-detector module to be enabled on the manager and to
+                                        has been scanned. Vulnerability scanning requires the monitoring
+                                        engine&apos;s vulnerability-detector module to be enabled on the manager and to
                                         have completed a scan for this agent.
                                     </p>
                                 </div>
@@ -359,7 +359,7 @@ export function AssetDetail({ agentId }: { agentId: string }) {
                     <div className="space-y-3">
                         <p className="text-sm font-bold text-foreground">Per-agent network connections are not collected</p>
                         <p className="text-xs text-foreground-muted leading-relaxed max-w-2xl">
-                            The Wazuh agents here do not ship per-process socket inventory, so there
+                            The monitoring agents here do not ship per-process socket inventory, so there
                             is no per-agent connection data to show.
                         </p>
                         <p className="text-xs text-foreground-muted leading-relaxed max-w-2xl">
