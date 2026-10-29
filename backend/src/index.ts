@@ -152,6 +152,11 @@ const ALLOWED_ORIGINS = [
     'https://novrsoc-prev.vercel.app',
     'https://novr-soc.vercel.app',
     'https://novrsoc.vercel.app',
+    // The production custom domain (Vercel project alias). www is the one a browser ever actually
+    // sends as Origin — the apex 308s to www before any script runs — but the apex is listed too,
+    // defensively, since it costs nothing and a redirect target can change.
+    'https://www.novrsoc.com',
+    'https://novrsoc.com',
     // This backend's own Railway origin. Not needed for the frontend->backend calls that make up
     // ~all traffic (a page served from Vercel sends its own Vercel origin, and same-origin
     // requests send no Origin header at all), but listed so anything served from the API's own
@@ -423,9 +428,14 @@ app.use('/api/reports', requireAuth, reportsRouter); // Reporting Center: schedu
 app.use('/api/collectors', requireAuth, collectorsRouter); // Collector Management: enrollment, status, revocation (phase P31)
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error('Unhandled error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    // A bare "Unhandled error: Error: Not allowed by CORS" with nothing else is undiagnosable —
+    // confirmed live on 2026-10-29 (the www.novrsoc.com custom-domain cutover): the log named the
+    // error but not which Origin was rejected, so root-causing it needed live reproduction against
+    // production instead of just reading the log. Method/path/Origin always accompany it now.
+    const isCors = err instanceof Error && err.message === 'Not allowed by CORS';
+    console.error('Unhandled error:', err, { method: req.method, path: req.path, origin: req.headers.origin ?? null });
+    res.status(isCors ? 403 : 500).json({ error: isCors ? 'Origin not allowed' : 'Internal server error' });
 });
 
 app.listen(PORT, () => {
