@@ -7,14 +7,15 @@
 // removed by the backend and counted here. Briefings and 7/30-day reports use the same rules.
 // The AI never takes an action and never changes a record.
 
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
-import { Sparkles, Send, AlertTriangle, ShieldCheck } from 'lucide-react';
-import { PageHeader, Segmented, Notice, btn, type Msg } from '@/components/features/vms/kit';
+import { Sparkles, Send, AlertTriangle, ShieldCheck, Download, FlaskConical } from 'lucide-react';
+import { PageHeader, Segmented, Notice, Tag, btn, downloadText, type Msg } from '@/components/features/vms/kit';
 import { Card, SectionTitle, Skeleton } from '@/components/features/vms/ui';
 import { vmsSend } from '@/components/features/vms/data';
 import { AiPanel } from '@/components/shared/AiPanel';
 import { fmtWat } from '@/lib/vms';
+import { isDemoModeEnabled, subscribeDemoMode } from '@/lib/demo/state';
 import { BasisBadge, type Basis } from './common';
 import { AiThreatIntelligenceDemo } from './AiThreatIntelligenceDemo';
 
@@ -42,12 +43,27 @@ function refHref(r: SourceRef): string | null {
     return null;
 }
 
+/** A plain-text briefing export of one answer — the AI never writes a record, so exporting is the
+ * only way to carry an investigation finding out of this page. */
+function briefingText(h: Answer): string {
+    const c = h.artifact.content;
+    const header = [
+        'NovrSOC AI Intelligence Analyst — Investigation Briefing',
+        `Question: ${h.question}`,
+        `Answered: ${fmtWat(h.artifact.created_at)} · Model: ${h.artifact.model} · Confidence: ${c.confidence}`,
+    ];
+    if (c.insufficient_evidence) header.push('Note: the stored intelligence did not fully answer this question.');
+    const statements = c.statements.map((s, i) => `${i + 1}. [${s.basis}] ${s.statement}`);
+    return [...header, '', c.answer, '', ...statements].join('\n');
+}
+
 export function TiAnalyst() {
     const [question, setQuestion] = useState('');
     const [busy, setBusy] = useState(false);
     const [msg, setMsg] = useState<Msg>(null);
     const [history, setHistory] = useState<Answer[]>([]);
     const [period, setPeriod] = useState<'7d' | '30d'>('7d');
+    const demoMode = useSyncExternalStore(subscribeDemoMode, isDemoModeEnabled, () => false);
 
     async function ask(q: string) {
         const text = q.trim();
@@ -83,12 +99,19 @@ export function TiAnalyst() {
 
             {busy && <Card><Skeleton className="h-28" /></Card>}
 
+            {history.length > 0 && <h2 className="text-sm font-black text-foreground">Investigation history</h2>}
             {history.map((h, i) => {
                 const c = h.artifact.content;
                 const refs = new Map(h.artifact.source_refs.map((r) => [r.ref, r]));
                 return (
                     <Card key={`${h.artifact.created_at}-${i}`} aria-label={`Answer to: ${h.question}`}>
-                        <p className="text-[11px] text-foreground-muted">You asked · {fmtWat(h.artifact.created_at)}</p>
+                        <div className="flex items-start justify-between gap-3">
+                            <p className="text-[11px] text-foreground-muted">You asked · {fmtWat(h.artifact.created_at)}</p>
+                            <button type="button" className={btn('ghost')} title="Export this briefing as a text file"
+                                onClick={() => downloadText(`ti-briefing-${h.artifact.created_at.slice(0, 10)}-${i}.txt`, briefingText(h), 'text/plain;charset=utf-8')}>
+                                <Download className="w-3 h-3" aria-hidden /> Export
+                            </button>
+                        </div>
                         <p className="text-sm font-semibold text-foreground mt-0.5">{h.question}</p>
                         {c.insufficient_evidence && (
                             <p className="mt-3 flex items-start gap-1.5 rounded-xl border border-orange/40 bg-orange/10 p-2.5 text-xs text-foreground"><AlertTriangle className="w-4 h-4 text-orange shrink-0" aria-hidden />The stored intelligence does not fully answer this. What follows is limited to what the records show.</p>
@@ -134,10 +157,27 @@ export function TiAnalyst() {
                 </div>
             </Card>
 
-            <div>
-                <h2 className="text-sm font-black text-foreground mb-3">AI Threat Intelligence &amp; Behavioral Analysis</h2>
-                <AiThreatIntelligenceDemo />
-            </div>
+            <Card>
+                <SectionTitle title="More investigation tools" hint="Built into the pages those records live on, rather than duplicated here" />
+                <div className="flex flex-wrap gap-2">
+                    <Link href="/admin/ti/indicators" className={btn('secondary')}>Per-indicator AI analysis &amp; related pivots</Link>
+                    <Link href="/admin/ti/actors" className={btn('secondary')}>Threat actor profiles &amp; MITRE ATT&amp;CK techniques</Link>
+                </div>
+            </Card>
+
+            {/* Synthetic — no behavioral-baseline engine, anomaly scorer, or correlation service
+                exists yet (see AiThreatIntelligenceDemo.tsx's header). Shown only in Demo Mode,
+                never in the normal operational view, and still carries its own label even then. */}
+            {demoMode && (
+                <div>
+                    <div className="flex items-center gap-2 mb-3">
+                        <h2 className="text-sm font-black text-foreground">AI Threat Intelligence &amp; Behavioral Analysis</h2>
+                        <Tag strong><FlaskConical className="w-3 h-3" aria-hidden /> Demonstration — synthetic data</Tag>
+                    </div>
+                    <p className="text-[11px] text-foreground-muted mb-3 max-w-2xl">This section illustrates what a future behavioral-detection capability could look like. Every event, score and the correlated sequence below is generated for this demonstration — none of it is derived from real alerts, and nothing here is written to any record.</p>
+                    <AiThreatIntelligenceDemo />
+                </div>
+            )}
         </div>
     );
 }
