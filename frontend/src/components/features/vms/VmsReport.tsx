@@ -1,10 +1,16 @@
 'use client';
 
-// Period report (phase P7, extended R3.3A): what happened in vulnerability management over a
-// stated period, from stored records, with the sources used and what the report cannot see.
-// Printable. Two render modes over the same fetched data: Executive (headline exposure,
-// remediation progress, historical trend, key recommendations, compliance context) and
-// Technical (the original detailed breakdown, now with CVE/CVSS/KEV on the headline findings).
+// Period report (phase P7, extended R3.3A, redesigned for professional client delivery). What
+// happened in vulnerability management over a stated period, from stored records, with the
+// sources used and what the report cannot see. Printable (window.print(), with print CSS for
+// page breaks — @admin/vms/report/page.tsx is the professional, enterprise-format view).
+//
+// Shared by three call sites with different needs: the staff VMS report (/admin/vms/report, the
+// one this redesign targets, richDetail=true — the searchable findings table, compliance-impact
+// table and remediation plan all need staff auth and staff-shaped endpoints), an executive's own
+// CNII report (CniiMyOrgReport.tsx) and the client portal (ClientVms.tsx, different endpoints and
+// auth model entirely) — both kept at richDetail=false, their exact pre-existing behaviour,
+// unchanged by this redesign.
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -13,7 +19,13 @@ import { loadJson } from '@/lib/alerts';
 import { fmtWat } from '@/lib/vms';
 import { ExportButton } from '@/components/shared/ExportButton';
 import { PageHeader, Segmented, btn, KpiCard, ExportCsvButton, Tag } from './kit';
+import { useVmsData } from './data';
 import { keyRecommendations, type VmsReportForRecommendations } from '@/lib/vmsReportInsights';
+import { ReportHeader } from './report/ReportHeader';
+import { RiskDashboard } from './report/RiskDashboard';
+import { ComplianceImpactSection } from './report/ComplianceImpactSection';
+import { FindingsTable } from './report/FindingsTable';
+import { RemediationPlanTable } from './report/RemediationPlanTable';
 
 interface TopFinding { id: string; title: string; asset: string; priority: string; due_at: string | null; status: string; severity: string | null; cvss: number | null; cve_ids: string[]; known_exploited: boolean }
 interface ComplianceFrameworkImpact { failing: number; at_risk: number; controls: { framework: string; control: string; status: 'FAIL' | 'AT RISK'; rationale: string }[] }
@@ -29,7 +41,6 @@ interface Report {
     attack_surface_changes: Record<string, number>;
     top_open: TopFinding[];
     recurring: { reopened: { id: string; title: string; asset_value: string; times_reopened: number }[]; widespread: { rule_id: string; title: string; open_on_assets: number }[] };
-    /** P16: closure by evidence vs claims; what was actually assessed. */
     closure?: { available: false; note: string } | {
         available: true; verified_by_rescan: number; verified_by_wazuh: number; marked_fixed_by_people: number; awaiting_verification_now: number | null;
         verification_inconclusive: number; closed_without_fix: { risk_accepted: number; false_positive: number }; reopened_after_verification: number;
@@ -47,12 +58,13 @@ interface Report {
     limitations: string[];
 }
 interface Trends { period: { from: string; to: string; days: number }; snapshots: { day: string; open_total: number; risk_mean?: number | null; kev_open?: number }[]; note: string | null }
+interface FindingForDashboard { id: string; title: string; asset_value: string; scanner_severity: string | null; scanner_cvss: number | null; risk_score: number | null; status: string; due_at: string | null; cve_ids: string[]; priority: string | null; owner: string | null; remediation?: string | null }
 
 const pairs = (o: Record<string, number>) => Object.entries(o).length ? Object.entries(o).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`).join(' · ') : 'none';
 const STATUS_COLOR: Record<string, string> = { FAIL: 'text-red font-bold', 'AT RISK': 'text-amber font-bold' };
 
 function ComplianceSection({ compliance }: { compliance: Compliance }) {
-    const section = 'bg-card border border-border rounded-2xl p-4 text-xs space-y-2';
+    const section = 'bg-card border border-border rounded-2xl p-4 text-xs space-y-2 vms-print-card';
     const frameworks = Object.entries(compliance.frameworks);
     return (
         <div className={section}>
@@ -75,8 +87,10 @@ function ComplianceSection({ compliance }: { compliance: Compliance }) {
     );
 }
 
-/** endpoint: the report API (the client portal reads /api/client/vms/report); exports: the staff CSV links. */
-export function VmsReport({ endpoint = '/api/vms/report', exports = true, findingsPath = '/admin/vms/findings' }: { endpoint?: string; exports?: boolean; findingsPath?: string } = {}) {
+/** endpoint: the report API (the client portal reads /api/client/vms/report); exports: the staff
+ * CSV links; richDetail: the new professional sections (header/dashboard/compliance table/
+ * findings table/remediation plan) — staff-only, see the file header for why. */
+export function VmsReport({ endpoint = '/api/vms/report', exports = true, findingsPath = '/admin/vms/findings', richDetail = true }: { endpoint?: string; exports?: boolean; findingsPath?: string; richDetail?: boolean } = {}) {
     const [days, setDays] = useState(30);
     const [mode, setMode] = useState<'executive' | 'technical'>('executive');
     const [data, setData] = useState<Report | null>(null);
@@ -101,7 +115,12 @@ export function VmsReport({ endpoint = '/api/vms/report', exports = true, findin
         return () => { active = false; };
     }, [days, endpoint]);
 
-    const section = 'bg-card border border-border rounded-2xl p-4 text-xs space-y-1';
+    // Open findings for the Risk Dashboard / Compliance Impact / Remediation Plan sections —
+    // richDetail only (staff-shaped endpoint; the findings table below fetches its own, filtered
+    // view separately since its filters differ from this fixed "every open finding" scope).
+    const dashboardFindings = useVmsData<{ findings: FindingForDashboard[] }>(richDetail ? '/api/vms/findings?status=open_all' : null);
+
+    const section = 'bg-card border border-border rounded-2xl p-4 text-xs space-y-1 vms-print-card';
 
     const resolvedInPeriod = data?.closure && data.closure.available
         ? data.closure.verified_by_rescan + data.closure.verified_by_wazuh + data.closure.closed_without_fix.risk_accepted + data.closure.closed_without_fix.false_positive
@@ -120,6 +139,10 @@ export function VmsReport({ endpoint = '/api/vms/report', exports = true, findin
         return `Open findings ${direction} over the period: ${first.open_total} on ${first.day} → ${last.open_total} on ${last.day} (${trends.snapshots.length} daily snapshot(s)).`;
     })();
 
+    const coverageNote = data?.coverage
+        ? `${data.coverage.latest_checks.reached}/${data.coverage.latest_checks.total} assessed asset(s) reached in this period` + (data.wazuh_freshness ? (data.wazuh_freshness.last_complete_at ? `; monitoring engine data as of ${fmtWat(data.wazuh_freshness.last_complete_at)}` : '; monitoring engine sync has not completed') : '')
+        : 'Coverage data not available';
+
     return (
         <div className="space-y-4">
             <PageHeader icon={FileBarChart} title="Reports" description="What happened in vulnerability management over the period, counted from stored records, with the sources used and what the report cannot see."
@@ -127,7 +150,7 @@ export function VmsReport({ endpoint = '/api/vms/report', exports = true, findin
                     <Segmented label="View" value={mode} onChange={setMode} options={[['executive', 'Executive'], ['technical', 'Technical']]} />
                     <Segmented label="Period" value={String(days) as '7' | '30' | '90'} onChange={(v) => setDays(Number(v))} options={[['7', '7 days'], ['30', '30 days'], ['90', '90 days']]} />
                     <ExportButton elementId="vms-report" filename={`vms-report-${mode}-${days}d-${new Date().toISOString().slice(0, 10)}`} title={`Vulnerability Management ${mode === 'executive' ? 'Executive' : 'Technical'} report — last ${days} days`} />
-                    <button onClick={() => window.print()} className={btn('secondary', 'md')}><Printer className="w-3.5 h-3.5" aria-hidden /> Print</button>
+                    <button onClick={() => window.print()} className={btn('secondary', 'md')}><Printer className="w-3.5 h-3.5" aria-hidden /> Print / PDF</button>
                 </div>} />
             {exports && <div className="bg-card border border-border rounded-2xl p-4 text-xs print:hidden">
                 <p className="font-bold text-foreground mb-2">Data exports (CSV)</p>
@@ -140,21 +163,46 @@ export function VmsReport({ endpoint = '/api/vms/report', exports = true, findin
             <div id="vms-report" className="space-y-4">
             {data && (
                 <>
+                    {richDetail && <ReportHeader days={days} periodFrom={data.period.from} periodTo={data.period.to} scanCounts={data.scans} coverageNote={coverageNote} staff />}
+
                     <p className="text-xs text-foreground-muted">Period: {fmtWat(data.period.from)} to {fmtWat(data.period.to)} ({data.period.days} days). Counted from stored records when this page was opened.
                         {data.wazuh_freshness && (data.wazuh_freshness.last_complete_at
                             ? ` Monitoring engine vulnerability data as of ${fmtWat(data.wazuh_freshness.last_complete_at)}.`
                             : ' Monitoring engine vulnerability sync has not completed for this organisation.')}
                     </p>
 
+                    {richDetail && (
+                        dashboardFindings.load.state === 'error' ? (
+                            <p className="text-xs text-red font-semibold">Findings could not be read: {dashboardFindings.load.error}</p>
+                        ) : (
+                            <>
+                                <RiskDashboard
+                                    findings={dashboardFindings.data?.findings ?? []}
+                                    totalUniqueVulnerabilities={new Set((dashboardFindings.data?.findings ?? []).flatMap((f) => f.cve_ids.length ? f.cve_ids : [f.id])).size}
+                                    trendSummary={trendsError ? `Trend unavailable — ${trendsError}` : trendSummary}
+                                />
+                                <ComplianceImpactSection findings={dashboardFindings.data?.findings ?? []} findingsPath={findingsPath} />
+                                <div className="print:break-before-page">
+                                    <FindingsTable />
+                                </div>
+                                <div className="print:break-before-page">
+                                    <RemediationPlanTable findings={dashboardFindings.data?.findings ?? []} findingsPath={findingsPath} />
+                                </div>
+                            </>
+                        )
+                    )}
+
                     {mode === 'executive' ? (
                         <>
-                            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                                <KpiCard label="Open findings" value={data.open_now.total} href={findingsPath} />
-                                <KpiCard label="Critical + high (open)" value={(data.open_now.by_severity.critical ?? 0) + (data.open_now.by_severity.high ?? 0)} tone={(data.open_now.by_severity.critical ?? 0) > 0 ? 'critical' : (data.open_now.by_severity.high ?? 0) > 0 ? 'serious' : 'good'} />
-                                <KpiCard label="Affected assets" value={data.open_now.affected_assets} />
-                                <KpiCard label="Known exploited" value={data.open_now.known_exploited} tone={data.open_now.known_exploited > 0 ? 'critical' : 'good'} />
-                                <KpiCard label="Overdue" value={data.open_now.overdue} tone={data.open_now.overdue > 0 ? 'warning' : 'good'} />
-                            </div>
+                            {!richDetail && (
+                                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                                    <KpiCard label="Open findings" value={data.open_now.total} href={findingsPath} />
+                                    <KpiCard label="Critical + high (open)" value={(data.open_now.by_severity.critical ?? 0) + (data.open_now.by_severity.high ?? 0)} tone={(data.open_now.by_severity.critical ?? 0) > 0 ? 'critical' : (data.open_now.by_severity.high ?? 0) > 0 ? 'serious' : 'good'} />
+                                    <KpiCard label="Affected assets" value={data.open_now.affected_assets} />
+                                    <KpiCard label="Known exploited" value={data.open_now.known_exploited} tone={data.open_now.known_exploited > 0 ? 'critical' : 'good'} />
+                                    <KpiCard label="Overdue" value={data.open_now.overdue} tone={data.open_now.overdue > 0 ? 'warning' : 'good'} />
+                                </div>
+                            )}
                             <div className={section}>
                                 <h2 className="text-sm font-black text-foreground">Remediation progress</h2>
                                 <p>New findings this period: {data.new_in_period.total}{resolvedInPeriod !== null ? `; resolved (verified or formally closed): ${resolvedInPeriod}` : ''}.</p>
@@ -163,15 +211,17 @@ export function VmsReport({ endpoint = '/api/vms/report', exports = true, findin
                                 )}
                                 {data.closure && !data.closure.available && <p className="text-foreground-muted">{data.closure.note}</p>}
                             </div>
-                            <div className={section}>
-                                <h2 className="text-sm font-black text-foreground">Historical risk trend</h2>
-                                <p className="text-foreground-muted">{trendsError ? `Trend unavailable — ${trendsError}` : trendSummary ?? 'Loading…'}</p>
-                            </div>
+                            {!richDetail && (
+                                <div className={section}>
+                                    <h2 className="text-sm font-black text-foreground">Historical risk trend</h2>
+                                    <p className="text-foreground-muted">{trendsError ? `Trend unavailable — ${trendsError}` : trendSummary ?? 'Loading…'}</p>
+                                </div>
+                            )}
                             <div className={`${section} border-blue/30`}>
                                 <h2 className="text-sm font-black text-foreground">Key recommendations</h2>
                                 {recommendations.map((r) => <p key={r}>• {r}</p>)}
                             </div>
-                            <ComplianceSection compliance={data.compliance} />
+                            {!richDetail && <ComplianceSection compliance={data.compliance} />}
                         </>
                     ) : (
                         <>
@@ -239,12 +289,13 @@ export function VmsReport({ endpoint = '/api/vms/report', exports = true, findin
                                 <p>Reopened after a fix: {data.recurring.reopened.length ? data.recurring.reopened.map((f) => `${f.title} on ${f.asset_value} (${f.times_reopened}×)`).join('; ') : 'none'}.</p>
                                 <p>Open on 3+ assets: {data.recurring.widespread.length ? data.recurring.widespread.map((r) => `${r.title} (${r.open_on_assets})`).join('; ') : 'none'}.</p>
                             </div>
-                            <ComplianceSection compliance={data.compliance} />
+                            {!richDetail && <ComplianceSection compliance={data.compliance} />}
                         </>
                     )}
 
                     <div className={`${section} border-amber/30`}>
-                        <h2 className="text-sm font-black text-foreground">Limitations</h2>
+                        <h2 className="text-sm font-black text-foreground">Methodology, Limitations &amp; Appendix</h2>
+                        <p className="text-foreground-muted">This report is generated from live stored assessment data at the time it was opened. It is not a point-in-time snapshot exported and archived — reopening it later reflects the platform&apos;s current state, not this moment.</p>
                         {data.limitations.map((l) => <p key={l}>• {l}</p>)}
                         <p className="text-foreground-muted">Sources: {data.sources.join(', ')}.</p>
                     </div>

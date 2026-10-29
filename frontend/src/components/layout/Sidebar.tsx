@@ -135,7 +135,7 @@ export function Sidebar({ navGroups, user, onLogout, mobileOpen = false, onClose
         <aside
             id="app-sidebar"
             className={cn(
-                'w-[260px] h-screen bg-white border-r border-border text-foreground flex flex-col fixed left-0 top-0 z-50 transition-transform duration-200 lg:translate-x-0',
+                'w-[260px] h-screen bg-white border-r border-border text-foreground flex flex-col fixed left-0 top-0 z-50 transition-transform duration-200 lg:translate-x-0 print:hidden',
                 mobileOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full',
             )}
         >

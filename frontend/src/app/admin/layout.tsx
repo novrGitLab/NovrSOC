@@ -43,10 +43,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             <PresenceHeartbeat />
             <AdminSidebar mobileOpen={navOpen} onClose={() => setNavOpen(false)} user={user} onLogout={signOut} />
 
-            <div className="lg:ml-[260px] flex flex-1 min-w-0 min-h-screen flex-col">
+            <div className="lg:ml-[260px] print:ml-0 flex flex-1 min-w-0 min-h-screen flex-col">
                 <DemoBanner />
                 <Header initials={initials} name={user.name} email={user.email} role={user.role} onSignOut={signOut} onMenu={() => setNavOpen(true)} settingsHref={SETTINGS_HREF[user.role]} />
-                <main className="flex-1 min-w-0 p-4 sm:p-6 overflow-y-auto">{children}</main>
+                <main className="flex-1 min-w-0 p-4 sm:p-6 print:p-0 overflow-y-auto print:overflow-visible">{children}</main>
             </div>
 
             <HelpAssistant />

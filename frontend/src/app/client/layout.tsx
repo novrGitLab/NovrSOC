@@ -44,9 +44,9 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
         <div className="flex min-h-screen bg-surface">
             <ClientSidebar mobileOpen={navOpen} onClose={() => setNavOpen(false)} user={user} onLogout={portalSignOut} />
 
-            <div className="lg:ml-[260px] flex flex-1 min-w-0 min-h-screen flex-col">
+            <div className="lg:ml-[260px] print:ml-0 flex flex-1 min-w-0 min-h-screen flex-col">
                 <Header initials={initials} name={user.name} email={user.email} role="portal_user" onSignOut={portalSignOut} onMenu={() => setNavOpen(true)} settingsHref="/client/settings" />
-                <main className="flex-1 min-w-0 p-4 sm:p-6 overflow-y-auto">{children}</main>
+                <main className="flex-1 min-w-0 p-4 sm:p-6 print:p-0 overflow-y-auto print:overflow-visible">{children}</main>
             </div>
 
             <HelpAssistant />

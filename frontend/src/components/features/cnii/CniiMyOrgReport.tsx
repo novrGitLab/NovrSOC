@@ -70,8 +70,10 @@ export function CniiMyOrgReport() {
                 </Card>
             )}
             {/* The detailed vulnerability report below is the same Executive/Technical VmsReport
-             * every VMS page uses — vms:read already confines it to this organisation. */}
-            <VmsReport />
+             * every VMS page uses — vms:read already confines it to this organisation. richDetail
+             * off: this executive summary keeps its existing shape rather than gaining the new
+             * staff-oriented findings table / compliance table / remediation plan. */}
+            <VmsReport richDetail={false} />
         </div>
     );
 }

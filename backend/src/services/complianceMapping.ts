@@ -119,6 +119,24 @@ export function mapCVEToCompliance(vuln: MappableVulnerability): ComplianceImpac
         });
     }
 
+    // CIS Controls v8, Control 07 (Continuous Vulnerability Management). Safeguard 7.7 sets a
+    // risk-based remediation timeline (CIS's own implementation guidance: monthly for urgent/high,
+    // quarterly for the rest) — critical/high bears directly on it; 7.1 (the vulnerability
+    // management process itself) is only AT RISK, since a single open finding does not by itself
+    // prove the process is missing, only that this one item within it is outstanding.
+    impacts.push({
+        framework: 'CIS Controls',
+        control: '7.7 — Remediate Detected Vulnerabilities',
+        status: 'FAIL',
+        rationale: `${severity[0].toUpperCase()}${severity.slice(1)}-severity vulnerability outstanding against CIS's risk-based remediation timeline for this control.`,
+    });
+    impacts.push({
+        framework: 'CIS Controls',
+        control: '7.1 — Establish and Maintain a Vulnerability Management Process',
+        status: 'AT RISK',
+        rationale: 'An open, unremediated finding is evidence the process has not yet closed this item — not proof the process itself is absent.',
+    });
+
     // Internet-facing crypto/web components carry an extra PCI requirement, since these are the
     // components that terminate cardholder-data connections.
     const pkg = (vuln.package ?? '').toLowerCase();

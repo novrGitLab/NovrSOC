@@ -98,7 +98,7 @@ export function Header({ initials, name, email, role, onSignOut, onMenu, setting
     };
 
     return (
-        <header className="h-14 bg-white border-b border-grey-100 flex items-center gap-2 sm:gap-4 px-3 sm:px-6 sticky top-0 z-30 w-full">
+        <header className="h-14 bg-white border-b border-grey-100 flex items-center gap-2 sm:gap-4 px-3 sm:px-6 sticky top-0 z-30 w-full print:hidden">
             {/* Left */}
             <div className="flex items-center gap-2 min-w-0">
                 {onMenu && (

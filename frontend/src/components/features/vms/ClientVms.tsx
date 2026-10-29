@@ -210,5 +210,7 @@ export function ClientVmsRemediation() {
 }
 
 export function ClientVmsReports() {
-    return <VmsReport endpoint="/api/client/vms/report" exports={false} findingsPath="/client/vms/findings" />;
+    // richDetail off: the client portal's findings endpoint has a different shape than the staff
+    // one the new sections need (see VmsReport.tsx's file header) — unchanged existing behaviour.
+    return <VmsReport endpoint="/api/client/vms/report" exports={false} findingsPath="/client/vms/findings" richDetail={false} />;
 }

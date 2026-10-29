@@ -17,17 +17,26 @@ test('CVSS fallback bands match FIRST\'s v3 bands when severity text is absent',
     assert.deepEqual(mapCVEToCompliance({ cvss: 3.9 }), [], 'cvss 3.9 is low');
 });
 
-test('high severity maps to ISO 27001, PCI-DSS, NDPA, NIST CSF, GDPR and NCC — not CBN', () => {
+test('high severity maps to ISO 27001, PCI-DSS, NDPA, NIST CSF, GDPR, NCC and CIS Controls — not CBN', () => {
     const impacts = mapCVEToCompliance({ severity: 'high' });
     const frameworks = impacts.map((i) => i.framework);
-    assert.deepEqual(new Set(frameworks), new Set(['ISO 27001', 'PCI-DSS', 'NDPA', 'NIST CSF', 'GDPR', 'NCC']));
+    assert.deepEqual(new Set(frameworks), new Set(['ISO 27001', 'PCI-DSS', 'NDPA', 'NIST CSF', 'GDPR', 'NCC', 'CIS Controls']));
     assert.equal(frameworks.includes('CBN'), false, 'CBN is critical-only');
 });
 
-test('critical severity adds CBN on top of the six high-severity frameworks', () => {
+test('critical severity adds CBN on top of the seven high-severity frameworks', () => {
     const impacts = mapCVEToCompliance({ severity: 'critical' });
     const frameworks = impacts.map((i) => i.framework);
-    assert.deepEqual(new Set(frameworks), new Set(['ISO 27001', 'PCI-DSS', 'NDPA', 'NIST CSF', 'GDPR', 'NCC', 'CBN']));
+    assert.deepEqual(new Set(frameworks), new Set(['ISO 27001', 'PCI-DSS', 'NDPA', 'NIST CSF', 'GDPR', 'NCC', 'CBN', 'CIS Controls']));
+});
+
+test('CIS Controls cites Safeguard 7.7 as FAIL and 7.1 as AT RISK, never the other way round', () => {
+    const impacts = mapCVEToCompliance({ severity: 'high' }).filter((i) => i.framework === 'CIS Controls');
+    assert.equal(impacts.length, 2);
+    const remediate = impacts.find((i) => /7\.7/.test(i.control));
+    const process = impacts.find((i) => /7\.1/.test(i.control));
+    assert.equal(remediate?.status, 'FAIL');
+    assert.equal(process?.status, 'AT RISK');
 });
 
 test('NIST CSF is PR.PS-02 (patching), never ID.RA-1 — a recorded finding proves identification worked', () => {
@@ -73,8 +82,9 @@ test('getComplianceImpact dedupes repeated controls and counts unmapped low-seve
 
 test('overall_impact bands by distinct failing controls, not by vulnerability count', () => {
     assert.equal(getComplianceImpact([]).overall_impact, 'No impact');
-    // FAIL-status controls are ISO 27001 A.8.8, PCI-DSS 6.3.3 and NIST CSF PR.PS-02 (NDPA, GDPR
-    // and NCC are AT RISK, not FAIL) = 3 distinct failing controls for any high-severity vuln.
+    // FAIL-status controls are ISO 27001 A.8.8, PCI-DSS 6.3.3, NIST CSF PR.PS-02 and CIS Controls
+    // 7.7 (NDPA, GDPR, NCC and CIS 7.1 are AT RISK, not FAIL) = 4 distinct failing controls for
+    // any high-severity vuln — still under the Medium-impact band's ceiling of 6.
     assert.equal(getComplianceImpact([{ severity: 'high' }]).overall_impact, 'Medium impact');
     assert.equal(getComplianceImpact([{ severity: 'critical' }]).overall_impact, 'Medium impact'); // + CBN = 4 failing, still under 6
 });

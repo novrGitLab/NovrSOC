@@ -190,3 +190,34 @@ body {
     100% { background-position: -200% 0; }
   }
 }
+
+/* Client-deliverable PDF output (window.print() from a report page, e.g. /admin/vms/report).
+   Sidebar/header/help-widget are hidden per-component via Tailwind's print:hidden; this covers
+   what a stylesheet, not a component class, actually needs to control: page size/margins, so
+   tables and cards don't split across a page edge, and link/card chrome that reads fine on
+   screen but is noise on paper. */
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm 12mm;
+  }
+
+  html, body {
+    background: #fff !important;
+  }
+
+  /* Headings, table rows and KPI/finding cards stay on one page rather than splitting across
+     a page edge mid-row; break-before-page sections (ReportHeader, FindingsTable,
+     RemediationPlanTable) still force a fresh page ahead of themselves. */
+  h1, h2, h3, table tr, .vms-print-card {
+    break-inside: avoid;
+  }
+  thead {
+    display: table-header-group; /* repeat column headers on every printed page */
+  }
+
+  a {
+    color: inherit !important;
+    text-decoration: none !important;
+  }
+}
